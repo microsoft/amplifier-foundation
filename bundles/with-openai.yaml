@@ -9,5 +9,3 @@ includes:
 providers:
   - module: provider-openai
     source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
-    config:
-      default_model: gpt-4o
