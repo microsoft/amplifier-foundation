@@ -26,16 +26,19 @@ def construct_agent_path(base: Path, name: str) -> Path:
 def construct_context_path(base: Path, name: str) -> Path:
     """Construct path to a context file.
 
-    Looks for context in context/ subdirectory with .md extension.
+    The name is a path relative to the context/ directory within the bundle.
+    Supports any file extension and arbitrary directory depth.
+
+    Examples:
+        'IMPLEMENTATION_PHILOSOPHY.md' -> context/IMPLEMENTATION_PHILOSOPHY.md
+        'shared/common-agent-base.md'  -> context/shared/common-agent-base.md
+        'examples/config.yaml'         -> context/examples/config.yaml
 
     Args:
         base: Base directory (bundle root).
-        name: Context file name.
+        name: Path to context file relative to context/ directory.
 
     Returns:
         Path to context file.
     """
-    # Try with and without .md extension
-    if name.endswith(".md"):
-        return base / "context" / name
-    return base / "context" / f"{name}.md"
+    return base / "context" / name
