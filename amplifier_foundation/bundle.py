@@ -53,6 +53,7 @@ class Bundle:
 
     # Internal
     base_path: Path | None = None
+    source_base_paths: dict[str, Path] = field(default_factory=dict)  # Track base_path for each source namespace
 
     def compose(self, *others: Bundle) -> Bundle:
         """Compose this bundle with others (later overrides earlier).
@@ -69,6 +70,11 @@ class Bundle:
         Returns:
             New Bundle with merged configuration.
         """
+        # Initialize source_base_paths: copy self's or create from self's name/base_path
+        initial_base_paths = dict(self.source_base_paths) if self.source_base_paths else {}
+        if self.name and self.base_path and self.name not in initial_base_paths:
+            initial_base_paths[self.name] = self.base_path
+
         result = Bundle(
             name=self.name,
             version=self.version,
@@ -82,9 +88,14 @@ class Bundle:
             context=dict(self.context),
             instruction=self.instruction,
             base_path=self.base_path,
+            source_base_paths=initial_base_paths,
         )
 
         for other in others:
+            # Track source base_path before name override (for @mention resolution)
+            if other.name and other.base_path and other.name not in result.source_base_paths:
+                result.source_base_paths[other.name] = other.base_path
+
             # Metadata: later wins
             result.name = other.name or result.name
             result.version = other.version or result.version
@@ -462,6 +473,74 @@ class PreparedBundle:
         # Initialize the session (loads all modules)
         await session.initialize()
 
+        # Inject system instruction with resolved @mentions (if present)
+        if self.bundle.instruction:
+            from dataclasses import replace as dataclass_replace
+
+            from amplifier_foundation.mentions import BaseMentionResolver
+            from amplifier_foundation.mentions import ContentDeduplicator
+            from amplifier_foundation.mentions import format_context_block
+            from amplifier_foundation.mentions import load_mentions
+
+            # Build bundle registry: each namespace maps to bundle with correct base_path
+            # This allows @foundation:context/... to resolve relative to foundation's base_path
+            bundles_for_resolver: dict[str, Bundle] = {}
+            namespaces = list(self.bundle.source_base_paths.keys()) if self.bundle.source_base_paths else []
+            if self.bundle.name and self.bundle.name not in namespaces:
+                namespaces.append(self.bundle.name)
+
+            for ns in namespaces:
+                if not ns:
+                    continue
+                # Use source_base_paths if available, otherwise fall back to bundle's base_path
+                ns_base_path = self.bundle.source_base_paths.get(ns, self.bundle.base_path)
+                if ns_base_path:
+                    # Create a copy of bundle with correct base_path for this namespace
+                    bundles_for_resolver[ns] = dataclass_replace(self.bundle, base_path=ns_base_path)
+                else:
+                    bundles_for_resolver[ns] = self.bundle
+
+            resolver = BaseMentionResolver(
+                bundles=bundles_for_resolver,
+                base_path=self.bundle.base_path or Path.cwd(),
+            )
+
+            # Deduplicator collects all unique files (including nested @mentions)
+            deduplicator = ContentDeduplicator()
+
+            # Register resolver and deduplicator as capabilities for tools to use
+            # (e.g., filesystem tool's read_file can resolve @mention paths)
+            session.coordinator.register_capability("mention_resolver", resolver)
+            session.coordinator.register_capability("mention_deduplicator", deduplicator)
+
+            # Resolve @mentions in the instruction (returns MentionResult list with content)
+            mention_results = await load_mentions(
+                self.bundle.instruction,
+                resolver=resolver,
+                deduplicator=deduplicator,
+            )
+
+            # Build mention_to_path map for context block attribution
+            mention_to_path: dict[str, Path] = {}
+            for mr in mention_results:
+                if mr.resolved_path:
+                    mention_to_path[mr.mention] = mr.resolved_path
+
+            # Format loaded context as XML blocks (prepended to instruction)
+            # @mentions stay in instruction as semantic references
+            context_block = format_context_block(deduplicator, mention_to_path)
+
+            # Prepend context to instruction (context first, then original instruction with @mentions)
+            if context_block:
+                final_instruction = f"{context_block}\n\n---\n\n{self.bundle.instruction}"
+            else:
+                final_instruction = self.bundle.instruction
+
+            # Add as system message
+            context_manager = session.coordinator.get("context")
+            if context_manager and hasattr(context_manager, "add_message"):
+                await context_manager.add_message({"role": "system", "content": final_instruction})
+
         return session
 
     async def spawn(
@@ -544,11 +623,64 @@ class PreparedBundle:
         await child_session.coordinator.mount("module-source-resolver", self.resolver)
         await child_session.initialize()
 
-        # Inject system instruction if present
+        # Inject system instruction with resolved @mentions (if present)
         if effective_bundle.instruction:
+            from dataclasses import replace as dataclass_replace
+
+            from amplifier_foundation.mentions import BaseMentionResolver
+            from amplifier_foundation.mentions import ContentDeduplicator
+            from amplifier_foundation.mentions import format_context_block
+            from amplifier_foundation.mentions import load_mentions
+
+            # Build bundle registry from source_base_paths (set during compose)
+            bundles_for_resolver: dict[str, Bundle] = {}
+            namespaces = list(effective_bundle.source_base_paths.keys()) if effective_bundle.source_base_paths else []
+            if effective_bundle.name and effective_bundle.name not in namespaces:
+                namespaces.append(effective_bundle.name)
+
+            for ns in namespaces:
+                if not ns:
+                    continue
+                ns_base_path = effective_bundle.source_base_paths.get(ns, effective_bundle.base_path)
+                if ns_base_path:
+                    bundles_for_resolver[ns] = dataclass_replace(effective_bundle, base_path=ns_base_path)
+                else:
+                    bundles_for_resolver[ns] = effective_bundle
+
+            resolver = BaseMentionResolver(
+                bundles=bundles_for_resolver,
+                base_path=effective_bundle.base_path or Path.cwd(),
+            )
+
+            # Create deduplicator to collect ALL loaded content (including nested)
+            deduplicator = ContentDeduplicator()
+
+            # Resolve @mentions in the instruction (also loads nested @mentions)
+            mention_results = await load_mentions(
+                effective_bundle.instruction,
+                resolver=resolver,
+                deduplicator=deduplicator,
+            )
+
+            # Build mention_to_path map for context block attribution
+            mention_to_path: dict[str, Path] = {}
+            for mr in mention_results:
+                if mr.resolved_path:
+                    mention_to_path[mr.mention] = mr.resolved_path
+
+            # Format loaded context as XML blocks (prepended to instruction)
+            # @mentions stay in instruction as semantic references
+            context_block = format_context_block(deduplicator, mention_to_path)
+
+            # Prepend context to instruction (context first, then original instruction with @mentions)
+            if context_block:
+                final_instruction = f"{context_block}\n\n---\n\n{effective_bundle.instruction}"
+            else:
+                final_instruction = effective_bundle.instruction
+
             context = child_session.coordinator.get("context")
             if context and hasattr(context, "add_message"):
-                await context.add_message({"role": "system", "content": effective_bundle.instruction})
+                await context.add_message({"role": "system", "content": final_instruction})
 
         # Execute instruction and cleanup
         try:

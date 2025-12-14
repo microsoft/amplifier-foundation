@@ -306,7 +306,7 @@ async def main() -> None:
         print_step(1, 5, "Load Foundation Bundle")
         print("       Fetching from GitHub...")
 
-    foundation = await load_bundle(foundation_source, auto_include=False)
+    foundation = await load_bundle(foundation_source)
     print_detail("Name", f"{foundation.name} v{foundation.version}")
     print_detail("Tools", str(len(foundation.tools)))
 
@@ -384,7 +384,12 @@ async def main() -> None:
 
         # Register app-layer spawn capability (adapts task tool's contract)
         register_spawn_capability(session, prepared)
+
+        # Note: hooks-streaming-ui is included via foundation:behaviors/streaming-ui
+        # which handles thinking blocks, tool calls, and token usage display
+
         print_success("Session created with sub-agent spawning enabled")
+        print_detail("Session ID", session.session_id)
 
         async with session:
             print("\n       Executing...\n")

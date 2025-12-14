@@ -7,6 +7,6 @@ providers:
   - module: provider-openai
     source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
     config:
-      default_model: gpt-5.1
+      default_model: gpt-5.2
       debug: true
       raw_debug: true
