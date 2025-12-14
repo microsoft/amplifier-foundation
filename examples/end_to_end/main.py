@@ -39,13 +39,53 @@ from amplifier_foundation import load_bundle
 from amplifier_foundation.bundle import PreparedBundle
 
 # =============================================================================
+# CLI Output Helpers
+# =============================================================================
+
+STEP_WIDTH = 60
+
+
+def print_header(title: str) -> None:
+    """Print a prominent header for the demo."""
+    print()
+    print("╔" + "═" * (STEP_WIDTH - 2) + "╗")
+    print(f"║  {title.center(STEP_WIDTH - 6)}  ║")
+    print("╚" + "═" * (STEP_WIDTH - 2) + "╝")
+    print()
+
+
+def print_step(step: int, total: int, title: str) -> None:
+    """Print a step header with visual separation."""
+    print()
+    print("─" * STEP_WIDTH)
+    print(f"  [{step}/{total}] {title}")
+    print("─" * STEP_WIDTH)
+
+
+def print_detail(label: str, value: str) -> None:
+    """Print an indented detail line."""
+    print(f"       {label}: {value}")
+
+
+def print_success(message: str) -> None:
+    """Print a success message with checkmark."""
+    print(f"    ✓  {message}")
+
+
+# =============================================================================
 # Provider Discovery and Selection
 # =============================================================================
 
 
-def discover_providers(foundation_path: Path) -> list[dict]:
-    """Discover available provider bundles in the foundation."""
-    providers_dir = foundation_path / "providers"
+def discover_providers(bundle: Bundle) -> list[dict]:
+    """Discover available provider bundles from the foundation's providers directory.
+
+    Works for both local and remote (git-cached) bundles using bundle.base_path.
+    """
+    if not bundle.base_path:
+        return []
+
+    providers_dir = bundle.base_path / "providers"
     if not providers_dir.exists():
         return []
 
@@ -84,15 +124,13 @@ def discover_providers(foundation_path: Path) -> list[dict]:
 
 def display_providers(providers: list[dict]) -> None:
     """Display available providers with status."""
-    print("\nAvailable Providers:")
-    print("-" * 60)
-
+    print()
     for i, p in enumerate(providers, 1):
         status = "✓" if p["env_set"] else "✗"
-        env_status = f"({p['env_var']} {'set' if p['env_set'] else 'NOT set'})"
-        print(f"  [{i}] {p['name']}")
-        print(f"      Model: {p['model']}")
-        print(f"      Status: {status} {env_status}")
+        env_status = f"{p['env_var']} {'set' if p['env_set'] else 'NOT set'}"
+        print(f"    [{i}] {p['name']}")
+        print(f"        Model:  {p['model']}")
+        print(f"        Status: {status} {env_status}")
         print()
 
 
@@ -253,132 +291,84 @@ def resolve_agent_bundle(
 
 async def main() -> None:
     """Interactive end-to-end demo."""
-    print("=" * 60)
-    print("Amplifier Foundation: End-to-End Demo")
-    print("=" * 60)
+    print_header("Amplifier Foundation: End-to-End Demo")
 
-    # Determine foundation path (local if available, otherwise remote)
+    # -------------------------------------------------------------------------
+    # Step 1: Load Foundation
+    # -------------------------------------------------------------------------
     local_foundation = Path(__file__).parent.parent.parent
     if (local_foundation / "bundle.md").exists():
-        foundation_path = local_foundation
-        print(f"\n[1/5] Using local foundation bundle: {foundation_path}")
+        foundation_source = str(local_foundation)
+        print_step(1, 5, "Load Foundation Bundle")
+        print_success(f"Using local: {local_foundation}")
     else:
-        print("\n[1/5] Local foundation not found, will load from GitHub...")
-        foundation_path = None
+        foundation_source = "git+https://github.com/microsoft/amplifier-foundation@main"
+        print_step(1, 5, "Load Foundation Bundle")
+        print("       Fetching from GitHub...")
 
-    # Load foundation bundle
-    if foundation_path:
-        foundation = await load_bundle(str(foundation_path), auto_include=False)
-    else:
-        foundation = await load_bundle(
-            "git+https://github.com/microsoft/amplifier-foundation@main",
-            auto_include=False,
-        )
-    print(f"      Loaded: {foundation.name} v{foundation.version}")
-    print(f"      Tools: {len(foundation.tools)}")
+    foundation = await load_bundle(foundation_source, auto_include=False)
+    print_detail("Name", f"{foundation.name} v{foundation.version}")
+    print_detail("Tools", str(len(foundation.tools)))
 
-    # Discover providers
-    print("\n[2/5] Discovering available providers...")
-    if foundation_path:
-        providers = discover_providers(foundation_path)
-    else:
-        # For remote, we'd need to check the resolved path
-        # For simplicity, define inline options
-        providers = [
-            {
-                "name": "anthropic-sonnet",
-                "description": "Anthropic Claude Sonnet",
-                "model": "claude-sonnet-4-5",
-                "env_var": "ANTHROPIC_API_KEY",
-                "env_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
-                "inline": {
-                    "module": "provider-anthropic",
-                    "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
-                    "config": {"default_model": "claude-sonnet-4-5"},
-                },
-            },
-            {
-                "name": "anthropic-opus",
-                "description": "Anthropic Claude Opus",
-                "model": "claude-opus-4-5",
-                "env_var": "ANTHROPIC_API_KEY",
-                "env_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
-                "inline": {
-                    "module": "provider-anthropic",
-                    "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
-                    "config": {"default_model": "claude-opus-4-5"},
-                },
-            },
-            {
-                "name": "openai-gpt",
-                "description": "OpenAI GPT",
-                "model": "gpt-4o",
-                "env_var": "OPENAI_API_KEY",
-                "env_set": bool(os.environ.get("OPENAI_API_KEY")),
-                "inline": {
-                    "module": "provider-openai",
-                    "source": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
-                    "config": {"default_model": "gpt-4o"},
-                },
-            },
-        ]
+    # -------------------------------------------------------------------------
+    # Step 2: Discover Providers
+    # -------------------------------------------------------------------------
+    print_step(2, 5, "Discover Available Providers")
+
+    # Works for both local and remote (git-cached) bundles via foundation.base_path
+    providers = discover_providers(foundation)
 
     if not providers:
-        print("      No providers found!")
+        print("       No providers found!")
         return
 
-    print(f"      Found {len(providers)} provider(s)")
+    print_success(f"Found {len(providers)} provider(s)")
     display_providers(providers)
 
-    # Select provider
-    print("[3/5] Select a provider...")
+    # -------------------------------------------------------------------------
+    # Step 3: Select Provider
+    # -------------------------------------------------------------------------
+    print_step(3, 5, "Select a Provider")
+    print()
     selected = select_provider(providers)
     if not selected:
-        print("\nExiting.")
+        print("\n    Exiting.")
         return
 
-    print(f"\n      Selected: {selected['name']} ({selected['model']})")
+    print()
+    print_success(f"Selected: {selected['name']} ({selected['model']})")
 
-    # Load/create provider bundle
-    print("\n[4/5] Composing bundles...")
-    if "file" in selected:
-        # Load from file
-        provider_bundle = await load_bundle(str(selected["file"]))
-        # If user provided API key, inject it into the provider config
-        if "api_key" in selected and provider_bundle.providers:
-            provider_bundle.providers[0].setdefault("config", {})["api_key"] = selected["api_key"]
-    else:
-        # Create inline - include api_key if user provided it
-        provider_config = dict(selected["inline"])
-        if "api_key" in selected:
-            provider_config.setdefault("config", {})["api_key"] = selected["api_key"]
-        provider_bundle = Bundle(
-            name=selected["name"],
-            version="1.0.0",
-            providers=[provider_config],
-        )
+    # -------------------------------------------------------------------------
+    # Step 4: Compose Bundles
+    # -------------------------------------------------------------------------
+    print_step(4, 5, "Compose Bundles")
 
-    # Compose
+    provider_bundle = await load_bundle(str(selected["file"]))
+    # If user provided API key, inject it into the provider config
+    if "api_key" in selected and provider_bundle.providers:
+        provider_bundle.providers[0].setdefault("config", {})["api_key"] = selected["api_key"]
+
     composed = foundation.compose(provider_bundle)
+    print_success("Foundation + Provider composed")
 
-    # Prepare bundle - downloads and activates all modules
-    print("      Preparing modules (downloading and installing)...")
+    print("\n       Preparing modules (downloading if needed)...")
     prepared = await composed.prepare()
 
     mount_plan = prepared.mount_plan
-    print(f"      Session: {mount_plan.get('session', {}).get('orchestrator', {}).get('module', 'default')}")
-    print(f"      Providers: {len(mount_plan.get('providers', []))}")
-    print(f"      Tools: {len(mount_plan.get('tools', []))}")
+    orchestrator = mount_plan.get("session", {}).get("orchestrator", {}).get("module", "default")
+    print_detail("Orchestrator", orchestrator)
+    print_detail("Providers", str(len(mount_plan.get("providers", []))))
+    print_detail("Tools", str(len(mount_plan.get("tools", []))))
 
-    # Get user prompt
+    # -------------------------------------------------------------------------
+    # Step 5: Execute
+    # -------------------------------------------------------------------------
     prompt = get_user_prompt()
     if not prompt:
-        print("\nExiting.")
+        print("\n    Exiting.")
         return
 
-    # Execute
-    print("\n[5/5] Executing via AmplifierSession...")
-    print("-" * 60)
+    print_step(5, 5, "Execute via AmplifierSession")
 
     try:
         # PreparedBundle.create_session() handles:
@@ -394,25 +384,34 @@ async def main() -> None:
 
         # Register app-layer spawn capability (adapts task tool's contract)
         register_spawn_capability(session, prepared)
-        print("      Sub-session spawning enabled (session.spawn capability registered)")
+        print_success("Session created with sub-agent spawning enabled")
 
         async with session:
+            print("\n       Executing...\n")
             response = await session.execute(prompt)
-            print(f"\nResponse:\n{response}")
+            print()
+            print("─" * STEP_WIDTH)
+            print("  Response")
+            print("─" * STEP_WIDTH)
+            print(f"\n{response}")
 
     except ImportError:
-        print("ERROR: amplifier-core not installed")
-        print("Install with: pip install amplifier-core")
-        print("\nMount plan was successfully created:")
+        print("\n    ✗  ERROR: amplifier-core not installed")
+        print("       Install with: pip install amplifier-core")
+        print("\n       Mount plan was successfully created:")
         _print_mount_plan_summary(mount_plan)
     except Exception as e:
-        print(f"Execution error: {e}")
-        print("\nMount plan for debugging:")
+        print(f"\n    ✗  Execution error: {e}")
+        print("\n       Mount plan for debugging:")
         _print_mount_plan_summary(mount_plan)
 
-    print("\n" + "=" * 60)
-    print("Demo complete")
-    print("=" * 60)
+    # -------------------------------------------------------------------------
+    # Footer
+    # -------------------------------------------------------------------------
+    print()
+    print("═" * STEP_WIDTH)
+    print("  Demo complete")
+    print("═" * STEP_WIDTH)
 
 
 def _print_mount_plan_summary(mount_plan: dict) -> None:
