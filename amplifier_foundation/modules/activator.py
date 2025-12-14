@@ -10,12 +10,15 @@ workspace conventions), see amplifier-module-resolution.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
+
+logger = logging.getLogger(__name__)
 
 
 class ModuleActivator:
@@ -104,45 +107,72 @@ class ModuleActivator:
     async def _install_dependencies(self, module_path: Path) -> None:
         """Install Python dependencies for a module.
 
+        Uses uv to install into the current Python environment. The --python flag
+        ensures installation targets the correct environment even when run via
+        `uv tool install` where there's no active virtualenv.
+
         Args:
             module_path: Path to the module directory.
+
+        Raises:
+            subprocess.CalledProcessError: If installation fails.
         """
         # Check for pyproject.toml or requirements.txt
         pyproject = module_path / "pyproject.toml"
         requirements = module_path / "requirements.txt"
 
         if pyproject.exists():
-            # Try uv first (faster), fall back to pip
             try:
                 subprocess.run(
-                    ["uv", "pip", "install", "-e", str(module_path), "--quiet"],
+                    [
+                        "uv",
+                        "pip",
+                        "install",
+                        "-e",
+                        str(module_path),
+                        "--python",
+                        sys.executable,
+                        "--quiet",
+                    ],
                     check=True,
                     capture_output=True,
                     text=True,
                 )
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                # Fall back to pip
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-e", str(module_path), "--quiet"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to install module from {module_path}.\nstdout: {e.stdout}\nstderr: {e.stderr}")
+                raise
+            except FileNotFoundError:
+                logger.error(
+                    "uv is not installed. Please install uv: https://docs.astral.sh/uv/getting-started/installation/"
                 )
+                raise
         elif requirements.exists():
             try:
                 subprocess.run(
-                    ["uv", "pip", "install", "-r", str(requirements), "--quiet"],
+                    [
+                        "uv",
+                        "pip",
+                        "install",
+                        "-r",
+                        str(requirements),
+                        "--python",
+                        sys.executable,
+                        "--quiet",
+                    ],
                     check=True,
                     capture_output=True,
                     text=True,
                 )
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-r", str(requirements), "--quiet"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
+            except subprocess.CalledProcessError as e:
+                logger.error(
+                    f"Failed to install requirements from {requirements}.\nstdout: {e.stdout}\nstderr: {e.stderr}"
                 )
+                raise
+            except FileNotFoundError:
+                logger.error(
+                    "uv is not installed. Please install uv: https://docs.astral.sh/uv/getting-started/installation/"
+                )
+                raise
 
 
 class ModuleActivationError(Exception):
