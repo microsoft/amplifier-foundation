@@ -34,19 +34,14 @@ If no search criteria provided, ask for at least one constraint.
 
 ## Storage Locations
 
-Amplifier stores sessions in two locations:
+Amplifier stores sessions at: `~/.amplifier/projects/PROJECT_NAME/sessions/SESSION_ID/`
 
-1. **Project-based sessions**: `~/.amplifier/projects/PROJECT_NAME/sessions/SESSION_ID/`
-
-   - `metadata.json`: Contains session_id, created (ISO timestamp), profile, model, turn_count
-   - `transcript.jsonl`: JSONL format, each line is `{"role": "user"|"assistant", "content": "..."}`
-
-2. **Standalone transcripts**: `~/.amplifier/transcripts/transcript_TIMESTAMP.json`
-   - JSON format with config/messages/timestamp
+- `metadata.json`: Contains session_id, created (ISO timestamp), profile, model, turn_count
+- `transcript.jsonl`: JSONL format, each line is `{"role": "user"|"assistant", "content": "..."}`
 
 ## Operating Principles
 
-1. **Constrained search scope**: ONLY search within `~/.amplifier/projects/` and `~/.amplifier/transcripts/` - never spelunk elsewhere
+1. **Constrained search scope**: ONLY search within `~/.amplifier/projects/` - never spelunk elsewhere
 2. **Plan before searching**: Use todo tool to track search strategy and synthesis goals
 3. **Metadata first**: Start with metadata.json files for quick filtering
 4. **Content search when needed**: Dig into transcript content to understand conversations, not just locate them

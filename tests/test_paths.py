@@ -19,15 +19,6 @@ class TestParseUri:
         assert result.path == "/user/repo"
         assert result.ref == "main"
 
-    def test_git_uri_with_subpath(self) -> None:
-        """Parses git URI with inline subpath syntax."""
-        result = parse_uri("git+https://github.com/user/repo@main/path/to/bundle")
-        assert result.scheme == "git+https"
-        assert result.host == "github.com"
-        assert result.path == "/user/repo"
-        assert result.ref == "main"
-        assert result.subpath == "path/to/bundle"
-
     def test_git_uri_with_subdirectory_fragment(self) -> None:
         """Parses git URI with pip/uv standard #subdirectory= fragment."""
         result = parse_uri("git+https://github.com/org/repo@main#subdirectory=bundles/foundation")
@@ -36,12 +27,6 @@ class TestParseUri:
         assert result.path == "/org/repo"
         assert result.ref == "main"
         assert result.subpath == "bundles/foundation"
-
-    def test_git_uri_fragment_takes_precedence(self) -> None:
-        """Fragment #subdirectory= takes precedence over inline /subpath."""
-        result = parse_uri("git+https://github.com/org/repo@v1.0.0/old/path#subdirectory=new/path")
-        assert result.ref == "v1.0.0"
-        assert result.subpath == "new/path"  # Fragment wins
 
     def test_zip_https_uri(self) -> None:
         """Parses zip+https:// URIs."""

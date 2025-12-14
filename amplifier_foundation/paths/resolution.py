@@ -36,7 +36,7 @@ class ParsedURI:
     host: str  # github.com, etc.
     path: str  # /org/repo or local path
     ref: str  # @main, @v1.0.0, etc. (empty if not specified)
-    subpath: str  # path inside container (from @ref/subpath OR #subdirectory=)
+    subpath: str  # path inside container (from #subdirectory= fragment)
 
     @property
     def is_git(self) -> bool:
@@ -69,7 +69,6 @@ def parse_uri(uri: str) -> ParsedURI:
 
     Supports pip/uv standard syntax with #subdirectory= fragment:
     - git+https://github.com/org/repo@ref#subdirectory=path/inside
-    - git+https://github.com/org/repo@ref/subpath (alternative syntax)
     - zip+https://example.com/bundle.zip#subdirectory=path/inside
     - zip+file:///local/archive.zip#subdirectory=path/inside
     - file:///path/to/file
@@ -174,8 +173,6 @@ def _extract_fragment_subpath(uri_with_possible_fragment: str) -> tuple[str, str
 def _parse_vcs_uri(uri: str, prefix: str) -> ParsedURI:
     """Parse a VCS URI (git+ or zip+ prefix).
 
-    Supports both #subdirectory= fragment and @ref/subpath syntax.
-
     Args:
         uri: Full URI including prefix.
         prefix: The prefix to strip (e.g., "git+", "zip+").
@@ -186,29 +183,23 @@ def _parse_vcs_uri(uri: str, prefix: str) -> ParsedURI:
     # Strip prefix for parsing
     uri_without_prefix = uri[len(prefix) :]
 
-    # First extract any fragment (#subdirectory=)
-    fragment_subpath = ""
+    # Extract any fragment (#subdirectory=)
+    subpath = ""
     if "#" in uri_without_prefix:
         uri_without_prefix, fragment = uri_without_prefix.split("#", 1)
-        fragment_subpath = _extract_subdirectory_from_fragment(fragment)
+        subpath = _extract_subdirectory_from_fragment(fragment)
 
     parsed = urlparse(uri_without_prefix)
 
-    # Extract ref and inline subpath from path
+    # Extract ref from path (e.g., /org/repo@main)
     path = parsed.path
     ref = ""
-    inline_subpath = ""
 
-    # Check for @ref syntax (e.g., /org/repo@main or /org/repo@main/subpath)
     if "@" in path:
-        match = re.match(r"^([^@]+)@([^/]+)(.*)$", path)
+        match = re.match(r"^([^@]+)@([^/]+)$", path)
         if match:
             path = match.group(1)
             ref = match.group(2)
-            inline_subpath = match.group(3).lstrip("/")
-
-    # Fragment #subdirectory= takes precedence over inline /subpath
-    subpath = fragment_subpath if fragment_subpath else inline_subpath
 
     return ParsedURI(
         scheme=prefix + parsed.scheme,
