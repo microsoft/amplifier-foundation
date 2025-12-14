@@ -16,8 +16,8 @@ from amplifier_foundation.paths.construction import construct_context_path
 class Bundle:
     """Composable unit containing mount plan config and resources.
 
-    Bundles replace both "profiles" (mount plan config) and "collections"
-    (resource repositories). They produce mount plans for AmplifierSession.
+    Bundles are the core composable unit in amplifier-foundation. They contain
+    mount plan configuration and resources, producing mount plans for AmplifierSession.
 
     Attributes:
         name: Bundle name (namespace for @mentions).
@@ -366,12 +366,12 @@ class BundleModuleResolver:
         """
         self._paths = module_paths
 
-    def resolve(self, module_id: str, profile_hint: Any = None) -> BundleModuleSource:
+    def resolve(self, module_id: str, hint: Any = None) -> BundleModuleSource:
         """Resolve module ID to source.
 
         Args:
             module_id: Module identifier (e.g., "tool-bash").
-            profile_hint: Optional hint (unused, for protocol compliance).
+            hint: Optional hint (unused, for protocol compliance).
 
         Returns:
             BundleModuleSource with the module path.

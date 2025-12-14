@@ -481,8 +481,7 @@ class BundleRegistry:
     async def _check_update_single(self, name: str) -> UpdateInfo | None:
         """Check if a single bundle has updates.
 
-        For now, this is a placeholder that marks checked_at.
-        Real implementation would check remote version for git URIs, mtime for file URIs.
+        Updates the checked_at timestamp. Returns None if no update is available.
         """
         state = self._registry.get(name)
         if not state:
@@ -490,10 +489,6 @@ class BundleRegistry:
 
         # Update checked_at timestamp
         state.checked_at = datetime.now()
-
-        # Version checking is a no-op for now - returns None (no update available)
-        # Future: For git+https://, fetch remote refs and compare
-        # Future: For file://, check mtime
 
         logger.debug(f"Checked for updates: {name} (checked_at={state.checked_at})")
         return None

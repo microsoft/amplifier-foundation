@@ -150,20 +150,17 @@ When loading by name, resolution follows this order:
 ### Customizing Resolution
 
 ```python
-from amplifier_foundation import BundleRegistry, SimpleSourceResolver
+from amplifier_foundation import BundleRegistry
 from pathlib import Path
 
-# Create registry with custom cache directory
-registry = BundleRegistry(
-    source_resolver=SimpleSourceResolver(
-        cache_dir=Path("~/.my-app/cache").expanduser(),
-        base_path=Path.cwd()
-    )
-)
+# Create registry with custom home directory
+registry = BundleRegistry(home=Path("~/.my-app").expanduser())
 
-# Register known bundles
-registry.register("foundation", "git+https://github.com/microsoft/amplifier-foundation@main")
-registry.register("my-bundle", "file:///path/to/my-bundle")
+# Register known bundles (accepts a dict)
+registry.register({
+    "foundation": "git+https://github.com/microsoft/amplifier-foundation@main",
+    "my-bundle": "file:///path/to/my-bundle",
+})
 
 bundle = await registry.load("my-bundle")
 ```
@@ -304,13 +301,12 @@ Unified class for bundle discovery, registration, and loading.
 ```python
 from amplifier_foundation import BundleRegistry
 
-registry = BundleRegistry(
-    source_resolver=...,  # Optional: custom source resolution
-    cache=...,            # Optional: custom caching
-)
+# Create registry (optional: custom home directory)
+registry = BundleRegistry()  # Uses ~/.amplifier by default
+# registry = BundleRegistry(home=Path("/custom/home"))
 
-# Register known bundles
-registry.register("my-bundle", "git+https://github.com/org/repo@main")
+# Register known bundles (accepts a dict)
+registry.register({"my-bundle": "git+https://github.com/org/repo@main"})
 
 # Load with automatic include resolution
 bundle = await registry.load("my-bundle", auto_include=True)

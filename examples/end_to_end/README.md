@@ -130,24 +130,30 @@ The example scans `providers/*.yaml` for available provider bundles and checks i
 provider_bundle = await load_bundle("./providers/anthropic-sonnet.yaml")
 composed = foundation.compose(provider_bundle)
 
-# prepare() downloads all modules from their git sources and installs dependencies
-mount_plan = await composed.prepare()
+# prepare() downloads modules from their git sources and installs dependencies
+prepared = await composed.prepare()
 ```
 
 The `prepare()` method is the key to turn-key execution:
 1. Downloads modules from git URLs to local cache
-2. Installs Python dependencies via uv/pip
+2. Installs Python dependencies via uv
 3. Makes modules importable via sys.path
-4. Returns the mount plan ready for AmplifierSession
+4. Returns a `PreparedBundle` with:
+   - `prepared.mount_plan` - The dict for AmplifierSession
+   - `prepared.create_session()` - Convenience method for full setup
 
 ### Execution
 
 ```python
-from amplifier_core import AmplifierSession
-
-session = AmplifierSession(config=mount_plan)
-async with session:
+# Option 1: Use create_session() convenience method
+async with prepared.create_session() as session:
     response = await session.execute(prompt)
+
+# Option 2: Manual setup with mount_plan
+from amplifier_core import AmplifierSession
+session = AmplifierSession(config=prepared.mount_plan)
+await session.coordinator.mount("module-source-resolver", prepared.resolver)
+await session.initialize()
 ```
 
 ## Troubleshooting

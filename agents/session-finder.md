@@ -41,8 +41,8 @@ Amplifier stores sessions in two locations:
    - `metadata.json`: Contains session_id, created (ISO timestamp), profile, model, turn_count
    - `transcript.jsonl`: JSONL format, each line is `{"role": "user"|"assistant", "content": "..."}`
 
-2. **Legacy transcripts**: `~/.amplifier/transcripts/transcript_TIMESTAMP.json`
-   - Older format, JSON with config/messages/timestamp
+2. **Standalone transcripts**: `~/.amplifier/transcripts/transcript_TIMESTAMP.json`
+   - JSON format with config/messages/timestamp
 
 ## Operating Principles
 

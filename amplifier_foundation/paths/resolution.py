@@ -69,7 +69,7 @@ def parse_uri(uri: str) -> ParsedURI:
 
     Supports pip/uv standard syntax with #subdirectory= fragment:
     - git+https://github.com/org/repo@ref#subdirectory=path/inside
-    - git+https://github.com/org/repo@ref/subpath (legacy, still supported)
+    - git+https://github.com/org/repo@ref/subpath (alternative syntax)
     - zip+https://example.com/bundle.zip#subdirectory=path/inside
     - zip+file:///local/archive.zip#subdirectory=path/inside
     - file:///path/to/file
@@ -174,7 +174,7 @@ def _extract_fragment_subpath(uri_with_possible_fragment: str) -> tuple[str, str
 def _parse_vcs_uri(uri: str, prefix: str) -> ParsedURI:
     """Parse a VCS URI (git+ or zip+ prefix).
 
-    Supports both pip/uv standard #subdirectory= and legacy @ref/subpath syntax.
+    Supports both #subdirectory= fragment and @ref/subpath syntax.
 
     Args:
         uri: Full URI including prefix.
@@ -194,10 +194,10 @@ def _parse_vcs_uri(uri: str, prefix: str) -> ParsedURI:
 
     parsed = urlparse(uri_without_prefix)
 
-    # Extract ref and legacy subpath from path
+    # Extract ref and inline subpath from path
     path = parsed.path
     ref = ""
-    legacy_subpath = ""
+    inline_subpath = ""
 
     # Check for @ref syntax (e.g., /org/repo@main or /org/repo@main/subpath)
     if "@" in path:
@@ -205,11 +205,10 @@ def _parse_vcs_uri(uri: str, prefix: str) -> ParsedURI:
         if match:
             path = match.group(1)
             ref = match.group(2)
-            legacy_subpath = match.group(3).lstrip("/")
+            inline_subpath = match.group(3).lstrip("/")
 
-    # Fragment #subdirectory= takes precedence over legacy /subpath
-    # This allows explicit override and cleaner URIs
-    subpath = fragment_subpath if fragment_subpath else legacy_subpath
+    # Fragment #subdirectory= takes precedence over inline /subpath
+    subpath = fragment_subpath if fragment_subpath else inline_subpath
 
     return ParsedURI(
         scheme=prefix + parsed.scheme,

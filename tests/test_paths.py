@@ -20,7 +20,7 @@ class TestParseUri:
         assert result.ref == "main"
 
     def test_git_uri_with_subpath(self) -> None:
-        """Parses git URI with legacy subpath (still supported)."""
+        """Parses git URI with inline subpath syntax."""
         result = parse_uri("git+https://github.com/user/repo@main/path/to/bundle")
         assert result.scheme == "git+https"
         assert result.host == "github.com"
@@ -38,7 +38,7 @@ class TestParseUri:
         assert result.subpath == "bundles/foundation"
 
     def test_git_uri_fragment_takes_precedence(self) -> None:
-        """Fragment #subdirectory= takes precedence over legacy /subpath."""
+        """Fragment #subdirectory= takes precedence over inline /subpath."""
         result = parse_uri("git+https://github.com/org/repo@v1.0.0/old/path#subdirectory=new/path")
         assert result.ref == "v1.0.0"
         assert result.subpath == "new/path"  # Fragment wins
