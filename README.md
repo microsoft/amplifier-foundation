@@ -2,7 +2,7 @@
 
 Ultra-thin mechanism layer for bundle composition in the Amplifier ecosystem.
 
-Foundation provides the mechanisms for loading, composing, and resolving bundles from local and remote sources. It sits between `amplifier-core` (kernel) and applications, enabling teams to share and compose AI agent configurations.
+Foundation provides the mechanisms for loading, composing, and resolving bundles from local and remote sources. It sits between `amplifier-core` (kernel) and applications, enabling teams to share and compose AI tool configurations.
 
 ## Quick Start
 
@@ -26,18 +26,20 @@ asyncio.run(main())
 ```
 
 **For complete examples, see:**
+
 - `examples/01_load_and_inspect.py` - Loading bundles from various sources
-- `examples/02_compose_bundles.py` - Bundle composition patterns
-- `examples/03_execute_with_session.py` - Using bundles with AmplifierSession
+- `examples/02_composition.py` - Bundle composition and merge rules
+- `examples/03_sources_and_registry.py` - Git URLs and BundleRegistry
+- `examples/04_full_workflow/` - Complete: prepare → create_session → execute
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [CONCEPTS.md](docs/CONCEPTS.md) | Mental model: bundles, composition, mount plans |
-| [PATTERNS.md](docs/PATTERNS.md) | Common patterns with code examples |
-| [URI_FORMATS.md](docs/URI_FORMATS.md) | Source URI quick reference |
-| [API_REFERENCE.md](docs/API_REFERENCE.md) | API index pointing to source files |
+| Document                                  | Description                                     |
+| ----------------------------------------- | ----------------------------------------------- |
+| [CONCEPTS.md](docs/CONCEPTS.md)           | Mental model: bundles, composition, mount plans |
+| [PATTERNS.md](docs/PATTERNS.md)           | Common patterns with code examples              |
+| [URI_FORMATS.md](docs/URI_FORMATS.md)     | Source URI quick reference                      |
+| [API_REFERENCE.md](docs/API_REFERENCE.md) | API index pointing to source files              |
 
 **Code is the authoritative reference**: Each source file has comprehensive docstrings. Read `bundle.py`, `validator.py`, etc. directly or use `help(ClassName)`.
 
