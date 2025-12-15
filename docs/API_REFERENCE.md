@@ -28,6 +28,7 @@ Bundle(
     context: dict[str, Path] = {},
     instruction: str | None = None,
     base_path: Path | None = None,
+    source_base_paths: dict[str, Path] = {},  # Tracks base_path for each source namespace
 )
 ```
 
@@ -173,24 +174,83 @@ Register name → URI mappings for bundles.
 registry.register({"my-bundle": "git+https://github.com/example/bundle@main"})
 ```
 
-**load(name_or_uri: str) -> Bundle**
+**find(name: str) -> str | None**
 
-Load a bundle by name or URI.
+Look up URI for a registered name.
 
 ```python
-bundle = await registry.load("my-bundle")
-bundle = await registry.load("git+https://github.com/example/bundle@main")
+uri = registry.find("my-bundle")  # Returns URI or None
 ```
 
-**get_state(name: str) -> BundleState | None**
+**list_registered() -> list[str]**
 
-Get state for a registered bundle.
+List all registered bundle names.
 
 ```python
+names = registry.list_registered()  # Returns sorted list
+```
+
+**load(name_or_uri: str | None = None, *, auto_register: bool = True) -> Bundle | dict[str, Bundle]**
+
+Load bundle(s) by name, URI, or all registered.
+
+```python
+# Load single bundle
+bundle = await registry.load("my-bundle")
+bundle = await registry.load("git+https://github.com/example/bundle@main")
+
+# Load all registered bundles
+all_bundles = await registry.load()  # Returns dict[str, Bundle]
+```
+
+**check_update(name: str | None = None) -> UpdateInfo | list[UpdateInfo] | None**
+
+Check for available updates.
+
+```python
+# Check single bundle
+update = await registry.check_update("my-bundle")
+
+# Check all registered
+updates = await registry.check_update()  # Returns list
+```
+
+**update(name: str | None = None) -> Bundle | dict[str, Bundle]**
+
+Update to latest version (bypasses cache).
+
+```python
+bundle = await registry.update("my-bundle")
+all_updated = await registry.update()  # Update all
+```
+
+**get_state(name: str | None = None) -> BundleState | dict[str, BundleState] | None**
+
+Get tracked state for bundle(s).
+
+```python
+# Single bundle state
 state = registry.get_state("my-bundle")
 if state:
     print(f"Loaded at: {state.loaded_at}")
+
+# All bundle states
+all_states = registry.get_state()  # Returns dict[str, BundleState]
 ```
+
+**save() -> None**
+
+Persist registry state to disk.
+
+```python
+registry.save()  # Saves to home/registry.json
+```
+
+#### Properties
+
+**home -> Path**
+
+Base directory for all registry data.
 
 ### ValidationResult
 
@@ -243,8 +303,24 @@ Validate completeness and raise on errors.
 ```python
 from amplifier_foundation import load_bundle
 
+async def load_bundle(
+    source: str,
+    auto_include: bool = True,
+    registry: BundleRegistry | None = None,
+) -> Bundle
+```
+
+Load a bundle from a source URI.
+
+Parameters:
+- `source`: Path or URI to load (file path, git URL, etc.)
+- `auto_include`: Whether to automatically resolve includes (default: True)
+- `registry`: Optional registry for caching and lookup
+
+```python
 bundle = await load_bundle("/path/to/bundle.md")
 bundle = await load_bundle("git+https://github.com/example/bundle@main")
+bundle = await load_bundle("my-bundle", registry=registry)
 ```
 
 ### validate_bundle
