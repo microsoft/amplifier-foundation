@@ -10,71 +10,129 @@ export ANTHROPIC_API_KEY='your-key-here'
 
 # Run any example
 cd amplifier-foundation
-uv run python examples/05_hello_world.py
+uv run python examples/01_hello_world.py
 ```
 
 ## Examples Overview
 
-### Foundation Concepts (01-04)
+### ✨ Tier 1: Quick Start (01-03)
 
-Learn the core mechanisms of Amplifier Foundation - bundles, composition, and module loading.
+Get running immediately with minimal code.
 
-**[01_load_and_inspect.py](./01_load_and_inspect.py)** - Load and inspect bundles  
+**[01_hello_world.py](./01_hello_world.py)** - Your first AI agent  
+**Value:** Get running in 2 minutes with minimal code  
+The simplest possible Amplifier agent. Load foundation, compose with provider, execute a prompt.
+
+**[02_custom_configuration.py](./02_custom_configuration.py)** - Tailor agents via composition  
+**Value:** Composition over configuration - swap capabilities, not flags  
+Add tools, use streaming orchestrators, and customize behavior by composing different modules.
+
+**[03_custom_tool.py](./03_custom_tool.py)** - Build domain-specific capabilities  
+**Value:** Extend Amplifier with your own tools  
+Build custom tools (WeatherTool, DatabaseTool) that integrate seamlessly. Learn the Tool protocol.
+
+### 🔧 Tier 2: Foundation Concepts (04-07)
+
+Understand the core mechanisms of Amplifier Foundation.
+
+**[04_load_and_inspect.py](./04_load_and_inspect.py)** - Load and inspect bundles  
 Learn how `load_bundle()` works and what a bundle contains. See the mount plan structure.
 
-**[02_composition.py](./02_composition.py)** - Bundle composition and merge rules  
+**[05_composition.py](./05_composition.py)** - Bundle composition and merge rules  
 Understand how `compose()` merges configuration. See how session, providers, tools, and instruction fields combine.
 
-**[03_sources_and_registry.py](./03_sources_and_registry.py)** - Loading from remote sources  
+**[06_sources_and_registry.py](./06_sources_and_registry.py)** - Loading from remote sources  
 Learn source formats (git, file, package). Use BundleRegistry for named bundle management.
 
-**[04_full_workflow/](./04_full_workflow/)** - Complete workflow with execution  
-See the full flow: `prepare()` → `create_session()` → `execute()`. Interactive demo with provider selection and LLM execution.
+**[07_full_workflow.py](./07_full_workflow.py)** - Complete workflow with execution  
+See the full flow: `prepare()` → `create_session()` → `execute()`. Interactive demo with provider selection.
 
-### Building with Amplifier (05-09)
+### 🏗️ Tier 3: Building Applications (08-10)
 
-Learn how to build real applications with Amplifier, from simple scripts to complex systems.
-
-**[05_hello_world.py](./05_hello_world.py)** - Your first AI agent  
-**Value:** Get running immediately with minimal code  
-The simplest possible Amplifier agent. Load foundation, compose with provider, execute a prompt. See the basic flow that all applications follow.
-
-**[06_custom_configuration.py](./06_custom_configuration.py)** - Tailor agents via composition  
-**Value:** Composition over configuration - swap capabilities, not flags  
-See how to add tools, use streaming orchestrators, and customize behavior by composing different modules. No configuration flags needed.
-
-**[07_custom_tool.py](./07_custom_tool.py)** - Build domain-specific capabilities  
-**Value:** Extend Amplifier with your own tools  
-Build custom tools (WeatherTool, DatabaseTool) that integrate seamlessly. Learn the Tool protocol: `name`, `description`, `input_schema`, `execute()`.
+Production-quality patterns for real applications.
 
 **[08_cli_application.py](./08_cli_application.py)** - CLI application architecture  
 **Value:** Best practices for building real tools  
-See application architecture patterns: configuration management, logging, error handling, lifecycle management. Build reusable application classes.
+Application architecture patterns: configuration, logging, error handling, lifecycle management.
 
 **[09_multi_agent_system.py](./09_multi_agent_system.py)** - Coordinate specialized agents  
 **Value:** Build sophisticated systems with agent workflows  
-Create specialized agents (Architect, Implementer, Reviewer) with different tools and instructions. See sequential workflows and context passing between agents.
+Create specialized agents with different tools and instructions. Sequential workflows and context passing.
+
+**[10_provider_comparison.py](./10_provider_comparison.py)** - Provider comparison & model selection  
+**Value:** Trivially easy provider swapping  
+See how to compare providers and make cost/performance tradeoffs.
+
+### 🎯 Tier 4: Domain Applications (11-13)
+
+Apply Amplifier to specific use cases.
+
+**[11_meeting_notes_to_actions.py](./11_meeting_notes_to_actions.py)** - Meeting notes → action items  
+**Audience:** Everyone - PMs, designers, developers  
+Transform unstructured meeting notes into organized task lists.
+
+**[12_calendar_assistant.py](./12_calendar_assistant.py)** - Calendar integration  
+**Audience:** Everyone  
+Automate meeting scheduling with natural language and calendar APIs.
+
+**[13_github_actions_ci.py](./13_github_actions_ci.py)** - GitHub Actions CI/CD  
+**Audience:** DevOps engineers  
+Integrate Amplifier into automated workflows, code review, test analysis.
+
+### ⚡ Tier 5: Advanced Techniques (14-18)
+
+Power user patterns for production systems.
+
+**[14_approval_gates.py](./14_approval_gates.py)** - Approval gates in action  
+Safety controls and human-in-the-loop capability with ApprovalProvider protocol.
+
+**[15_session_persistence.py](./15_session_persistence.py)** - Session persistence & resume  
+Persist conversation history, resume sessions, maintain context across restarts.
+
+**[16_event_debugging.py](./16_event_debugging.py)** - Event-driven debugging  
+Complete observability of event flow, debugging techniques for complex agents.
+
+**[17_custom_hooks.py](./17_custom_hooks.py)** - Custom hook library  
+Performance monitoring, cost tracking, audit logging, error handling patterns.
+
+**[18_multi_model_ensemble.py](./18_multi_model_ensemble.py)** - Multi-model ensemble  
+Consensus voting, cost cascading, intelligent routing across multiple models.
 
 ## Learning Paths
 
-### For Beginners
+### 🚀 For Complete Beginners (15 minutes)
 Start here to understand Amplifier basics:
-1. **05_hello_world.py** - See it work immediately
-2. **06_custom_configuration.py** - Understand composition
-3. **07_custom_tool.py** - Build your first custom capability
+1. **01_hello_world.py** - See it work immediately (2 min)
+2. **02_custom_configuration.py** - Understand composition (5 min)
+3. **03_custom_tool.py** - Build your first custom capability (10 min)
 
-### For Building Real Tools
-Learn patterns for production-quality applications:
-1. **Foundation:** 01-04 (understand core concepts)
-2. **Architecture:** 08_cli_application.py (see best practices)
-3. **Advanced:** 09_multi_agent_system.py (complex systems)
-
-### For Understanding Internals
+### 🔧 For Understanding Internals (30 minutes)
 Deep dive into how Amplifier works:
-1. **01_load_and_inspect.py** - Bundle structure
-2. **02_composition.py** - Merge rules and composition
-3. **03_sources_and_registry.py** - Module resolution and sources
-4. **04_full_workflow/** - Complete preparation and execution flow
+1. **04_load_and_inspect.py** - Bundle structure
+2. **05_composition.py** - Merge rules and composition
+3. **06_sources_and_registry.py** - Module resolution
+4. **07_full_workflow.py** - Complete preparation and execution flow
+
+### 🏗️ For Building Production Apps (1 hour)
+Learn patterns for production-quality applications:
+1. **Tier 2 (04-07)** - Understand foundation concepts first
+2. **08_cli_application.py** - Application architecture
+3. **09_multi_agent_system.py** - Complex multi-agent systems
+4. **10_provider_comparison.py** - Model selection strategies
+
+### 🎯 For Domain-Specific Use Cases (30-45 min each)
+Pick your domain:
+- **11_meeting_notes_to_actions.py** - Productivity (everyone)
+- **12_calendar_assistant.py** - Business automation (everyone)
+- **13_github_actions_ci.py** - DevOps & CI/CD (engineers)
+
+### ⚡ For Advanced Patterns (2+ hours)
+Power user techniques for production systems:
+- **14_approval_gates.py** - Safety controls & human-in-the-loop
+- **15_session_persistence.py** - Stateful workflows
+- **16_event_debugging.py** - Observability & debugging
+- **17_custom_hooks.py** - Production monitoring patterns
+- **18_multi_model_ensemble.py** - Advanced orchestration
 
 ## Key Concepts Demonstrated
 

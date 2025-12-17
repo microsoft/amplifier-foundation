@@ -265,7 +265,8 @@ async def main():
     print("4. Integration: Custom tools work with any orchestrator/provider")
     print("5. No framework lock-in: Just implement the protocol")
     print("\n✅ You can now extend Amplifier with domain-specific capabilities!")
-    print("\n💡 Next: Try 08_cli_application.py for application patterns")
+    print("\n💡 Next: Try 04_load_and_inspect.py to understand internals,")
+    print("      or jump to 08_cli_application.py for application patterns")
 
 
 if __name__ == "__main__":

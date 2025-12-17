@@ -1,0 +1,10 @@
+bundle:
+  name: provider-anthropic-haiku
+  version: 1.0.0
+  description: Anthropic Claude Haiku - Fast and cost-effective
+
+providers:
+  - module: provider-anthropic
+    source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
+    config:
+      default_model: claude-haiku-4-5

@@ -26,7 +26,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from amplifier_core import AmplifierSession
 from amplifier_foundation import load_bundle
 
 
@@ -121,7 +120,7 @@ class CalendarAssistant:
     - Send meeting summaries
     """
     
-    def __init__(self, calendar: MockCalendar, session: AmplifierSession):
+    def __init__(self, calendar: MockCalendar, session: Any):
         self.calendar = calendar
         self.session = session
     
@@ -246,10 +245,12 @@ async def scenario_schedule_meeting():
     calendar = MockCalendar()
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
-    session = AmplifierSession(config=mount_plan)
-    await session.initialize()
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     assistant = CalendarAssistant(calendar, session)
     
@@ -315,10 +316,12 @@ async def scenario_check_availability():
     calendar = MockCalendar()
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
-    session = AmplifierSession(config=mount_plan)
-    await session.initialize()
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     # Show today's schedule
     print("\n📅 Today's Schedule:")
@@ -404,10 +407,12 @@ Next Meeting: January 15, 2024 (2 weeks)
     
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
-    session = AmplifierSession(config=mount_plan)
-    await session.initialize()
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     # Generate structured summary
     prompt = f"""Create a polished meeting summary from these notes:

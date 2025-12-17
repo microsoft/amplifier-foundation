@@ -26,7 +26,6 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from amplifier_core import AmplifierSession
 from amplifier_foundation import load_bundle
 
 
@@ -53,15 +52,14 @@ async def ensemble_consensus(
         
         # Load foundation with specific provider
         foundation = await load_bundle(str(foundation_path))
-        provider = await load_bundle(provider_path)
+        provider = await load_bundle(str(foundation_path / provider_path))
         
         # Compose bundles (provider overrides foundation defaults)
         composed = foundation.compose(provider)
-        mount_plan = composed.to_mount_plan()
         
-        # Create and run session
-        session = AmplifierSession(config=mount_plan)
-        await session.initialize()
+        # Prepare and create session (correct pattern)
+        prepared = await composed.prepare()
+        session = await prepared.create_session()
         
         try:
             result = await session.execute(prompt)
@@ -102,13 +100,12 @@ async def ensemble_cascade(
         print(f"{'─'*80}")
         
         # Load and compose with provider
-        provider = await load_bundle(provider_path)
+        provider = await load_bundle(str(foundation_path / provider_path))
         composed = foundation.compose(provider)
-        mount_plan = composed.to_mount_plan()
         
-        # Run session
-        session = AmplifierSession(config=mount_plan)
-        await session.initialize()
+        # Prepare and create session (correct pattern)
+        prepared = await composed.prepare()
+        session = await prepared.create_session()
         
         try:
             result = await session.execute(prompt)
@@ -168,12 +165,12 @@ async def ensemble_routing(
     
     # Load and run
     foundation = await load_bundle(str(foundation_path))
-    provider = await load_bundle(provider_path)
+    provider = await load_bundle(str(foundation_path / provider_path))
     composed = foundation.compose(provider)
-    mount_plan = composed.to_mount_plan()
     
-    session = AmplifierSession(config=mount_plan)
-    await session.initialize()
+    # Prepare and create session (correct pattern)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     try:
         result = await session.execute(prompt)

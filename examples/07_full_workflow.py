@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 4: Complete workflow - load, compose, prepare, execute.
+"""Example 7: Complete Workflow - Load, Compose, Prepare, Execute
 
 TEACHABLE MOMENT: The full prepare() → create_session() → execute() flow
 
@@ -11,6 +11,47 @@ This is the SINGLE SOURCE for understanding:
 OPTIONAL ADVANCED features (marked clearly):
 - @mention processing - loading files referenced in prompts
 - spawn capability - sub-session delegation for agents
+
+## The Core Pattern
+
+```python
+# 1. Load and compose bundles
+foundation = await load_bundle(foundation_path)
+provider = await load_bundle(provider_path)
+composed = foundation.compose(provider)
+
+# 2. Prepare (resolves module sources)
+prepared = await composed.prepare()
+
+# 3. Create session and execute
+session = await prepared.create_session()
+async with session:
+    response = await session.execute(prompt)
+```
+
+## Running
+
+```bash
+# Set your API key
+export ANTHROPIC_API_KEY="sk-..."
+# or
+export OPENAI_API_KEY="sk-..."
+
+# Run the demo
+cd amplifier-foundation
+uv run python examples/07_full_workflow.py
+```
+
+## Code Sections
+
+The example is organized into clearly marked sections:
+
+1. **FOUNDATION MECHANISM** - The essential pattern to copy
+2. **APP-LAYER HELPERS** - Provider discovery, interactive selection
+3. **OPTIONAL: @Mentions** - Loading files referenced in prompts
+4. **OPTIONAL: Spawning** - Sub-session delegation for agents
+
+Sections 3-4 are optional advanced features. Start with sections 1-2.
 
 Requirements:
 - ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable set
@@ -243,7 +284,7 @@ async def main() -> None:
     print("=" * 60)
 
     # Step 1: Load foundation
-    foundation_path = Path(__file__).parent.parent.parent
+    foundation_path = Path(__file__).parent.parent
     print(f"\n[1/4] Loading foundation from: {foundation_path}")
     foundation = await load_bundle(str(foundation_path))
     print(f"      Loaded: {foundation.name} v{foundation.version}")

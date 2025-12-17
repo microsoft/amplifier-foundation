@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from amplifier_core import AmplifierSession, HookResult
+from amplifier_core import HookResult
 from amplifier_foundation import load_bundle
 
 
@@ -339,19 +339,19 @@ async def scenario_performance_monitoring():
     
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
     # Create performance monitor
     perf_monitor = PerformanceMonitor()
     
-    # Create session and register hooks
-    session = AmplifierSession(config=mount_plan)
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     session.coordinator.hooks.register("tool:pre", perf_monitor.on_tool_pre)
     session.coordinator.hooks.register("tool:post", perf_monitor.on_tool_post)
     session.coordinator.hooks.register("provider:post", perf_monitor.on_provider_post)
     session.coordinator.hooks.register("*:error", perf_monitor.on_error)
-    
-    await session.initialize()
     
     prompt = "Use glob to find all Python files, then read the first one you find."
     
@@ -378,16 +378,16 @@ async def scenario_cost_tracking():
     
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
     # Create cost tracker
     cost_tracker = CostTracker(model="claude-sonnet-4-5")
     
-    # Create session and register hooks
-    session = AmplifierSession(config=mount_plan)
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     session.coordinator.hooks.register("provider:post", cost_tracker.track_usage)
-    
-    await session.initialize()
     
     prompt = "Explain what Amplifier is and why it's useful in 3 sentences."
     
@@ -414,17 +414,17 @@ async def scenario_audit_logging():
     
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
     # Create audit logger
     log_file = f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
     audit_logger = AuditLogger(log_file=log_file)
     
-    # Create session and register hooks
-    session = AmplifierSession(config=mount_plan)
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     session.coordinator.hooks.register("*", audit_logger.log_action)
-    
-    await session.initialize()
     
     prompt = "List files in the current directory."
     
@@ -451,15 +451,17 @@ async def scenario_composed_hooks():
     
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
     # Create multiple hooks
     perf_monitor = PerformanceMonitor()
     cost_tracker = CostTracker()
     rate_limiter = RateLimiter(max_calls_per_minute=10)
     
-    # Create session and register all hooks
-    session = AmplifierSession(config=mount_plan)
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     # Performance monitoring
     session.coordinator.hooks.register("tool:pre", perf_monitor.on_tool_pre)
@@ -471,8 +473,6 @@ async def scenario_composed_hooks():
     
     # Rate limiting
     session.coordinator.hooks.register("tool:pre", rate_limiter.check_rate_limit)
-    
-    await session.initialize()
     
     prompt = "Find all Python files and show me their sizes."
     

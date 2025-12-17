@@ -28,7 +28,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from amplifier_core import AmplifierSession
 from amplifier_foundation import load_bundle
 
 
@@ -125,10 +124,12 @@ async def workflow_code_review():
     # Load Amplifier
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
-    session = AmplifierSession(config=mount_plan)
-    await session.initialize()
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     # Generate code review
     prompt = f"""Perform a code review on the following changed files:
@@ -202,10 +203,12 @@ async def workflow_test_failure_analysis():
     # Load Amplifier
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
-    session = AmplifierSession(config=mount_plan)
-    await session.initialize()
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     prompt = f"""Analyze this test failure and provide insights:
 
@@ -266,10 +269,12 @@ async def workflow_release_notes():
     # Load Amplifier
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
-    session = AmplifierSession(config=mount_plan)
-    await session.initialize()
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     prompt = f"""Generate professional release notes from these commits:
 
@@ -333,10 +338,12 @@ def login(username, password):
     # Load Amplifier
     foundation_path = Path(__file__).parent.parent
     foundation = await load_bundle(str(foundation_path))
-    mount_plan = foundation.to_mount_plan()
+    provider = await load_bundle(str(foundation_path / "providers" / "anthropic-sonnet.yaml"))
     
-    session = AmplifierSession(config=mount_plan)
-    await session.initialize()
+    # Compose foundation with provider, then prepare
+    composed = foundation.compose(provider)
+    prepared = await composed.prepare()
+    session = await prepared.create_session()
     
     prompt = f"""Perform a security audit of this code:
 
