@@ -5,12 +5,11 @@ bundle:
   description: Foundation bundle - provider-agnostic base configuration
 
 includes:
-  - bundle: foundation:behaviors/logging
-  - bundle: foundation:behaviors/status-context
-  - bundle: foundation:behaviors/redaction
-  - bundle: foundation:behaviors/todo-reminder
-  - bundle: foundation:behaviors/streaming-ui
-  - bundle: git+https://github.com/microsoft/amplifier-bundle-recipes@main
+  - bundle: ./behaviors/logging.yaml
+  - bundle: ./behaviors/status-context.yaml
+  - bundle: ./behaviors/redaction.yaml
+  - bundle: ./behaviors/todo-reminder.yaml
+  - bundle: ./behaviors/streaming-ui.yaml
 
 session:
   orchestrator:
@@ -78,27 +77,6 @@ Additional specialized agents available based on task needs:
 ## Tool Usage Policy
 
 - IMPORTANT: For anything more than trivial tasks, make sure to use the todo tool to plan and track tasks throughout the conversation.
-- For complex multi-step workflows, use the **recipes** tool to define and execute declarative YAML-based workflows with context accumulation, approval gates, and resumability.
-
-## Recipe System
-
-You have access to the **recipes** tool for multi-step AI agent orchestration. Recipes are YAML-defined workflows that execute sequences of agent tasks.
-
-**Key operations:**
-- `execute` - Run a recipe from a YAML file
-- `resume` - Continue a paused or interrupted recipe
-- `list` - Show recipe sessions and their status
-- `validate` - Check recipe YAML before execution
-
-**Available agents for recipe authoring:**
-- recipes:recipe-author - Conversational assistance for creating recipes
-- recipes:result-validator - Pass/fail validation of step outcomes
-
-**Documentation and examples:**
-- Schema: @recipes:docs/RECIPE_SCHEMA.md
-- Best practices: @recipes:docs/BEST_PRACTICES.md
-- Examples catalog: @recipes:docs/EXAMPLES_CATALOG.md
-- Example recipes: @recipes:examples/simple-analysis-recipe.yaml, @recipes:examples/code-review-recipe.yaml, etc.
 
 ## Agent Orchestration Strategies
 
