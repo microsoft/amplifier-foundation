@@ -10,6 +10,7 @@ from .deduplicator import ContentDeduplicator
 from .models import MentionResult
 from .parser import parse_mentions
 from .protocol import MentionResolverProtocol
+from .utils import format_directory_listing
 
 
 def format_context_block(
@@ -135,15 +136,27 @@ async def _resolve_mention(
             error=None,  # Opportunistic - no error for not found
         )
 
-    # Check if path is a directory (don't try to read it)
+    # Handle directories: generate listing as content
     if path.is_dir():
-        return MentionResult(
-            mention=mention,
-            resolved_path=path,
-            content=None,  # Directories have no content at foundation level
-            error=None,
-            is_directory=True,
-        )
+        try:
+            content = format_directory_listing(path)
+            deduplicator.add_file(path, content)
+            return MentionResult(
+                mention=mention,
+                resolved_path=path,
+                content=content,
+                error=None,
+                is_directory=True,
+            )
+        except (PermissionError, OSError):
+            # Can't list directory - return without content
+            return MentionResult(
+                mention=mention,
+                resolved_path=path,
+                content=None,
+                error=None,
+                is_directory=True,
+            )
 
     # Read file
     try:

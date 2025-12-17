@@ -142,6 +142,15 @@ async def process_mentions(session: Any, prompt: str, foundation: Bundle) -> Non
 
     This is APP-LAYER POLICY for handling @file references.
     Skip this section if you don't need @mention support.
+
+    Supported @mention types:
+    - @filename.txt - loads file content
+    - @path/to/file.md - loads file at path
+    - @directory/ - loads directory listing (files/subdirs, NOT contents)
+    - @bundle:resource - loads resource from registered bundle
+
+    Directory @mentions provide awareness of available files without
+    flooding context with all file contents.
     """
     from amplifier_foundation.mentions import BaseMentionResolver
     from amplifier_foundation.mentions import ContentDeduplicator
@@ -179,7 +188,15 @@ async def process_mentions(session: Any, prompt: str, foundation: Bundle) -> Non
                 "content": f"Referenced files:\n\n{context_block}",
             }
         )
-        print(f"  Loaded {len(deduplicator.get_unique_files())} file(s)")
+        unique_files = deduplicator.get_unique_files()
+        dir_count = sum(1 for f in unique_files if f.content.startswith("Directory:"))
+        file_count = len(unique_files) - dir_count
+        parts = []
+        if file_count:
+            parts.append(f"{file_count} file(s)")
+        if dir_count:
+            parts.append(f"{dir_count} directory listing(s)")
+        print(f"  Loaded {', '.join(parts)}")
 
 
 # =============================================================================
