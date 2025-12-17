@@ -1,0 +1,55 @@
+bundle:
+  name: foundation-desktop
+  version: 1.0.0
+  description: Desktop application bundle - streaming UI with persistent memory and event broadcast
+
+session:
+  orchestrator:
+    module: loop-streaming
+    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    config:
+      extended_thinking: true
+  context:
+    module: context-simple
+    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+    config:
+      max_tokens: 200000
+      compact_threshold: 0.8
+      auto_compact: true
+
+# Event broadcast for real-time UI updates
+# Application registers "broadcast" capability with its transport (WebSocket, etc.)
+hooks:
+  - module: hooks-event-broadcast
+    source: git+https://github.com/michaeljabbour/amplifier-module-hooks-event-broadcast@v0.1.0
+    config:
+      events:
+        - content_block:start
+        - content_block:delta
+        - content_block:end
+        - tool:pre
+        - tool:post
+        - orchestrator:complete
+        - session:start
+        - session:end
+        - error:tool
+        - error:provider
+
+tools:
+  # Persistent memory across sessions
+  - module: tool-memory
+    source: git+https://github.com/michaeljabbour/amplifier-module-tool-memory@v0.1.0
+    config:
+      max_memories: 1000
+
+  # Core tools
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
+  - module: tool-web
+    source: git+https://github.com/microsoft/amplifier-module-tool-web@main
+
+  # MCP bridge for external tool servers
+  - module: tool-mcp
+    source: git+https://github.com/microsoft/amplifier-module-tool-mcp@main
