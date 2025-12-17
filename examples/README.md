@@ -1,6 +1,6 @@
 # Amplifier Foundation Examples
 
-Progressive examples demonstrating how to use Amplifier Foundation, from basic concepts to sophisticated applications.
+Progressive examples demonstrating how to use Amplifier Foundation, organized by learning progression.
 
 ## Quick Start
 
@@ -8,73 +8,69 @@ Progressive examples demonstrating how to use Amplifier Foundation, from basic c
 # Set your API key
 export ANTHROPIC_API_KEY='your-key-here'
 
-# Run any example
+# Run the first example
 cd amplifier-foundation
-uv run python examples/05_hello_world.py
+uv run python examples/01_hello_world.py
 ```
 
 ## Examples Overview
 
-### Foundation Concepts (01-04)
+### ✨ Tier 1: Quick Start (01-03)
+**Goal:** Get running in 15 minutes
 
-Learn the core mechanisms of Amplifier Foundation - bundles, composition, and module loading.
-
-**[01_load_and_inspect.py](./01_load_and_inspect.py)** - Load and inspect bundles  
-Learn how `load_bundle()` works and what a bundle contains. See the mount plan structure.
-
-**[02_composition.py](./02_composition.py)** - Bundle composition and merge rules  
-Understand how `compose()` merges configuration. See how session, providers, tools, and instruction fields combine.
-
-**[03_sources_and_registry.py](./03_sources_and_registry.py)** - Loading from remote sources  
-Learn source formats (git, file, package). Use BundleRegistry for named bundle management.
-
-**[04_full_workflow/](./04_full_workflow/)** - Complete workflow with execution  
-See the full flow: `prepare()` → `create_session()` → `execute()`. Interactive demo with provider selection and LLM execution.
-
-### Building with Amplifier (05-09)
-
-Learn how to build real applications with Amplifier, from simple scripts to complex systems.
-
-**[05_hello_world.py](./05_hello_world.py)** - Your first AI agent  
-**Value:** Get running immediately with minimal code  
+**[01_hello_world.py](./01_hello_world.py)** - Your first AI agent  
 The simplest possible Amplifier agent. Load foundation, compose with provider, execute a prompt. See the basic flow that all applications follow.
 
-**[06_custom_configuration.py](./06_custom_configuration.py)** - Tailor agents via composition  
-**Value:** Composition over configuration - swap capabilities, not flags  
-See how to add tools, use streaming orchestrators, and customize behavior by composing different modules. No configuration flags needed.
+**[02_custom_configuration.py](./02_custom_configuration.py)** - Tailor agents via composition  
+See how to add tools, use streaming orchestrators, and customize behavior by composing different modules. Composition over configuration - swap capabilities, not flags.
 
-**[07_custom_tool.py](./07_custom_tool.py)** - Build domain-specific capabilities  
-**Value:** Extend Amplifier with your own tools  
+**[03_custom_tool.py](./03_custom_tool.py)** - Build domain-specific capabilities  
 Build custom tools (WeatherTool, DatabaseTool) that integrate seamlessly. Learn the Tool protocol: `name`, `description`, `input_schema`, `execute()`.
 
+### 🔧 Tier 2: Foundation Concepts (04-07)
+**Goal:** Understand how Amplifier works internally
+
+**[04_load_and_inspect.py](./04_load_and_inspect.py)** - Load and inspect bundles  
+Learn how `load_bundle()` works and what a bundle contains. See the mount plan structure.
+
+**[05_composition.py](./05_composition.py)** - Bundle composition and merge rules  
+Understand how `compose()` merges configuration. See how session, providers, tools, and instruction fields combine.
+
+**[06_sources_and_registry.py](./06_sources_and_registry.py)** - Loading from remote sources  
+Learn source formats (git, file, package). Use BundleRegistry for named bundle management.
+
+**[07_full_workflow.py](./07_full_workflow.py)** - Complete workflow with execution  
+See the full flow: `prepare()` → `create_session()` → `execute()`. Interactive demo with provider selection and LLM execution.
+
+### 🏗️ Tier 3: Building Applications (08-09)
+**Goal:** Production patterns and complex systems
+
 **[08_cli_application.py](./08_cli_application.py)** - CLI application architecture  
-**Value:** Best practices for building real tools  
 See application architecture patterns: configuration management, logging, error handling, lifecycle management. Build reusable application classes.
 
 **[09_multi_agent_system.py](./09_multi_agent_system.py)** - Coordinate specialized agents  
-**Value:** Build sophisticated systems with agent workflows  
 Create specialized agents (Architect, Implementer, Reviewer) with different tools and instructions. See sequential workflows and context passing between agents.
 
 ## Learning Paths
 
 ### For Beginners
 Start here to understand Amplifier basics:
-1. **05_hello_world.py** - See it work immediately
-2. **06_custom_configuration.py** - Understand composition
-3. **07_custom_tool.py** - Build your first custom capability
+1. **01_hello_world.py** - See it work immediately
+2. **02_custom_configuration.py** - Understand composition
+3. **03_custom_tool.py** - Build your first custom capability
 
 ### For Building Real Tools
 Learn patterns for production-quality applications:
-1. **Foundation:** 01-04 (understand core concepts)
-2. **Architecture:** 08_cli_application.py (see best practices)
-3. **Advanced:** 09_multi_agent_system.py (complex systems)
+1. **Tier 1:** 01-03 (get started)
+2. **Tier 2:** 04-07 (understand core concepts)
+3. **Tier 3:** 08-09 (see production patterns)
 
 ### For Understanding Internals
 Deep dive into how Amplifier works:
-1. **01_load_and_inspect.py** - Bundle structure
-2. **02_composition.py** - Merge rules and composition
-3. **03_sources_and_registry.py** - Module resolution and sources
-4. **04_full_workflow/** - Complete preparation and execution flow
+1. **04_load_and_inspect.py** - Bundle structure
+2. **05_composition.py** - Merge rules and composition
+3. **06_sources_and_registry.py** - Module resolution and sources
+4. **07_full_workflow.py** - Complete preparation and execution flow
 
 ## Key Concepts Demonstrated
 
@@ -254,7 +250,7 @@ Modules are resolved and downloaded before execution (`prepare()`), not during r
 
 - **Read the docs:** [amplifier-foundation documentation](../docs/)
 - **Explore modules:** Check out pre-built modules on GitHub
-- **Build your own:** Use 07_custom_tool.py as a template for custom capabilities
+- **Build your own:** Use 03_custom_tool.py as a template for custom capabilities
 - **Study patterns:** 08_cli_application.py shows application architecture best practices
 
 ## Getting Help
