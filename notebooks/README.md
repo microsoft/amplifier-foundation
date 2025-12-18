@@ -13,40 +13,13 @@ Notebooks are for **interactive experimentation** after you understand the basic
 - `02_validation_checker.ipynb` - Paste bundle YAML and see validation errors/warnings.
 - `03_bundle_playground.ipynb` - Paste/load bundles and inspect mount plans interactively.
 - `04_composition_explorer.ipynb` - Visualize composition merge rules side-by-side.
-## Notebooks
-
-### bundle_playground.ipynb
-
-**Purpose**: Interactive bundle exploration
-
-Paste your bundle YAML, see the resulting Bundle object and mount plan, experiment with changes.
-
-**Good for**:
-- Debugging bundle configurations
-- Exploring mount plan structure
-- Quick iteration on bundle design
-
-### composition_explorer.ipynb
-
-**Purpose**: Visualize composition merge rules
-
-Define base and overlay bundles, see exactly how they merge.
-
-**Good for**:
-- Understanding merge behavior
-- Testing composition scenarios
-- Seeing how configs combine
-
-### validation_checker.ipynb
-
-**Purpose**: Test validation interactively
-
-Paste bundles with errors, see validation messages with explanations.
-
-**Good for**:
-- Learning validation rules
-- Debugging validation errors
-- Testing bundle validity
+- `05_load_and_inspect.ipynb` - Load any bundle and inspect its mount plan sections.
+- `06_custom_configuration.ipynb` - Toggle tool and streaming overlays to see composition effects.
+- `07_custom_tool.ipynb` - Define and register a simple custom tool, then exercise it.
+- `08_full_workflow.ipynb` - Full prepare -> create_session -> execute with your prompt.
+- `09_multi_agent_system.ipynb` - Coordinate architect/implementer/reviewer agents through a handoff workflow.
+- `10_provider_comparison.ipynb` - Run one prompt across multiple providers and compare timing/responses.
+- `11_session_persistence.ipynb` - Save/resume session state to disk to continue later.
 
 ## Running Notebooks
 
