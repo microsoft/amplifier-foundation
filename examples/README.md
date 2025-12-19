@@ -51,6 +51,39 @@ See application architecture patterns: configuration management, logging, error 
 **[09_multi_agent_system.py](./09_multi_agent_system.py)** - Coordinate specialized agents  
 Create specialized agents (Architect, Implementer, Reviewer) with different tools and instructions. See sequential workflows and context passing between agents.
 
+**[10_meeting_notes_to_actions.py](./10_meeting_notes_to_actions.py)** - Domain-specific workflow automation  
+Extract action items from meeting notes, assign to participants, and generate follow-up emails. See real-world task automation patterns.
+
+### 🎯 Tier 4: Advanced Patterns (11-14)
+**Goal:** Power user techniques and debugging
+
+**[11_provider_comparison.py](./11_provider_comparison.py)** - Compare multiple LLM providers  
+Run the same prompt across different providers (Anthropic, OpenAI, etc.) to compare responses, latency, and costs. Learn provider selection strategies.
+
+**[12_approval_gates.py](./12_approval_gates.py)** - Human-in-the-loop controls  
+Implement approval gates for sensitive operations. See how to require human confirmation before executing destructive actions.
+
+**[13_event_debugging.py](./13_event_debugging.py)** - Deep system observability  
+Hook into all events to debug orchestrator flow, tool execution, and context updates. Learn advanced debugging techniques.
+
+**[14_session_persistence.py](./14_session_persistence.py)** - Save and resume conversations  
+Serialize session state to disk and resume later. Understand context persistence and session lifecycle management.
+
+### ⚡ Tier 5: Domain Applications (17-20)
+**Goal:** Complete domain-specific applications
+
+**[17_multi_model_ensemble.py](./17_multi_model_ensemble.py)** - Ensemble decision making  
+Combine responses from multiple models to make better decisions. See voting strategies and consensus building.
+
+**[18_custom_hooks.py](./18_custom_hooks.py)** - Build your own hooks  
+Create custom hooks for metrics, logging, tracing, and performance monitoring. Learn the Hook protocol deeply.
+
+**[19_github_actions_ci.py](./19_github_actions_ci.py)** - CI/CD automation agent  
+Analyze GitHub Actions logs, suggest fixes, and generate improved workflow files. See how to build domain-expert agents.
+
+**[20_calendar_assistant.py](./20_calendar_assistant.py)** - Personal assistant agent  
+Manage calendar, schedule meetings, find time slots, and handle conflicts. Complete productivity tool example.
+
 ## Learning Paths
 
 ### For Beginners
