@@ -1,0 +1,13 @@
+bundle:
+  name: provider-openai-gpt-mini
+  version: 1.0.0
+  description: OpenAI GPT Mini provider (cost-efficient, fast)
+
+providers:
+  - module: provider-openai
+    source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
+    config:
+      # Adjust to the exact mini model id available in your account (example value shown)
+      default_model: gpt-5-mini
+      debug: true
+      raw_debug: true
