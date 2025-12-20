@@ -25,11 +25,13 @@ Example usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from amplifier_foundation.paths.resolution import ParsedURI, parse_uri
+from amplifier_foundation.paths.resolution import ParsedURI
+from amplifier_foundation.paths.resolution import parse_uri
 from amplifier_foundation.sources.git import GitSourceHandler
 from amplifier_foundation.sources.protocol import SourceStatus
 
@@ -84,10 +86,9 @@ class BundleStatus:
 
         if updates > 0:
             return f"{updates} update(s) available ({up_to_date} up to date, {unknown} unknown)"
-        elif unknown > 0:
+        if unknown > 0:
             return f"Up to date ({unknown} source(s) could not be checked)"
-        else:
-            return f"All {total} source(s) up to date"
+        return f"All {total} source(s) up to date"
 
 
 def _get_cache_dir() -> Path:

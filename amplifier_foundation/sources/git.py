@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import shutil
@@ -11,7 +12,8 @@ from datetime import datetime
 from pathlib import Path
 
 from amplifier_foundation.exceptions import BundleNotFoundError
-from amplifier_foundation.paths.resolution import ParsedURI, ResolvedSource
+from amplifier_foundation.paths.resolution import ParsedURI
+from amplifier_foundation.paths.resolution import ResolvedSource
 from amplifier_foundation.sources.protocol import SourceStatus
 
 # Metadata file name for tracking cache info
@@ -96,10 +98,8 @@ class GitSourceHandler:
     def _save_cache_metadata(self, cache_path: Path, metadata: dict) -> None:
         """Save cache metadata."""
         meta_path = cache_path / CACHE_METADATA_FILE
-        try:
+        with contextlib.suppress(OSError):
             meta_path.write_text(json.dumps(metadata, indent=2, default=str))
-        except OSError:
-            pass  # Non-critical, continue without metadata
 
     async def resolve(self, parsed: ParsedURI, cache_dir: Path) -> ResolvedSource:
         """Resolve git URI to local cached path.
@@ -205,10 +205,8 @@ class GitSourceHandler:
         if cache_path.exists():
             metadata = self._get_cache_metadata(cache_path)
             if metadata.get("cached_at"):
-                try:
+                with contextlib.suppress(ValueError):
                     status.cached_at = datetime.fromisoformat(metadata["cached_at"])
-                except ValueError:
-                    pass
             status.cached_commit = metadata.get("commit") or self._get_local_commit(cache_path)
         else:
             status.cached_commit = None

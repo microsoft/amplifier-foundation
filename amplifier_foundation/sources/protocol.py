@@ -61,9 +61,7 @@ class SourceStatus:
         if len(self.cached_ref) == 40 and all(c in "0123456789abcdef" for c in self.cached_ref.lower()):
             return True
         # If ref starts with 'v' and contains numbers, likely a version tag
-        if self.cached_ref.startswith("v") and any(c.isdigit() for c in self.cached_ref):
-            return True
-        return False
+        return self.cached_ref.startswith("v") and any(c.isdigit() for c in self.cached_ref)
 
 
 class SourceResolverProtocol(Protocol):
