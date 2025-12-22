@@ -9,6 +9,11 @@ For learning, see:
 Notebooks are for **interactive experimentation** after you understand the basics.
 
 ## Notebooks
+- `01_hello_world.ipynb` - Fast path to load -> compose -> execute; edit prompt/provider.
+- `02_validation_checker.ipynb` - Paste bundle YAML and see validation errors/warnings.
+- `03_bundle_playground.ipynb` - Paste/load bundles and inspect mount plans interactively.
+- `04_composition_explorer.ipynb` - Visualize composition merge rules side-by-side.
+## Notebooks
 
 ### bundle_playground.ipynb
 
