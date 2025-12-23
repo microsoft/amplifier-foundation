@@ -3,7 +3,6 @@ from __future__ import annotations
 import getpass
 import os
 from pathlib import Path
-from typing import Tuple
 
 # Repository root
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +28,7 @@ def select_provider(
     key: str = "sonnet",
     foundation: str = "minimal",
     prompt_for_env: bool = True,
-) -> Tuple[Path, Path, str]:
+) -> tuple[Path, Path, str]:
     """Resolve foundation/provider paths and ensure env is set."""
     if key not in PROVIDERS:
         raise ValueError(f"Unknown provider key: {key}")
