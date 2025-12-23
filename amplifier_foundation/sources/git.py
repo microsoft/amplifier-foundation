@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import shutil
 import subprocess
 from datetime import datetime
@@ -15,6 +16,8 @@ from amplifier_foundation.exceptions import BundleNotFoundError
 from amplifier_foundation.paths.resolution import ParsedURI
 from amplifier_foundation.paths.resolution import ResolvedSource
 from amplifier_foundation.sources.protocol import SourceStatus
+
+logger = logging.getLogger(__name__)
 
 # Metadata file name for tracking cache info
 CACHE_METADATA_FILE = ".amplifier_cache_meta.json"
@@ -101,6 +104,43 @@ class GitSourceHandler:
         with contextlib.suppress(OSError):
             meta_path.write_text(json.dumps(metadata, indent=2, default=str))
 
+    def _verify_clone_integrity(self, cache_path: Path) -> bool:
+        """Verify that a cloned repository has expected structure.
+
+        Checks for indicators that the clone completed successfully and contains
+        a valid Python module. This catches cases where git clone partially
+        succeeds but leaves an incomplete directory (e.g., due to network issues,
+        cloud sync interference, or disk I/O errors).
+
+        Args:
+            cache_path: Path to the cloned repository.
+
+        Returns:
+            True if the clone appears complete and valid, False otherwise.
+        """
+        if not cache_path.exists():
+            return False
+
+        # Must have .git directory (indicates git clone completed)
+        if not (cache_path / ".git").exists():
+            logger.warning(f"Clone missing .git directory: {cache_path}")
+            return False
+
+        # For Python modules, check for pyproject.toml, setup.py, or setup.cfg
+        # Also check for bundle.md/bundle.yaml for amplifier bundles
+        has_python_module = (
+            (cache_path / "pyproject.toml").exists()
+            or (cache_path / "setup.py").exists()
+            or (cache_path / "setup.cfg").exists()
+        )
+        has_bundle = (cache_path / "bundle.md").exists() or (cache_path / "bundle.yaml").exists()
+
+        if not has_python_module and not has_bundle:
+            logger.warning(f"Clone missing expected files (pyproject.toml/setup.py/bundle.md): {cache_path}")
+            return False
+
+        return True
+
     async def resolve(self, parsed: ParsedURI, cache_dir: Path) -> ResolvedSource:
         """Resolve git URI to local cached path.
 
@@ -118,13 +158,18 @@ class GitSourceHandler:
         ref = parsed.ref or "HEAD"
         cache_path = self._get_cache_path(parsed, cache_dir)
 
-        # Check if already cached
+        # Check if already cached and valid
         if cache_path.exists():
-            result_path = cache_path
-            if parsed.subpath:
-                result_path = cache_path / parsed.subpath
-            if result_path.exists():
-                return ResolvedSource(active_path=result_path, source_root=cache_path)
+            # Verify cache integrity before using
+            if not self._verify_clone_integrity(cache_path):
+                logger.warning(f"Cached clone is invalid, removing: {cache_path}")
+                shutil.rmtree(cache_path, ignore_errors=True)
+            else:
+                result_path = cache_path
+                if parsed.subpath:
+                    result_path = cache_path / parsed.subpath
+                if result_path.exists():
+                    return ResolvedSource(active_path=result_path, source_root=cache_path)
 
         # Clone repository
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +191,16 @@ class GitSourceHandler:
                 capture_output=True,
                 text=True,
             )
+
+            # Verify clone completed with expected structure
+            if not self._verify_clone_integrity(cache_path):
+                # Clone succeeded but result is invalid - remove and raise error
+                shutil.rmtree(cache_path, ignore_errors=True)
+                raise BundleNotFoundError(
+                    f"Clone of {git_url}@{ref} completed but result is invalid "
+                    "(missing pyproject.toml/setup.py/bundle.md). "
+                    "This may indicate a network issue or cloud sync interference."
+                )
 
             # Save metadata after successful clone
             commit = self._get_local_commit(cache_path)
