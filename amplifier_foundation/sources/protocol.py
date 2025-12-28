@@ -157,7 +157,7 @@ class SourceHandlerWithStatusProtocol(Protocol):
         """
         ...
 
-    async def refresh(self, parsed: ParsedURI, cache_dir: Path) -> Path:
+    async def update(self, parsed: ParsedURI, cache_dir: Path) -> Path:
         """Force re-download of source, ignoring cache.
 
         Removes any cached version and downloads fresh content.
@@ -167,7 +167,7 @@ class SourceHandlerWithStatusProtocol(Protocol):
             cache_dir: Directory for caching downloaded content.
 
         Returns:
-            Local path to the refreshed content.
+            Local path to the updated content.
 
         Raises:
             BundleNotFoundError: If source cannot be resolved.

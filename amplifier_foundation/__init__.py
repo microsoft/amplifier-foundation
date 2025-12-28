@@ -82,10 +82,10 @@ from amplifier_foundation.sources.resolver import SimpleSourceResolver
 # Tracing utilities
 from amplifier_foundation.tracing import generate_sub_session_id
 
-# Updates - bundle update checking and refresh
+# Updates - bundle update checking and updating
 from amplifier_foundation.updates import BundleStatus
 from amplifier_foundation.updates import check_bundle_status
-from amplifier_foundation.updates import refresh_bundle
+from amplifier_foundation.updates import update_bundle
 from amplifier_foundation.validator import BundleValidator
 from amplifier_foundation.validator import ValidationResult
 from amplifier_foundation.validator import validate_bundle
@@ -118,7 +118,7 @@ __all__ = [
     # Updates
     "BundleStatus",
     "check_bundle_status",
-    "refresh_bundle",
+    "update_bundle",
     # Reference implementations
     "BaseMentionResolver",
     "SimpleSourceResolver",

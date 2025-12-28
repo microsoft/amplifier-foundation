@@ -299,7 +299,7 @@ class GitSourceHandler:
 
         return status
 
-    async def refresh(self, parsed: ParsedURI, cache_dir: Path) -> ResolvedSource:
+    async def update(self, parsed: ParsedURI, cache_dir: Path) -> ResolvedSource:
         """Force re-clone of repository, ignoring cache.
 
         Removes any cached version and downloads fresh content.
@@ -309,7 +309,7 @@ class GitSourceHandler:
             cache_dir: Directory for caching downloaded content.
 
         Returns:
-            ResolvedSource with the refreshed content.
+            ResolvedSource with the updated content.
 
         Raises:
             BundleNotFoundError: If clone fails.

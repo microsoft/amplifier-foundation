@@ -1,13 +1,13 @@
 """Bundle update utilities.
 
-This module provides mechanisms for checking bundle update status and refreshing
+This module provides mechanisms for checking bundle update status and updating
 cached sources. Following the kernel philosophy, these are MECHANISMS that apps
 can use - the app decides WHEN and HOW to apply updates.
 
 Example usage:
 
     from amplifier_foundation import load_bundle
-    from amplifier_foundation.updates import check_bundle_status, refresh_bundle
+    from amplifier_foundation.updates import check_bundle_status, update_bundle
 
     # Load a bundle
     bundle = await load_bundle("git+https://github.com/org/my-bundle@main")
@@ -18,9 +18,9 @@ Example usage:
     for source in status.sources:
         print(f"  {source.summary}")
 
-    # Refresh if updates available (side effects - re-downloads)
+    # Update if updates available (side effects - re-downloads and reinstalls deps)
     if status.has_updates:
-        updated_bundle = await refresh_bundle(bundle)
+        updated_bundle = await update_bundle(bundle)
 """
 
 from __future__ import annotations
@@ -200,54 +200,69 @@ async def check_bundle_status(
     )
 
 
-async def refresh_bundle(
+async def update_bundle(
     bundle: Bundle,
     cache_dir: Path | None = None,
     selective: list[str] | None = None,
+    install_deps: bool = True,
 ) -> Bundle:
-    """Refresh bundle sources by re-downloading from remote.
+    """Update bundle sources by re-downloading from remote and reinstalling dependencies.
 
     This is a MECHANISM that has side effects - it removes cached
-    versions and re-downloads fresh content.
+    versions, re-downloads fresh content, and reinstalls dependencies.
 
     Args:
-        bundle: Bundle to refresh.
+        bundle: Bundle to update.
         cache_dir: Cache directory for modules. Defaults to ~/.amplifier/cache.
-        selective: If provided, only refresh these source URIs.
-            If None, refreshes all sources with available updates.
+        selective: If provided, only update these source URIs.
+            If None, updates all sources with available updates.
+        install_deps: If True (default), reinstall dependencies after updating.
+            This ensures new dependencies added to pyproject.toml are installed.
 
     Returns:
-        The same bundle (sources are refreshed in cache, bundle config unchanged).
+        The same bundle (sources are updated in cache, bundle config unchanged).
 
     Example:
-        # Refresh all sources with updates
-        await refresh_bundle(bundle)
+        # Update all sources with updates
+        await update_bundle(bundle)
 
-        # Refresh specific sources
-        await refresh_bundle(bundle, selective=["git+https://github.com/org/module@main"])
+        # Update specific sources
+        await update_bundle(bundle, selective=["git+https://github.com/org/module@main"])
     """
     if cache_dir is None:
         cache_dir = _get_cache_dir()
 
-    # Get current status to know what to refresh
+    # Get current status to know what to update
     status = await check_bundle_status(bundle, cache_dir)
 
-    # Determine which sources to refresh
+    # Determine which sources to update
     if selective is not None:
-        sources_to_refresh = selective
+        sources_to_update = selective
     else:
-        # Refresh all sources with available updates
-        sources_to_refresh = [s.source_uri for s in status.updateable_sources]
+        # Update all sources with available updates
+        sources_to_update = [s.source_uri for s in status.updateable_sources]
 
-    # Refresh each source
+    # Update each source
     git_handler = GitSourceHandler()
+    updated_paths: list[Path] = []
 
-    for uri in sources_to_refresh:
+    for uri in sources_to_update:
         parsed = parse_uri(uri)
 
         if git_handler.can_handle(parsed):
-            await git_handler.refresh(parsed, cache_dir)
+            resolved = await git_handler.update(parsed, cache_dir)
+            updated_paths.append(resolved.active_path)
         # Non-git sources: no-op for now (could add support later)
+
+    # Reinstall dependencies for updated modules
+    if install_deps and updated_paths:
+        from amplifier_foundation.modules.activator import ModuleActivator
+
+        activator = ModuleActivator(cache_dir=cache_dir)
+        for module_path in updated_paths:
+            # Only reinstall if it's a Python module (has pyproject.toml)
+            if (module_path / "pyproject.toml").exists():
+                await activator._install_dependencies(module_path)
 
     return bundle
 
@@ -256,5 +271,5 @@ __all__ = [
     "BundleStatus",
     "SourceStatus",
     "check_bundle_status",
-    "refresh_bundle",
+    "update_bundle",
 ]

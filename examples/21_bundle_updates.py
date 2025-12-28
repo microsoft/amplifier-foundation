@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Example 21: Bundle Updates (Status Checking & Refresh)
+Example 21: Bundle Updates (Status Checking & Updating)
 =======================================================
 
 AUDIENCE: Developers building apps with bundles loaded from git sources
 VALUE: Shows how to detect and apply updates to bundles without rebuilding
-PATTERN: Check status (no side effects) → Optionally refresh (side effects)
+PATTERN: Check status (no side effects) → Optionally update (side effects)
 
 What this demonstrates:
   - Checking if bundle sources have updates available
   - Getting detailed status for each source in a bundle
-  - Refreshing specific or all sources with updates
+  - Updating specific or all sources with updates
   - Foundation provides mechanism, app provides policy
 
 When you'd use this:
@@ -29,7 +29,7 @@ from amplifier_foundation import Bundle
 from amplifier_foundation import BundleStatus
 from amplifier_foundation import check_bundle_status
 from amplifier_foundation import load_bundle
-from amplifier_foundation import refresh_bundle
+from amplifier_foundation import update_bundle
 from amplifier_foundation.sources.protocol import SourceStatus
 
 # ============================================================================
@@ -144,20 +144,20 @@ async def detailed_status_example():
 
 
 # ============================================================================
-# Example 3: Selective Refresh
+# Example 3: Selective Update
 # ============================================================================
 
 
-async def selective_refresh_example():
+async def selective_update_example():
     """
-    Demonstrate refreshing specific sources.
+    Demonstrate updating specific sources.
 
     This shows the two-phase pattern:
     1. Check status (no side effects) - inform user
-    2. Refresh selected sources (side effects) - user decides
+    2. Update selected sources (side effects) - user decides
     """
     print("\n" + "=" * 80)
-    print("EXAMPLE 3: Selective Refresh Pattern")
+    print("EXAMPLE 3: Selective Update Pattern")
     print("=" * 80)
 
     # Create demo bundle
@@ -186,22 +186,22 @@ async def selective_refresh_example():
         print(f"    {source.summary}")
 
     # Phase 2: App decides policy (interactive demo)
-    print("\n[Phase 2: App decides what to refresh]")
+    print("\n[Phase 2: App decides what to update]")
     print("Options:")
-    print("  1. Refresh all sources with updates")
-    print("  2. Refresh specific sources only")
-    print("  3. Skip refresh")
+    print("  1. Update all sources with updates")
+    print("  2. Update specific sources only")
+    print("  3. Skip update")
 
     # In real app, this would be user input or config
     # Here we demonstrate the selective API
-    print("\nDemonstrating selective refresh of first source only...")
+    print("\nDemonstrating selective update of first source only...")
 
     if status.updateable_sources:
         first_source = status.updateable_sources[0].source_uri
         print(f"Refreshing: {first_source}")
 
         # Selective refresh - only specific URIs
-        await refresh_bundle(demo_bundle, selective=[first_source])
+        await update_bundle(demo_bundle, selective=[first_source])
 
         print("Done!")
 
@@ -265,7 +265,7 @@ async def full_update_workflow():
 
     if auto_update:
         print("Auto-update enabled - refreshing...")
-        await refresh_bundle(bundle)
+        await update_bundle(bundle)
         print("Bundle refreshed!")
     else:
         print("Manual update required - skipping refresh")
@@ -343,10 +343,10 @@ async def cli_update_command_example():
     # Perform refresh
     if specific_source:
         print(f"\nRefreshing specific source: {specific_source}")
-        await refresh_bundle(bundle, selective=[specific_source])
+        await update_bundle(bundle, selective=[specific_source])
     else:
         print(f"\nRefreshing {len(status.updateable_sources)} source(s)...")
-        await refresh_bundle(bundle)
+        await update_bundle(bundle)
 
     print("Update complete!")
     return status
@@ -373,7 +373,7 @@ async def main():
     examples = [
         ("Basic Status Checking", check_status_example),
         ("Detailed Source Status", detailed_status_example),
-        ("Selective Refresh Pattern", selective_refresh_example),
+        ("Selective Update Pattern", selective_update_example),
         ("Full Update Workflow", full_update_workflow),
         ("CLI Update Command Pattern", cli_update_command_example),
     ]
@@ -416,12 +416,12 @@ async def main():
     print("=" * 80)
     print(
         """
-1. **Two-Phase Pattern**: Check (no side effects) → Refresh (side effects)
+1. **Two-Phase Pattern**: Check (no side effects) → Update (side effects)
    - check_bundle_status() - safe to call anytime
-   - refresh_bundle() - actually downloads updates
+   - update_bundle() - downloads updates and reinstalls dependencies
 
 2. **Foundation = Mechanism, App = Policy**:
-   - Foundation provides: status checking, refresh capability
+   - Foundation provides: status checking, update capability
    - App decides: when to check, whether to auto-update, which sources
 
 3. **Detailed Status Information**:
@@ -429,9 +429,9 @@ async def main():
    - has_update: True/False/None (unknown)
    - is_pinned: detects version tags and commit SHAs
 
-4. **Selective Refresh**:
-   - Refresh all: await refresh_bundle(bundle)
-   - Refresh specific: await refresh_bundle(bundle, selective=[uri1, uri2])
+4. **Selective Update**:
+   - Update all: await update_bundle(bundle)
+   - Update specific: await update_bundle(bundle, selective=[uri1, uri2])
 
 5. **Git Source Support**:
    - Uses `git ls-remote` for efficient status checking
@@ -441,7 +441,7 @@ async def main():
 **Production Implementation**:
 
 ```python
-from amplifier_foundation import load_bundle, check_bundle_status, refresh_bundle
+from amplifier_foundation import load_bundle, check_bundle_status, update_bundle
 
 # In your CLI update command:
 bundle = await load_bundle("your-bundle-uri")
@@ -450,7 +450,7 @@ status = await check_bundle_status(bundle)
 if status.has_updates:
     print(f"Updates available: {status.summary}")
     if user_confirms_update():
-        await refresh_bundle(bundle)
+        await update_bundle(bundle)
         print("Updated!")
 ```
 """
