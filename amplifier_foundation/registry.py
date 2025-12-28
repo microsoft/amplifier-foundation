@@ -382,18 +382,18 @@ class BundleRegistry:
                     # Resolve namespace:path syntax before loading
                     resolved_source = self._resolve_include_source(include_source)
                     if resolved_source is None:
-                        logger.debug(f"Include could not be resolved (skipping): {include_source}")
+                        logger.warning(f"Include could not be resolved (skipping): {include_source}")
                         continue
 
                     included = await self._load_single(
                         resolved_source,
-                        auto_register=False,
+                        auto_register=True,  # Register includes as first-class bundles
                         auto_include=True,
                     )
                     included_bundles.append(included)
                 except BundleNotFoundError:
-                    # Includes are opportunistic
-                    logger.debug(f"Include not found (skipping): {include_source}")
+                    # Includes are opportunistic - but warn so users know
+                    logger.warning(f"Include not found (skipping): {include_source}")
                     pass
 
         if not included_bundles:

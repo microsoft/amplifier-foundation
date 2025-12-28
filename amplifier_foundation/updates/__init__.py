@@ -132,9 +132,9 @@ def _collect_source_uris(bundle: Bundle) -> list[str]:
             if isinstance(mod, dict) and "source" in mod:
                 sources.add(mod["source"])
 
-    # Included bundles (these are URIs themselves)
-    for include_uri in bundle.includes:
-        sources.add(include_uri)
+    # Note: Included bundles are now registered as first-class bundles
+    # and will be checked independently by _check_all_bundle_status().
+    # No need to collect their URIs here.
 
     return list(sources)
 
