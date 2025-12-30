@@ -34,15 +34,17 @@ tools:
   - module: tool-todo
     source: git+https://github.com/microsoft/amplifier-module-tool-todo@main
 
-# Agents bundled with this experiment (simple names to avoid delegation confusion)
+# Reuse foundation's existing agents - no need for custom versions
 agents:
   include:
-    - file-ops
-    - code-intel
-    - shell-exec
-    - git-ops
-    - web-research
-    - explorer
+    - foundation:explorer
+    - foundation:bug-hunter
+    - foundation:zen-architect
+    - foundation:modular-builder
+    - foundation:integration-specialist
+    - foundation:security-guardian
+    - foundation:test-coverage
+    - foundation:session-analyst
 ---
 
 # Delegation-Only Coordinator
