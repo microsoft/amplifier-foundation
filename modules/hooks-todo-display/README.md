@@ -6,12 +6,12 @@ Visual progress display for todo list tool calls. Renders todo lists with progre
 
 - **Full mode**: Shows all items with individual status and progress bar
 - **Condensed mode**: Single-line progress summary with current task
-- **Auto mode**: Automatically switches based on item count
+- **Auto mode**: Automatically switches to condensed based on item count
 - **Configurable**: Adjust thresholds, widths, borders, and more
 
 ## Display Examples
 
-### Full Mode (≤7 items)
+### Full Mode (default)
 
 ```
 ┌─ Tasks ──────────────────────────────────────────┐
@@ -27,7 +27,7 @@ Visual progress display for todo list tool calls. Renders todo lists with progre
 └──────────────────────────────────────────────────┘
 ```
 
-### Condensed Mode (>7 items or configured)
+### Condensed Mode (when mode="auto" or mode="condensed")
 
 ```
 ┌─ Tasks ──────────────────────────────────────────────────┐
@@ -50,11 +50,11 @@ hooks:
   - module: hooks-todo-display
     source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-todo-display
     config:
-      # Display modes: "full", "condensed", "auto", "none"
-      mode: auto
+      # Display modes: "full" (default), "condensed", "auto", "none"
+      # mode: full
       
-      # Switch to condensed above this item count (for auto mode)
-      compact_threshold: 7
+      # Switch to condensed above this item count (only used when mode="auto")
+      # compact_threshold: 7
       
       # Show progress bar at bottom
       show_progress_bar: true

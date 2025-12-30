@@ -66,8 +66,8 @@ class Symbols:
 @dataclass
 class TodoDisplayConfig:
     """Configuration for todo display rendering."""
-    mode: str = "auto"  # "full", "condensed", "auto", "none"
-    compact_threshold: int = 7  # Switch to condensed at this count
+    mode: str = "full"  # "full", "condensed", "auto", "none"
+    compact_threshold: int = 7  # Switch to condensed at this count (only used when mode="auto")
     show_progress_bar: bool = True
     progress_bar_width: int = 24
     max_width: int = 60  # Max width for item text

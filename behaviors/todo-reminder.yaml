@@ -17,12 +17,10 @@ hooks:
   - module: hooks-todo-display
     source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-todo-display
     config:
-      # Display modes: "full", "condensed", "auto", "none"
-      # - full: Shows all items with progress bar
+      # Display modes: "full" (default), "condensed", "auto", "none"
+      # - full: Shows all items with progress bar (default)
       # - condensed: Single-line progress summary
-      # - auto: Switches based on item count (default)
+      # - auto: Switches based on item count (compact_threshold)
       # - none: Disables special rendering
-      mode: auto
-      compact_threshold: 7  # Switch to condensed above this count
       show_progress_bar: true
       show_border: true
