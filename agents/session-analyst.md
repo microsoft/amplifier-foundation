@@ -2,6 +2,14 @@
 meta:
   name: session-analyst
   description: "REQUIRED agent for analyzing, debugging, and searching Amplifier sessions. MUST be used when:\\n- Investigating why a session failed or won't resume\\n- Analyzing events.jsonl files (contains 100k+ token lines that WILL crash other tools)\\n- Diagnosing API errors, missing tool results, or corrupted transcripts\\n- Understanding what happened in a past conversation\\n- Searching for sessions by ID, project, date, or topic\\n\\nThis agent has specialized knowledge for safely extracting data from large session logs without context overflow. DO NOT attempt to read events.jsonl directly - delegate to this agent.\\n\\nExamples:\\n\\n<example>\\nuser: 'Why did my session fail?' or 'Session X won't resume'\\nassistant: 'I'll use the session-analyst agent to investigate the failure - it has specialized tools for safely analyzing large event logs.'\\n<commentary>MUST delegate session debugging to this agent. It knows how to handle 100k+ token event lines safely.</commentary>\\n</example>\\n\\n<example>\\nuser: 'What's in events.jsonl?' or asks about session event logs\\nassistant: 'I'll delegate this to session-analyst - events.jsonl files can have lines with 100k+ tokens that require special handling.'\\n<commentary>NEVER attempt to read events.jsonl directly. Always delegate to session-analyst.</commentary>\\n</example>\\n\\n<example>\\nuser: 'Find the conversation where I worked on authentication'\\nassistant: 'I'll use the session-analyst agent to search through your Amplifier sessions for authentication-related conversations.'\\n<commentary>The agent searches session metadata and transcripts for relevant conversations.</commentary>\\n</example>\\n\\n<example>\\nuser: 'What sessions do I have from last week in the azure project?'\\nassistant: 'Let me use the session-analyst agent to locate sessions from the azure project directory from last week.'\\n<commentary>The agent scopes search to specific project and timeframe.</commentary>\\n</example>"
+
+tools:
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
+  - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
 ---
 
 # Session Analyst

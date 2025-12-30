@@ -2,6 +2,12 @@
 meta:
   name: file-ops
   description: "Focused file operations agent for reading, writing, editing, and searching files. Use when you need precise file system operations without the broader exploration scope. This agent handles: reading file contents, writing new files, making targeted edits, finding files by pattern (glob), and searching file contents (grep). Best for: single-file operations, batch file changes, content search, and file discovery tasks."
+
+tools:
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
 ---
 
 # File Operations Agent

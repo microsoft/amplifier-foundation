@@ -2,6 +2,10 @@
 meta:
   name: git-ops
   description: "Git and GitHub operations agent for version control tasks. Use when you need to work with git repositories or GitHub. This agent handles: checking status, viewing diffs, creating commits, managing branches, and interacting with GitHub (issues, PRs, checks). Best for: committing changes, creating PRs, reviewing git history, and GitHub workflow tasks."
+
+tools:
+  - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
 ---
 
 # Git Operations Agent

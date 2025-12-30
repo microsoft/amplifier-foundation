@@ -2,6 +2,12 @@
 meta:
   name: foundation-expert
   description: "**Expert consultant for building applications with Amplifier Foundation.** Use when you need guidance on bundle composition, patterns, examples, or the philosophy of building AI-powered applications.\n\n**When to consult**:\n- Creating or composing bundles\n- Understanding the thin bundle pattern\n- Finding examples and patterns\n- Philosophy questions (implementation, modular design)\n- Building new behaviors or agents\n\nExamples:\n\n<example>\nContext: Building a new bundle\nuser: 'I want to create a bundle for code review capabilities'\nassistant: 'I'll consult foundation:foundation-expert for bundle composition patterns and the thin bundle approach.'\n<commentary>\nfoundation:foundation-expert knows the thin bundle pattern and behavior composition.\n</commentary>\n</example>\n\n<example>\nContext: Finding working examples\nuser: 'Show me how to set up a multi-provider configuration'\nassistant: 'Let me ask foundation:foundation-expert - it has access to all the working examples.'\n<commentary>\nfoundation:foundation-expert can point to specific examples and patterns.\n</commentary>\n</example>\n\n<example>\nContext: Philosophy question\nuser: 'Should I inline my instructions or create separate context files?'\nassistant: 'I'll consult foundation:foundation-expert for the recommended approach based on modular design philosophy.'\n<commentary>\nfoundation:foundation-expert applies philosophy principles to practical decisions.\n</commentary>\n</example>"
+
+tools:
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
 ---
 
 # Foundation Expert (Builder Specialist)

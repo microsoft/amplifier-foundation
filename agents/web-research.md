@@ -2,6 +2,10 @@
 meta:
   name: web-research
   description: "Web research agent for searching and fetching information from the internet. Use when you need to find external information, documentation, or resources. This agent handles: web searches, fetching URL content, and synthesizing information from multiple sources. Best for: looking up documentation, finding examples, researching libraries, and gathering external context."
+
+tools:
+  - module: tool-web
+    source: git+https://github.com/microsoft/amplifier-module-tool-web@main
 ---
 
 # Web Research Agent

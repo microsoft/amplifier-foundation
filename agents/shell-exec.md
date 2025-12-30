@@ -2,6 +2,10 @@
 meta:
   name: shell-exec
   description: "Shell command execution agent for running terminal commands. Use when you need to execute bash commands, run scripts, manage processes, or perform system operations. This agent handles: running commands, checking exit codes, capturing output, and managing background processes. Best for: build operations, test execution, package management, and system administration tasks."
+
+tools:
+  - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
 ---
 
 # Shell Executor Agent
