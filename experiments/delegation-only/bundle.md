@@ -34,6 +34,10 @@ tools:
   - module: tool-todo
     source: git+https://github.com/microsoft/amplifier-module-tool-todo@main
 
+# Spawn policy: agents get their own tools, NOT the coordinator's task tool
+spawn:
+  exclude_tools: [tool-task]
+
 # Reuse foundation's existing agents - no need for custom versions
 agents:
   include:

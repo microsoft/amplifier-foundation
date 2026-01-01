@@ -45,6 +45,10 @@ tools:
   - module: tool-task
     source: git+https://github.com/microsoft/amplifier-module-tool-task@main
 
+# Spawn policy: control what tools spawned agents inherit
+spawn:
+  exclude_tools: [tool-task]  # Agents do the work, they don't delegate
+
 agents:
   include:
     # Note: amplifier-expert and core-expert come via included behaviors above
