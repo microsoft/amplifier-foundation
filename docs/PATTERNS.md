@@ -256,19 +256,25 @@ print(result["output"])
 
 ### Controlling Agent Tool Inheritance
 
-By default, spawned agents inherit all tools from their parent. Use the `spawn` section to control this:
+By default, spawned agents inherit all tools from their parent. Configure tool inheritance
+in the task tool's config section:
 
 ```yaml
 # In your bundle.md
-spawn:
-  exclude_tools: [tool-task]  # Agents inherit all EXCEPT these
+tools:
+  - module: tool-task
+    source: git+https://github.com/microsoft/amplifier-module-tool-task@main
+    config:
+      exclude_tools: [tool-task]  # Agents inherit all EXCEPT these
 ```
 
-Or specify an explicit list:
+Or specify an explicit allowlist:
 
 ```yaml
-spawn:
-  tools: [tool-filesystem, tool-bash]  # Agents get ONLY these
+tools:
+  - module: tool-task
+    config:
+      inherit_tools: [tool-filesystem, tool-bash]  # Agents get ONLY these
 ```
 
 **Common pattern**: Prevent agents from delegating further:
@@ -276,16 +282,20 @@ spawn:
 ```yaml
 # Coordinator has task tool for orchestration
 tools:
-  - module: tool-task
   - module: tool-filesystem
   - module: tool-bash
-
-# But agents can't delegate (no recursion)
-spawn:
-  exclude_tools: [tool-task]
+  - module: tool-task
+    config:
+      exclude_tools: [tool-task]  # Spawned agents can't delegate
 ```
 
 This ensures agents do the work themselves rather than trying to spawn sub-agents.
+
+**Design rationale**: Tool inheritance config belongs in tool-task's config section because:
+- The task tool is the module that consumes this config
+- Follows the pattern of all other tool configs
+- Without tool-task mounted, this config is meaningless
+- Standard module-config merge rules apply during bundle composition
 
 ### Agent Resolution Pattern
 

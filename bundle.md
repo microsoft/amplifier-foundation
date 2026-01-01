@@ -44,10 +44,8 @@ tools:
     source: git+https://github.com/microsoft/amplifier-module-tool-search@main
   - module: tool-task
     source: git+https://github.com/microsoft/amplifier-module-tool-task@main
-
-# Spawn policy: control what tools spawned agents inherit
-spawn:
-  exclude_tools: [tool-task]  # Agents do the work, they don't delegate
+    config:
+      exclude_tools: [tool-task]  # Spawned agents do the work, they don't delegate
 
 agents:
   include:
