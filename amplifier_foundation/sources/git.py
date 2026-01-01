@@ -180,8 +180,10 @@ class GitSourceHandler:
 
         try:
             # Shallow clone with specific ref
+            # Note: "HEAD" is not a valid --branch argument; it's a symbolic reference.
+            # When ref is HEAD (or not specified), let git clone use the repo's default branch.
             clone_args = ["git", "clone", "--depth", "1"]
-            if parsed.ref:
+            if parsed.ref and parsed.ref != "HEAD":
                 clone_args.extend(["--branch", parsed.ref])
             clone_args.extend([git_url, str(cache_path)])
 
