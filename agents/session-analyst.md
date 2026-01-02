@@ -6,6 +6,10 @@ meta:
 tools:
   - module: tool-filesystem
     source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+    config:
+      allowed_write_paths:
+        - "."
+        - "~/.amplifier/projects"
   - module: tool-search
     source: git+https://github.com/microsoft/amplifier-module-tool-search@main
   - module: tool-bash

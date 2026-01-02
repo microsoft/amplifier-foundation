@@ -156,6 +156,15 @@ Both mechanisms result in content appearing in your system instructions, but:
 | Bundle-specific orchestration (your agents, your workflows) | `bundle.md` instructions | Unique to this bundle's mix |
 | Capability-specific guidance | `context/` files referenced by behaviors | Reusable by other bundles |
 
+### App-Level Runtime Injection
+
+Beyond bundle composition, **apps inject runtime configuration** via `settings.yaml`:
+- Provider configs (API keys, model selection)
+- Tool configs (e.g., `allowed_write_paths` for filesystem)
+- Session-scoped overrides
+
+For the full composition chain (bundle → app → session), see `@foundation:docs/BUNDLE_GUIDE.md`.
+
 ### Be Judicious with @mentions
 
 Every @mention adds tokens to context. Before adding one:

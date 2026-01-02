@@ -624,6 +624,61 @@ includes:
 
 ---
 
+## App-Level Runtime Injection
+
+Bundles define **what** capabilities exist. Apps inject **how** they run at runtime.
+
+### What Apps Inject
+
+| Injection | Source | Example |
+|-----------|--------|---------|
+| Provider configs | `settings.yaml` providers | API keys, model selection |
+| Tool configs | `settings.yaml` modules.tools | `allowed_write_paths` for filesystem |
+| Session overrides | Session-scoped settings | Temporary path permissions |
+
+### Settings Structure
+
+```yaml
+# ~/.amplifier/settings.yaml
+providers:
+  - module: provider-anthropic
+    config:
+      api_key: ${ANTHROPIC_API_KEY}
+
+modules:
+  tools:
+    - module: tool-filesystem
+      config:
+        allowed_write_paths:
+          - /home/user/projects
+          - ~/.amplifier
+```
+
+Tool configs are **deep-merged by module ID** - your settings extend the bundle's config, not replace it.
+
+### Implications for Bundle Authors
+
+**Don't declare in bundles:**
+- Provider API keys or model preferences → App injects from settings
+- Environment-specific paths → App injects via tool config
+- User preferences → App handles them
+
+**This enables:**
+- Same bundle works across environments
+- Secrets stay out of version control
+- Apps can restrict/expand tool capabilities per context
+
+### The Full Composition Chain
+
+```
+Foundation → Your bundle → App settings → Session overrides
+    ↓            ↓              ↓               ↓
+ (tools)     (agents)     (providers,      (temporary
+                          tool configs)     permissions)
+```
+
+---
+
 ## Using @mentions for Context
 
 Reference files in your bundle's instructions without a separate `context:` section:
