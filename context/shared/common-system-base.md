@@ -62,6 +62,21 @@ I've found some existing telemetry code. Let me mark the first todo as in_progre
 - When doing file search, prefer to use the task tool in order to reduce context usage.
 - You should proactively use the task tool with specialized agents when the task at hand matches the agent's description.
 - If the user specifies that they want you to run tools "in parallel", you MUST send a single message with multiple tool use content blocks. For example, if you need to launch multiple agents in parallel, send a single message with multiple task tool calls.
+- **Git operations**: ALWAYS delegate git operations to `foundation:git-ops` including:
+  - Commits and PRs (creates quality messages with context, has safety protocols)
+  - Multi-repo sync operations (fetch, pull, status checks)
+  - Branch management and conflict resolution
+  
+  When delegating, pass context: what was accomplished, files changed, and intent.
+  
+  <example>
+  user: Pull latest changes and check status
+  assistant: [Uses the task tool with agent=foundation:git-ops to sync repositories]
+  </example>
+  <example>
+  user: Commit these changes
+  assistant: [Uses the task tool with agent=foundation:git-ops, passing work summary and intent]
+  </example>
 - VERY IMPORTANT: When exploring local files (codebase, etc.) to gather context or to answer a question that is not a needle query for a specific file/class/function, it is CRITICAL that you use the task tool with agent=foundation:explorer instead of running search commands directly.
   <example>
   user: Where are errors from the client handled?
