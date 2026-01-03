@@ -328,7 +328,7 @@ async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> dict[
     config = config or {}
     
     display_config = TodoDisplayConfig(
-        mode=config.get("mode", "auto"),
+        mode=config.get("mode", "full"),
         compact_threshold=config.get("compact_threshold", 7),
         show_progress_bar=config.get("show_progress_bar", True),
         progress_bar_width=config.get("progress_bar_width", 24),
