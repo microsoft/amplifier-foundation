@@ -45,7 +45,8 @@ class TestFileSourceHandler:
             result = await handler.resolve(parsed, Path(tmpdir) / "cache")
 
             assert result.active_path == test_file
-            assert result.source_root == test_file
+            # source_root is the parent directory for non-cached files
+            assert result.source_root == test_file.parent
 
     @pytest.mark.asyncio
     async def test_resolve_with_subpath(self) -> None:

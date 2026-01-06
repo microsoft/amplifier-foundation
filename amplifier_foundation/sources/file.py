@@ -56,10 +56,15 @@ class FileSourceHandler:
             raise BundleNotFoundError(f"File not found: {active_path}")
 
         # Determine source_root: the actual repository/bundle root
-        # If the file is within the cache directory, find the repository root
-        # (first-level directory under cache). This enables sub-bundle detection
-        # for file:// URIs pointing to files within cached repositories.
-        source_root = self._find_source_root(active_path, cache_dir)
+        # If a subdirectory was specified, the source_root is the base path
+        # (before applying the subdirectory). Otherwise, try to detect it
+        # from the cache directory structure.
+        if parsed.subpath:
+            # Subdirectory URI: source_root is the base path
+            source_root = resolved_path
+        else:
+            # No subdirectory: try to find source root from cache structure
+            source_root = self._find_source_root(active_path, cache_dir)
 
         return ResolvedSource(active_path=active_path, source_root=source_root)
 

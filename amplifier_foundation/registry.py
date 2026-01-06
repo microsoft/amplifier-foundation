@@ -133,6 +133,7 @@ class BundleRegistry:
         )
         self._loading: set[str] = set()  # Cycle detection for includes
         self._load_persisted_state()
+        self._validate_cached_paths()
 
     @property
     def home(self) -> Path:
@@ -290,13 +291,15 @@ class BundleRegistry:
             # - file:// URIs pointing to files within a bundle's directory structure
             # - Any other case where a bundle file is nested within another bundle
             #
-            # We try to find a root bundle by walking up from the parent directory.
-            # If the loaded bundle's path IS the root bundle, _find_nearest_bundle_file
-            # will find itself, so we check if the found root is different.
+            # We try to find a root bundle by walking up from the PARENT of the
+            # bundle directory. This skips the current bundle and looks for a root
+            # bundle above it in the directory hierarchy.
             if local_path.is_file():
-                search_start = local_path.parent
+                # Bundle file: start from grandparent (parent of the directory containing the file)
+                search_start = local_path.parent.parent
             else:
-                search_start = local_path
+                # Bundle directory: start from parent directory
+                search_start = local_path.parent
 
             # Use source_root as stop boundary if available, otherwise use cache root
             cache_root = Path.home() / ".amplifier" / "cache"
@@ -307,7 +310,13 @@ class BundleRegistry:
                 stop=stop_boundary,
             )
 
-            if root_bundle_path and root_bundle_path != local_path:
+            # Compare directories, not file paths - local_path may be a directory while
+            # root_bundle_path is always a file. We need to check if they refer to the
+            # same bundle location.
+            bundle_dir = local_path.parent if local_path.is_file() else local_path
+            root_bundle_dir = root_bundle_path.parent if root_bundle_path else None
+
+            if root_bundle_path and root_bundle_dir != bundle_dir:
                 # Found a root bundle that's different from our loaded bundle
                 root_bundle = await self._load_from_path(root_bundle_path)
                 if root_bundle.name:
@@ -838,6 +847,23 @@ class BundleRegistry:
             logger.debug(f"Loaded registry from {registry_path} ({len(self._registry)} bundles)")
         except Exception as e:
             logger.warning(f"Failed to load registry from {registry_path}: {e}")
+
+    def _validate_cached_paths(self) -> None:
+        """Clear stale local_path references from registry entries.
+
+        On startup, registry entries may reference cached paths that no longer
+        exist (e.g., user cleared cache but not registry.json). This clears
+        those stale references so bundles will be re-fetched when needed.
+        """
+        stale_entries = []
+        for name, state in self._registry.items():
+            if state.local_path and not Path(state.local_path).exists():
+                logger.info(f"Clearing stale cache reference for '{name}'")
+                state.local_path = None
+                stale_entries.append(name)
+
+        if stale_entries:
+            self.save()  # Persist the cleanup
 
 
 # Convenience function for simple usage
