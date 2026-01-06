@@ -295,11 +295,103 @@ class EnhancedMcpClient:
         # [50+ more lines of complex state tracking and retry logic]
 ```
 
+## Cross-Platform Development (Windows Compatibility)
+
+### File I/O - Always Specify UTF-8 Encoding
+
+**Critical Rule**: Every file operation must explicitly specify `encoding="utf-8"`
+
+**Why**: Windows defaults to `cp1252` (or locale-specific "charmap" encoding) instead of UTF-8. Python's `open()` and `Path.read_text()` use system default encoding when not specified, causing decode errors with UTF-8 content on Windows.
+
+**Error signature**: `'charmap' codec can't decode byte 0x9d in position X: character maps to <undefined>`
+
+**Always do this:**
+```python
+# ✅ Reading files
+with open(path, encoding="utf-8") as f:
+    content = f.read()
+
+config = Path(file).read_text(encoding="utf-8")
+
+# ✅ Writing files
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+
+Path(file).write_text(content, encoding="utf-8")
+```
+
+**Never do this:**
+```python
+# ❌ Windows-unsafe (uses system default encoding)
+with open(path) as f:
+    content = f.read()
+
+config = Path(file).read_text()
+```
+
+### Path and Filename Sanitization
+
+**Critical Rule**: Any user input or external data used in filenames must be sanitized for Windows compatibility.
+
+**Windows-prohibited characters**: `< > : " | ? * \`
+
+**Why**: Windows reserves these characters for special purposes. Colons (`:`) are particularly problematic - reserved for drive letters only (e.g., `C:`), causing `[WinError 267] The directory name is invalid`.
+
+**Common sources of problematic characters:**
+- Agent names with colons: `foundation:explorer`
+- User input in filenames
+- URL-derived identifiers
+- Timestamps with colons
+
+**Sanitization patterns:**
+```python
+# ✅ For filesystem-safe identifiers (agent names, session IDs)
+import re
+sanitized = re.sub(r"[^a-z0-9]+", "-", name.lower())
+sanitized = re.sub(r"-{2,}", "-", sanitized)  # Collapse multiple hyphens
+sanitized = sanitized.strip("-").lstrip(".")  # Remove leading/trailing
+
+# ✅ For project slugs from paths
+slug = str(path).replace("/", "-").replace("\\", "-").replace(":", "")
+
+# ✅ Minimal sanitization (preserve more characters)
+sanitized = re.sub(r'[<>:"|?*\\]', "-", filename)
+```
+
+**Examples:**
+- `foundation:explorer` → `foundation-explorer`
+- `My Agent!` → `my-agent`
+- `C:\Users\name` → `C-Users-name`
+
+### Development Checklist for Windows Compatibility
+
+Before committing code that touches file I/O or paths:
+- [ ] All `open()` calls include `encoding="utf-8"`
+- [ ] All `Path.read_text()` / `write_text()` include `encoding="utf-8"`
+- [ ] Any filename/path generation sanitizes Windows-prohibited characters
+- [ ] No assumptions about case-sensitive filesystems
+- [ ] No assumptions about path separator types (`/` vs `\`)
+
+### Testing on Windows
+
+**High-risk scenarios to test:**
+- File I/O with UTF-8 content (emojis, special characters, non-ASCII)
+- Filenames/paths containing colons or other prohibited characters
+- Long paths (Windows 260 character limit before long path support)
+- Case sensitivity assumptions (Windows is case-insensitive by default)
+
+**Recommended test environments:**
+- Windows 10/11 native Python (primary target)
+- PowerShell and Command Prompt
+- Consider WSL for Unix-compatibility testing
+
 ## Remember
 
 - It's easier to add complexity later than to remove it
 - Code you don't write has no bugs
 - Favor clarity over cleverness
 - The best code is often the simplest
+- **Always specify UTF-8 encoding for cross-platform compatibility**
+- **Always sanitize user input used in filenames**
 
 This philosophy document serves as the foundational guide for all implementation decisions in the project.
