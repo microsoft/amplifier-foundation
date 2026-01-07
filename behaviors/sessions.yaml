@@ -1,0 +1,13 @@
+bundle:
+  name: behavior-sessions
+  version: 1.0.0
+  description: Session observability - logging, analysis, and debugging
+
+# Per-session JSONL event logging
+includes:
+  - bundle: foundation:behaviors/logging
+
+# Session analysis agent
+agents:
+  include:
+    - foundation:session-analyst

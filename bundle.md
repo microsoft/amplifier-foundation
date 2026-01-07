@@ -9,7 +9,7 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier@main#subdirectory=behaviors/amplifier-expert.yaml
   - bundle: git+https://github.com/microsoft/amplifier-core@main#subdirectory=behaviors/core-expert.yaml
   # Foundation behaviors
-  - bundle: foundation:behaviors/logging
+  - bundle: foundation:behaviors/sessions
   - bundle: foundation:behaviors/status-context
   - bundle: foundation:behaviors/redaction
   - bundle: foundation:behaviors/todo-reminder
@@ -61,7 +61,7 @@ agents:
     - foundation:modular-builder
     - foundation:post-task-cleanup
     - foundation:security-guardian
-    - foundation:session-analyst
+    # session-analyst now comes from foundation:behaviors/sessions
     - foundation:test-coverage
     - foundation:web-research   # Web research context sink
     - foundation:zen-architect
