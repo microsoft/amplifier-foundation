@@ -1,0 +1,67 @@
+# Example: Notification Policy Configuration
+#
+# Add this to your ~/.amplifier/settings.yaml to enable notifications.
+# The app will compose these behaviors onto your bundle at runtime,
+# only for root sessions (not sub-agents or recipe steps).
+
+config:
+  # Provider configuration (existing pattern)
+  providers:
+    - module: provider-anthropic
+      config:
+        api_key: ${ANTHROPIC_API_KEY}
+        default_model: claude-sonnet-4-20250514
+
+  # Notification policy (new pattern)
+  notifications:
+    # Desktop notifications (macOS/Linux/Windows)
+    # Uses native notifications locally, terminal bell over SSH
+    desktop:
+      enabled: true
+      title: "Amplifier"          # Notification title
+      subtitle: "cwd"             # "cwd", "git", or custom string
+      suppress_if_focused: true   # Skip if terminal has focus
+      sound: false                # Play sound (macOS only)
+
+    # Push notifications (mobile/remote)
+    # Uses ntfy.sh - install the app and subscribe to your topic
+    push:
+      enabled: true
+      service: ntfy               # Currently only ntfy supported
+      topic: "my-amplifier-alerts"  # Your secret topic (treat like password)
+      server: "https://ntfy.sh"   # Or self-hosted: https://ntfy.yourdomain.com
+      priority: default           # min, low, default, high, urgent
+
+    # Common options (apply to all notification methods)
+    min_iterations: 1             # Only notify after N iterations
+    show_iteration_count: true    # Include iteration count in message
+
+
+# Alternative: Minimal configuration
+# 
+# config:
+#   notifications:
+#     desktop:
+#       enabled: true
+#
+# This enables desktop notifications with all defaults.
+
+
+# Alternative: Push only (mobile user)
+#
+# config:
+#   notifications:
+#     push:
+#       enabled: true
+#       service: ntfy
+#       topic: "my-topic"
+#
+# Desktop is disabled, only push notifications fire.
+
+
+# To disable all notifications:
+#
+# config:
+#   notifications: {}
+#
+# Or simply omit the notifications section entirely.

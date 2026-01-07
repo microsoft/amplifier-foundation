@@ -677,6 +677,51 @@ Foundation → Your bundle → App settings → Session overrides
                           tool configs)     permissions)
 ```
 
+### Policy Behaviors
+
+Some behaviors are **app-level policies** that should:
+- Only apply to root/interactive sessions (not sub-agents or recipe steps)
+- Be added by the app, not baked into bundles
+- Be configurable per-app context
+
+**Examples of policy behaviors:**
+- Notifications (don't notify for every sub-agent)
+- Cost tracking alerts
+- Session duration limits
+
+**Pattern for bundle authors:**
+If your behavior should be a policy (root-only, app-controlled):
+1. **Don't include it in your bundle.md** - provide it as a separate behavior
+2. **Document it as a policy behavior** - so apps know to compose it
+3. **Check `parent_id` in hooks** - skip sub-sessions by default
+
+```python
+# In your hook
+async def handle_event(self, event: str, data: dict) -> HookResult:
+    # Policy behavior: skip sub-sessions
+    if data.get("parent_id"):
+        return HookResult(action="continue")
+    # ... root session logic
+```
+
+**Pattern for app developers:**
+Configure policy behaviors in `settings.yaml`:
+
+```yaml
+config:
+  notifications:
+    desktop:
+      enabled: true
+    push:
+      enabled: true
+      service: ntfy
+      topic: "my-topic"
+```
+
+The app composes these behaviors onto bundles at runtime, only for root sessions.
+
+For detailed guidance, see [POLICY_BEHAVIORS.md](POLICY_BEHAVIORS.md).
+
 ---
 
 ## Using @mentions for Context
