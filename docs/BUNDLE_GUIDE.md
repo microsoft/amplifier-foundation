@@ -71,7 +71,7 @@ bundle:
 
 includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - bundle: my-capability:behaviors/my-capability    # Behavior pattern
+  - bundle: "@my-capability:behaviors/my-capability"    # Behavior pattern
 
 ---
 
@@ -100,7 +100,7 @@ bundle:
 
 includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - bundle: recipes:behaviors/recipes
+  - bundle: "@recipes:behaviors/recipes"
 ---
 
 # Recipe System
@@ -164,7 +164,7 @@ Include a behavior in your bundle:
 ```yaml
 includes:
   - bundle: foundation
-  - bundle: my-capability:behaviors/my-capability   # From same bundle
+  - bundle: "@my-capability:behaviors/my-capability"   # From same bundle
   - bundle: git+https://github.com/org/bundle@main#subdirectory=behaviors/foo.yaml  # External
 ```
 
@@ -249,7 +249,7 @@ bundle:
   name: my-capability
 includes:
   - bundle: foundation
-  - bundle: my-capability:behaviors/my-capability
+  - bundle: "@my-capability:behaviors/my-capability"
 ---
 
 # My Capability
@@ -390,7 +390,7 @@ bundle:
 
 includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - bundle: my-capability:behaviors/my-capability
+  - bundle: "@my-capability:behaviors/my-capability"
 ---
 
 # My Capability
@@ -553,7 +553,7 @@ bundle:
 
 includes:
   - bundle: foundation              # Inherit from other bundles
-  - bundle: my-bundle:behaviors/x   # Include behaviors
+  - bundle: "@my-bundle:behaviors/x"   # Include behaviors
 
 # Only declare tools NOT inherited from includes
 tools:
@@ -612,7 +612,7 @@ includes:
   - bundle: foundation                    # Well-known bundle name
   - bundle: git+https://github.com/...    # Git URL
   - bundle: ./bundles/variant.yaml        # Local file
-  - bundle: my-bundle:behaviors/foo       # Behavior within same bundle
+  - bundle: "@my-bundle:behaviors/foo"       # Behavior within same bundle
 ```
 
 **Merge rules**:
@@ -620,6 +620,60 @@ includes:
 - `session`, `providers`, `tools`, `hooks` are deep-merged by module ID
 - `agents` are merged by agent name
 - `spawn` is deep-merged (later overrides earlier)
+
+### Namespace Resolution Rules
+
+**Critical**: Bundle namespace references in YAML frontmatter MUST start with `@`.
+
+#### Context File Includes
+
+✅ **Correct**:
+```yaml
+context:
+  include:
+    - "@foundation:context/shared/common-agent-base.md"
+    - "@my-bundle:context/instructions.md"
+```
+
+❌ **Incorrect** (will fail with "file not found"):
+```yaml
+context:
+  include:
+    - foundation:context/shared/common-agent-base.md  # Missing @
+```
+
+#### Bundle Includes with Namespace References
+
+✅ **Correct**:
+```yaml
+includes:
+  - bundle: foundation                           # Well-known name
+  - bundle: git+https://github.com/org/repo@main # Git URI
+  - bundle: "@my-bundle:behaviors/feature"       # Namespace reference (needs @)
+```
+
+❌ **Incorrect**:
+```yaml
+includes:
+  - bundle: my-bundle:behaviors/feature  # Missing @
+```
+
+#### Agents Include
+
+✅ **Correct**:
+```yaml
+agents:
+  include:
+    - "@my-bundle:my-agent"
+```
+
+#### Markdown @mentions
+
+In markdown body:
+- Use `@bundle:path` for eager loading (loaded immediately)
+- Use `bundle:path` (no `@`) for soft references (loaded on-demand by AI)
+
+**Why the `@` prefix matters**: The `@` symbol triggers namespace resolution. Without it, the system treats the path as a literal string and fails to resolve it to the actual bundle resource.
 - Markdown instructions replace entirely (later wins)
 
 ---
