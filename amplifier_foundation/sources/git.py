@@ -93,7 +93,7 @@ class GitSourceHandler:
         meta_path = cache_path / CACHE_METADATA_FILE
         if meta_path.exists():
             try:
-                return json.loads(meta_path.read_text())
+                return json.loads(meta_path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 pass
         return {}
