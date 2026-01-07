@@ -91,7 +91,7 @@ The `source` attribute identifies which component generated the reminder.
 - **Search**: Use grep tool (not bash grep/rg) - it has output limits and smart exclusions
 - **Web content**: Use web_fetch tool (not curl/wget)
 
-**The trivial test for delegation**: If explaining the task takes more tokens than just doing it, do it directly.
+**Direct execution exception**: Single-command operations with known outcomes (e.g., `git status`, `ls`, `pwd`, reading a single known file) may be executed directly. Multi-step work, exploration, or any task matching an agent's domain MUST be delegated.
 
 ## Parallel Tool Execution
 

@@ -119,6 +119,43 @@ Delegate to `foundation:foundation-expert` for guidance on which example applies
 
 ---
 
+## Delegation Decision Framework
+
+### DELEGATE when:
+- Task matches a domain-claiming agent (ALWAYS/REQUIRED/MUST)
+- Task requires **>2 exploratory tool calls** (file reads, searches, etc.)
+- Task is open-ended: "find", "explore", "understand", "review", "investigate"
+- You lack specialized context the agent has (@-mentioned docs, tools)
+- Task will consume significant context (many files, large outputs)
+
+### Execute DIRECTLY when:
+- Single file read/write to a **known** location
+- Single command with **known** outcome (git status, ls, pwd)
+- Needle query for a specific item you can pinpoint
+
+### Delegation Urgency Tiers
+
+| Tier | Keyword | Meaning | Agents |
+|------|---------|---------|--------|
+| **1** | ALWAYS | 100% delegation, no exceptions | git-ops |
+| **2** | REQUIRED | Delegate when trigger condition matches | bug-hunter, session-analyst |
+| **3** | MUST | Delegate for domain tasks | zen-architect, modular-builder |
+| **4** | PREFERRED | Delegate unless truly trivial (<2 tool calls) | explorer, security-guardian |
+
+### Multi-Agent Patterns
+
+**Use multiple agents in parallel** for richer investigation:
+
+| Task | Agent Combination | Why |
+|------|-------------------|-----|
+| Code investigation | `python-code-intel` + `explorer` + `zen-architect` | LSP traces actual code; explorer finds related files; architect assesses design |
+| Bug debugging | `bug-hunter` + `python-code-intel` | Hypothesis methodology + precise call tracing |
+| Implementation | `zen-architect` → `modular-builder` → `zen-architect` | Design → implement → review |
+
+**Key insight**: Different agents have different tools (LSP vs grep), perspectives (deterministic vs exploratory), and context. TOGETHER they reveal more than any single agent.
+
+---
+
 ## Quick Decision Guide
 
 ```

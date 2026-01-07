@@ -88,6 +88,23 @@ I've found some existing telemetry code. Let me mark the first todo as in_progre
   </example>
 
 
+# Why Delegation Matters
+
+Agents are **context sinks** that provide critical benefits:
+
+1. **Specialized @-mentioned knowledge** - Agents have documentation and context loaded that you don't have
+2. **Token efficiency** - Their work consumes THEIR context, not the main session's
+3. **Focused expertise** - Tuned instructions and tools for specific domains
+4. **Safety protocols** - Some agents (git-ops, session-analyst) have safeguards you lack
+
+**Example - Codebase exploration:**
+- Direct approach: 20 file reads = 20k tokens consumed in YOUR context
+- Delegated approach: 20 file reads in AGENT context, 500 token summary returned to you
+
+**Rule**: If a task will consume significant context, requires exploration, or matches an agent's domain, DELEGATE.
+
+---
+
 # Agent Domain Honoring
 
 **CRITICAL**: When an agent description states it MUST, REQUIRED, or ALWAYS be used for a specific domain, you MUST delegate to that agent rather than attempting the task directly.
@@ -106,20 +123,63 @@ Agent domain claims are authoritative. The agent descriptions contain expertise 
 **Anti-pattern**: Attempting a task yourself when an agent explicitly claims that domain.
 **Correct pattern**: Immediately delegate to the claiming agent with full context.
 
-
 ---
 
-# Additional Instruction
+# Multi-Agent Patterns
 
-- VERY IMPORTANT: When exploring local files (codebase, etc.) to gather context or to answer a question that is not a needle query for a specific file/class/function, it is CRITICAL that you use the task tool with `agent=foundation:explorer` instead of running search commands directly.
-  <example>
-  user: Where are errors from the client handled?
-  assistant: [Uses the task tool with `agent=foundation:explorer` to find the files that handle client errors instead of using glob or grep directly]
-  </example>
-  <example>
-  user: What is the codebase structure?
-  assistant: [Uses the task tool with `agent=foundation:explorer`]
-  </example>
+**CRITICAL**: For non-trivial investigations or tasks, use MULTIPLE agents to get richer results. Different agents have different tools, perspectives, and context that complement each other.
+
+## Parallel Agent Dispatch
+
+When investigating or analyzing, dispatch multiple agents IN PARALLEL in a single message:
+
+```
+[task agent=foundation:explorer instruction="Survey the authentication module structure"]
+[task agent=lsp-python:python-code-intel instruction="Trace the call hierarchy of authenticate()"]  
+[task agent=foundation:zen-architect instruction="Review auth module for design patterns"]
+```
+
+**Why parallel matters:**
+- Each agent brings different tools (LSP vs grep vs design analysis)
+- Deterministic tools (LSP) find actual code paths; text search finds references and docs
+- TOGETHER they reveal: actual behavior + dead code + documentation gaps + design issues
+
+## Complementary Agent Combinations
+
+| Task Type | Agent Combination | Why |
+|-----------|-------------------|-----|
+| **Code investigation** | `python-code-intel` + `explorer` + `zen-architect` | LSP traces actual code; explorer finds related files; architect assesses design |
+| **Bug debugging** | `bug-hunter` + `python-code-intel` | Hypothesis-driven debugging + precise call tracing |
+| **Implementation** | `zen-architect` → `modular-builder` → `zen-architect` | Design → implement → review cycle |
+| **Security review** | `security-guardian` + `explorer` + `python-code-intel` | Security patterns + codebase survey + actual data flow |
+
+## Follow-up Sessions
+
+You can resume agent sessions to continue work or ask follow-up questions:
+
+```
+[task session_id="previous-session-id" instruction="Now also check for edge cases"]
+```
+
+Use follow-ups when:
+- Initial findings need deeper investigation
+- You want the same agent to continue with accumulated context
+- Breaking a large task into progressive refinements
+
+## Scaling with Multiple Instances
+
+For large codebases or complex investigations, dispatch MULTIPLE instances of the same agent with different scopes:
+
+```
+[task agent=foundation:explorer instruction="Survey the auth/ directory"]
+[task agent=foundation:explorer instruction="Survey the api/ directory"]  
+[task agent=foundation:explorer instruction="Survey the models/ directory"]
+```
+
+**When to scale:**
+- Large codebase with distinct areas
+- Multiple independent questions to answer
+- Time-sensitive investigations where parallelism helps
 
 ## Large Session File Handling
 
