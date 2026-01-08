@@ -508,6 +508,99 @@ agents:
 
 **Fix**: If you're just adding agents + maybe a tool, use a behavior YAML only.
 
+### ❌ Using @ Prefix in YAML
+
+```yaml
+# DON'T DO THIS - @ prefix is for markdown only
+context:
+  include:
+    - "@my-bundle:context/instructions.md"   # ❌ @ doesn't belong here
+
+agents:
+  include:
+    - "@my-bundle:my-agent"                  # ❌ @ doesn't belong here
+```
+
+```yaml
+# DO THIS - bare namespace:path in YAML
+context:
+  include:
+    - my-bundle:context/instructions.md      # ✅ No @ in YAML
+
+agents:
+  include:
+    - my-bundle:my-agent                     # ✅ No @ in YAML
+```
+
+**Why it's wrong**: The `@` prefix is markdown syntax for eager file loading. YAML sections use bare `namespace:path` references. Using `@` in YAML causes **silent failure** - the path won't resolve and content won't load, with no error message.
+
+### ❌ Using Repository Name as Namespace
+
+```yaml
+# If loading: git+https://github.com/microsoft/amplifier-bundle-recipes@main
+# And bundle.name in that repo is: "recipes"
+
+# DON'T DO THIS
+agents:
+  include:
+    - amplifier-bundle-recipes:recipe-author   # ❌ Repo name
+
+# DO THIS
+agents:
+  include:
+    - recipes:recipe-author                    # ✅ bundle.name value
+```
+
+**Why it's wrong**: The namespace is ALWAYS `bundle.name` from the YAML frontmatter, regardless of the git URL, repository name, or file path.
+
+### ❌ Including Subdirectory in Paths
+
+```yaml
+# If loading: git+https://...@main#subdirectory=bundles/foo
+# And bundle.name is: "foo"
+
+# DON'T DO THIS
+context:
+  include:
+    - foo:bundles/foo/context/instructions.md   # ❌ Redundant path
+
+# DO THIS
+context:
+  include:
+    - foo:context/instructions.md               # ✅ Relative to bundle location
+```
+
+**Why it's wrong**: When loaded via `#subdirectory=X`, the bundle root IS `X/`. Paths are relative to that root, so including the subdirectory in the path duplicates it.
+
+### ❌ Using context.include in bundle.md Instead of @mentions
+
+```markdown
+<!-- DON'T DO THIS in bundle.md -->
+---
+bundle:
+  name: my-bundle
+context:                              # ❌ This is for behavior YAML files
+  include:
+    - my-bundle:context/instructions.md
+---
+
+# Instructions here
+```
+
+```markdown
+<!-- DO THIS in bundle.md -->
+---
+bundle:
+  name: my-bundle
+---
+
+# Instructions
+
+@my-bundle:context/instructions.md    # ✅ Use @mention in markdown body
+```
+
+**Why it's wrong**: The `context.include` YAML section is the **behavior pattern** - it's meant for `behaviors/*.yaml` files that programmatically inject context into bundles that include them. Main `bundle.md` files should use `@mentions` directly in the markdown body.
+
 ---
 
 ## Decision Framework
@@ -744,6 +837,19 @@ For API details, see @my-bundle:docs/API.md
 **Format**: `@namespace:path/to/file.md`
 
 The namespace is the bundle name. Paths are relative to the bundle root.
+
+### Syntax Quick Reference
+
+There are two different syntaxes for referencing files, and they are **NOT interchangeable**:
+
+| Location | Syntax | Example |
+|----------|--------|---------|
+| **Markdown body** (bundle.md, agents/*.md) | `@namespace:path` | `@my-bundle:context/guide.md` |
+| **YAML sections** (context.include, agents.include) | `namespace:path` (NO @) | `my-bundle:context/guide.md` |
+
+The `@` prefix is **only** for markdown text that gets processed during instruction loading. YAML sections use bare `namespace:path` references.
+
+See [Anti-Patterns to Avoid](#anti-patterns-to-avoid) for common syntax mistakes.
 
 ---
 
