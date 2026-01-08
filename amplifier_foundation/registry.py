@@ -381,10 +381,10 @@ class BundleRegistry:
 
                 # Also register subdirectory bundle's own name if different
                 if bundle.name and bundle.name != root_bundle.name:
-                    bundle.source_base_paths[bundle.name] = resolved.source_root
+                    bundle.source_base_paths[bundle.name] = local_path
                     logger.debug(
                         f"Sub-bundle also registered own namespace "
-                        f"@{bundle.name}: -> {resolved.source_root}"
+                        f"@{bundle.name}: -> {local_path}"
                     )
 
             # Determine if this is a root bundle or sub-bundle
