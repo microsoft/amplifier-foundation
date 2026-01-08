@@ -292,7 +292,8 @@ class TestSubdirectoryBundleLoading:
 
             # The bundle should have source_base_paths set up
             assert bundle.name == "recipes"
-            assert bundle.source_base_paths.get("recipes") == base.resolve()
+            # Subdirectory bundle's own namespace should point to its actual location
+            assert bundle.source_base_paths.get("recipes") == (base / "behaviors" / "recipes").resolve()
 
     @pytest.mark.asyncio
     async def test_root_bundle_no_extra_source_base_paths(self) -> None:
