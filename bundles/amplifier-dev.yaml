@@ -1,0 +1,12 @@
+bundle:
+  name: amplifier-dev
+  version: 1.0.0
+  description: Bundle for developing ON the Amplifier ecosystem - multi-repo coordination, testing patterns, shadow integration
+
+includes:
+  # Base foundation capabilities
+  - bundle: foundation
+  # Shadow environment for isolated testing
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-shadow@main
+  # Amplifier dev behavior (agents + context)
+  - bundle: foundation:behaviors/amplifier-dev
