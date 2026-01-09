@@ -497,6 +497,10 @@ class BundleRegistry:
         if not bundle.includes:
             return bundle
 
+        # Pre-load any namespace bundles referenced in includes
+        # This ensures local_path is populated before we try to resolve namespace:path syntax
+        await self._preload_namespace_bundles(bundle.includes)
+
         included_bundles: list[Bundle] = []
         included_names: list[str] = []  # Track names for relationship recording
 
@@ -571,6 +575,41 @@ class BundleRegistry:
         # Persist the updated state
         self.save()
         logger.debug(f"Recorded include relationships: {parent_name} includes {child_names}")
+
+    async def _preload_namespace_bundles(self, includes: list) -> None:
+        """Pre-load namespace bundles to ensure local_path is populated.
+
+        When processing includes with namespace:path syntax (e.g., foundation:behaviors/logging),
+        we need the namespace bundle to be loaded first so its local_path is available for
+        path resolution. This method identifies and loads those namespace bundles.
+
+        Args:
+            includes: List of include specifications from bundle config.
+        """
+        namespaces_to_load: set[str] = set()
+
+        for include in includes:
+            include_source = self._parse_include(include)
+            if not include_source:
+                continue
+
+            # Check for namespace:path syntax (but not URIs like git+https://)
+            if ":" in include_source and "://" not in include_source:
+                namespace = include_source.split(":")[0]
+                state = self._registry.get(namespace)
+
+                # If namespace is registered but not loaded (no local_path), queue it
+                if state and not state.local_path:
+                    namespaces_to_load.add(namespace)
+
+        # Load namespace bundles to populate their local_path
+        for namespace in namespaces_to_load:
+            try:
+                logger.debug(f"Pre-loading namespace bundle: {namespace}")
+                await self._load_single(namespace, auto_register=True, auto_include=False)
+            except Exception as e:
+                logger.debug(f"Failed to pre-load namespace '{namespace}': {e}")
+                # Will fail later with proper error message during include resolution
 
     def _resolve_include_source(self, source: str) -> str | None:
         """Resolve include source to a loadable URI.
