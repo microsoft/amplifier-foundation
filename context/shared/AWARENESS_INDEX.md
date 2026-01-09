@@ -138,6 +138,19 @@ Load on demand via `read_file` or delegate to expert agents.
 
 ---
 
+## Domain Prerequisites
+
+Some domains have anti-patterns that cause significant rework. **Load required reading BEFORE starting work.**
+
+| Domain | Required Reading |
+|--------|------------------|
+| Bundle/module packaging | `foundation:docs/BUNDLE_GUIDE.md` |
+| Hook implementation | `core:docs/HOOKS_API.md` |
+
+**Pattern**: When you detect work in a listed domain, load the doc FIRST—don't wait until you hit problems.
+
+---
+
 ## Examples Catalog
 
 Working examples in `foundation:examples/`:
