@@ -311,6 +311,61 @@ my-bundle/
 
 **Note**: No `pyproject.toml` at the root. Only modules inside `modules/` need their own `pyproject.toml`.
 
+### Hybrid Bundle (Python CLI + Bundle Assets)
+
+Some bundles provide BOTH a Python CLI tool AND bundle configuration (agents, context, etc.). These require careful packaging to avoid conflicts.
+
+```
+my-hybrid-bundle/
+├── pyproject.toml            # Python package config
+├── src/my_package/           # Python code
+│   ├── __init__.py
+│   ├── cli.py
+│   └── _bundle/              # Bundle assets INSIDE package
+│       ├── bundle.yaml
+│       ├── agents/
+│       └── context/
+├── modules/                  # Tool modules (separate packages)
+│   └── tool-my-tool/
+├── bundle.md                 # Root entry point
+└── README.md
+```
+
+**Key pattern**: Bundle assets go in a `_bundle/` subdirectory INSIDE the Python package, not at the package root.
+
+**Why?** When using hatch's `force-include` to put non-Python files in a wheel, the target path must NOT shadow the Python package namespace. See [Packaging Anti-Patterns](#-force-include-shadowing-python-namespace) below.
+
+**pyproject.toml for hybrid bundles:**
+
+```toml
+[project]
+name = "my-hybrid-bundle"
+version = "0.1.0"
+dependencies = [...]
+
+[project.scripts]
+my-cli = "my_package.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/my_package"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# Assets go INSIDE package, in _bundle/ subdirectory
+"bundle.yaml" = "my_package/_bundle/bundle.yaml"
+"agents" = "my_package/_bundle/agents"
+"context" = "my_package/_bundle/context"
+```
+
+**Testing hybrid packages**: Always test with a built wheel, not just editable installs:
+
+```bash
+uv build --wheel
+uv pip install dist/*.whl --force-reinstall
+python -c "from my_package import SomeClass"  # Verify imports work
+```
+
+Editable installs use source directories and may mask packaging bugs that only appear in built wheels.
+
 ---
 
 ## Creating a Bundle Step-by-Step
@@ -600,6 +655,52 @@ bundle:
 ```
 
 **Why it's wrong**: The `context.include` YAML section is the **behavior pattern** - it's meant for `behaviors/*.yaml` files that programmatically inject context into bundles that include them. Main `bundle.md` files should use `@mentions` directly in the markdown body.
+
+### ❌ force-include Shadowing Python Namespace
+
+```toml
+# DON'T DO THIS - shadows the Python package!
+[tool.hatch.build.targets.wheel]
+packages = ["src/my_package"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"agents" = "my_package/agents"        # ❌ Creates my_package/ with no __init__.py!
+"context" = "my_package/context"      # ❌ Shadows the actual Python package
+```
+
+```toml
+# DO THIS - use _bundle/ subdirectory
+[tool.hatch.build.targets.wheel.force-include]
+"agents" = "my_package/_bundle/agents"      # ✅ Inside package, won't shadow
+"context" = "my_package/_bundle/context"    # ✅ Python imports still work
+```
+
+**Why it's wrong**: hatch's `force-include` creates directories in the wheel. If you target `my_package/agents`, it creates a `my_package/` directory with just `agents/` inside (no `__init__.py`, no Python code). Python finds this directory first and treats it as a namespace package, **shadowing your actual Python package**. Result: `from my_package import X` fails with `ImportError`.
+
+**The fix**: Put non-Python assets in a subdirectory like `_bundle/` or `data/` inside the package namespace.
+
+**Critical**: This bug only appears in built wheels, not editable installs. Always test with `uv build && uv pip install dist/*.whl`.
+
+### ❌ Declaring amplifier-core as Runtime Dependency
+
+```toml
+# DON'T DO THIS in modules/tool-*/pyproject.toml
+[project]
+dependencies = [
+    "amplifier-core>=1.0.0",           # ❌ Not on PyPI, will fail
+    "amplifier-bundle-foo>=0.1.0",     # ❌ Not on PyPI, will fail
+]
+```
+
+```toml
+# DO THIS - no runtime dependencies for tool modules
+[project]
+dependencies = []   # ✅ amplifier-core is a peer dependency
+```
+
+**Why it's wrong**: Tool modules run inside the host application's process (amplifier-app-cli), which already has `amplifier-core` loaded. These packages aren't on PyPI, so declaring them as dependencies causes installation failures.
+
+**The pattern**: `amplifier-core` and bundle packages are **peer dependencies** - they're provided by the runtime environment, not installed as dependencies.
 
 ---
 
