@@ -457,10 +457,10 @@ async def mount(
 
     hook = SessionNamingHook(coordinator, hook_config)
 
-    # Register for prompt completion events (fires after each turn)
+    # Register for orchestrator completion events (fires after each turn)
     # Use low priority (high number) so we run after other hooks
     coordinator.hooks.register(
-        "prompt:complete",
+        "orchestrator:complete",
         hook.on_orchestrator_complete,
         priority=100,
         name="session-naming",
