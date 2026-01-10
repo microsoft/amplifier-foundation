@@ -412,7 +412,14 @@ class SessionNamingHook:
             response = await provider.complete(request)
 
             if response and response.content:
-                return response.content
+                # Extract text from content blocks
+                text_parts = []
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        text_parts.append(block.text)
+                    elif hasattr(block, "content") and isinstance(block.content, str):
+                        text_parts.append(block.content)
+                return "".join(text_parts) if text_parts else None
 
         except Exception as e:
             logger.error(f"Provider call failed: {e}")
