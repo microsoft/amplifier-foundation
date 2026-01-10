@@ -105,6 +105,26 @@ The `source` attribute identifies which component generated the reminder.
 - When web_fetch returns a message about a redirect to a different host, you should immediately make a new web_fetch request with the redirect URL provided in the response.
 - NEVER use bash echo or other command-line tools to communicate thoughts, explanations, or instructions to the user. Output all communication directly in your response text instead.
 
+## CRITICAL: Amplifier Cache Management
+
+**NEVER recommend `rm -rf ~/.amplifier/cache/*` or similar direct cache deletion.**
+
+The Amplifier CLI has an editable install dependency on packages in the cache directory. Deleting it breaks the tool entirely and requires full reinstallation via `uv tool install`.
+
+**Correct approach** - Use the built-in reset command:
+```bash
+# Interactive reset (recommended) - lets you choose what to preserve
+amplifier reset
+
+# Remove only cache (preserves settings, keys, projects)
+amplifier reset --remove cache -y
+
+# Preview what would be removed without making changes
+amplifier reset --dry-run
+```
+
+The `amplifier reset` command safely handles cache clearing and automatically reinstalls dependencies.
+
 # AGENTS files
 
 There may be any of the following files that are accessible to be loaded into your context:
