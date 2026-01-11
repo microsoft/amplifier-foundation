@@ -14,6 +14,7 @@ includes:
   - bundle: foundation:behaviors/redaction
   - bundle: foundation:behaviors/todo-reminder
   - bundle: foundation:behaviors/streaming-ui
+  - bundle: foundation:behaviors/explanatory
   # External bundles
   - bundle: git+https://github.com/microsoft/amplifier-bundle-recipes@main#subdirectory=behaviors/recipes.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-design-intelligence@main#subdirectory=behaviors/design-intelligence.yaml

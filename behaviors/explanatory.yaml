@@ -1,0 +1,8 @@
+bundle:
+  name: behavior-explanatory
+  version: 1.0.0
+  description: Explanatory output style with educational insight blocks
+
+hooks:
+  - module: hooks-explanatory
+    source: git+https://github.com/michaeljabbour/amplifier-module-hooks-explanatory@main
