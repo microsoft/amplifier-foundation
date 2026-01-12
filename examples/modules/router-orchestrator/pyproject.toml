@@ -3,7 +3,6 @@ name = "amplifier-module-router-orchestrator"
 version = "1.0.0"
 description = "Example routing orchestrator for Amplifier (routes between models based on prompt)"
 license = "MIT"
-readme = "README.md"
 requires-python = ">=3.11"
 authors = [
     { name = "Microsoft MADE:Explorations Team" },

@@ -102,7 +102,9 @@ def discover_providers(bundle: Bundle) -> list[dict[str, Any]]:
         providers.append(
             {
                 "name": bundle_info.get("name", provider_file.stem),
-                "model": provider_config.get("config", {}).get("default_model", "unknown"),
+                "model": provider_config.get("config", {}).get(
+                    "default_model", "unknown"
+                ),
                 "file": provider_file,
                 "env_var": env_var,
                 "env_set": bool(os.environ.get(env_var)),
@@ -112,7 +114,9 @@ def discover_providers(bundle: Bundle) -> list[dict[str, Any]]:
     return providers
 
 
-def select_provider_interactive(providers: list[dict[str, Any]]) -> dict[str, Any] | None:
+def select_provider_interactive(
+    providers: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     """Interactive provider selection."""
     print("\nAvailable providers:")
     for i, p in enumerate(providers, 1):
@@ -221,7 +225,7 @@ def register_spawn_capability(session: Any, prepared: PreparedBundle) -> None:
         parent_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Spawn sub-session for agent.
-        
+
         Args:
             agent_name: Name of the agent to spawn.
             instruction: Task instruction for the agent.
@@ -249,7 +253,8 @@ def register_spawn_capability(session: Any, prepared: PreparedBundle) -> None:
             providers=config.get("providers", []),
             tools=config.get("tools", []),
             hooks=config.get("hooks", []),
-            instruction=config.get("instruction") or config.get("system", {}).get("instruction"),
+            instruction=config.get("instruction")
+            or config.get("system", {}).get("instruction"),
         )
 
         return await prepared.spawn(
@@ -276,7 +281,7 @@ async def main() -> None:
     print("=" * 60)
 
     # Step 1: Load foundation
-    foundation_path = Path(__file__).parent.parent.parent
+    foundation_path = Path(__file__).parent.parent
     print(f"\n[1/4] Loading foundation from: {foundation_path}")
     foundation = await load_bundle(str(foundation_path))
     print(f"      Loaded: {foundation.name} v{foundation.version}")
