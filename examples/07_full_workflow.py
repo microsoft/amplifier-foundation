@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 4: Complete workflow - load, compose, prepare, execute.
+"""Example 7: Complete workflow - load, compose, prepare, execute.
 
 TEACHABLE MOMENT: The full prepare() → create_session() → execute() flow
 
@@ -14,6 +14,9 @@ OPTIONAL ADVANCED features (marked clearly):
 
 Requirements:
 - ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable set
+
+Bundle Source:
+- Loads foundation from GitHub (production pattern)
 """
 
 from __future__ import annotations
@@ -26,6 +29,9 @@ from typing import Any
 from amplifier_foundation import Bundle
 from amplifier_foundation import load_bundle
 from amplifier_foundation.bundle import PreparedBundle
+
+# Foundation bundle source (production pattern - loads from GitHub)
+FOUNDATION_SOURCE = "git+https://github.com/microsoft/amplifier-foundation@main"
 
 # =============================================================================
 # SECTION 1: FOUNDATION MECHANISM (The essential pattern - copy this)
@@ -281,9 +287,8 @@ async def main() -> None:
     print("=" * 60)
 
     # Step 1: Load foundation
-    foundation_path = Path(__file__).parent.parent
-    print(f"\n[1/4] Loading foundation from: {foundation_path}")
-    foundation = await load_bundle(str(foundation_path))
+    print(f"\n[1/4] Loading foundation from: {FOUNDATION_SOURCE}")
+    foundation = await load_bundle(FOUNDATION_SOURCE)
     print(f"      Loaded: {foundation.name} v{foundation.version}")
 
     # Step 2: Discover and select provider
