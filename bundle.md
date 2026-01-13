@@ -38,6 +38,7 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-bundle-python-dev@main
   - bundle: git+https://github.com/microsoft/amplifier-bundle-shadow@main
   - bundle: git+https://github.com/microsoft/amplifier-module-tool-skills@main#subdirectory=behaviors/skills.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-module-hook-shell@main#subdirectory=behaviors/hook-shell.yaml
 
 
 session:
