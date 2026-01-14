@@ -506,7 +506,7 @@ class BundleRegistry:
     async def _compose_includes(
         self, bundle: Bundle, parent_name: str | None = None
     ) -> Bundle:
-        """Load and compose included bundles.
+        """Load and compose included bundles with parallelization.
 
         Args:
             bundle: The bundle to compose includes for.
@@ -515,13 +515,12 @@ class BundleRegistry:
         if not bundle.includes:
             return bundle
 
-        # Pre-load any namespace bundles referenced in includes
+        # Pre-load any namespace bundles referenced in includes (sequential - has ordering deps)
         # This ensures local_path is populated before we try to resolve namespace:path syntax
         await self._preload_namespace_bundles(bundle.includes)
 
-        included_bundles: list[Bundle] = []
-        included_names: list[str] = []  # Track names for relationship recording
-
+        # Phase 1: Parse and resolve all include sources first
+        include_sources: list[str] = []
         for include in bundle.includes:
             include_source = self._parse_include(include)
             if include_source:
@@ -541,22 +540,31 @@ class BundleRegistry:
                             f"Include skipped (unregistered namespace): {include_source}"
                         )
                         continue
-
-                    included = await self._load_single(
-                        resolved_source,
-                        auto_register=True,  # Register includes as first-class bundles
-                        auto_include=True,
-                    )
-                    included_bundles.append(included)
-
-                    # Track the included bundle's name for relationship recording
-                    if included.name:
-                        included_names.append(included.name)
-
+                    include_sources.append(resolved_source)
                 except BundleNotFoundError:
                     # Includes are opportunistic - but warn so users know
                     logger.warning(f"Include not found (skipping): {include_source}")
-                    pass
+
+        if not include_sources:
+            return bundle
+
+        # Phase 2: Load all includes in PARALLEL
+        tasks = [
+            self._load_single(source, auto_register=True, auto_include=True)
+            for source in include_sources
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect successful loads
+        included_bundles: list[Bundle] = []
+        included_names: list[str] = []
+        for source, result in zip(include_sources, results):
+            if isinstance(result, BaseException):
+                logger.warning(f"Include failed (skipping): {source} - {result}")
+            else:
+                included_bundles.append(result)
+                if result.name:
+                    included_names.append(result.name)
 
         if not included_bundles:
             return bundle
@@ -565,7 +573,7 @@ class BundleRegistry:
         if parent_name and included_names:
             self._record_include_relationships(parent_name, included_names)
 
-        # Compose: includes first, then current bundle overrides
+        # Compose: includes first, then current bundle overrides (order matters here)
         result = included_bundles[0]
         for included in included_bundles[1:]:
             result = result.compose(included)

@@ -10,11 +10,13 @@ workspace conventions), see amplifier-module-resolution.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 import sys
 from pathlib import Path
 
+from amplifier_foundation.modules.install_state import InstallStateManager
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
 
@@ -54,6 +56,7 @@ class ModuleActivator:
         self._resolver = SimpleSourceResolver(
             cache_dir=self.cache_dir, base_path=base_path
         )
+        self._install_state = InstallStateManager(self.cache_dir)
         self._activated: set[str] = set()
         # Track bundle package paths added to sys.path for inheritance by child sessions
         self._bundle_package_paths: list[str] = []
@@ -103,7 +106,7 @@ class ModuleActivator:
         return list(self._bundle_package_paths)
 
     async def activate_all(self, modules: list[dict]) -> dict[str, Path]:
-        """Activate multiple modules.
+        """Activate multiple modules with parallelization.
 
         Args:
             modules: List of module specs with 'module' and 'source' keys.
@@ -111,18 +114,29 @@ class ModuleActivator:
         Returns:
             Dict mapping module names to their local paths.
         """
-        results = {}
+        # Phase 1: Resolve all sources and check install state
+        to_activate = []
         for mod in modules:
             module_name = mod.get("module")
             source_uri = mod.get("source")
-
             if not module_name or not source_uri:
                 continue
+            to_activate.append((module_name, source_uri))
 
-            path = await self.activate(module_name, source_uri)
-            results[module_name] = path
+        # Phase 2: Parallel activation
+        if to_activate:
+            tasks = [self.activate(name, uri) for name, uri in to_activate]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        return results
+            activated = {}
+            for (name, _), result in zip(to_activate, results):
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to activate {name}: {result}")
+                else:
+                    activated[name] = result
+            return activated
+
+        return {}
 
     async def activate_bundle_package(self, bundle_path: Path) -> None:
         """Install a bundle's own Python package to enable internal imports.
@@ -177,12 +191,19 @@ class ModuleActivator:
         ensures installation targets the correct environment even when run via
         `uv tool install` where there's no active virtualenv.
 
+        Skips installation if the module is already installed with matching fingerprint.
+
         Args:
             module_path: Path to the module directory.
 
         Raises:
             subprocess.CalledProcessError: If installation fails.
         """
+        # Check if already installed with matching fingerprint
+        if self._install_state.is_installed(module_path):
+            logger.debug(f"Skipping install for {module_path.name} (already installed)")
+            return
+
         # Check for pyproject.toml or requirements.txt
         pyproject = module_path / "pyproject.toml"
         requirements = module_path / "requirements.txt"
@@ -204,6 +225,8 @@ class ModuleActivator:
                     capture_output=True,
                     text=True,
                 )
+                # Mark as installed after successful install
+                self._install_state.mark_installed(module_path)
             except subprocess.CalledProcessError as e:
                 logger.error(
                     f"Failed to install module from {module_path}.\nstdout: {e.stdout}\nstderr: {e.stderr}"
@@ -231,6 +254,8 @@ class ModuleActivator:
                     capture_output=True,
                     text=True,
                 )
+                # Mark as installed after successful install
+                self._install_state.mark_installed(module_path)
             except subprocess.CalledProcessError as e:
                 logger.error(
                     f"Failed to install requirements from {requirements}.\nstdout: {e.stdout}\nstderr: {e.stderr}"
@@ -241,6 +266,14 @@ class ModuleActivator:
                     "uv is not installed. Please install uv: https://docs.astral.sh/uv/getting-started/installation/"
                 )
                 raise
+
+    def finalize(self) -> None:
+        """Save any pending state changes.
+
+        Should be called at the end of module activation to persist
+        the install state to disk.
+        """
+        self._install_state.save()
 
 
 class ModuleActivationError(Exception):

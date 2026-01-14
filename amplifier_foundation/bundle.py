@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import Callable
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
 from amplifier_foundation.dicts.merge import deep_merge
 from amplifier_foundation.dicts.merge import merge_module_lists
@@ -294,6 +298,9 @@ class Bundle:
 
         # Activate all modules and get their paths
         module_paths = await activator.activate_all(modules_to_activate)
+
+        # Save install state to disk for fast subsequent startups
+        activator.finalize()
 
         # Create resolver from activated paths
         resolver = BundleModuleResolver(module_paths)
