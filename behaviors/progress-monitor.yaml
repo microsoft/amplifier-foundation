@@ -1,0 +1,20 @@
+# Progress Monitor Behavior
+#
+# Detects analysis paralysis patterns and injects corrective prompts.
+# Include this behavior in bundles where agents may get stuck in research loops.
+#
+# Usage:
+#   includes:
+#     - bundle: foundation:behaviors/progress-monitor
+#
+# This is particularly useful for implementation agents like modular-builder
+# that might over-research before implementing.
+
+hooks:
+  - module: hooks-progress-monitor
+    source: foundation:modules/hooks-progress-monitor
+    config:
+      enabled: true
+      read_threshold: 30      # Warn after 30 reads with 0 writes
+      same_file_threshold: 3  # Warn after reading same file 3 times
+      warning_interval: 15    # Re-warn every 15 additional reads
