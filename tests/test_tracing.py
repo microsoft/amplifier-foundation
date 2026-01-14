@@ -74,3 +74,11 @@ class TestGenerateSubSessionId:
         """Hyphenated agent names are preserved."""
         sub_id = generate_sub_session_id(agent_name="zen-architect")
         assert sub_id.endswith("_zen-architect")
+
+    def test_colon_in_agent_name_sanitized(self) -> None:
+        """Colons in agent names are replaced with hyphens (Windows filesystem compatibility)."""
+        sub_id = generate_sub_session_id(agent_name="foundation:explorer")
+        # Colon should be replaced with hyphen
+        assert sub_id.endswith("_foundation-explorer")
+        # Verify no colons in the entire ID (Windows doesn't allow colons in paths)
+        assert ":" not in sub_id
