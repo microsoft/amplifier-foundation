@@ -115,7 +115,7 @@ Agent domain claims are authoritative. The agent descriptions contain expertise 
 |-------------|---------------|
 | "REQUIRED for events.jsonl" | ALWAYS use session-analyst for session files |
 | "MUST BE USED when errors" | ALWAYS use bug-hunter for debugging |
-| "PROACTIVELY for ALL implementation" | ALWAYS use modular-builder for code |
+| "Implementation-only with complete specs" | Use modular-builder ONLY when specifications complete; use zen-architect first for design |
 | "ALWAYS delegate git operations" | ALWAYS use git-ops for commits/PRs |
 
 **Why this matters**: Agents that claim domains often have @-mentioned context, specialized tools, or safety protocols that the root session lacks. When you skip delegation, you lose that expertise.
@@ -152,6 +152,117 @@ When investigating or analyzing, dispatch multiple agents IN PARALLEL in a singl
 | **Bug debugging** | `bug-hunter` + `python-code-intel` | Hypothesis-driven debugging + precise call tracing |
 | **Implementation** | `zen-architect` → `modular-builder` → `zen-architect` | Design → implement → review cycle |
 | **Security review** | `security-guardian` + `explorer` + `python-code-intel` | Security patterns + codebase survey + actual data flow |
+
+---
+
+# Task Decomposition for Implementation Work
+
+**Before delegating to modular-builder, ensure specifications are complete.**
+
+## Task Complexity Assessment
+
+| Task Type | Decomposition Strategy |
+|-----------|------------------------|
+| "Implement X from spec in [file]" | ✅ Direct to modular-builder (spec exists) |
+| "Add feature Y" (no spec) | ❌ Two-phase: zen-architect (design) → modular-builder (implement) |
+| "Improve performance" | ❌ Three-phase: zen-architect (analyze) → zen-architect (design) → modular-builder (implement) |
+| "Refactor Z" | ❌ Two-phase: zen-architect (plan refactor) → modular-builder (execute) |
+
+## Required Specification Elements
+
+modular-builder requires these inputs:
+- **File paths**: Exact locations
+- **Interfaces**: Complete signatures with types
+- **Pattern**: Reference example or design freedom
+- **Success criteria**: Measurable outcomes
+
+**Missing any of these? Use zen-architect first to create specifications.**
+
+## The Design-First Pattern
+
+For under-specified tasks, use this workflow:
+
+```
+1. zen-architect (ANALYZE mode)
+   ↓ Produces: Problem analysis and design options
+   
+2. zen-architect (ARCHITECT mode)  
+   ↓ Produces: Complete specification with all required elements
+   
+3. modular-builder
+   ↓ Produces: Implementation matching specification
+   
+4. zen-architect (REVIEW mode)
+   ↓ Produces: Quality assessment and recommendations
+```
+
+## Anti-Patterns
+
+❌ Delegating "add authentication" to modular-builder
+   → Missing: where, how, what pattern, what interface?
+   → Fix: zen-architect designs auth approach first
+
+❌ Delegating "improve code quality" to modular-builder
+   → This is analysis/review work, not implementation
+   → Fix: zen-architect reviews and creates refactor spec
+
+❌ Delegating complex features without specs to modular-builder
+   → Will cause research loops and paralysis
+   → Fix: zen-architect creates complete specification first
+
+## Good Delegation Examples
+
+✅ "Use zen-architect to design caching layer, then modular-builder to implement per spec"
+
+✅ "For the refactoring, use zen-architect to plan changes, then modular-builder to execute"
+
+✅ "Use modular-builder to add the `validate_email()` method to `validators.py` following the pattern of `validate_username()`"
+   → Note: Last example has enough detail to skip zen-architect
+
+---
+
+# Context Management for Agent Delegation
+
+## Default: Clean Context (Preferred)
+
+By default, agents start with clean context (no main conversation history).
+This provides:
+- Focused, unbiased execution
+- Token efficiency (agent work doesn't consume main session tokens)
+- Fresh context space for agent
+- Parallel execution capability
+
+**Use clean context for:**
+- Independent tasks
+- Initial delegations
+- Parallel agent execution
+- Tasks with explicit specifications
+
+## Context Inheritance: When to Use
+
+Override default with `inherit_context` when agent needs recent discussion context:
+
+**Good for:**
+- Follow-up questions building on recent work ("analyze the design we just discussed")
+- Iterative refinement with user feedback from conversation
+- Meta-analysis tasks (analyzing the conversation itself)
+
+**Avoid for:**
+- Initial calls (no prior context needed)
+- Independent tasks (specification is sufficient)
+- Parallel execution (agents should be independent)
+
+**Usage:**
+```python
+task(agent="foundation:zen-architect",
+     instruction="Analyze failure modes in the design we discussed",
+     inherit_context="recent",      # or "all"
+     inherit_context_turns=3)       # 3-5 typical, 10 max
+```
+
+**Prefer `recent` (3-5 turns) over `all`** - keeps tokens reasonable.
+
+---
 
 ## Follow-up Sessions
 

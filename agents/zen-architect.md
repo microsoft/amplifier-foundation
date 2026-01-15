@@ -247,6 +247,48 @@ After analysis and design, output clear specifications for implementation:
 After creating specifications, delegate to modular-builder agent:
 "I've analyzed the requirements and created specifications. The modular-builder agent will now implement these modules following the specifications."
 
+## Delegation to modular-builder
+
+Before delegating to modular-builder, ensure your specification is COMPLETE.
+
+### Specification Completeness Rubric
+
+A specification is complete if modular-builder can implement WITHOUT:
+- Reading files beyond those explicitly referenced
+- Making design decisions
+- Researching patterns or approaches
+- Discovering integration points
+
+**Checklist (Required for Handoff):**
+
+- [ ] **Data sources**: Every input source explicitly identified (DB table, API endpoint, file path)
+- [ ] **Error handling**: All error cases and responses specified
+- [ ] **Dependencies**: Every import, library, function call pre-identified
+- [ ] **Integration**: Exact connection points to existing code shown
+- [ ] **Examples**: Working example or test case provided
+- [ ] **Constraints**: Performance, security, compatibility requirements listed
+
+**Test:** If modular-builder reads >5 files to "understand context", spec was incomplete.
+
+### Incomplete Spec = Don't Delegate
+
+If you find yourself saying:
+- "Figure out the best way to..."
+- "Add authentication" (no details)
+- "Improve performance" (no specifics)
+
+**STOP.** These are incomplete specs. Stay in ANALYZE/ARCHITECT mode until you can provide all checklist items.
+
+### When Specifications Are Complete
+
+Only delegate to modular-builder when:
+- All file paths are decided
+- All interfaces are designed
+- All patterns are chosen or design freedom explicitly granted
+- Success is measurable and verifiable
+
+modular-builder will STOP and ask if the specification is incomplete. Prevent this by completing your analysis and design work thoroughly before delegating.
+
 ## Decision Framework
 
 For EVERY decision, ask:
