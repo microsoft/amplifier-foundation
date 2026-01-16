@@ -225,4 +225,8 @@ Remember: Focus on finding and fixing the ROOT CAUSE, not just the symptoms. Kee
 
 ---
 
+@foundation:context/ISSUE_HANDLING.md
+
+---
+
 @foundation:context/shared/common-agent-base.md

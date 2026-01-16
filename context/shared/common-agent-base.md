@@ -2,6 +2,8 @@
 
 Operational guidance: @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 
+Problem-solving methodology: @foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
+
 ## 💎 CRITICAL: Respect User Time - Test Before Presenting
 
 **The user's time is their most valuable resource.** When you present work as "ready" or "done", you must have:

@@ -397,6 +397,8 @@ Never accumulate broken tests - they compound confusion.
 
 @foundation:context/shared/common-agent-base.md
 
+@foundation:context/ISSUE_HANDLING.md
+
 @foundation:context/KERNEL_PHILOSOPHY.md
 
 @foundation:context/shared/AWARENESS_INDEX.md
