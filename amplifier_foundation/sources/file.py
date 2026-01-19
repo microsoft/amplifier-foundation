@@ -100,8 +100,39 @@ class FileSourceHandler:
             # Path is not within cache_dir
             pass
 
-        # For non-cached paths or if detection fails, use the path itself
-        # (or parent directory if it's a file)
+        # For non-cached paths, walk up to find bundle root
+        bundle_root = self._find_bundle_root(active_path)
+        if bundle_root:
+            return bundle_root
+
+        # Fallback: use the path itself (or parent directory if it's a file)
         if active_path.is_file():
             return active_path.parent
         return active_path
+
+    def _find_bundle_root(self, path: Path) -> Path | None:
+        """Walk up from path to find the nearest bundle.md or bundle.yaml.
+
+        This enables local behavior bundles (e.g., /repo/behaviors/foo.yaml)
+        to properly resolve @namespace:path references to files in the parent
+        bundle (e.g., /repo/agents/agent.md).
+
+        Args:
+            path: Starting path (file or directory)
+
+        Returns:
+            Directory containing bundle.md/yaml, or None if not found
+        """
+        current = path.resolve()
+        if current.is_file():
+            current = current.parent
+
+        # Don't search above home directory or filesystem root
+        stop = Path.home()
+
+        while current >= stop and current != current.parent:
+            if (current / "bundle.md").exists() or (current / "bundle.yaml").exists():
+                return current
+            current = current.parent
+
+        return None

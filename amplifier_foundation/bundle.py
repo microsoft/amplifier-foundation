@@ -428,6 +428,36 @@ class Bundle:
                     self.context[name] = resolved_path
                     del self._pending_context[name]
 
+    def load_agent_metadata(self) -> None:
+        """Load full metadata for all agents from their .md files.
+
+        Updates self.agents in-place with description and other meta fields
+        loaded from agent .md files. Uses resolve_agent_path() to find files.
+
+        Call after composition when source_base_paths is fully populated.
+        This is similar to resolve_pending_context() which also needs
+        source_base_paths for namespace resolution.
+
+        Agents with inline definitions (description already set) are preserved;
+        file metadata only fills in missing fields.
+        """
+        if not self.agents:
+            return
+
+        for agent_name, agent_config in self.agents.items():
+            path = self.resolve_agent_path(agent_name)
+            if path and path.exists():
+                try:
+                    file_metadata = _load_agent_file_metadata(path, agent_name)
+                    # Merge: file metadata fills gaps, doesn't override explicit config
+                    for key, value in file_metadata.items():
+                        if key not in agent_config or not agent_config.get(key):
+                            agent_config[key] = value
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load metadata for agent '{agent_name}': {e}"
+                    )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any], base_path: Path | None = None) -> Bundle:
         """Create Bundle from parsed dict (from YAML/frontmatter).
@@ -486,6 +516,37 @@ def _parse_agents(
             result[key] = value
 
     return result
+
+
+def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
+    """Load agent metadata from a .md file.
+
+    Args:
+        path: Path to agent .md file
+        fallback_name: Name to use if not specified in file
+
+    Returns:
+        Dict with name, description, and any other meta fields
+    """
+    from amplifier_foundation.io.frontmatter import parse_frontmatter
+
+    text = path.read_text(encoding="utf-8")
+    frontmatter, _body = parse_frontmatter(text)
+
+    # Agents use meta: section (not bundle:)
+    meta = frontmatter.get("meta", {})
+    if not meta:
+        # Some agents might have flat frontmatter without meta wrapper
+        if "name" in frontmatter or "description" in frontmatter:
+            meta = frontmatter
+        else:
+            meta = {}
+
+    return {
+        "name": meta.get("name", fallback_name),
+        "description": meta.get("description", ""),
+        **{k: v for k, v in meta.items() if k not in ("name", "description")},
+    }
 
 
 def _parse_context(
