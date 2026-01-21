@@ -1,0 +1,15 @@
+bundle:
+  name: behavior-sessionindicator
+  version: 1.0.0
+  description: Real-time session activity indicator - shows spinner, token usage, elapsed time, and stuck detection
+
+hooks:
+  - module: hooks-sessionindicator
+    source: git+https://github.com/michaeljabbour/amplifier-module-hooks-sessionindicator@main
+    config:
+      position: bottom
+      show_tokens: true
+      show_elapsed: true
+      update_interval: 0.1
+      stuck_threshold: 60
+      enable_unstick_hint: true
