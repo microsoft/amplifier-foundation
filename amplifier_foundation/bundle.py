@@ -252,6 +252,10 @@ class Bundle:
         """
         from amplifier_foundation.modules.activator import ModuleActivator
 
+        # Load full agent metadata (including system instructions from .md files)
+        # Must happen before to_mount_plan() so agent configs include system.instruction
+        self.load_agent_metadata()
+
         # Get mount plan
         mount_plan = self.to_mount_plan()
 
@@ -526,12 +530,12 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
         fallback_name: Name to use if not specified in file
 
     Returns:
-        Dict with name, description, and any other meta fields
+        Dict with name, description, system instruction, and any other meta fields
     """
     from amplifier_foundation.io.frontmatter import parse_frontmatter
 
     text = path.read_text(encoding="utf-8")
-    frontmatter, _body = parse_frontmatter(text)
+    frontmatter, body = parse_frontmatter(text)
 
     # Agents use meta: section (not bundle:)
     meta = frontmatter.get("meta", {})
@@ -542,11 +546,19 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
         else:
             meta = {}
 
-    return {
+    result = {
         "name": meta.get("name", fallback_name),
         "description": meta.get("description", ""),
         **{k: v for k, v in meta.items() if k not in ("name", "description")},
     }
+
+    # Extract markdown body as system instruction
+    # The body contains the agent's behavioral instructions that should be
+    # injected as the system prompt when the agent is spawned
+    if body and body.strip():
+        result["system"] = {"instruction": body.strip()}
+
+    return result
 
 
 def _parse_context(

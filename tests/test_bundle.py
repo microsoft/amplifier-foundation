@@ -256,3 +256,103 @@ class TestBundlePendingContext:
         assert "ns2:context/b.md" in result.context
         assert result.context["ns1:context/a.md"] == Path("/ns1/root/context/a.md")
         assert result.context["ns2:context/b.md"] == Path("/ns2/root/context/b.md")
+
+
+class TestAgentMetadataLoading:
+    """Tests for agent metadata loading from .md files."""
+
+    def test_load_agent_metadata_extracts_system_instruction(self) -> None:
+        """Agent markdown body becomes system.instruction."""
+        with TemporaryDirectory() as tmpdir:
+            # Create agent .md file with frontmatter and body
+            agents_dir = Path(tmpdir) / "agents"
+            agents_dir.mkdir()
+            agent_file = agents_dir / "test-agent.md"
+            agent_file.write_text("""---
+meta:
+  name: test-agent
+  description: A test agent
+---
+
+# Test Agent Instructions
+
+You are a test agent. Follow these rules:
+1. Do something
+2. Do something else
+""")
+
+            # Create bundle with agent stub
+            bundle = Bundle(
+                name="test",
+                base_path=Path(tmpdir),
+                agents={"test-agent": {"name": "test-agent"}},
+            )
+
+            # Load metadata
+            bundle.load_agent_metadata()
+
+            # Verify system instruction was extracted from body
+            agent_config = bundle.agents["test-agent"]
+            assert "system" in agent_config
+            assert "instruction" in agent_config["system"]
+            assert "Test Agent Instructions" in agent_config["system"]["instruction"]
+            assert "Follow these rules" in agent_config["system"]["instruction"]
+
+    def test_load_agent_metadata_preserves_existing_system(self) -> None:
+        """Existing system.instruction is not overwritten by file metadata."""
+        with TemporaryDirectory() as tmpdir:
+            # Create agent .md file
+            agents_dir = Path(tmpdir) / "agents"
+            agents_dir.mkdir()
+            agent_file = agents_dir / "test-agent.md"
+            agent_file.write_text("""---
+meta:
+  name: test-agent
+---
+
+File body instructions.
+""")
+
+            # Create bundle with agent that already has system.instruction
+            bundle = Bundle(
+                name="test",
+                base_path=Path(tmpdir),
+                agents={"test-agent": {
+                    "name": "test-agent",
+                    "system": {"instruction": "Explicit inline instruction"}
+                }},
+            )
+
+            # Load metadata
+            bundle.load_agent_metadata()
+
+            # Explicit instruction should be preserved (not overwritten)
+            agent_config = bundle.agents["test-agent"]
+            assert agent_config["system"]["instruction"] == "Explicit inline instruction"
+
+    def test_load_agent_metadata_empty_body_no_system(self) -> None:
+        """Agent with empty body doesn't get system.instruction."""
+        with TemporaryDirectory() as tmpdir:
+            # Create agent .md file with only frontmatter, no body
+            agents_dir = Path(tmpdir) / "agents"
+            agents_dir.mkdir()
+            agent_file = agents_dir / "test-agent.md"
+            agent_file.write_text("""---
+meta:
+  name: test-agent
+  description: Agent with no body
+---
+""")
+
+            bundle = Bundle(
+                name="test",
+                base_path=Path(tmpdir),
+                agents={"test-agent": {"name": "test-agent"}},
+            )
+
+            bundle.load_agent_metadata()
+
+            agent_config = bundle.agents["test-agent"]
+            # Should have description but no system (empty body)
+            assert agent_config.get("description") == "Agent with no body"
+            assert "system" not in agent_config or not agent_config.get("system", {}).get("instruction")
