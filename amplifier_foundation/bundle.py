@@ -526,12 +526,12 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
         fallback_name: Name to use if not specified in file
 
     Returns:
-        Dict with name, description, and any other meta fields
+        Dict with name, description, instruction (from markdown body), and any other meta fields
     """
     from amplifier_foundation.io.frontmatter import parse_frontmatter
 
     text = path.read_text(encoding="utf-8")
-    frontmatter, _body = parse_frontmatter(text)
+    frontmatter, body = parse_frontmatter(text)
 
     # Agents use meta: section (not bundle:)
     meta = frontmatter.get("meta", {})
@@ -542,11 +542,17 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
         else:
             meta = {}
 
-    return {
+    result = {
         "name": meta.get("name", fallback_name),
         "description": meta.get("description", ""),
         **{k: v for k, v in meta.items() if k not in ("name", "description")},
     }
+
+    # Include instruction from markdown body (same as bundle loading does)
+    if body and body.strip():
+        result["instruction"] = body.strip()
+
+    return result
 
 
 def _parse_context(
@@ -629,7 +635,9 @@ class BundleModuleResolver:
         self._activator = activator
         self._activation_lock = asyncio.Lock()
 
-    def resolve(self, module_id: str, source_hint: Any = None, profile_hint: Any = None) -> BundleModuleSource:
+    def resolve(
+        self, module_id: str, source_hint: Any = None, profile_hint: Any = None
+    ) -> BundleModuleSource:
         """Resolve module ID to source.
 
         Args:
@@ -642,7 +650,7 @@ class BundleModuleResolver:
 
         Raises:
             ModuleNotFoundError: If module not in activated paths and lazy activation fails.
-            
+
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         hint = profile_hint if profile_hint is not None else source_hint
@@ -669,7 +677,7 @@ class BundleModuleResolver:
 
         Raises:
             ModuleNotFoundError: If module not found and activation fails.
-            
+
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         hint = profile_hint if profile_hint is not None else source_hint
