@@ -42,6 +42,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ANSI color codes for terminal output
+class _Colors:
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+
 @dataclass
 class BundleState:
     """Tracked state for a registered bundle."""
@@ -608,7 +616,11 @@ class BundleRegistry:
                     # Circular dependency - log helpful warning and skip
                     self._log_circular_dependency_warning(source, result, _loading_chain)
                 else:
-                    logger.warning(f"Include failed (skipping): {source} - {result}")
+                    source_name = self._extract_bundle_name(source)
+                    logger.warning(
+                        f"{_Colors.YELLOW}{_Colors.BOLD}Include failed (skipping):{_Colors.RESET} {_Colors.YELLOW}{source_name}{_Colors.RESET}\n"
+                        f"    {result}"
+                    )
             else:
                 included_bundles.append(result)
                 if result.name:
@@ -879,8 +891,9 @@ class BundleRegistry:
         else:
             chain_str = "unknown"
 
+        # Yellow warning with clear formatting
         logger.warning(
-            f"Circular include skipped: {source_name}\n"
+            f"{_Colors.YELLOW}{_Colors.BOLD}Circular include skipped:{_Colors.RESET} {_Colors.YELLOW}{source_name}{_Colors.RESET}\n"
             f"    Chain: {chain_str} → {source_name} (cycle)\n"
             f"    This include was skipped. The bundle will load without it.\n"
             f"    To fix: Check includes in the chain for circular references."
