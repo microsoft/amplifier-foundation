@@ -149,9 +149,9 @@ class BundleRegistry:
             cache_dir=self._home / "cache",
             base_path=Path.cwd(),
         )
-        # Cycle detection tracking: full URIs and base URIs (without fragments)
-        self._loading: set[str] = set()  # Complete URIs being loaded
-        self._loading_base: set[str] = set()  # Base URIs (stripped of #subdirectory)
+        # Future-based deduplication: cache loaded bundles and track in-progress loads
+        self._loaded_bundles: dict[str, Bundle] = {}  # Cache of fully loaded bundles
+        self._pending_loads: dict[str, asyncio.Future[Bundle]] = {}  # In-progress loads
         self._load_persisted_state()
         self._validate_cached_paths()
 
@@ -295,6 +295,7 @@ class BundleRegistry:
         auto_register: bool = True,
         auto_include: bool = True,
         refresh: bool = False,  # noqa: ARG002 - Reserved for future cache bypass
+        _loading_chain: frozenset[str] | None = None,
     ) -> Bundle:
         """Load a single bundle by name or URI.
 
@@ -303,6 +304,7 @@ class BundleRegistry:
             auto_register: Register URI bundles by extracted name.
             auto_include: Load and compose includes.
             refresh: Bypass cache, fetch fresh (reserved for future use).
+            _loading_chain: Internal parameter for per-chain cycle detection.
 
         Returns:
             Loaded Bundle.
@@ -321,37 +323,30 @@ class BundleRegistry:
         else:
             uri = name_or_uri
 
-        # Cycle detection: distinguish between real circular dependencies and legitimate self-references
         base_uri = uri.split("#")[0] if "#" in uri else uri
+        loading_chain = _loading_chain or frozenset()
+
+        # 1. Check cache first (skip if refresh requested)
+        if not refresh and uri in self._loaded_bundles:
+            return self._loaded_bundles[uri]
+
+        # 2. Check for TRUE circular dependency (same chain revisiting same URI)
+        # Allow subdirectory self-references (e.g., foundation:behaviors/streaming-ui)
         is_subdirectory = "#subdirectory=" in uri
-
-        # Check if this is a namespace preload for an already-loading bundle
-        # When amplifier-dev includes "foundation" by name, preload loads foundation's URI
-        # to register the namespace. This is NOT circular - it's the same bundle being prepared.
-        is_namespace_preload = (
-            name_or_uri in self._registry
-            and self._registry[name_or_uri].uri.split("#")[0] == base_uri
-            and base_uri in self._loading_base
-        )
-
-        # Check for exact URI match (same URI with same fragment)
-        if uri in self._loading:
+        if not is_subdirectory and (uri in loading_chain or base_uri in loading_chain):
             raise BundleDependencyError(f"Circular dependency detected: {uri}")
 
-        # Check for inter-bundle circular dependency (different bundles including each other)
-        # Allow: intra-bundle subdirectory references + namespace preload self-references
-        if (
-            base_uri in self._loading_base
-            and not is_subdirectory
-            and not is_namespace_preload
-        ):
-            # Base bundle already loading and this is neither subdirectory nor namespace preload → circular
-            raise BundleDependencyError(f"Circular dependency detected: {uri}")
+        # 3. Check if another task is already loading this (diamond case) - await it
+        if uri in self._pending_loads:
+            return await self._pending_loads[uri]
 
-        # Track both full URI and base URI
-        self._loading.add(uri)
-        self._loading_base.add(base_uri)
+        # 4. Start new load with future for deduplication
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[Bundle] = loop.create_future()
+        self._pending_loads[uri] = future
+
         try:
+            new_chain = loading_chain | {uri, base_uri}
             # Resolve URI to local paths (active_path and source_root)
             resolved = await self._source_resolver.resolve(uri)
             if resolved is None:
@@ -474,21 +469,29 @@ class BundleRegistry:
                 state.loaded_at = datetime.now()
                 state.local_path = str(local_path)
 
-            # Load includes and compose
+            # Load includes and compose (pass the chain for per-chain cycle detection)
             if auto_include and bundle.includes:
-                bundle = await self._compose_includes(bundle, parent_name=bundle.name)
+                bundle = await self._compose_includes(
+                    bundle, parent_name=bundle.name, _loading_chain=new_chain
+                )
 
             # Store source URI for update checking (used by check_bundle_status)
             # Must be set AFTER composition since compose() returns a new Bundle
             bundle._source_uri = uri  # type: ignore[attr-defined]
 
+            # Cache the loaded bundle and complete the future
+            self._loaded_bundles[uri] = bundle
+            future.set_result(bundle)
             return bundle
 
+        except Exception:
+            # Cancel the future to avoid "Future exception was never retrieved" warning
+            # Any concurrent waiters will get CancelledError and can retry
+            future.cancel()
+            raise
         finally:
-            # Clean up both tracking sets
-            self._loading.discard(uri)
-            base_uri = uri.split("#")[0] if "#" in uri else uri
-            self._loading_base.discard(base_uri)
+            # Clean up pending load tracker
+            self._pending_loads.pop(uri, None)
 
     async def _load_from_path(self, path: Path) -> Bundle:
         """Load bundle from local path.
@@ -539,13 +542,17 @@ class BundleRegistry:
         return Bundle.from_dict(data, base_path=path.parent)
 
     async def _compose_includes(
-        self, bundle: Bundle, parent_name: str | None = None
+        self,
+        bundle: Bundle,
+        parent_name: str | None = None,
+        _loading_chain: frozenset[str] | None = None,
     ) -> Bundle:
         """Load and compose included bundles with parallelization.
 
         Args:
             bundle: The bundle to compose includes for.
             parent_name: Name of the parent bundle (for tracking relationships).
+            _loading_chain: Internal parameter for per-chain cycle detection.
         """
         if not bundle.includes:
             return bundle
@@ -583,18 +590,23 @@ class BundleRegistry:
         if not include_sources:
             return bundle
 
-        # Phase 2: Load all includes in PARALLEL
+        # Phase 2: Load all includes in PARALLEL (pass chain for per-chain cycle detection)
         tasks = [
-            self._load_single(source, auto_register=True, auto_include=True)
+            self._load_single(
+                source, auto_register=True, auto_include=True, _loading_chain=_loading_chain
+            )
             for source in include_sources
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Collect successful loads
+        # Collect successful loads (re-raise circular dependency errors)
         included_bundles: list[Bundle] = []
         included_names: list[str] = []
         for source, result in zip(include_sources, results):
             if isinstance(result, BaseException):
+                # Re-raise circular dependency errors - these are not recoverable
+                if isinstance(result, BundleDependencyError):
+                    raise result
                 logger.warning(f"Include failed (skipping): {source} - {result}")
             else:
                 included_bundles.append(result)

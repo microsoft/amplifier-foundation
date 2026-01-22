@@ -331,3 +331,188 @@ class TestSubdirectoryBundleLoading:
             # Without a root bundle, source_base_paths won't be populated
             assert bundle.name == "auth"
             assert "auth" not in bundle.source_base_paths
+
+
+class TestDiamondAndCircularDependencies:
+    """Tests for diamond dependency handling and circular dependency detection."""
+
+    @pytest.mark.asyncio
+    async def test_diamond_dependency_loads_successfully(self) -> None:
+        """Diamond dependencies (A->B->C, A->C) should NOT be flagged as circular.
+
+        Structure:
+            A includes [B, C]
+            B includes [C]
+        This creates a diamond: A->B->C and A->C both reach C.
+        C should be loaded only once without errors.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create bundle A (includes B and C)
+            bundle_a = base / "bundle-a"
+            bundle_a.mkdir()
+            (bundle_a / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-a\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-b\n"
+                f"  - file://{base}/bundle-c\n"
+            )
+
+            # Create bundle B (includes C)
+            bundle_b = base / "bundle-b"
+            bundle_b.mkdir()
+            (bundle_b / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-b\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-c\n"
+            )
+
+            # Create bundle C (no includes - leaf node)
+            bundle_c = base / "bundle-c"
+            bundle_c.mkdir()
+            (bundle_c / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-c\n"
+                "  version: 1.0.0\n"
+            )
+
+            # Create registry and load bundle A
+            registry = BundleRegistry(home=base / "home")
+            bundle = await registry._load_single(f"file://{bundle_a}")
+
+            # Should load successfully without circular dependency error
+            assert bundle is not None
+            # The composed bundle should have content from all three bundles
+            # Bundle A's name wins because it's composed last
+            assert bundle.name == "bundle-a"
+
+    @pytest.mark.asyncio
+    async def test_true_circular_dependency_raises(self) -> None:
+        """True circular (A->B->A) should still raise BundleDependencyError.
+
+        Structure:
+            A includes [B]
+            B includes [A]
+        This is a true circular dependency and should be detected.
+        """
+        from amplifier_foundation.exceptions import BundleDependencyError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create bundle A (includes B)
+            bundle_a = base / "bundle-a"
+            bundle_a.mkdir()
+            (bundle_a / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-a\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-b\n"
+            )
+
+            # Create bundle B (includes A - creates circular dependency)
+            bundle_b = base / "bundle-b"
+            bundle_b.mkdir()
+            (bundle_b / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-b\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-a\n"
+            )
+
+            # Create registry and attempt to load bundle A
+            registry = BundleRegistry(home=base / "home")
+
+            with pytest.raises(BundleDependencyError) as exc_info:
+                await registry._load_single(f"file://{bundle_a}")
+
+            assert "Circular dependency detected" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_bundle_cached_after_first_load(self) -> None:
+        """Bundle should be cached and returned from cache on subsequent loads."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create a simple bundle
+            bundle_dir = base / "test-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: test-bundle\n"
+                "  version: 1.0.0\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            uri = f"file://{bundle_dir}"
+
+            # First load
+            bundle1 = await registry._load_single(uri)
+            assert bundle1.name == "test-bundle"
+
+            # Second load should return cached version
+            bundle2 = await registry._load_single(uri)
+
+            # Should be the exact same object (from cache)
+            assert bundle1 is bundle2
+
+    @pytest.mark.asyncio
+    async def test_three_level_circular_dependency_raises(self) -> None:
+        """Three-level circular (A->B->C->A) should raise BundleDependencyError.
+
+        Structure:
+            A includes [B]
+            B includes [C]
+            C includes [A]
+        """
+        from amplifier_foundation.exceptions import BundleDependencyError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create bundle A (includes B)
+            bundle_a = base / "bundle-a"
+            bundle_a.mkdir()
+            (bundle_a / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-a\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-b\n"
+            )
+
+            # Create bundle B (includes C)
+            bundle_b = base / "bundle-b"
+            bundle_b.mkdir()
+            (bundle_b / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-b\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-c\n"
+            )
+
+            # Create bundle C (includes A - creates circular dependency)
+            bundle_c = base / "bundle-c"
+            bundle_c.mkdir()
+            (bundle_c / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-c\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-a\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+
+            with pytest.raises(BundleDependencyError) as exc_info:
+                await registry._load_single(f"file://{bundle_a}")
+
+            assert "Circular dependency detected" in str(exc_info.value)
