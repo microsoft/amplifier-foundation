@@ -392,16 +392,14 @@ class TestDiamondAndCircularDependencies:
             assert bundle.name == "bundle-a"
 
     @pytest.mark.asyncio
-    async def test_true_circular_dependency_raises(self) -> None:
-        """True circular (A->B->A) should still raise BundleDependencyError.
+    async def test_circular_dependency_handled_gracefully(self) -> None:
+        """True circular (A->B->A) should be detected but handled gracefully.
 
         Structure:
             A includes [B]
             B includes [A]
-        This is a true circular dependency and should be detected.
+        The circular include (B's include of A) is skipped, but loading succeeds.
         """
-        from amplifier_foundation.exceptions import BundleDependencyError
-
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
 
@@ -427,13 +425,15 @@ class TestDiamondAndCircularDependencies:
                 f"  - file://{base}/bundle-a\n"
             )
 
-            # Create registry and attempt to load bundle A
+            # Create registry and load bundle A
             registry = BundleRegistry(home=base / "home")
 
-            with pytest.raises(BundleDependencyError) as exc_info:
-                await registry._load_single(f"file://{bundle_a}")
+            # Should succeed - circular include is skipped with warning
+            bundle = await registry._load_single(f"file://{bundle_a}")
 
-            assert "Circular dependency detected" in str(exc_info.value)
+            # Bundle A should load successfully (composed with B)
+            assert bundle is not None
+            assert bundle.name == "bundle-a"
 
     @pytest.mark.asyncio
     async def test_bundle_cached_after_first_load(self) -> None:
@@ -464,16 +464,15 @@ class TestDiamondAndCircularDependencies:
             assert bundle1 is bundle2
 
     @pytest.mark.asyncio
-    async def test_three_level_circular_dependency_raises(self) -> None:
-        """Three-level circular (A->B->C->A) should raise BundleDependencyError.
+    async def test_three_level_circular_dependency_handled_gracefully(self) -> None:
+        """Three-level circular (A->B->C->A) should be detected but handled gracefully.
 
         Structure:
             A includes [B]
             B includes [C]
             C includes [A]
+        The circular include (C's include of A) is skipped, but loading succeeds.
         """
-        from amplifier_foundation.exceptions import BundleDependencyError
-
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
 
@@ -512,7 +511,58 @@ class TestDiamondAndCircularDependencies:
 
             registry = BundleRegistry(home=base / "home")
 
-            with pytest.raises(BundleDependencyError) as exc_info:
-                await registry._load_single(f"file://{bundle_a}")
+            # Should succeed - circular include is skipped with warning
+            bundle = await registry._load_single(f"file://{bundle_a}")
 
-            assert "Circular dependency detected" in str(exc_info.value)
+            # Bundle A should load successfully (composed with B and C)
+            assert bundle is not None
+            assert bundle.name == "bundle-a"
+
+    @pytest.mark.asyncio
+    async def test_circular_dependency_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Circular dependency should log a helpful warning message.
+
+        Structure:
+            A includes [B]
+            B includes [A]
+        The warning should include the chain and guidance.
+        """
+        import logging
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create bundle A (includes B)
+            bundle_a = base / "bundle-a"
+            bundle_a.mkdir()
+            (bundle_a / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-a\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-b\n"
+            )
+
+            # Create bundle B (includes A - creates circular dependency)
+            bundle_b = base / "bundle-b"
+            bundle_b.mkdir()
+            (bundle_b / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-b\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{base}/bundle-a\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+
+            # Capture warning logs
+            with caplog.at_level(logging.WARNING):
+                bundle = await registry._load_single(f"file://{bundle_a}")
+
+            # Should succeed
+            assert bundle is not None
+
+            # Should have logged a warning about circular dependency
+            warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+            assert any("Circular include skipped" in msg for msg in warning_messages)

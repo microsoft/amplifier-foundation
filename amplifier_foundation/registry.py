@@ -559,7 +559,7 @@ class BundleRegistry:
 
         # Pre-load any namespace bundles referenced in includes (sequential - has ordering deps)
         # This ensures local_path is populated before we try to resolve namespace:path syntax
-        await self._preload_namespace_bundles(bundle.includes)
+        await self._preload_namespace_bundles(bundle.includes, _loading_chain)
 
         # Phase 1: Parse and resolve all include sources first
         include_sources: list[str] = []
@@ -599,15 +599,16 @@ class BundleRegistry:
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Collect successful loads (re-raise circular dependency errors)
+        # Collect successful loads (gracefully handle circular dependencies)
         included_bundles: list[Bundle] = []
         included_names: list[str] = []
         for source, result in zip(include_sources, results):
             if isinstance(result, BaseException):
-                # Re-raise circular dependency errors - these are not recoverable
                 if isinstance(result, BundleDependencyError):
-                    raise result
-                logger.warning(f"Include failed (skipping): {source} - {result}")
+                    # Circular dependency - log helpful warning and skip
+                    self._log_circular_dependency_warning(source, result, _loading_chain)
+                else:
+                    logger.warning(f"Include failed (skipping): {source} - {result}")
             else:
                 included_bundles.append(result)
                 if result.name:
@@ -663,7 +664,11 @@ class BundleRegistry:
             f"Recorded include relationships: {parent_name} includes {child_names}"
         )
 
-    async def _preload_namespace_bundles(self, includes: list) -> None:
+    async def _preload_namespace_bundles(
+        self,
+        includes: list,
+        _loading_chain: frozenset[str] | None = None,
+    ) -> None:
         """Pre-load namespace bundles to ensure local_path is populated.
 
         When processing includes with namespace:path syntax (e.g., foundation:behaviors/logging),
@@ -672,6 +677,7 @@ class BundleRegistry:
 
         Args:
             includes: List of include specifications from bundle config.
+            _loading_chain: Internal parameter for per-chain cycle detection.
         """
         namespaces_to_load: set[str] = set()
 
@@ -692,10 +698,15 @@ class BundleRegistry:
         # Load namespace bundles to populate their local_path
         for namespace in namespaces_to_load:
             try:
-                logger.info(f"Pre-loading namespace bundle: {namespace}")
+                logger.debug(f"Pre-loading namespace bundle: {namespace}")
                 await self._load_single(
-                    namespace, auto_register=True, auto_include=False
+                    namespace,
+                    auto_register=True,
+                    auto_include=False,
+                    _loading_chain=_loading_chain,
                 )
+            except BundleDependencyError as e:
+                logger.debug(f"Namespace preload skipped (circular): {namespace} - {e}")
             except Exception as e:
                 raise BundleDependencyError(
                     f"Cannot resolve includes: namespace '{namespace}' failed to load. "
@@ -852,6 +863,44 @@ class BundleRegistry:
             current = current.parent
 
         return None
+
+    def _log_circular_dependency_warning(
+        self,
+        source: str,
+        error: BundleDependencyError,
+        loading_chain: frozenset[str] | None,
+    ) -> None:
+        """Log a helpful warning about circular dependency with resolution guidance."""
+        source_name = self._extract_bundle_name(source)
+
+        if loading_chain:
+            chain_names = [self._extract_bundle_name(uri) for uri in sorted(loading_chain)]
+            chain_str = " → ".join(chain_names)
+        else:
+            chain_str = "unknown"
+
+        logger.warning(
+            f"Circular include skipped: {source_name}\n"
+            f"    Chain: {chain_str} → {source_name} (cycle)\n"
+            f"    This include was skipped. The bundle will load without it.\n"
+            f"    To fix: Check includes in the chain for circular references."
+        )
+
+    def _extract_bundle_name(self, uri: str) -> str:
+        """Extract readable bundle name from URI."""
+        # git+https://github.com/microsoft/amplifier-foundation@main → amplifier-foundation
+        # file:///path/to/bundle.yaml → bundle.yaml
+        if "github.com" in uri:
+            parts = uri.split("/")
+            for i, part in enumerate(parts):
+                if "github.com" in part and i + 2 < len(parts):
+                    name = parts[i + 2].split("@")[0].split("#")[0]
+                    return name
+        # For file:// URIs, get the filename
+        if uri.startswith("file://"):
+            return uri.split("/")[-1].split("#")[0]
+        # Fallback: last path component
+        return uri.split("/")[-1].split("@")[0].split("#")[0]
 
     # =========================================================================
     # Update Methods
