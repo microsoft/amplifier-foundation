@@ -47,7 +47,12 @@ class _Colors:
     YELLOW = "\033[93m"
     RED = "\033[91m"
     BOLD = "\033[1m"
+    DIM = "\033[2m"
     RESET = "\033[0m"
+
+    # Unicode box drawing (works in most terminals)
+    BOX_TOP = "─"
+    BOX_SIDE = "│"
 
 
 @dataclass
@@ -617,10 +622,14 @@ class BundleRegistry:
                     self._log_circular_dependency_warning(source, result, _loading_chain)
                 else:
                     source_name = self._extract_bundle_name(source)
-                    logger.warning(
-                        f"{_Colors.YELLOW}{_Colors.BOLD}Include failed (skipping):{_Colors.RESET} {_Colors.YELLOW}{source_name}{_Colors.RESET}\n"
-                        f"    {result}"
-                    )
+                    lines = [
+                        f"Bundle: {source_name}",
+                        "",
+                        str(result),  # The actual error message
+                    ]
+
+                    message = self._format_warning_panel("Include Failed (skipping)", lines)
+                    logger.warning(message)
             else:
                 included_bundles.append(result)
                 if result.name:
@@ -876,6 +885,30 @@ class BundleRegistry:
 
         return None
 
+    def _format_warning_panel(self, title: str, lines: list[str]) -> str:
+        """Format a warning as a bordered panel for visibility."""
+        # Calculate width based on content (min 60, max 80)
+        max_line = max(len(line) for line in lines) if lines else 0
+        width = min(80, max(60, max_line + 4))
+
+        # Build the panel
+        border = _Colors.YELLOW + _Colors.BOX_TOP * width + _Colors.RESET
+
+        parts = [
+            "",  # Empty line before
+            border,
+            f"{_Colors.YELLOW}{_Colors.BOLD}{title}{_Colors.RESET}",
+            border,
+        ]
+
+        for line in lines:
+            parts.append(line)
+
+        parts.append(border)
+        parts.append("")  # Empty line after
+
+        return "\n".join(parts)
+
     def _log_circular_dependency_warning(
         self,
         source: str,
@@ -891,13 +924,16 @@ class BundleRegistry:
         else:
             chain_str = "unknown"
 
-        # Yellow warning with clear formatting
-        logger.warning(
-            f"{_Colors.YELLOW}{_Colors.BOLD}Circular include skipped:{_Colors.RESET} {_Colors.YELLOW}{source_name}{_Colors.RESET}\n"
-            f"    Chain: {chain_str} → {source_name} (cycle)\n"
-            f"    This include was skipped. The bundle will load without it.\n"
-            f"    To fix: Check includes in the chain for circular references."
-        )
+        lines = [
+            f"Bundle: {source_name}",
+            f"Chain: {chain_str} → {source_name} (cycle)",
+            "",
+            "This include was skipped. The bundle will load without it.",
+            "To fix: Check includes in the chain for circular references.",
+        ]
+
+        message = self._format_warning_panel("Circular Include Skipped", lines)
+        logger.warning(message)
 
     def _extract_bundle_name(self, uri: str) -> str:
         """Extract readable bundle name from URI."""
