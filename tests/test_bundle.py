@@ -3,7 +3,10 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from amplifier_foundation.bundle import Bundle
+from amplifier_foundation.exceptions import BundleValidationError
 
 
 class TestBundle:
@@ -33,7 +36,9 @@ class TestBundle:
                 "description": "A full test bundle",
             },
             "session": {"orchestrator": "loop-basic"},
-            "providers": [{"module": "provider-anthropic", "config": {"model": "test"}}],
+            "providers": [
+                {"module": "provider-anthropic", "config": {"model": "test"}}
+            ],
             "tools": [{"module": "tool-bash"}],
             "hooks": [{"module": "hooks-logging"}],
             "includes": ["base-bundle"],
@@ -61,7 +66,9 @@ class TestBundleCompose:
 
     def test_compose_session_deep_merge(self) -> None:
         """Session configs are deep merged."""
-        base = Bundle(name="base", session={"orchestrator": "loop-basic", "context": "simple"})
+        base = Bundle(
+            name="base", session={"orchestrator": "loop-basic", "context": "simple"}
+        )
         child = Bundle(name="child", session={"orchestrator": "loop-streaming"})
         result = base.compose(child)
         assert result.session["orchestrator"] == "loop-streaming"
@@ -193,7 +200,9 @@ class TestBundlePendingContext:
 
         # Should be resolved now
         assert "myns:context/file.md" in bundle.context
-        assert bundle.context["myns:context/file.md"] == Path("/namespace/root/context/file.md")
+        assert bundle.context["myns:context/file.md"] == Path(
+            "/namespace/root/context/file.md"
+        )
         # Should be removed from pending
         assert "myns:context/file.md" not in bundle._pending_context
 
@@ -209,7 +218,9 @@ class TestBundlePendingContext:
 
         # Should be resolved using base_path (self-reference)
         assert "myns:context/file.md" in bundle.context
-        assert bundle.context["myns:context/file.md"] == Path("/bundle/root/context/file.md")
+        assert bundle.context["myns:context/file.md"] == Path(
+            "/bundle/root/context/file.md"
+        )
 
     def test_compose_merges_pending_context(self) -> None:
         """Compose merges pending context from both bundles."""
@@ -256,3 +267,111 @@ class TestBundlePendingContext:
         assert "ns2:context/b.md" in result.context
         assert result.context["ns1:context/a.md"] == Path("/ns1/root/context/a.md")
         assert result.context["ns2:context/b.md"] == Path("/ns2/root/context/b.md")
+
+
+class TestBundleValidation:
+    """Tests for Bundle.from_dict validation of malformed configs."""
+
+    def test_raises_on_string_tools(self) -> None:
+        """Raises BundleValidationError when tools contains strings instead of dicts."""
+        data = {
+            "bundle": {"name": "m365-collab"},
+            "tools": ["m365_collab", "sharepoint"],  # Wrong: should be list of dicts
+        }
+        with pytest.raises(BundleValidationError) as exc_info:
+            Bundle.from_dict(data)
+        error_msg = str(exc_info.value)
+        assert "m365-collab" in error_msg  # Bundle name in error
+        assert "tools[0]" in error_msg  # Field and index
+        assert "expected dict" in error_msg  # What was expected
+        assert "got str" in error_msg  # What was found
+        assert "'m365_collab'" in error_msg  # The bad value
+        assert "module" in error_msg  # Correct format hint
+
+    def test_raises_on_string_providers(self) -> None:
+        """Raises BundleValidationError when providers contains strings instead of dicts."""
+        data = {
+            "bundle": {"name": "test-bundle"},
+            "providers": ["provider-anthropic"],  # Wrong: should be list of dicts
+        }
+        with pytest.raises(BundleValidationError) as exc_info:
+            Bundle.from_dict(data)
+        error_msg = str(exc_info.value)
+        assert "test-bundle" in error_msg
+        assert "providers[0]" in error_msg
+        assert "expected dict" in error_msg
+        assert "got str" in error_msg
+
+    def test_raises_on_string_hooks(self) -> None:
+        """Raises BundleValidationError when hooks contains strings instead of dicts."""
+        data = {
+            "bundle": {"name": "test-bundle"},
+            "hooks": [{"module": "hook-a"}, "hook-b"],  # Second item is wrong
+        }
+        with pytest.raises(BundleValidationError) as exc_info:
+            Bundle.from_dict(data)
+        error_msg = str(exc_info.value)
+        assert "hooks[1]" in error_msg  # Index 1, not 0
+        assert "got str" in error_msg
+        assert "'hook-b'" in error_msg
+
+    def test_error_uses_base_path_when_no_name(self) -> None:
+        """Uses base_path in error when bundle has no name."""
+        data = {
+            "bundle": {},  # No name
+            "tools": ["bad-tool"],
+        }
+        with pytest.raises(BundleValidationError) as exc_info:
+            Bundle.from_dict(data, base_path=Path("/path/to/bundle"))
+        error_msg = str(exc_info.value)
+        assert "/path/to/bundle" in error_msg
+
+    def test_error_shows_correct_format_example(self) -> None:
+        """Error message includes example of correct format."""
+        data = {
+            "bundle": {"name": "test"},
+            "tools": ["wrong"],
+        }
+        with pytest.raises(BundleValidationError) as exc_info:
+            Bundle.from_dict(data)
+        error_msg = str(exc_info.value)
+        assert "Correct format:" in error_msg
+        assert "module" in error_msg
+        assert "source" in error_msg
+
+    def test_valid_config_passes(self) -> None:
+        """Valid configuration with proper dict format passes validation."""
+        data = {
+            "bundle": {"name": "valid-bundle"},
+            "providers": [
+                {"module": "provider-anthropic", "source": "git+https://..."}
+            ],
+            "tools": [{"module": "tool-bash"}],
+            "hooks": [{"module": "hooks-logging", "config": {"level": "debug"}}],
+        }
+        bundle = Bundle.from_dict(data)
+        assert bundle.name == "valid-bundle"
+        assert len(bundle.providers) == 1
+        assert len(bundle.tools) == 1
+        assert len(bundle.hooks) == 1
+
+    def test_empty_lists_pass(self) -> None:
+        """Empty lists for tools/providers/hooks pass validation."""
+        data = {
+            "bundle": {"name": "empty-lists"},
+            "providers": [],
+            "tools": [],
+            "hooks": [],
+        }
+        bundle = Bundle.from_dict(data)
+        assert bundle.providers == []
+        assert bundle.tools == []
+        assert bundle.hooks == []
+
+    def test_missing_lists_pass(self) -> None:
+        """Missing tools/providers/hooks (not specified) pass validation."""
+        data = {"bundle": {"name": "minimal"}}
+        bundle = Bundle.from_dict(data)
+        assert bundle.providers == []
+        assert bundle.tools == []
+        assert bundle.hooks == []

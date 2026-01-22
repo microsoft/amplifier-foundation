@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from amplifier_foundation.dicts.merge import deep_merge
 from amplifier_foundation.dicts.merge import merge_module_lists
+from amplifier_foundation.exceptions import BundleValidationError
 from amplifier_foundation.paths.construction import construct_context_path
 
 logger = logging.getLogger(__name__)
@@ -468,8 +469,23 @@ class Bundle:
 
         Returns:
             Bundle instance.
+
+        Raises:
+            BundleValidationError: If providers, tools, or hooks contain malformed items.
         """
         bundle_meta = data.get("bundle", {})
+        bundle_name = bundle_meta.get("name", "")
+
+        # Validate module lists before using them
+        providers = _validate_module_list(
+            data.get("providers", []), "providers", bundle_name, base_path
+        )
+        tools = _validate_module_list(
+            data.get("tools", []), "tools", bundle_name, base_path
+        )
+        hooks = _validate_module_list(
+            data.get("hooks", []), "hooks", bundle_name, base_path
+        )
 
         # Parse context - returns (resolved, pending) tuple
         resolved_context, pending_context = _parse_context(
@@ -477,14 +493,14 @@ class Bundle:
         )
 
         return cls(
-            name=bundle_meta.get("name", ""),
+            name=bundle_name,
             version=bundle_meta.get("version", "1.0.0"),
             description=bundle_meta.get("description", ""),
             includes=data.get("includes", []),
             session=data.get("session", {}),
-            providers=data.get("providers", []),
-            tools=data.get("tools", []),
-            hooks=data.get("hooks", []),
+            providers=providers,
+            tools=tools,
+            hooks=hooks,
             agents=_parse_agents(data.get("agents", {}), base_path),
             context=resolved_context,
             _pending_context=pending_context,
@@ -592,6 +608,49 @@ def _parse_context(
     return resolved, pending
 
 
+def _validate_module_list(
+    items: Any,
+    field_name: str,
+    bundle_name: str,
+    base_path: Path | None,
+) -> list[dict[str, Any]]:
+    """Validate that a module list contains only dicts with required keys.
+
+    Args:
+        items: The items to validate (should be a list of dicts).
+        field_name: Name of the field being validated (e.g., "tools", "providers").
+        bundle_name: Bundle name for error messages.
+        base_path: Bundle base path for error messages.
+
+    Returns:
+        The validated items list (unchanged if valid).
+
+    Raises:
+        BundleValidationError: If items is not a list or contains non-dict items.
+    """
+    if not items:
+        return []
+
+    if not isinstance(items, list):
+        bundle_identifier = bundle_name or str(base_path) or "unknown"
+        raise BundleValidationError(
+            f"Bundle '{bundle_identifier}' has malformed {field_name}: "
+            f"expected list, got {type(items).__name__}.\n"
+            f"Correct format: {field_name}: [{{module: 'module-id', source: 'git+https://...'}}]"
+        )
+
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            bundle_identifier = bundle_name or str(base_path) or "unknown"
+            raise BundleValidationError(
+                f"Bundle '{bundle_identifier}' has malformed {field_name}[{i}]: "
+                f"expected dict with 'module' and 'source' keys, got {type(item).__name__} {item!r}.\n"
+                f"Correct format: {field_name}: [{{module: 'module-id', source: 'git+https://...'}}]"
+            )
+
+    return items
+
+
 class BundleModuleSource:
     """Simple module source that returns a pre-resolved path."""
 
@@ -629,7 +688,9 @@ class BundleModuleResolver:
         self._activator = activator
         self._activation_lock = asyncio.Lock()
 
-    def resolve(self, module_id: str, source_hint: Any = None, profile_hint: Any = None) -> BundleModuleSource:
+    def resolve(
+        self, module_id: str, source_hint: Any = None, profile_hint: Any = None
+    ) -> BundleModuleSource:
         """Resolve module ID to source.
 
         Args:
@@ -642,7 +703,7 @@ class BundleModuleResolver:
 
         Raises:
             ModuleNotFoundError: If module not in activated paths and lazy activation fails.
-            
+
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         hint = profile_hint if profile_hint is not None else source_hint
@@ -669,7 +730,7 @@ class BundleModuleResolver:
 
         Raises:
             ModuleNotFoundError: If module not found and activation fails.
-            
+
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         hint = profile_hint if profile_hint is not None else source_hint

@@ -50,16 +50,29 @@ def merge_module_lists(
 
     Returns:
         Merged list of module configs (new list).
+
+    Raises:
+        TypeError: If any config in parent or child is not a dict.
     """
     # Index parent configs by module ID
     by_id: dict[str, dict[str, Any]] = {}
-    for config in parent:
+    for i, config in enumerate(parent):
+        if not isinstance(config, dict):
+            raise TypeError(
+                f"Malformed module config at index {i}: expected dict with 'module' key, "
+                f"got {type(config).__name__} {config!r}"
+            )
         module_id = config.get("module")
         if module_id:
             by_id[module_id] = config.copy()
 
     # Process child configs
-    for config in child:
+    for i, config in enumerate(child):
+        if not isinstance(config, dict):
+            raise TypeError(
+                f"Malformed module config at index {i}: expected dict with 'module' key, "
+                f"got {type(config).__name__} {config!r}"
+            )
         module_id = config.get("module")
         if not module_id:
             continue

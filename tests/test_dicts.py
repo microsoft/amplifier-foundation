@@ -1,5 +1,7 @@
 """Tests for dict utilities."""
 
+import pytest
+
 from amplifier_foundation.dicts.merge import deep_merge
 from amplifier_foundation.dicts.merge import merge_module_lists
 from amplifier_foundation.dicts.navigation import get_nested
@@ -74,6 +76,40 @@ class TestMergeModuleLists:
         result = merge_module_lists(parent, child)
         modules = [m["module"] for m in result]
         assert modules == ["a", "b", "c"]
+
+    def test_raises_typeerror_on_string_in_parent(self) -> None:
+        """Raises TypeError when parent list contains a string instead of dict."""
+        parent = ["tool-bash", {"module": "tool-file"}]  # type: ignore[list-item]
+        child: list[dict[str, str]] = []
+        with pytest.raises(TypeError) as exc_info:
+            merge_module_lists(parent, child)  # type: ignore[arg-type]
+        assert "Malformed module config at index 0" in str(exc_info.value)
+        assert "expected dict with 'module' key" in str(exc_info.value)
+        assert "got str" in str(exc_info.value)
+        assert "'tool-bash'" in str(exc_info.value)
+
+    def test_raises_typeerror_on_string_in_child(self) -> None:
+        """Raises TypeError when child list contains a string instead of dict."""
+        parent = [{"module": "tool-file"}]
+        child = [{"module": "tool-bash"}, "provider-anthropic"]  # type: ignore[list-item]
+        with pytest.raises(TypeError) as exc_info:
+            merge_module_lists(parent, child)  # type: ignore[arg-type]
+        assert "Malformed module config at index 1" in str(exc_info.value)
+        assert "expected dict with 'module' key" in str(exc_info.value)
+        assert "got str" in str(exc_info.value)
+        assert "'provider-anthropic'" in str(exc_info.value)
+
+    def test_raises_typeerror_on_non_dict_types(self) -> None:
+        """Raises TypeError for various non-dict types in list."""
+        # Test with integer
+        with pytest.raises(TypeError) as exc_info:
+            merge_module_lists([123], [])  # type: ignore[list-item]
+        assert "got int" in str(exc_info.value)
+
+        # Test with list inside list
+        with pytest.raises(TypeError) as exc_info:
+            merge_module_lists([[{"module": "nested"}]], [])  # type: ignore[list-item]
+        assert "got list" in str(exc_info.value)
 
 
 class TestGetNested:
