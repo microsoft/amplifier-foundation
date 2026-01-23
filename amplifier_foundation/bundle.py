@@ -535,14 +535,20 @@ def _parse_agents(
 
 
 def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
-    """Load agent metadata from a .md file.
+    """Load agent config from a .md file.
+
+    Extracts both metadata (name, description) from the meta: section AND
+    mount plan sections (tools, providers, hooks, session) from top-level
+    frontmatter. This allows agents to define their own tools that will be
+    used when the agent is spawned.
 
     Args:
         path: Path to agent .md file
         fallback_name: Name to use if not specified in file
 
     Returns:
-        Dict with name, description, instruction (from markdown body), and any other meta fields
+        Dict with name, description, instruction (from markdown body),
+        and optionally tools, providers, hooks, session if defined.
     """
     from amplifier_foundation.io.frontmatter import parse_frontmatter
 
@@ -563,6 +569,18 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
         "description": meta.get("description", ""),
         **{k: v for k, v in meta.items() if k not in ("name", "description")},
     }
+
+    # Extract top-level mount plan sections (tools, providers, hooks, session)
+    # These are siblings to meta:, not nested inside it
+    # This enables agents to define their own tools that get loaded at spawn time
+    if "tools" in frontmatter:
+        result["tools"] = frontmatter["tools"]
+    if "providers" in frontmatter:
+        result["providers"] = frontmatter["providers"]
+    if "hooks" in frontmatter:
+        result["hooks"] = frontmatter["hooks"]
+    if "session" in frontmatter:
+        result["session"] = frontmatter["session"]
 
     # Include instruction from markdown body (same as bundle loading does)
     if body and body.strip():
