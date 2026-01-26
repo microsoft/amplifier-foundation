@@ -73,6 +73,14 @@ from amplifier_foundation.registry import load_bundle
 # Serialization utilities
 from amplifier_foundation.serialization import sanitize_for_json
 from amplifier_foundation.serialization import sanitize_message
+
+# Spawn utilities
+from amplifier_foundation.spawn_utils import ModelResolutionResult
+from amplifier_foundation.spawn_utils import ProviderPreference
+from amplifier_foundation.spawn_utils import apply_provider_preferences
+from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
+from amplifier_foundation.spawn_utils import is_glob_pattern
+from amplifier_foundation.spawn_utils import resolve_model_pattern
 from amplifier_foundation.sources.protocol import SourceHandlerProtocol
 from amplifier_foundation.sources.protocol import SourceHandlerWithStatusProtocol
 from amplifier_foundation.sources.protocol import SourceResolverProtocol
@@ -164,4 +172,11 @@ __all__ = [
     "get_working_dir",
     "set_working_dir",
     "WORKING_DIR_CAPABILITY",
+    # Spawn utilities
+    "ProviderPreference",
+    "ModelResolutionResult",
+    "apply_provider_preferences",
+    "apply_provider_preferences_with_resolution",
+    "is_glob_pattern",
+    "resolve_model_pattern",
 ]

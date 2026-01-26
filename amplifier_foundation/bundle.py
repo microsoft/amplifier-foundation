@@ -20,6 +20,8 @@ from amplifier_foundation.dicts.merge import deep_merge
 from amplifier_foundation.dicts.merge import merge_module_lists
 from amplifier_foundation.exceptions import BundleValidationError
 from amplifier_foundation.paths.construction import construct_context_path
+from amplifier_foundation.spawn_utils import ProviderPreference
+from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 
 logger = logging.getLogger(__name__)
 
@@ -1100,16 +1102,18 @@ class PreparedBundle:
         orchestrator_config: dict[str, Any] | None = None,
         parent_messages: list[dict[str, Any]] | None = None,
         session_cwd: Path | None = None,
+        provider_preferences: list[ProviderPreference] | None = None,
     ) -> dict[str, Any]:
         """Spawn a sub-session with a child bundle.
 
         This is the core spawning MECHANISM. It handles:
         1. Optionally composes child with parent bundle
         2. Creates a new session with the child's mount plan
-        3. Injects parent messages if provided (for context inheritance)
-        4. Injects system instruction if present
-        5. Executes the instruction
-        6. Returns the result
+        3. Applies provider preferences if specified
+        4. Injects parent messages if provided (for context inheritance)
+        5. Injects system instruction if present
+        6. Executes the instruction
+        7. Returns the result
 
         Agent name resolution is APP-LAYER POLICY. Apps should resolve
         agent names to Bundle objects before calling this method.
@@ -1126,6 +1130,9 @@ class PreparedBundle:
             parent_messages: Optional list of messages from parent session to inject
                 into child's context before execution. Enables context inheritance
                 where child can reference parent's conversation history.
+            provider_preferences: Optional ordered list of provider/model preferences.
+                The system tries each in order until finding an available provider.
+                Model names support glob patterns (e.g., "claude-haiku-*").
 
         Returns:
             Dict with "output" (response) and "session_id".
@@ -1151,6 +1158,16 @@ class PreparedBundle:
                 "Do something",
                 compose=False,
             )
+
+            # Spawn with provider preferences (fallback chain)
+            result = await prepared.spawn(
+                child_bundle,
+                "Analyze this code",
+                provider_preferences=[
+                    ProviderPreference(provider="anthropic", model="claude-haiku-*"),
+                    ProviderPreference(provider="openai", model="gpt-4o-mini"),
+                ],
+            )
         """
         # Compose with parent if requested
         effective_bundle = child_bundle
@@ -1169,6 +1186,17 @@ class PreparedBundle:
                 child_mount_plan["orchestrator"]["config"] = {}
             # Merge recipe config into mount plan (recipe takes precedence)
             child_mount_plan["orchestrator"]["config"].update(orchestrator_config)
+
+        # Apply provider preferences if specified
+        # This is done before session creation so the mount plan has the right provider
+        # We need to initialize a temporary session to resolve model patterns
+        if provider_preferences:
+            child_mount_plan = await apply_provider_preferences_with_resolution(
+                child_mount_plan,
+                provider_preferences,
+                # Pass parent session's coordinator for model resolution if available
+                parent_session.coordinator if parent_session else None,
+            )
 
         from amplifier_core import AmplifierSession
 
