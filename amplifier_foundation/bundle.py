@@ -1021,6 +1021,15 @@ class PreparedBundle:
                 "bundle_package_paths", list(self.bundle_package_paths)
             )
 
+        # Register session working directory capability
+        # This provides a unified way for tools/hooks to discover the working directory
+        # instead of using Path.cwd() which returns the wrong value in server deployments.
+        # The value can be updated during the session (e.g., if assistant "cd"s to subdir).
+        effective_working_dir = session_cwd or self.bundle.base_path or Path.cwd()
+        session.coordinator.register_capability(
+            "session.working_dir", str(effective_working_dir.resolve())
+        )
+
         # Initialize the session (loads all modules)
         await session.initialize()
 
@@ -1181,6 +1190,24 @@ class PreparedBundle:
 
         # Mount resolver and initialize
         await child_session.coordinator.mount("module-source-resolver", self.resolver)
+
+        # Register session working directory capability for child session
+        # Inherit from parent session if available, otherwise use session_cwd or defaults
+        effective_child_cwd: Path
+        if session_cwd:
+            effective_child_cwd = session_cwd
+        elif parent_session:
+            # Try to inherit working_dir from parent session
+            parent_wd = parent_session.coordinator.get_capability("session.working_dir")
+            effective_child_cwd = (
+                Path(parent_wd) if parent_wd else (self.bundle.base_path or Path.cwd())
+            )
+        else:
+            effective_child_cwd = self.bundle.base_path or Path.cwd()
+        child_session.coordinator.register_capability(
+            "session.working_dir", str(effective_child_cwd.resolve())
+        )
+
         await child_session.initialize()
 
         # Inject parent messages if provided (for context inheritance)

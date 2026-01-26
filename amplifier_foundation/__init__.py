@@ -82,6 +82,11 @@ from amplifier_foundation.sources.resolver import SimpleSourceResolver
 # Tracing utilities
 from amplifier_foundation.tracing import generate_sub_session_id
 
+# Session capability helpers (for modules to access session context)
+from amplifier_foundation.session.capabilities import get_working_dir
+from amplifier_foundation.session.capabilities import set_working_dir
+from amplifier_foundation.session.capabilities import WORKING_DIR_CAPABILITY
+
 # Updates - bundle update checking and updating
 from amplifier_foundation.updates import BundleStatus
 from amplifier_foundation.updates import check_bundle_status
@@ -155,4 +160,8 @@ __all__ = [
     "construct_context_path",
     "find_files",
     "find_bundle_root",
+    # Session capabilities
+    "get_working_dir",
+    "set_working_dir",
+    "WORKING_DIR_CAPABILITY",
 ]

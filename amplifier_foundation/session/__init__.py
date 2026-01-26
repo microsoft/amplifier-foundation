@@ -67,6 +67,13 @@ from .slice import (
     slice_to_turn,
 )
 
+# Capability helpers (for modules to access session context)
+from .capabilities import (
+    WORKING_DIR_CAPABILITY,
+    get_working_dir,
+    set_working_dir,
+)
+
 __all__ = [
     # Core fork operations
     "ForkResult",
@@ -88,4 +95,8 @@ __all__ = [
     "find_orphaned_tool_calls",
     "add_synthetic_tool_results",
     "get_turn_summary",
+    # Capability helpers
+    "WORKING_DIR_CAPABILITY",
+    "get_working_dir",
+    "set_working_dir",
 ]
