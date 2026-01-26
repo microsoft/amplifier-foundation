@@ -1,13 +1,15 @@
 bundle:
   name: amplifier-dev
-  version: 1.1.0
+  version: 1.2.0
   description: Bundle for developing ON the Amplifier ecosystem - multi-repo coordination, testing patterns, shadow environments
 
 includes:
-  # Base foundation capabilities (includes python-dev, shadow, recipes, etc.)
+  # Base foundation capabilities
   - bundle: foundation
   # Amplifier dev behavior (agents + context)
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/amplifier-dev.yaml
+  # Shadow environments with Amplifier-specific helpers (includes generic shadow bundle)
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/shadow-amplifier.yaml
 
 # Development-specific session settings
 session:
