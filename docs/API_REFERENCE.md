@@ -98,6 +98,14 @@ from amplifier_foundation import Bundle, BundleRegistry, load_bundle
 | `find_files` | `paths/discovery.py` | Find files by pattern (async) |
 | `find_bundle_root` | `paths/discovery.py` | Find bundle root upward (async) |
 
+## Session Capabilities
+
+| Export | Source | Purpose |
+|--------|--------|---------|
+| `get_working_dir` | `session/capabilities.py` | Get session working directory from coordinator |
+| `set_working_dir` | `session/capabilities.py` | Update session working directory dynamically |
+| `WORKING_DIR_CAPABILITY` | `session/capabilities.py` | Capability name constant (`"session.working_dir"`) |
+
 ## Reading the Source
 
 Each source file has comprehensive docstrings. To read them:

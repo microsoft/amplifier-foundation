@@ -55,6 +55,8 @@ from amplifier_foundation import (
     parse_mentions, load_mentions,
     # Caching
     SimpleCache, DiskCache,
+    # Session capabilities
+    get_working_dir, set_working_dir, WORKING_DIR_CAPABILITY,
 )
 
 # Parse git URIs
