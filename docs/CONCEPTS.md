@@ -99,6 +99,36 @@ agent = await load_bundle("./agents/my-agent.md")
 
 See [AGENT_AUTHORING.md](AGENT_AUTHORING.md) for agent-specific guidance (the `description` field pattern).
 
+## Session Capabilities
+
+**Capabilities** are named values registered on the coordinator that modules can query at runtime. Foundation registers several capabilities during session creation.
+
+### session.working_dir
+
+The session's working directory. Critical for server/web deployments where `Path.cwd()` returns the server's directory, not the user's project.
+
+**Registered by**: `PreparedBundle.create_session()` and `spawn()`
+
+**Value**: Absolute path string (e.g., `/home/user/myproject`)
+
+**Module usage**:
+```python
+from amplifier_foundation import get_working_dir
+
+# In mount() or tool execute()
+working_dir = get_working_dir(coordinator)  # Returns Path
+```
+
+**Fallback behavior**: If capability not set, `get_working_dir()` returns `Path.cwd()` for backward compatibility.
+
+**Dynamic updates**: Use `set_working_dir(coordinator, path)` to change the working directory mid-session (e.g., when assistant "cd"s into a subdirectory).
+
+### bundle_package_paths
+
+List of `src/` directories from bundles that need to be on `sys.path` for module imports.
+
+**Registered by**: `PreparedBundle.create_session()` when bundles include Python packages.
+
 ## Philosophy
 
 ### Mechanism, Not Policy
