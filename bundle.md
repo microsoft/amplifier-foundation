@@ -26,6 +26,8 @@ includes:
   # Ecosystem expert behaviors (provides @amplifier: and @core: namespaces)
   - bundle: git+https://github.com/microsoft/amplifier@main#subdirectory=behaviors/amplifier-expert.yaml
   - bundle: git+https://github.com/microsoft/amplifier-core@main#subdirectory=behaviors/core-expert.yaml
+  # Foundation expert behavior (provides foundation-expert agent + bundle awareness context)
+  - bundle: foundation:behaviors/foundation-expert
   # Foundation behaviors
   - bundle: foundation:behaviors/sessions
   - bundle: foundation:behaviors/status-context
@@ -72,8 +74,7 @@ tools:
 
 agents:
   include:
-    # Note: amplifier-expert and core-expert come via included behaviors above
-    - foundation:foundation-expert
+    # Note: amplifier-expert, core-expert, and foundation-expert come via included behaviors above
     - foundation:bug-hunter
     - foundation:explorer
     - foundation:file-ops       # File operations context sink

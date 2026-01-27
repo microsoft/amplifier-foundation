@@ -275,6 +275,87 @@ Please advise which resolution to apply.
 
 ---
 
+## Structural Prevention in Amplifier
+
+Beyond documentation discipline, Amplifier provides **architectural patterns** that prevent context poisoning by design.
+
+### Context Sink Pattern
+
+**Problem**: Heavy documentation loaded into every session causes bloat and increases the chance of stale/conflicting information being referenced.
+
+**Solution**: Expert agents serve as **context sinks**:
+- Heavy documentation lives in agent files, not always-loaded context
+- Agents only load their documentation when spawned
+- Results return to parent without the source documentation weight
+
+**Implementation**:
+```yaml
+# behavior.yaml (thin - loaded for everyone)
+context:
+  include:
+    - my-bundle:context/awareness.md  # ~30 lines: "domain exists, delegate"
+
+agents:
+  include:
+    - my-bundle:my-expert  # Heavy docs load only when spawned
+```
+
+### Composition-Based Context Injection
+
+**Problem**: Static context files create "always on" knowledge that may conflict with other bundles or become stale.
+
+**Solution**: Context flows from **composed behaviors**, not static files:
+- If behavior is composed → context loads
+- If behavior is NOT composed → zero context
+- No partial knowledge, no "I think I read something about this"
+
+**Implementation**:
+```yaml
+# Only if this behavior is included does the context load
+includes:
+  - bundle: my-bundle:behaviors/my-capability
+
+# This composes in the awareness context for that capability
+```
+
+### Thin Awareness Pointers
+
+**Problem**: Root sessions with detailed instructions attempt work they should delegate, using potentially stale/incomplete information.
+
+**Solution**: Awareness files provide just enough to know to delegate:
+
+**Anti-pattern** (80 lines explaining how bundles work):
+```markdown
+# Bundles
+Bundles are YAML files that define... [detailed explanation]
+## Composition
+When you compose bundles... [detailed explanation]
+```
+
+**Correct pattern** (25 lines):
+```markdown
+# Bundle Capabilities
+
+You have access to bundle composition.
+
+**BEFORE any bundle work**, delegate to `foundation:foundation-expert`.
+```
+
+The expert carries the full documentation as a context sink.
+
+### Detection: Structural Poisoning
+
+**Watch for these signs of structural context poisoning:**
+
+- [ ] Heavy documentation in `context/shared/` (should be in agent files)
+- [ ] Domain instructions always loaded regardless of composition
+- [ ] Root sessions attempting specialized work without delegation
+- [ ] "I read in the context that..." for content that should be expert-only
+
+**Resolution**: Restructure following the context sink and composition patterns.
+
+---
+
 ## Prevention Checklist
 
 Before committing any documentation:

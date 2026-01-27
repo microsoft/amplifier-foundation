@@ -1,0 +1,15 @@
+bundle:
+  name: foundation-expert-behavior
+  version: 1.0.0
+  description: Expert consultant for bundle composition, patterns, and building AI applications
+
+agents:
+  include:
+    # Note: agent loading searches /agents dir automatically - don't include "agents" in path
+    - foundation:foundation-expert
+
+context:
+  include:
+    # Thin awareness pointer - just enough to know the domain exists and to delegate
+    # Heavy documentation lives in the agent file (context sink pattern)
+    - foundation:context/bundle-awareness.md

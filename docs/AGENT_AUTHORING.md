@@ -143,6 +143,80 @@ Your response MUST include:
 
 ---
 
+## Agents as Context Sinks
+
+Expert agents serve as **context sinks** - they carry heavy documentation that would bloat every session if always loaded.
+
+### Why This Matters
+
+- **Token efficiency**: Heavy docs load ONLY when agent spawns, not in every session
+- **Delegation pattern**: Parent sessions stay lean; sub-sessions burn context doing work
+- **Longer session success**: Critical strategy for sessions that run many turns
+
+### Structure
+
+```yaml
+---
+meta:
+  name: my-expert
+  description: "Expert for X domain. Delegate when user needs..."
+---
+
+# My Expert
+
+[Role description]
+
+## Knowledge Base
+
+@my-bundle:docs/FULL_GUIDE.md        # Heavy docs - loaded only when spawned
+@my-bundle:docs/REFERENCE.md         # More heavy docs
+@my-bundle:docs/PATTERNS.md          # Even more
+
+---
+
+@foundation:context/shared/common-agent-base.md
+```
+
+### The Behavior + Agent Pattern
+
+Pair your expert agent with a behavior that injects a thin awareness pointer:
+
+```yaml
+# behaviors/my-expert.yaml
+bundle:
+  name: behavior-my-expert
+  version: 1.0.0
+
+agents:
+  include:
+    - my-bundle:my-expert    # Heavy agent file
+
+context:
+  include:
+    - my-bundle:context/my-awareness.md  # Thin pointer (~30 lines)
+```
+
+The thin awareness file tells root sessions: "This domain exists. Delegate to `my-bundle:my-expert`."
+
+The agent file carries all the heavy @mentions that only load when the agent is actually spawned.
+
+### Anti-Pattern: Heavy Context in Behaviors
+
+```yaml
+# ❌ BAD: Heavy docs in behavior context (loads for everyone)
+context:
+  include:
+    - my-bundle:docs/FULL_GUIDE.md      # 500 lines in every session!
+    - my-bundle:docs/REFERENCE.md       # More bloat
+
+# ✅ GOOD: Thin pointer in behavior, heavy docs in agent
+context:
+  include:
+    - my-bundle:context/awareness.md    # 30 lines: "domain exists, delegate"
+```
+
+---
+
 ## Common Mistakes
 
 ### 1. Vague Description
@@ -156,6 +230,9 @@ Callers don't know what to expect back. Define what the agent returns.
 
 ### 4. Treating Agents as Different from Bundles
 Agents ARE bundles. Don't reinvent - use the same patterns from BUNDLE_GUIDE.md.
+
+### 5. Heavy Docs in Always-Loaded Context
+Put heavy @mentions in agent files (context sink), not in behavior context.include.
 
 ---
 

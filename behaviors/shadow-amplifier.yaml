@@ -17,23 +17,9 @@ includes:
 
 # Amplifier-specific agents
 agents:
-  amplifier-smoke-test:
-    description: |
-      Amplifier-specialized smoke test for shadow environments.
-      Extends the generic shadow-smoke-test with Amplifier ecosystem knowledge:
-      - Knows about amplifier_core, Session, Coordinator imports
-      - Understands provider installation and configuration
-      - Tests bundle loading and agent availability
-      - Validates amplifier-specific CLI commands
-      
-      Use AFTER shadow-operator creates an environment to validate Amplifier changes.
-      For non-Amplifier projects, use the generic shadow-smoke-test instead.
-      
-      Returns objective VERDICT: PASS/FAIL with evidence.
-    instructions: foundation:agents/amplifier-smoke-test.md
-    tools:
-      - module: tool-shadow
-        source: git+https://github.com/microsoft/amplifier-bundle-shadow@main#subdirectory=modules/tool-shadow
+  include:
+    # Agent file contains full description and tool configuration
+    - foundation:amplifier-smoke-test
 
 # Amplifier-specific context
 context:

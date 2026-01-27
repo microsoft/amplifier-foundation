@@ -131,42 +131,15 @@ git push origin feat/use-new-capability
 
 ### Adding a New Bundle
 
-```bash
-# 1. Create the bundle repo on GitHub first
-# microsoft/amplifier-bundle-newbundle
+For bundle structure, composition patterns, and the context sink pattern, consult `foundation:foundation-expert` or see [BUNDLE_GUIDE.md](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md).
 
-# 2. Clone and structure
-git clone https://github.com/microsoft/amplifier-bundle-newbundle.git
-cd amplifier-bundle-newbundle
+**Key steps:**
+1. Create the bundle repo on GitHub (`microsoft/amplifier-bundle-newbundle`)
+2. Clone and create directory structure: `behaviors/`, `agents/`, `context/`, `docs/`
+3. Create `bundle.md` following the thin bundle pattern
+4. Add to `amplifier/docs/MODULES.md`
 
-# 3. Create bundle structure
-mkdir -p behaviors agents context docs
-
-# 4. Create bundle.md (see BUNDLE_GUIDE.md for details)
-cat > bundle.md << 'EOF'
----
-bundle:
-  name: newbundle
-  version: 1.0.0
-  description: Description of what this bundle provides
-
-includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - bundle: newbundle:behaviors/main
----
-
-# New Bundle
-
-@newbundle:context/instructions.md
-
----
-
-@foundation:context/shared/common-system-base.md
-EOF
-
-# 5. Add to MODULES.md
-# Edit amplifier/docs/MODULES.md to include new bundle
-```
+**Canonical example:** [amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes) - demonstrates proper structure, thin bundle pattern, behavior composition, and context sink agents.
 
 ## Git Workflow
 

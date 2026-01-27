@@ -63,19 +63,11 @@ The orchestrator is **THE control surface** for agent behavior, not just "execut
 - Swapping orchestrators can **radically change** how an agent behaves
 - Examples: agentic-loop (default), streaming, event-driven, observer-pattern
 
-### Agents (NOT a Module Type)
+### Agents, Bundles, and Behaviors
 
-**Agents are bundles**, not kernel modules. When you use the `task` tool:
-1. The task tool looks up agent config from `coordinator.config["agents"]`
-2. It calls the `session.spawn` capability (registered by the app layer)
-3. A new `AmplifierSession` is created with merged config and `parent_id` linking
-4. The child session runs its own orchestrator loop and returns a result
+Agents are bundle-level abstractions (not kernel modules). For bundle composition, behavior patterns, agent spawning mechanics, and context architecture, delegate to `foundation:foundation-expert`.
 
-This is a **foundation-layer pattern**, not a kernel concept. The kernel provides the session forking mechanism; the "agent" abstraction is built on top.
-
-**Session Model**: Sessions carry a Coordinator with mounted modules. Sub-sessions fork with configuration overlays via app-layer spawn capabilities.
-
-**Event System**: Canonical events (`session:*`, `prompt:*`, `tool:*`, `provider:*`, `content_block:*`, `context:*`, `approval:*`) flow through hooks. Hooks can observe, enrich, modify, or cancel.
+**Key distinction**: There are exactly 5 kernel module types (Provider, Tool, Orchestrator, Hook, Context). "Agent" and "behavior" are bundle-layer conventions built on top of these primitives.
 
 ### Tool vs Hook: The Triggering Difference
 
@@ -83,14 +75,6 @@ This is a **foundation-layer pattern**, not a kernel concept. The kernel provide
 |--|-----------|-----------|
 | **Triggered by** | LLM decides to call | Code (lifecycle events) |
 | **Control** | LLM-driven | Full programmatic control |
-| **Can use models?** | Only if tool code does internally | Only if hook code does internally |
-
-**Tools**: LLM sees tool definitions, decides to call them, orchestrator executes.
-**Hooks**: Code registers for events, runs when events fire. No LLM decision involved.
-
-### Behavior Bundles (Convention, Not Code)
-
-"Behavior bundle" is a **naming convention**, not a kernel concept. There's no special code for "behaviors" - they're just smaller, focused bundles in `behaviors/` directories designed to be composed into larger bundles.
 
 ---
 

@@ -1,14 +1,14 @@
-# Progress Monitor Behavior
-#
+bundle:
+  name: behavior-progress-monitor
+  version: 1.0.0
+  description: Detects analysis paralysis patterns and injects corrective prompts
+
 # Detects analysis paralysis patterns and injects corrective prompts.
 # Include this behavior in bundles where agents may get stuck in research loops.
 #
 # Usage:
 #   includes:
 #     - bundle: foundation:behaviors/progress-monitor
-#
-# This is particularly useful for implementation agents like modular-builder
-# that might over-research before implementing.
 
 hooks:
   - module: hooks-progress-monitor

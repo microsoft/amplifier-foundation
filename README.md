@@ -133,12 +133,23 @@ See [`examples/README.md`](examples/README.md) for the full catalog of 20+ examp
 
 | Document | Description |
 |----------|-------------|
+| [BUNDLE_GUIDE.md](docs/BUNDLE_GUIDE.md) | Complete bundle authoring guide |
+| [AGENT_AUTHORING.md](docs/AGENT_AUTHORING.md) | Agent creation and context sink pattern |
 | [CONCEPTS.md](docs/CONCEPTS.md) | Mental model: bundles, composition, mount plans |
 | [PATTERNS.md](docs/PATTERNS.md) | Common patterns with code examples |
 | [URI_FORMATS.md](docs/URI_FORMATS.md) | Source URI quick reference |
 | [API_REFERENCE.md](docs/API_REFERENCE.md) | API index pointing to source files |
 
 **Code is authoritative**: Each source file has comprehensive docstrings. Use `help(ClassName)` or read source directly.
+
+## For Bundle Authors
+
+This README covers the Python library API. **For bundle authoring guidance:**
+
+- **[BUNDLE_GUIDE.md](docs/BUNDLE_GUIDE.md)** - Complete authoring guide (thin bundle pattern, behaviors, composition)
+- **[AGENT_AUTHORING.md](docs/AGENT_AUTHORING.md)** - Agent creation and the context sink pattern
+- **`foundation:foundation-expert`** - Expert agent for guidance when building bundles
+- **Canonical example**: [amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes) - demonstrates proper structure
 
 ## Philosophy
 
