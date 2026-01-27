@@ -688,6 +688,22 @@ def _validate_module_list(
                 f"Correct format: {field_name}: [{{module: 'module-id', source: 'git+https://...'}}]"
             )
 
+    # Resolve relative source paths to absolute (before composition can change base_path)
+    # This fixes issue #190: relative paths must be resolved at parse time
+    if base_path:
+        resolved_items = []
+        for item in items:
+            source = item.get("source", "")
+            if isinstance(source, str) and (
+                source.startswith("./") or source.startswith("../")
+            ):
+                # Resolve relative path against bundle's base_path
+                resolved_source = str((base_path / source).resolve())
+                # Copy dict to avoid mutating original
+                item = {**item, "source": resolved_source}
+            resolved_items.append(item)
+        return resolved_items
+
     return items
 
 
