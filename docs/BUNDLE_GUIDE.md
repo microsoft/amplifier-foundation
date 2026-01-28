@@ -270,6 +270,78 @@ See [amplifier-bundle-recipes/context/recipe-instructions.md](https://github.com
 
 ---
 
+## Directory Conventions
+
+Bundle repos follow **conventions** that enable maximum reusability and composition. These are patterns, not code-enforced rules.
+
+> **Structural vs Conventional**: Bundles have two independent classification systems. For **structural** concepts (root bundles, nested bundles, namespace registration), see [CONCEPTS.md](CONCEPTS.md#bundle-loading-structural-concepts). This section covers **conventional** organization patterns.
+
+### Standard Directory Layout
+
+| Directory | Convention Name | Purpose |
+|-----------|-----------------|---------|
+| `/bundle.md` | **Root bundle** | Repo's primary entry point, establishes namespace |
+| `/bundles/*.yaml` | **Standalone bundles** | Pre-composed, ready-to-use variants (e.g., "with-anthropic") |
+| `/behaviors/*.yaml` | **Behavior bundles** | "The value this repo provides" - compose onto YOUR bundle |
+| `/providers/*.yaml` | **Provider bundles** | Provider configurations to compose |
+| `/agents/*.md` | **Agent files** | Specialized agent definitions |
+| `/context/*.md` | **Context files** | Shared instructions, knowledge |
+| `/modules/` | **Local modules** | Tool implementations specific to this bundle |
+| `/docs/` | **Documentation** | Guides, references, examples |
+
+### Directory Purposes
+
+**Root bundle** (`/bundle.md`): The primary entry point for your bundle. Establishes the namespace (from `bundle.name`) and typically includes its own behavior for DRY. This is both structurally a "root bundle" and conventionally the main entry point.
+
+**Standalone bundles** (`/bundles/*.yaml`): Pre-composed variants ready to use as-is. Typically combine the root bundle with a provider choice. Examples: `with-anthropic.yaml`, `minimal.yaml`. These are structurally "nested bundles" (loaded via `namespace:bundles/foo`) but conventionally "standalone" because they're complete and ready to use.
+
+**Behavior bundles** (`/behaviors/*.yaml`): The reusable capability this repo provides. When someone wants to add your capability to THEIR bundle, they include your behavior. Contains agents, context, and optionally tools. The root bundle should include its own behavior (DRY pattern).
+
+**Provider bundles** (`/providers/*.yaml`): Provider configurations that can be composed onto other bundles. Allows users to choose which provider to use without the bundle author making that decision.
+
+### The Recommended Pattern
+
+1. **Put your main value in `/behaviors/`** - this is what others compose onto their bundles
+2. **Root bundle includes its own behavior** - DRY, root bundle stays thin
+3. **`/bundles/` offers pre-composed variants** - convenience for users who want ready-to-run combinations
+
+```yaml
+# bundle.md (root) - thin, includes own behavior
+bundle:
+  name: my-capability
+  version: 1.0.0
+
+includes:
+  - bundle: foundation
+  - bundle: my-capability:behaviors/my-capability  # DRY: include own behavior
+```
+
+```yaml
+# bundles/with-anthropic.yaml - standalone variant
+bundle:
+  name: my-capability-anthropic
+  version: 1.0.0
+
+includes:
+  - bundle: my-capability                           # Root already has behavior
+  - bundle: foundation:providers/anthropic-opus     # Add provider choice
+```
+
+### Structural vs Conventional Classification
+
+A bundle can be classified in BOTH systems independently:
+
+| Bundle | Structural | Conventional |
+|--------|------------|--------------|
+| `/bundle.md` | Root (`is_root=True`) | Root bundle |
+| `/bundles/with-anthropic.yaml` | Nested (`is_root=False`) | Standalone bundle |
+| `/behaviors/my-capability.yaml` | Nested (`is_root=False`) | Behavior bundle |
+| `/providers/anthropic-opus.yaml` | Nested (`is_root=False`) | Provider bundle |
+
+**Key insight:** A "standalone bundle" (conventional) is still a "nested bundle" (structural) when loaded via `namespace:bundles/foo.yaml`. These aren't contradictions—they describe different aspects.
+
+---
+
 ## Bundle Directory Structure
 
 ### Thin Bundle (Recommended)

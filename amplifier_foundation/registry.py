@@ -57,7 +57,22 @@ class _Colors:
 
 @dataclass
 class BundleState:
-    """Tracked state for a registered bundle."""
+    """Tracked state for a registered bundle.
+
+    Terminology:
+        Root bundle: A bundle at /bundle.md or /bundle.yaml at the root of a repo
+            or directory tree. Establishes the namespace and root directory for
+            path resolution. Tracked via is_root=True.
+
+        Nested bundle: A bundle loaded via #subdirectory= URIs or @namespace:path
+            references. Shares the namespace with its root bundle and resolves
+            paths relative to its own location. Tracked via is_root=False.
+            Examples: behaviors, providers, standalone bundles in /bundles/.
+
+        The namespace comes from bundle.name, not the repo URL or directory name.
+
+    See CONCEPTS.md for the full structural vs conventional classification framework.
+    """
 
     uri: str
     name: str
@@ -67,8 +82,10 @@ class BundleState:
     local_path: str | None = None  # Stored as string for JSON serialization
     includes: list[str] | None = None  # Bundles this bundle includes
     included_by: list[str] | None = None  # Bundles that include this bundle
-    is_root: bool = True  # True if root bundle, False if sub-bundle (behavior, etc.)
-    root_name: str | None = None  # For sub-bundles, the name of the root bundle
+    is_root: bool = True  # True for root bundles, False for nested bundles
+    root_name: str | None = (
+        None  # For nested bundles, the containing root bundle's name
+    )
     explicitly_requested: bool = (
         False  # True if user explicitly requested (bundle use/add)
     )
@@ -359,9 +376,9 @@ class BundleRegistry:
         self._pending_loads[uri] = future
 
         try:
-            # For sub-bundles (#subdirectory=), only add the specific URI to the chain,
-            # NOT the base_uri. This allows sub-bundles to include their root bundle.
-            # e.g., amplifier-dev (sub-bundle of foundation) can include foundation
+            # For nested bundles (#subdirectory=), only add the specific URI to the chain,
+            # NOT the base_uri. This allows nested bundles to include their root bundle.
+            # e.g., amplifier-dev (nested bundle of foundation) can include foundation
             if is_subdirectory:
                 new_chain = loading_chain | {uri}
             else:
@@ -376,11 +393,11 @@ class BundleRegistry:
             # Load bundle from path
             bundle = await self._load_from_path(local_path)
 
-            # Track root bundle info for sub-bundle detection
+            # Track root bundle info for nested bundle detection
             root_bundle_path: Path | None = None
             root_bundle: Bundle | None = None
 
-            # Detect sub-bundles by walking up to find a root bundle.md/yaml
+            # Detect nested bundles by walking up to find a root bundle.md/yaml
             # This works for:
             # - git URIs with #subdirectory= fragments (resolved.is_subdirectory=True)
             # - file:// URIs pointing to files within a bundle's directory structure
@@ -417,13 +434,13 @@ class BundleRegistry:
                 if root_bundle.name:
                     bundle.source_base_paths[root_bundle.name] = resolved.source_root
                     logger.debug(
-                        f"Sub-bundle '{bundle.name}' registered root namespace "
+                        f"Nested bundle '{bundle.name}' registered root namespace "
                         f"@{root_bundle.name}: -> {resolved.source_root}"
                     )
 
                     # Register the root bundle itself if not already registered
                     # This ensures root bundles are tracked for version updates
-                    # even when only accessed via sub-bundle includes
+                    # even when only accessed via nested bundle includes
                     if root_bundle.name not in self._registry:
                         # Construct root bundle URI by stripping #subdirectory= fragment
                         root_uri = uri.split("#")[0] if "#" in uri else uri
@@ -444,17 +461,17 @@ class BundleRegistry:
                 if bundle.name and bundle.name != root_bundle.name:
                     bundle.source_base_paths[bundle.name] = resolved.source_root
                     logger.debug(
-                        f"Sub-bundle also registered own namespace "
+                        f"Nested bundle also registered own namespace "
                         f"@{bundle.name}: -> {resolved.source_root}"
                     )
 
-            # Determine if this is a root bundle or sub-bundle
-            # A bundle is a sub-bundle if we found a DIFFERENT root bundle above it
+            # Determine if this is a root bundle or nested bundle
+            # A bundle is a nested bundle if we found a DIFFERENT root bundle above it
             is_root_bundle = True
             root_bundle_name: str | None = None
 
             if root_bundle and root_bundle.name and root_bundle.name != bundle.name:
-                # Found a different root bundle - this is a sub-bundle
+                # Found a different root bundle - this is a nested bundle
                 is_root_bundle = False
                 root_bundle_name = root_bundle.name
 

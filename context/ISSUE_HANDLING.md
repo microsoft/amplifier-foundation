@@ -790,8 +790,8 @@ When amplifier-dev included "foundation" by registered name for namespace resolu
 
 **Failure 2: Testing the wrong scenario**
 - Tested with foundation bundle directly
-- Actual users use amplifier-dev (sub-bundle)
-- The failure only appeared in sub-bundle → parent composition
+- Actual users use amplifier-dev (nested bundle)
+- The failure only appeared in nested bundle → parent composition
 - 11/11 tests passed but didn't cover real deployment
 
 **Lesson:** Test in ACTUAL user scenarios, not isolated components. Ask: "How do users actually use this?" Include their bundle configurations in tests.
@@ -884,7 +884,7 @@ Now handles all THREE patterns correctly.
 
 2. **Test in ACTUAL deployment configurations:**
    - Not just the component in isolation
-   - Include sub-bundles, dependent bundles, user configurations
+   - Include nested bundles, dependent bundles, user configurations
    - Test how users actually use the system
 
 3. **Validate downstream impact of rejections:**

@@ -83,6 +83,74 @@ How it works:
 
 This allows instructions to reference files from any included bundle without knowing absolute paths.
 
+## Bundle Loading: Structural Concepts
+
+Bundles have a **structural** classification based on how they load. This affects namespace registration and path resolution.
+
+### Root Bundles vs Nested Bundles
+
+| Term | Definition | Registry State |
+|------|------------|----------------|
+| **Root bundle** | A `/bundle.md` or `/bundle.yaml` at the root of a repo or directory tree. Establishes the namespace and root directory for path resolution. | `is_root = True` |
+| **Nested bundle** | Any bundle loaded via `#subdirectory=` URIs or `@namespace:path` references. Paths resolve relative to its location, shares namespace with root. | `is_root = False` |
+
+**Key insight:** The namespace comes from `bundle.name`, not the repo URL or directory name.
+
+### Namespace Registration
+
+When a bundle loads, its `bundle.name` becomes a namespace for `@mention` resolution:
+
+```
+Load foundation → Registers "foundation" namespace
+               → @foundation:docs/GUIDE.md resolves to /path/to/foundation/docs/GUIDE.md
+```
+
+Root bundles establish the namespace. Nested bundles (behaviors, providers, etc.) share the root's namespace and resolve paths relative to their own location.
+
+### Loading Flow
+
+```
+Root bundle loads → Registers namespace → All nested bundles share that namespace
+                                       → Paths resolve relative to bundle location
+```
+
+### Example: Nested Bundle Loading
+
+```yaml
+# A root bundle at repo root
+# bundles/with-anthropic.yaml (loaded via foundation:bundles/with-anthropic)
+includes:
+  - bundle: foundation                          # The root bundle
+  - bundle: foundation:providers/anthropic-opus  # A nested bundle
+```
+
+When `foundation:bundles/with-anthropic` loads:
+1. It's detected as a **nested bundle** (there's a root `bundle.md` above it)
+2. It shares the `foundation` namespace
+3. Its own includes resolve relative to its location
+
+### Structural vs Conventional
+
+Bundles have two independent classification systems:
+
+| Layer | Enforced By | Purpose |
+|-------|-------------|---------|
+| **Structural** | Code (registry.py) | How bundles load, namespace registration |
+| **Conventional** | Patterns (see [BUNDLE_GUIDE.md](BUNDLE_GUIDE.md)) | How to organize repos for maximum utility |
+
+A bundle can be:
+- **Structurally:** Nested (`is_root=False`) - loaded under root's directory
+- **Conventionally:** A "standalone bundle" - ready to use as-is from `/bundles/`
+
+These aren't contradictions—they describe different aspects.
+
+## Mount Plans vs Bundles
+
+- **Mount plans are REQUIRED**: AmplifierSession needs a mount plan to run
+- **Bundles are OPTIONAL**: They're a composition/sharing layer on top
+
+Bundles exist for **sharing and remixing**. You can create mount plans directly in code without ever touching bundles. Bundles make it easy to share and compose configurations, but they're not mandatory.
+
 ## Agents
 
 **Agents are bundles.** They use the same file format (markdown + YAML frontmatter) and are loaded via the same `load_bundle()` function.

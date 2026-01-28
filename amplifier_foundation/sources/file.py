@@ -73,7 +73,7 @@ class FileSourceHandler:
 
         For files within the cache directory, the source root is the
         repository directory (first level under cache). This enables
-        proper sub-bundle detection for behaviors, providers, etc.
+        proper nested bundle detection for behaviors, providers, etc.
         that are loaded via file:// URIs from within cached bundles.
 
         Args:
