@@ -295,6 +295,25 @@ class EnhancedMcpClient:
         # [50+ more lines of complex state tracking and retry logic]
 ```
 
+### Bad Example: Bypassing Public Interfaces
+
+```python
+# Fragile: reaching into internal state instead of using public API
+def get_activator(resolver):
+    bundle_resolver = getattr(resolver, "_bundle", resolver)
+    activator = getattr(bundle_resolver, "_activator", None)
+    return activator
+    # Breaks when implementation changes; extend the interface instead
+```
+
+### Good Example: Using Public Interfaces
+
+```python
+# If you need access to something, extend the public interface
+def get_activator(resolver):
+    return resolver.get_activator()
+```
+
 ## Remember
 
 - It's easier to add complexity later than to remove it
