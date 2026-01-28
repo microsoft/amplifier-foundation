@@ -1,0 +1,511 @@
+# validate-bundle-repo.yaml
+# Repository-Wide Bundle Validator Recipe
+# Validates an entire bundle repository against structural requirements and conventions
+#
+# This recipe:
+# 1. Discovers all bundles in a repo (root, behaviors, standalone, providers)
+# 2. Validates each bundle individually
+# 3. Validates the repo composition as a whole
+# 4. Produces a comprehensive repo-level report
+#
+# Usage:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=foundation:recipes/validate-bundle-repo.yaml \
+#     context='{"repo_path": "/path/to/my-bundle-repo"}'
+
+name: validate-bundle-repo
+description: |
+  Validates an entire Amplifier bundle repository including:
+  - Discovery of all bundle files (root, behaviors, standalone, providers)
+  - Individual validation of each bundle
+  - Repository composition analysis (do pieces fit together correctly?)
+  - Convention compliance across the whole repo
+  
+  For single bundle validation, use validate-bundle.yaml instead.
+version: "1.0.0"
+author: "Amplifier Foundation Team"
+tags: ["bundle", "validation", "quality", "conventions", "repository"]
+
+context:
+  repo_path: ""  # Required: Path to bundle repository root
+
+steps:
+  # ============================================================================
+  # PHASE 0: Environment Check
+  # Verify amplifier_foundation is available
+  # ============================================================================
+
+  - id: "environment-check"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+
+      results = {
+          "phase": "environment",
+          "foundation_available": False,
+          "foundation_version": None,
+          "python_version": sys.version,
+          "errors": []
+      }
+
+      try:
+          import amplifier_foundation
+          results["foundation_available"] = True
+          results["foundation_version"] = getattr(amplifier_foundation, "__version__", "unknown")
+      except ImportError as e:
+          results["errors"].append({
+              "type": "import_error",
+              "message": f"amplifier_foundation not importable: {e}",
+              "suggestion": "Install via: pip install amplifier-foundation or run within an Amplifier session"
+          })
+
+      if not results["foundation_available"]:
+          import subprocess
+          try:
+              subprocess.run(
+                  [sys.executable, "-m", "pip", "install", "-q",
+                   "git+https://github.com/microsoft/amplifier-foundation@main"],
+                  check=True,
+                  capture_output=True
+              )
+              import amplifier_foundation
+              results["foundation_available"] = True
+              results["foundation_version"] = getattr(amplifier_foundation, "__version__", "unknown")
+              results["errors"] = []
+              results["auto_installed"] = True
+          except Exception as install_error:
+              results["errors"].append({
+                  "type": "install_error",
+                  "message": f"Failed to auto-install: {install_error}"
+              })
+
+      print(json.dumps(results))
+      EOF
+    output: "env_check"
+    parse_json: true
+    timeout: 180
+
+  # ============================================================================
+  # PHASE 1: Repository Discovery
+  # Find all bundle files in the repository
+  # ============================================================================
+
+  - id: "repo-discovery"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      from pathlib import Path
+
+      def discover_bundles(repo_path: str) -> dict:
+          """Discover all bundle files in a repository."""
+          results = {
+              "phase": "discovery",
+              "repo_path": repo_path,
+              "bundles_found": {
+                  "root": [],
+                  "behaviors": [],
+                  "standalone": [],
+                  "providers": [],
+                  "agents": [],
+                  "other": []
+              },
+              "total_count": 0,
+              "repo_structure": {},
+              "errors": []
+          }
+
+          path = Path(repo_path).resolve()
+
+          if not path.exists():
+              results["errors"].append({
+                  "type": "path_error",
+                  "message": f"Repository path does not exist: {repo_path}"
+              })
+              print(json.dumps(results))
+              return results
+
+          if not path.is_dir():
+              results["errors"].append({
+                  "type": "path_error",
+                  "message": f"Path is not a directory: {repo_path}"
+              })
+              print(json.dumps(results))
+              return results
+
+          # Check for root bundle
+          for name in ["bundle.md", "bundle.yaml"]:
+              root_bundle = path / name
+              if root_bundle.exists():
+                  results["bundles_found"]["root"].append(str(root_bundle))
+
+          # Scan conventional directories
+          scan_dirs = {
+              "behaviors": "behaviors",
+              "standalone": "bundles",
+              "providers": "providers",
+              "agents": "agents"
+          }
+
+          for category, dir_name in scan_dirs.items():
+              dir_path = path / dir_name
+              if dir_path.exists() and dir_path.is_dir():
+                  for item in dir_path.iterdir():
+                      if item.is_file() and item.suffix in [".md", ".yaml", ".yml"]:
+                          results["bundles_found"][category].append(str(item))
+                      elif item.is_dir():
+                          # Check for bundle inside subdirectory
+                          for sub_name in ["bundle.md", "bundle.yaml"]:
+                              sub_bundle = item / sub_name
+                              if sub_bundle.exists():
+                                  results["bundles_found"][category].append(str(sub_bundle))
+
+          # Map repo structure
+          results["repo_structure"] = {
+              "has_root_bundle": len(results["bundles_found"]["root"]) > 0,
+              "has_behaviors": len(results["bundles_found"]["behaviors"]) > 0,
+              "has_standalone": len(results["bundles_found"]["standalone"]) > 0,
+              "has_providers": len(results["bundles_found"]["providers"]) > 0,
+              "has_agents": len(results["bundles_found"]["agents"]) > 0,
+              "directories": [d.name for d in path.iterdir() if d.is_dir() and not d.name.startswith(".")]
+          }
+
+          # Count totals
+          for category, bundles in results["bundles_found"].items():
+              results["total_count"] += len(bundles)
+
+          print(json.dumps(results))
+          return results
+
+      discover_bundles("{{repo_path}}")
+      EOF
+    output: "discovery_results"
+    parse_json: true
+    timeout: 60
+    depends_on: ["environment-check"]
+
+  # ============================================================================
+  # PHASE 2: Individual Bundle Validation
+  # Validate each discovered bundle structurally
+  # ============================================================================
+
+  - id: "validate-all-bundles"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import asyncio
+      import json
+      import sys
+      from pathlib import Path
+
+      env_check = {{env_check}}
+      if not env_check.get("foundation_available"):
+          print(json.dumps({
+              "phase": "individual_validation",
+              "skipped": True,
+              "reason": "amplifier_foundation not available"
+          }))
+          sys.exit(0)
+
+      from amplifier_foundation import BundleRegistry
+      from amplifier_foundation.exceptions import (
+          BundleLoadError,
+          BundleNotFoundError,
+          BundleDependencyError,
+          BundleValidationError
+      )
+
+      discovery = {{discovery_results}}
+      
+      async def validate_bundle(bundle_path: str, category: str) -> dict:
+          """Validate a single bundle and return results."""
+          result = {
+              "path": bundle_path,
+              "category": category,
+              "passed": True,
+              "name": None,
+              "errors": [],
+              "warnings": []
+          }
+
+          try:
+              registry = BundleRegistry()
+              path = Path(bundle_path).resolve()
+              uri = f"file://{path}"
+
+              bundle = await registry._load_single(
+                  uri,
+                  auto_register=True,
+                  auto_include=False  # Don't follow includes for individual check
+              )
+
+              result["name"] = bundle.name
+              result["version"] = bundle.version
+              result["has_instruction"] = bool(bundle.instruction)
+              result["includes_count"] = len(bundle.includes)
+              result["agents_count"] = len(bundle.agents)
+
+              if not bundle.name:
+                  result["warnings"].append("Missing bundle.name")
+
+          except BundleDependencyError as e:
+              result["passed"] = False
+              result["errors"].append(f"Dependency error: {e}")
+          except BundleLoadError as e:
+              result["passed"] = False
+              result["errors"].append(f"Load error: {e}")
+          except Exception as e:
+              result["passed"] = False
+              result["errors"].append(f"{type(e).__name__}: {e}")
+
+          return result
+
+      async def validate_all():
+          results = {
+              "phase": "individual_validation",
+              "skipped": False,
+              "bundles": [],
+              "summary": {
+                  "total": 0,
+                  "passed": 0,
+                  "failed": 0,
+                  "by_category": {}
+              }
+          }
+
+          all_bundles = []
+          for category, paths in discovery.get("bundles_found", {}).items():
+              for path in paths:
+                  all_bundles.append((path, category))
+
+          for bundle_path, category in all_bundles:
+              result = await validate_bundle(bundle_path, category)
+              results["bundles"].append(result)
+              results["summary"]["total"] += 1
+              
+              if result["passed"]:
+                  results["summary"]["passed"] += 1
+              else:
+                  results["summary"]["failed"] += 1
+
+              if category not in results["summary"]["by_category"]:
+                  results["summary"]["by_category"][category] = {"passed": 0, "failed": 0}
+              
+              if result["passed"]:
+                  results["summary"]["by_category"][category]["passed"] += 1
+              else:
+                  results["summary"]["by_category"][category]["failed"] += 1
+
+          print(json.dumps(results))
+
+      asyncio.run(validate_all())
+      EOF
+    output: "individual_validation"
+    parse_json: true
+    timeout: 300
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
+  # PHASE 3: Repository Composition Analysis
+  # Analyze how the pieces fit together
+  # ============================================================================
+
+  - id: "composition-analysis"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Analyze the composition of this bundle repository.
+
+      **Repository Path:** {{repo_path}}
+
+      **Discovery Results:**
+      ```json
+      {{discovery_results}}
+      ```
+
+      **Individual Bundle Validation:**
+      ```json
+      {{individual_validation}}
+      ```
+
+      **Reference Documentation:**
+      Review these for conventions:
+      - @foundation:docs/CONCEPTS.md (structural terminology)
+      - @foundation:docs/BUNDLE_GUIDE.md (directory conventions, composition patterns)
+
+      **Composition Analysis Tasks:**
+
+      1. **Root Bundle + Behavior DRY Pattern**:
+         If repo has a root bundle AND behaviors/, does the root include its own behavior?
+         This is the recommended pattern for DRY composition.
+
+      2. **Standalone Bundle Completeness**:
+         For each bundle in /bundles/, can it actually be used standalone?
+         Check if it includes necessary base bundles (like foundation or the repo's root).
+
+      3. **Provider Bundle Isolation**:
+         Are provider configurations properly isolated in /providers/?
+         Root bundle shouldn't hardcode providers.
+
+      4. **Agent Accessibility**:
+         Are agents in /agents/ included by behaviors or root bundle?
+         Orphan agents (not included anywhere) may indicate incomplete setup.
+
+      5. **Namespace Consistency**:
+         Do all bundles use the same namespace (from root bundle.name)?
+         Mixed namespaces can cause include resolution issues.
+
+      6. **Cross-Bundle References**:
+         Do includes between bundles resolve correctly?
+         Check for broken references or incorrect paths.
+
+      **Output Format:**
+      For each analysis area:
+      - **Finding**: What you observed
+      - **Status**: GOOD | ISSUE | N/A
+      - **Recommendation**: If ISSUE, how to fix
+    output: "composition_analysis"
+    timeout: 300
+    depends_on: ["validate-all-bundles"]
+
+  # ============================================================================
+  # PHASE 4: Convention Compliance (Repo-Wide)
+  # Check repo-wide conventions
+  # ============================================================================
+
+  - id: "repo-conventions"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Review repository-wide convention compliance.
+
+      **Repository Path:** {{repo_path}}
+
+      **Discovery:**
+      ```json
+      {{discovery_results}}
+      ```
+
+      **Individual Validation:**
+      ```json
+      {{individual_validation}}
+      ```
+
+      **Conventions to Check (Repo-Wide):**
+
+      1. **Directory Structure**:
+         - /bundle.md or /bundle.yaml at root (recommended)
+         - /behaviors/ for reusable capability bundles
+         - /bundles/ for standalone variant bundles
+         - /providers/ for provider configurations
+         - /agents/ for agent definitions
+         - /context/ for shared context files
+         - /docs/ for documentation
+         - /modules/ for local tool modules (if any)
+
+      2. **Naming Conventions**:
+         - Behavior files: descriptive-name.yaml
+         - Agent files: descriptive-name.md
+         - Consistent naming style across the repo
+
+      3. **Documentation**:
+         - README.md at root
+         - Agent descriptions in meta.description
+         - Bundle descriptions in bundle.description
+
+      4. **File Format Consistency**:
+         - Bundles: .yaml or .md (prefer .md for root, .yaml for behaviors)
+         - Agents: always .md (markdown with YAML frontmatter)
+
+      5. **Required Files**:
+         - LICENSE (for public repos)
+         - At least one of: bundle.md, bundles/, behaviors/
+
+      **Read actual files as needed** to verify conventions.
+
+      **Output Format:**
+      Convention checklist with PASS/FAIL/N/A and notes.
+    output: "repo_conventions"
+    timeout: 300
+    depends_on: ["composition-analysis"]
+
+  # ============================================================================
+  # PHASE 5: Final Report Synthesis
+  # ============================================================================
+
+  - id: "synthesize-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Synthesize all validation results into a comprehensive repository validation report.
+
+      **Repository:** {{repo_path}}
+
+      **Environment:**
+      ```json
+      {{env_check}}
+      ```
+
+      **Discovery:**
+      ```json
+      {{discovery_results}}
+      ```
+
+      **Individual Bundle Validation:**
+      ```json
+      {{individual_validation}}
+      ```
+
+      **Composition Analysis:**
+      {{composition_analysis}}
+
+      **Repository Conventions:**
+      {{repo_conventions}}
+
+      **Generate a comprehensive report:**
+
+      # Bundle Repository Validation Report
+
+      ## Executive Summary
+      - **Overall Verdict**: PASS | FAIL | PASS WITH WARNINGS
+      - **Repository**: path
+      - **Bundles Found**: X total (Y root, Z behaviors, ...)
+      - **Issues**: X errors, Y warnings, Z suggestions
+
+      ## Bundle Discovery
+      Summary of what was found in the repository.
+
+      ## Individual Bundle Results
+      Table showing each bundle's validation status:
+      | Bundle | Category | Status | Issues |
+      |--------|----------|--------|--------|
+
+      ## Composition Analysis
+      How well do the pieces fit together?
+
+      ## Convention Compliance
+      Repository-wide convention check results.
+
+      ## Recommendations
+
+      ### Must Fix (Errors)
+      Issues that break loading or basic functionality.
+
+      ### Should Fix (Warnings)
+      Convention violations and best practice issues.
+
+      ### Consider (Suggestions)
+      Improvements for better maintainability.
+
+      ## Metadata
+      - Validated: [timestamp]
+      - Recipe: validate-bundle-repo v1.0.0
+      - Foundation: version from env_check
+
+      Make the report actionable with clear next steps.
+    output: "final_report"
+    timeout: 300
+    depends_on: ["repo-conventions"]

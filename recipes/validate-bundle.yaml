@@ -1,0 +1,554 @@
+# validate-bundle.yaml
+# Single Bundle Validator Recipe
+# Validates a single bundle file against structural requirements and conventions
+#
+# Usage:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=foundation:recipes/validate-bundle.yaml \
+#     context='{"bundle_path": "/path/to/bundle.md"}'
+
+name: validate-bundle
+description: |
+  Validates a single Amplifier bundle file against:
+  - Structural requirements (actual loading via amplifier_foundation)
+  - Convention patterns (from terminology framework)
+  - Common gotchas and mistakes
+  
+  Produces a validation report with pass/fail verdicts and actionable recommendations.
+  
+  For repo-wide validation, use validate-bundle-repo.yaml instead.
+version: "1.0.0"
+author: "Amplifier Foundation Team"
+tags: ["bundle", "validation", "quality", "conventions"]
+
+context:
+  bundle_path: ""  # Required: Path to bundle file to validate
+
+steps:
+  # ============================================================================
+  # PHASE 0: Environment Check
+  # Verify amplifier_foundation is available
+  # ============================================================================
+
+  - id: "environment-check"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+
+      results = {
+          "phase": "environment",
+          "foundation_available": False,
+          "foundation_version": None,
+          "python_version": sys.version,
+          "errors": []
+      }
+
+      # Try to import amplifier_foundation
+      try:
+          import amplifier_foundation
+          results["foundation_available"] = True
+          results["foundation_version"] = getattr(amplifier_foundation, "__version__", "unknown")
+      except ImportError as e:
+          results["errors"].append({
+              "type": "import_error",
+              "message": f"amplifier_foundation not importable: {e}",
+              "suggestion": "Install via: pip install amplifier-foundation or run within an Amplifier session"
+          })
+
+      # If not available, try to install it
+      if not results["foundation_available"]:
+          import subprocess
+          try:
+              subprocess.run(
+                  [sys.executable, "-m", "pip", "install", "-q", 
+                   "git+https://github.com/microsoft/amplifier-foundation@main"],
+                  check=True,
+                  capture_output=True
+              )
+              # Try import again
+              import amplifier_foundation
+              results["foundation_available"] = True
+              results["foundation_version"] = getattr(amplifier_foundation, "__version__", "unknown")
+              results["errors"] = []  # Clear errors since we fixed it
+              results["auto_installed"] = True
+          except Exception as install_error:
+              results["errors"].append({
+                  "type": "install_error", 
+                  "message": f"Failed to auto-install: {install_error}"
+              })
+
+      print(json.dumps(results))
+      EOF
+    output: "env_check"
+    parse_json: true
+    timeout: 180
+
+  # ============================================================================
+  # PHASE 1: Structural Validation (Code-Based)
+  # Does the bundle actually load? Does it compose correctly?
+  # ============================================================================
+
+  - id: "structural-validation"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import asyncio
+      import json
+      import sys
+      from pathlib import Path
+
+      # Check environment first
+      env_check = {{env_check}}
+      if not env_check.get("foundation_available"):
+          print(json.dumps({
+              "phase": "structural",
+              "passed": False,
+              "skipped": True,
+              "reason": "amplifier_foundation not available",
+              "errors": env_check.get("errors", [])
+          }))
+          sys.exit(0)
+
+      # Import foundation components
+      from amplifier_foundation import BundleRegistry
+      from amplifier_foundation.exceptions import (
+          BundleLoadError,
+          BundleNotFoundError,
+          BundleDependencyError,
+          BundleValidationError
+      )
+
+      async def validate_structural(bundle_path: str) -> dict:
+          """Run structural validation using real bundle loading."""
+          results = {
+              "phase": "structural",
+              "bundle_path": bundle_path,
+              "passed": True,
+              "skipped": False,
+              "checks": [],
+              "errors": [],
+              "warnings": [],
+              "bundle_info": {}
+          }
+
+          path = Path(bundle_path).resolve()
+
+          # Check 1: Bundle file exists
+          if not path.exists():
+              results["passed"] = False
+              results["errors"].append({
+                  "check": "exists",
+                  "message": f"Bundle path does not exist: {bundle_path}"
+              })
+              print(json.dumps(results))
+              return results
+          results["checks"].append({"check": "exists", "passed": True})
+
+          # Check 2: Try to load the bundle
+          try:
+              registry = BundleRegistry()
+              
+              # Determine URI format
+              if path.is_file():
+                  uri = f"file://{path}"
+              else:
+                  # Directory - look for bundle.md or bundle.yaml
+                  bundle_file = None
+                  for name in ["bundle.md", "bundle.yaml"]:
+                      candidate = path / name
+                      if candidate.exists():
+                          bundle_file = candidate
+                          break
+                  if bundle_file:
+                      uri = f"file://{bundle_file}"
+                  else:
+                      uri = str(path)
+
+              bundle = await registry._load_single(
+                  uri,
+                  auto_register=True,
+                  auto_include=True
+              )
+              results["checks"].append({"check": "load", "passed": True})
+
+              # Capture bundle info
+              results["bundle_info"] = {
+                  "name": bundle.name,
+                  "version": bundle.version,
+                  "description": bundle.description or "",
+                  "has_instruction": bool(bundle.instruction),
+                  "instruction_length": len(bundle.instruction) if bundle.instruction else 0,
+                  "includes_count": len(bundle.includes),
+                  "includes": [str(inc) for inc in bundle.includes],
+                  "agents_count": len(bundle.agents),
+                  "agents": list(bundle.agents.keys()) if hasattr(bundle.agents, 'keys') else [],
+                  "tools_count": len(bundle.tools),
+                  "providers_count": len(bundle.providers),
+                  "hooks_count": len(bundle.hooks) if hasattr(bundle, 'hooks') else 0,
+                  "context_count": len(bundle.context),
+                  "source_namespaces": list(bundle.source_base_paths.keys()) if hasattr(bundle, 'source_base_paths') else []
+              }
+
+              # Check 3: Bundle has a name (namespace registration)
+              if not bundle.name:
+                  results["passed"] = False
+                  results["errors"].append({
+                      "check": "bundle_name",
+                      "message": "Bundle has no 'bundle.name' - namespace won't register"
+                  })
+              else:
+                  results["checks"].append({"check": "bundle_name", "passed": True, "value": bundle.name})
+
+              # Check 4: Try to compile mount plan
+              try:
+                  mount_plan = bundle.to_mount_plan()
+                  results["checks"].append({"check": "mount_plan", "passed": True})
+                  results["bundle_info"]["mount_plan_sections"] = list(mount_plan.keys())
+              except Exception as e:
+                  results["passed"] = False
+                  results["errors"].append({
+                      "check": "mount_plan",
+                      "message": f"Failed to compile mount plan: {e}"
+                  })
+
+          except BundleNotFoundError as e:
+              results["passed"] = False
+              results["errors"].append({
+                  "check": "load",
+                  "message": f"Bundle not found: {e}"
+              })
+          except BundleDependencyError as e:
+              results["passed"] = False
+              results["errors"].append({
+                  "check": "dependencies",
+                  "message": f"Dependency error (possible circular include): {e}"
+              })
+          except BundleValidationError as e:
+              results["passed"] = False
+              results["errors"].append({
+                  "check": "validation",
+                  "message": f"Bundle validation failed: {e}"
+              })
+          except BundleLoadError as e:
+              results["passed"] = False
+              results["errors"].append({
+                  "check": "load",
+                  "message": f"Failed to load bundle: {e}"
+              })
+          except Exception as e:
+              results["passed"] = False
+              results["errors"].append({
+                  "check": "load",
+                  "message": f"Unexpected error: {type(e).__name__}: {e}"
+              })
+
+          print(json.dumps(results))
+          return results
+
+      asyncio.run(validate_structural("{{bundle_path}}"))
+      EOF
+    output: "structural_results"
+    parse_json: true
+    timeout: 120
+    on_error: "continue"
+    depends_on: ["environment-check"]
+
+  # ============================================================================
+  # PHASE 2: File Structure Analysis (Code-Based)
+  # Check directory structure against conventions
+  # ============================================================================
+
+  - id: "structure-analysis"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      from pathlib import Path
+
+      def analyze_structure(bundle_path: str) -> dict:
+          """Analyze bundle file structure against conventions."""
+          results = {
+              "phase": "structure",
+              "findings": [],
+              "directory_contents": {},
+              "detected_type": None,
+              "is_root_bundle": False,
+              "has_behaviors": False,
+              "has_standalone_bundles": False
+          }
+
+          path = Path(bundle_path).resolve()
+          bundle_dir = path.parent if path.is_file() else path
+
+          # Map what exists
+          conventional_dirs = ["agents", "behaviors", "bundles", "context", "providers", "modules", "docs", "recipes"]
+          for dir_name in conventional_dirs:
+              dir_path = bundle_dir / dir_name
+              if dir_path.exists() and dir_path.is_dir():
+                  files = [f.name for f in dir_path.iterdir() if f.is_file()]
+                  subdirs = [d.name for d in dir_path.iterdir() if d.is_dir()]
+                  results["directory_contents"][dir_name] = {
+                      "files": files,
+                      "subdirs": subdirs
+                  }
+
+          # Root files
+          root_files = [f.name for f in bundle_dir.iterdir() if f.is_file()]
+          root_dirs = [d.name for d in bundle_dir.iterdir() if d.is_dir()]
+          results["directory_contents"]["root"] = {
+              "files": root_files,
+              "dirs": root_dirs
+          }
+
+          # Detect bundle characteristics
+          has_bundle_md = (bundle_dir / "bundle.md").exists()
+          has_bundle_yaml = (bundle_dir / "bundle.yaml").exists()
+          has_root_bundle = has_bundle_md or has_bundle_yaml
+          has_behaviors = "behaviors" in results["directory_contents"]
+          has_bundles = "bundles" in results["directory_contents"]
+          has_agents = "agents" in results["directory_contents"]
+          has_providers = "providers" in results["directory_contents"]
+
+          results["is_root_bundle"] = has_root_bundle
+          results["has_behaviors"] = has_behaviors
+          results["has_standalone_bundles"] = has_bundles
+
+          # Detect bundle type
+          if path.is_file():
+              parent_name = path.parent.name
+              if parent_name == "behaviors":
+                  results["detected_type"] = "behavior_bundle"
+              elif parent_name == "bundles":
+                  results["detected_type"] = "standalone_bundle"
+              elif parent_name == "providers":
+                  results["detected_type"] = "provider_bundle"
+              elif path.name in ["bundle.md", "bundle.yaml"]:
+                  results["detected_type"] = "root_bundle"
+              else:
+                  results["detected_type"] = "unknown_bundle_file"
+          else:
+              if has_root_bundle and has_behaviors:
+                  results["detected_type"] = "root_bundle_with_behaviors"
+              elif has_root_bundle:
+                  results["detected_type"] = "root_bundle_simple"
+              else:
+                  results["detected_type"] = "directory_without_root"
+
+          # Generate findings
+          if not has_root_bundle and results["detected_type"] not in ["behavior_bundle", "standalone_bundle", "provider_bundle"]:
+              results["findings"].append({
+                  "level": "warning",
+                  "code": "NO_ROOT_BUNDLE",
+                  "message": "No bundle.md or bundle.yaml at root - consider adding one"
+              })
+
+          if has_agents and not has_behaviors:
+              results["findings"].append({
+                  "level": "info",
+                  "code": "AGENTS_WITHOUT_BEHAVIOR",
+                  "message": "Has agents/ but no behaviors/ - consider packaging agents into a behavior for reusability"
+              })
+
+          print(json.dumps(results))
+
+      analyze_structure("{{bundle_path}}")
+      EOF
+    output: "structure_analysis"
+    parse_json: true
+    timeout: 30
+    depends_on: ["structural-validation"]
+
+  # ============================================================================
+  # PHASE 3: Convention Analysis (Agent-Based)
+  # Check against documented conventions using LLM reasoning
+  # ============================================================================
+
+  - id: "convention-analysis"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Analyze this bundle against Amplifier bundle conventions.
+
+      **Bundle Path:** {{bundle_path}}
+
+      **Structural Validation Results:**
+      ```json
+      {{structural_results}}
+      ```
+
+      **File Structure Analysis:**
+      ```json
+      {{structure_analysis}}
+      ```
+
+      **Conventions Reference:**
+      Review these authoritative sources for the conventions to check against:
+      - @foundation:docs/CONCEPTS.md (structural terminology: root bundles, nested bundles)
+      - @foundation:docs/BUNDLE_GUIDE.md (directory conventions, patterns)
+
+      **Key Conventions to Check:**
+
+      1. **Root Bundle DRY Pattern**: If this is a root bundle with behaviors/,
+         does bundle.md include its own behavior? Look for pattern like:
+         `includes: - bundle: <namespace>:behaviors/<capability>`
+
+      2. **Agent Path Format**: Agent includes should use `namespace:agent-name` NOT
+         `namespace:agents/agent-name.md`. The agents/ directory is implied.
+         Check for incorrect patterns in agents.include sections.
+
+      3. **Context Organization**: Large inline instructions (>50 lines in markdown body)
+         should be moved to `context/` and referenced via `@namespace:context/file.md`.
+
+      4. **Provider Isolation**: Provider configurations should be in `providers/` not
+         inline in the main bundle (unless this is a small single-purpose bundle).
+
+      5. **Behavior Completeness**: Behavior bundles should add at least one agent OR
+         context file - empty behaviors serve no purpose.
+
+      6. **Standalone Bundle Independence**: Bundles in `/bundles/` should be usable
+         standalone (typically include root bundle + provider choice).
+
+      **Output Format:**
+      For each convention, provide:
+      - **Status**: PASS | FAIL | N/A (not applicable)
+      - **Evidence**: What you found in the bundle
+      - **Recommendation**: If FAIL, how to fix it
+    output: "convention_results"
+    timeout: 300
+
+  # ============================================================================
+  # PHASE 4: Gotcha Detection (Agent-Based)
+  # Look for common mistakes we've seen
+  # ============================================================================
+
+  - id: "gotcha-detection"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Review this bundle for common gotchas and mistakes.
+
+      **Bundle Path:** {{bundle_path}}
+
+      **Bundle Info:**
+      ```json
+      {{structural_results}}
+      ```
+
+      **Structure:**
+      ```json
+      {{structure_analysis}}
+      ```
+
+      **Known Gotchas to Check:**
+
+      1. **@ prefix in YAML sections**: Using `@namespace:path` in YAML (should be bare `namespace:path`).
+         The `@` prefix is ONLY for markdown text. Check includes, agents.include, context.include.
+
+      2. **Repository name confusion**: Using git repo name instead of `bundle.name` value.
+         E.g., using `amplifier-bundle-foo:agent` instead of `foo:agent`.
+
+      3. **Redundant path components**: When referencing within same bundle, paths shouldn't
+         duplicate directory structure. E.g., `foo:agents/my-agent` should be `foo:my-agent`.
+
+      4. **Missing bundle.name**: Root bundles MUST have `bundle.name` or namespace won't register.
+         (Already checked structurally, but verify the value makes sense)
+
+      5. **Agents without descriptions**: Agents need `meta.description` for discoverability.
+         If this bundle has agents, flag any missing descriptions.
+
+      6. **context.include vs @mentions**: In bundle.md, main instructions should use @mentions
+         in markdown body. The `context.include` YAML section is for behaviors.
+
+      7. **Circular includes**: Bundle A includes B which includes A.
+         (Already checked structurally, but note if detected)
+
+      8. **Inline providers in root**: Root bundles usually shouldn't hardcode providers -
+         let composing apps or `/bundles/` variants handle provider choice.
+
+      **Read the actual bundle file to check these:**
+      Use the filesystem tool to read {{bundle_path}} and any referenced files.
+
+      **Output Format:**
+      For each gotcha found:
+      - **Gotcha**: Name of the issue
+      - **Location**: File and line/section if possible
+      - **Problem**: Why this is an issue
+      - **Fix**: How to correct it
+
+      If no gotchas found, explicitly state the bundle is clean.
+    output: "gotcha_results"
+    timeout: 300
+    depends_on: ["convention-analysis"]
+
+  # ============================================================================
+  # PHASE 5: Final Report Synthesis
+  # ============================================================================
+
+  - id: "synthesize-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Synthesize all validation results into a comprehensive bundle validation report.
+
+      **Bundle:** {{bundle_path}}
+
+      **Environment Check:**
+      ```json
+      {{env_check}}
+      ```
+
+      **Structural Validation:**
+      ```json
+      {{structural_results}}
+      ```
+
+      **Structure Analysis:**
+      ```json
+      {{structure_analysis}}
+      ```
+
+      **Convention Analysis:**
+      {{convention_results}}
+
+      **Gotcha Detection:**
+      {{gotcha_results}}
+
+      **Generate a report with these sections:**
+
+      ## Bundle Validation Report
+
+      ### Executive Summary
+      - **Overall Verdict**: PASS | FAIL | PASS WITH WARNINGS
+      - **Bundle**: name and version (from structural_results)
+      - **Type**: detected bundle type
+      - **Issues**: X errors, Y warnings, Z suggestions
+
+      ### Structural Validation
+      - Load status (passed/failed)
+      - Namespace registration
+      - Mount plan compilation
+      - Include resolution
+
+      ### Convention Compliance
+      Summary table of convention checks with pass/fail status.
+
+      ### Gotchas Found
+      List any gotchas detected, or "None found" if clean.
+
+      ### Recommendations
+      Prioritized list of actions:
+      1. **Must Fix** (errors that break loading)
+      2. **Should Fix** (convention violations)
+      3. **Consider** (suggestions for improvement)
+
+      ### Metadata
+      - Validated: [timestamp]
+      - Recipe: validate-bundle v1.0.0
+      - Foundation available: yes/no (from env_check)
+
+      Make the report actionable and clear.
+    output: "final_report"
+    timeout: 300
+    depends_on: ["gotcha-detection"]
