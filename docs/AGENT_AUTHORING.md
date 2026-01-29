@@ -108,6 +108,78 @@ meta:
 
 ---
 
+## Description Requirements (Critical)
+
+The `meta.description` field is the **ONLY** discovery mechanism for agents. When the
+task tool presents available agents to the LLM, this description is all it sees to
+decide which agent to use.
+
+**Poor descriptions cause delegation failures.** One-liner descriptions are unacceptable.
+
+### Required Elements
+
+Every agent description MUST include:
+
+#### 1. WHY - The Purpose
+What problem does this agent solve? What value does it provide?
+
+#### 2. WHEN - Activation Triggers  
+Explicit conditions that should cause delegation to this agent.
+Use keywords: MUST, REQUIRED, ALWAYS, PROACTIVELY, "Use when..."
+
+#### 3. WHAT - Domain/Taxonomy Terms
+Keywords and concepts this agent is authoritative on.
+Pattern: `**Authoritative on:** term1, term2, term3, "multi-word concept"`
+
+This serves as the agent's "taxonomy" - terms that should trigger delegation.
+
+#### 4. HOW - Usage Examples
+Concrete examples showing user request → delegation rationale.
+Use `<example>` blocks with `<commentary>` tags.
+
+### Template
+
+```yaml
+meta:
+  name: my-agent
+  description: |
+    [ONE SENTENCE: What this agent does and why it matters]
+    
+    Use PROACTIVELY when [primary trigger condition].
+    
+    **Authoritative on:** [comma-separated domain terms/keywords]
+    
+    **MUST be used for:**
+    - [Condition 1]
+    - [Condition 2]
+    
+    <example>
+    user: '[Example user request]'
+    assistant: 'I'll delegate to [agent] because [reason].'
+    <commentary>
+    [Why this triggers the agent - helps LLMs learn the pattern]
+    </commentary>
+    </example>
+```
+
+### Anti-Patterns
+
+❌ One-liner descriptions: `"Helps with debugging"`
+❌ No trigger conditions: Missing WHEN to use
+❌ No taxonomy terms: LLM can't match domain questions
+❌ No examples: LLM doesn't learn delegation patterns
+
+### Audit Your Agents
+
+Check each agent's description against these criteria:
+- [ ] >100 words (not a one-liner)
+- [ ] Has explicit trigger conditions
+- [ ] Lists domain terms ("Authoritative on:")
+- [ ] Includes at least one example
+- [ ] Explains the value proposition
+
+---
+
 ## Instruction Structure
 
 The markdown body after frontmatter becomes the agent's system prompt. Recommended structure:
