@@ -10,10 +10,10 @@ This context provides patterns for orchestrating multiple agents effectively.
 
 When investigating or analyzing, dispatch multiple agents IN PARALLEL in a single message:
 
-```
-[task agent=foundation:explorer instruction="Survey the authentication module structure"]
-[task agent=lsp-python:python-code-intel instruction="Trace the call hierarchy of authenticate()"]  
-[task agent=foundation:zen-architect instruction="Review auth module for design patterns"]
+```python
+delegate(agent="foundation:explorer", instruction="Survey the authentication module structure")
+delegate(agent="lsp-python:python-code-intel", instruction="Trace the call hierarchy of authenticate()")
+delegate(agent="foundation:zen-architect", instruction="Review auth module for design patterns")
 ```
 
 **Why parallel matters:**
@@ -31,6 +31,61 @@ When investigating or analyzing, dispatch multiple agents IN PARALLEL in a singl
 | **Bug debugging** | `bug-hunter` + `python-code-intel` | Hypothesis-driven debugging + precise call tracing |
 | **Implementation** | `zen-architect` → `modular-builder` → `zen-architect` | Design → implement → review cycle |
 | **Security review** | `security-guardian` + `explorer` + `python-code-intel` | Security patterns + codebase survey + actual data flow |
+
+---
+
+## Multi-Agent Collaboration with Context Sharing
+
+The `context_scope="agents"` parameter enables agents to see each other's work:
+
+```python
+# Agent A works independently
+result_a = delegate(agent="foundation:explorer", instruction="Find all authentication issues",
+                    context_depth="none")
+
+# Agent B sees Agent A's output via context_scope="agents"
+result_b = delegate(agent="foundation:zen-architect", 
+                    instruction="Design fixes for the issues found",
+                    context_scope="agents")  # Can see result_a!
+
+# Agent C sees both A and B
+result_c = delegate(agent="foundation:modular-builder",
+                    instruction="Implement the designed fixes",
+                    context_scope="agents")  # Sees both previous agent results
+```
+
+### Context Scope for Collaboration
+
+| Scope | Agents See | Best For |
+|-------|------------|----------|
+| `"conversation"` | User/assistant text only | Independent work |
+| `"agents"` | + delegate tool results | Multi-agent collaboration |
+| `"full"` | + ALL tool results | Complete context sharing |
+
+---
+
+## Session Resumption for Iterative Work
+
+Delegate returns `short_id` for easy session management:
+
+```python
+# Round 1 - Initial analysis
+analyst = delegate(agent="foundation:analyst", instruction="Analyze the problem")
+critic = delegate(agent="foundation:critic", 
+                  instruction=f"Critique: {analyst.response}",
+                  context_scope="agents")
+
+# Round 2 - Resume sessions using short IDs
+analyst2 = delegate(session_id=analyst.short_id, 
+                    instruction=f"Address feedback: {critic.response}")
+critic2 = delegate(session_id=critic.short_id,
+                   instruction="Review the revision")
+
+# Continue rounds until convergence
+while not is_converged(analyst_result, critic_result):
+    analyst_result = delegate(session_id=analyst.short_id, ...)
+    critic_result = delegate(session_id=critic.short_id, ...)
+```
 
 ---
 
@@ -97,3 +152,44 @@ For under-specified tasks, use this workflow:
 
 ✅ "Use modular-builder to add the `validate_email()` method to `validators.py` following the pattern of `validate_username()`"
    → Note: Last example has enough detail to skip zen-architect
+
+---
+
+## Creative Patterns
+
+### Agent Chain with Accumulated Knowledge
+
+Each agent sees all previous agents' work:
+
+```python
+delegate(agent="foundation:explorer", instruction="Survey", context_depth="none")
+delegate(agent="foundation:analyst", instruction="Analyze", context_scope="agents")
+delegate(agent="foundation:architect", instruction="Design", context_scope="agents")
+delegate(agent="foundation:builder", instruction="Implement", context_scope="agents")
+```
+
+### Parallel Investigation with Synthesis
+
+```python
+# Parallel - independent work (context_depth="none")
+r1 = delegate(agent="foundation:explorer", instruction="Check frontend", context_depth="none")
+r2 = delegate(agent="foundation:explorer", instruction="Check backend", context_depth="none")
+r3 = delegate(agent="foundation:explorer", instruction="Check database", context_depth="none")
+
+# Synthesizer sees all their results
+delegate(agent="foundation:architect", 
+         instruction=f"Synthesize: {r1.response}, {r2.response}, {r3.response}",
+         context_scope="agents")
+```
+
+### Self-Delegation for Token Management
+
+When your session is getting full, spawn yourself to continue:
+
+```python
+delegate(agent="self", instruction="Continue the analysis in depth",
+         context_depth="all", context_scope="full")
+# Returns summary, main session stays lean
+```
+
+**Recommended for self-delegation:** `context_depth="all", context_scope="full"` - the sub-instance should see everything to avoid re-doing work.
