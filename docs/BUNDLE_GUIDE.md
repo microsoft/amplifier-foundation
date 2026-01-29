@@ -703,12 +703,54 @@ context:
 
 **Why it's wrong**: When loaded via `#subdirectory=X`, the bundle root IS `X/`. Paths are relative to that root, so including the subdirectory in the path duplicates it.
 
-### ⚠️ Prefer @mentions Over context.include in bundle.md (Convention)
+### Understanding `context.include` vs `@mentions` - They Have Different Semantics!
 
-> **Note**: Both patterns are supported by the code. This is a **convention recommendation**, not a code requirement.
+These two patterns are **NOT interchangeable** - they have fundamentally different composition behavior:
 
+| Pattern | Composition Behavior | Use When |
+|---------|---------------------|----------|
+| `context.include` | **ACCUMULATES** - content propagates to including bundles | Behaviors that inject context into parents |
+| `@mentions` | **REPLACES** - stays with this instruction only | Direct references in your own instruction |
+
+#### How `context.include` Works (bundle.py:174-186)
+
+When Bundle A includes Bundle B, **all context from both bundles merges**:
+
+```python
+# During compose(): context ACCUMULATES
+for key, path in other.context.items():
+    result.context[prefixed_key] = path  # Added to composed result!
+```
+
+Content is **appended** to the system prompt with `# Context: {name}` headers.
+
+#### How `@mentions` Work (bundle.py:958-977)
+
+@mentions are resolved from the **final instruction** and content is **prepended** as XML:
+
+```xml
+<context_file paths="@my-bundle:context/file.md → /abs/path">
+[file content]
+</context_file>
+
+---
+
+[instruction with @mention still present as semantic reference]
+```
+
+#### When to Use Each Pattern
+
+**Use `context.include` in behaviors (`.yaml` files):**
+```yaml
+# behaviors/my-behavior.yaml
+# This context will propagate to ANY bundle that includes this behavior
+context:
+  include:
+    - my-bundle:context/behavior-instructions.md
+```
+
+**Use `@mentions` in root bundles (`.md` files):**
 ```markdown
-<!-- RECOMMENDED in bundle.md -->
 ---
 bundle:
   name: my-bundle
@@ -716,23 +758,20 @@ bundle:
 
 # Instructions
 
-@my-bundle:context/instructions.md    # ✅ Preferred: inline in markdown body
+@my-bundle:context/my-instructions.md    # Stays with THIS instruction
 ```
 
-```markdown
-<!-- ALSO VALID but less common in bundle.md -->
----
-bundle:
-  name: my-bundle
-context:                              # ⚠️ Works, but typically used in behaviors
-  include:
-    - my-bundle:context/instructions.md
----
+#### Why This Matters
 
-# Instructions here
-```
+If you use `context.include` in a root bundle.md:
+- That context will propagate to any bundle that includes yours
+- May not be what you intended for a "final" bundle
 
-**Recommendation**: Use `@mentions` in the markdown body for bundle.md files. The `context.include` YAML section is more commonly used in `behaviors/*.yaml` files that programmatically inject context into bundles that include them. However, **both patterns work correctly** - choose based on your preference and consistency needs.
+If you use `@mentions` in a behavior:
+- The instruction (containing the @mention) **replaces** during composition
+- Your @mention may get overwritten by the including bundle's instruction
+
+**The pattern exists for a reason**: Behaviors use `context.include` because they WANT their context to propagate. Root bundles use `@mentions` because they're the final instruction.
 
 ### ❌ force-include Shadowing Python Namespace
 
