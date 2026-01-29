@@ -16,7 +16,7 @@ includes:
   - bundle: foundation:behaviors/redaction
   - bundle: foundation:behaviors/todo-reminder
   - bundle: foundation:behaviors/streaming-ui
-  - bundle: foundation:behaviors/agents
+  - bundle: foundation:behaviors/tasks  # Legacy task tool behavior (for new delegate tool, use exp-foundation)
   # External bundles
   - bundle: git+https://github.com/microsoft/amplifier-bundle-recipes@main#subdirectory=behaviors/recipes.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-design-intelligence@main#subdirectory=behaviors/design-intelligence.yaml

@@ -2,19 +2,19 @@ bundle:
   name: behavior-agents
   version: 2.0.0
   description: |
-    Agent orchestration capability - delegate tool and delegation patterns.
-    Provides the infrastructure for agent delegation without specifying
-    which agents to include. Agent selection is owned by root bundles
-    and other behaviors that compose this one.
+    Agent orchestration capability with enhanced delegate tool.
     
     Features:
     - Two-parameter context inheritance (depth + scope)
     - Short session ID resolution (6+ chars)
     - Fixed tool inheritance (agent declarations honored)
     - Multi-agent collaboration patterns
+    
+    Note: This behavior uses the NEW delegate tool. For legacy task tool,
+    use the 'tasks' behavior instead.
 
 tools:
-  # New delegate tool - recommended for new development
+  # New delegate tool with enhanced features
   - module: tool-delegate
     source: ./modules/tool-delegate
     config:
@@ -32,13 +32,6 @@ tools:
         exclude_tools: [delegate]  # Spawned agents can't further delegate by default
         exclude_hooks: []
         timeout: 300
-
-  # Legacy task tool - maintained for backwards compatibility
-  # Consider migrating to delegate tool for new features
-  - module: tool-task
-    source: git+https://github.com/microsoft/amplifier-module-tool-task@main
-    config:
-      exclude_tools: [tool-task, delegate]  # Prevent both tools from spawning
 
 context:
   include:

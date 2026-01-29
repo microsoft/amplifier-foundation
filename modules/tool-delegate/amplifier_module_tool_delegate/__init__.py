@@ -124,14 +124,74 @@ class DelegateTool:
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
         self.timeout: int = settings.get("timeout", 300)
 
+        # Build feature registry for dynamic description composition
+        self._feature_registry = self._build_feature_registry()
+
+    def _build_feature_registry(self) -> list[dict[str, Any]]:
+        """Build registry of features with their descriptions.
+
+        Each feature has:
+        - name: Feature identifier
+        - enabled: Whether the feature is enabled
+        - description: Text to include in tool description when enabled
+        - disabled_note: Optional text when feature is disabled
+
+        Returns:
+            List of feature definitions
+        """
+        return [
+            {
+                "name": "self_delegation",
+                "enabled": self.self_delegation_enabled,
+                "description": '- agent="self": Spawn yourself as a sub-agent (maximum token conservation)',
+                "disabled_note": None,
+            },
+            {
+                "name": "session_resume",
+                "enabled": self.session_resume_enabled,
+                "description": "- Use session_id to resume an existing agent session (supports 6+ char prefixes)",
+                "disabled_note": "- Session resumption is disabled",
+            },
+            {
+                "name": "context_inheritance",
+                "enabled": self.context_inheritance_enabled,
+                "description": """Context control (two independent parameters):
+- context_depth: HOW MUCH context - "none" (clean slate), "recent" (last N turns), "all" (full history)
+- context_scope: WHICH content - "conversation" (text only), "agents" (+ agent results), "full" (+ all tools)""",
+                "disabled_note": "- Context inheritance is disabled (agents always start fresh)",
+            },
+            {
+                "name": "provider_selection",
+                "enabled": self.provider_selection_enabled,
+                "description": "- Use provider_preferences to specify model/provider for the agent",
+                "disabled_note": None,
+            },
+        ]
+
+    def _compose_feature_descriptions(self) -> str:
+        """Compose feature descriptions based on enabled state.
+
+        Returns:
+            Composed feature description text
+        """
+        lines = []
+        for feature in self._feature_registry:
+            if feature["enabled"]:
+                lines.append(feature["description"])
+            elif feature.get("disabled_note"):
+                lines.append(feature["disabled_note"])
+        return "\n".join(lines)
+
     @property
     def description(self) -> str:
-        """Generate dynamic description with available agents.
+        """Generate dynamic description with available agents and enabled features.
 
-        Queries the agent registry to provide an up-to-date list
-        of available agents in the tool description.
+        Composes description based on:
+        1. Enabled features from config
+        2. Available agents from registry
         """
         agents_list = self._get_agent_list()
+        feature_desc = self._compose_feature_descriptions()
 
         base_description = """Spawn a specialized agent to handle complex, multi-step tasks autonomously.
 
@@ -142,18 +202,22 @@ the summary to you. Prefer agent delegation for:
 - Tasks matching an agent's specialty
 
 Special agent values:
-- agent="self": Spawn yourself as a sub-agent (maximum token conservation)
-- agent="namespace:path/to/bundle": Delegate to any bundle directly as an agent
+- agent="namespace:path/to/bundle": Delegate to any bundle directly as an agent"""
 
-Context control (two independent parameters):
-- context_depth: HOW MUCH context - "none" (clean slate), "recent" (last N turns), "all" (full history)
-- context_scope: WHICH content - "conversation" (text only), "agents" (+ agent results), "full" (+ all tools)
+        # Add self-delegation if enabled
+        if self.self_delegation_enabled:
+            base_description += '\n- agent="self": Spawn yourself as a sub-agent (maximum token conservation)'
+
+        # Add feature-based sections
+        base_description += f"\n\n{feature_desc}"
+
+        # Add usage notes
+        base_description += """
 
 Agent usage notes:
 - Launch multiple agents concurrently when tasks are independent
 - When an agent completes, it returns a single message back to you
-- Each agent invocation is stateless - provide complete context in your instruction
-- Use session_id to resume an existing agent session (supports 6+ char prefixes)"""
+- Each agent invocation is stateless - provide complete context in your instruction"""
 
         if agents_list:
             agent_desc = "\n".join(

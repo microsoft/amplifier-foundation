@@ -46,9 +46,51 @@ Before attempting ANY of the following yourself, you MUST delegate:
 
 ---
 
+## The Context Sink Pattern
+
+**Agents are context sinks** - they absorb the token cost of exploration and return only distilled insights.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Root Session (YOUR context)                                │
+│  - Orchestration decisions                                  │
+│  - User interaction                                         │
+│  - ~500 token summaries from agents                         │
+└────────────────────────┬────────────────────────────────────┘
+                         │ delegate()
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Agent Session (AGENT's context)                            │
+│  - Heavy @-mentioned documentation                          │
+│  - 20+ file reads (~20k tokens)                             │
+│  - Specialized tools and analysis                           │
+│  - Returns: concise summary to parent                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Why This Matters
+
+| Without Context Sink | With Context Sink |
+|---------------------|-------------------|
+| 20 file reads = 20k tokens in YOUR context | 20 file reads in AGENT context |
+| Session fills quickly | Session stays lean |
+| Can't run long tasks | Can orchestrate for hours |
+| Loses history to compaction | Preserves important history |
+
+### Applying the Pattern
+
+1. **Expert agents carry heavy docs** - @-mentioned documentation loads in THEIR context
+2. **Root sessions get thin pointers** - "This capability exists, delegate to X"
+3. **Zero partial knowledge** - If capability isn't composed, zero context about it
+4. **Summarize, don't relay** - Agents return insights, not raw data
+
+---
+
 ## Why Delegation Matters
 
-Agents are **context sinks** that provide critical benefits:
+Agents as **context sinks** provide critical benefits:
 
 1. **Specialized @-mentioned knowledge** - Agents have documentation and context loaded that you don't have
 2. **Token efficiency** - Their work consumes THEIR context, not the main session's
