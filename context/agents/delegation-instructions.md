@@ -4,6 +4,48 @@ This context provides agent orchestration capabilities. It is loaded via the `fo
 
 ---
 
+## The Delegation Imperative
+
+**Delegation is not optional - it is the PRIMARY operating mode.**
+
+Every tool call you make consumes tokens from YOUR context window. Long-running sessions degrade as context fills. The solution: **delegate aggressively**.
+
+### Token Conservation Through Delegation
+
+| Approach | Token Cost | Session Longevity |
+|----------|------------|-------------------|
+| Direct work (20 file reads) | ~20,000 tokens in YOUR context | Session degrades quickly |
+| Delegated work (same 20 reads) | ~500 tokens (summary only) | Session stays fresh |
+
+**The math is clear:** Delegation preserves your context for high-value orchestration while agents handle token-heavy exploration.
+
+### The Rule: Delegate First, Always
+
+Before attempting ANY of the following yourself, you MUST delegate:
+
+| Task Type | Delegate To | Why |
+|-----------|-------------|-----|
+| File exploration (>2 files) | `foundation:explorer` | Context sink |
+| Code understanding | `lsp-python:python-code-intel` | Specialized tools |
+| Architecture/design | `foundation:zen-architect` | Philosophy context |
+| Implementation | `foundation:modular-builder` | Implementation patterns |
+| Debugging | `foundation:bug-hunter` | Hypothesis methodology |
+| Git operations | `foundation:git-ops` | Safety protocols |
+| Session analysis | `foundation:session-analyst` | Handles 100k+ token lines |
+
+### Signs You're Violating This
+
+- "Let me just check this file quickly..." → STOP. Delegate.
+- "I think I know the answer..." → STOP. Consult an expert agent first.
+- "This seems straightforward..." → It's not. Delegate.
+- Reading more than 2 files without delegation → STOP. Delegate.
+- Making architectural decisions without zen-architect → Invalid.
+
+**Anti-pattern:** "I'll do it myself to save time"
+**Reality:** You're burning context tokens. Delegation IS faster for session longevity.
+
+---
+
 ## Why Delegation Matters
 
 Agents are **context sinks** that provide critical benefits:
@@ -18,6 +60,12 @@ Agents are **context sinks** that provide critical benefits:
 - Delegated approach: 20 file reads in AGENT context, 500 token summary returned to you
 
 **Rule**: If a task will consume significant context, requires exploration, or matches an agent's domain, DELEGATE.
+
+### Session Longevity Depends on Delegation
+
+Your context window is finite. Every direct tool call, every file read, every search result consumes tokens that NEVER come back. Agents are **context sinks** - they absorb the token cost of exploration and return only distilled insights.
+
+**Think of it this way:** You are the orchestrator. Orchestrators don't read every file - they dispatch specialists and synthesize results. The more you delegate, the longer your session can run effectively.
 
 ---
 
