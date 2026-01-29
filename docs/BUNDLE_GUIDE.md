@@ -703,23 +703,12 @@ context:
 
 **Why it's wrong**: When loaded via `#subdirectory=X`, the bundle root IS `X/`. Paths are relative to that root, so including the subdirectory in the path duplicates it.
 
-### ❌ Using context.include in bundle.md Instead of @mentions
+### ⚠️ Prefer @mentions Over context.include in bundle.md (Convention)
+
+> **Note**: Both patterns are supported by the code. This is a **convention recommendation**, not a code requirement.
 
 ```markdown
-<!-- DON'T DO THIS in bundle.md -->
----
-bundle:
-  name: my-bundle
-context:                              # ❌ This is for behavior YAML files
-  include:
-    - my-bundle:context/instructions.md
----
-
-# Instructions here
-```
-
-```markdown
-<!-- DO THIS in bundle.md -->
+<!-- RECOMMENDED in bundle.md -->
 ---
 bundle:
   name: my-bundle
@@ -727,10 +716,23 @@ bundle:
 
 # Instructions
 
-@my-bundle:context/instructions.md    # ✅ Use @mention in markdown body
+@my-bundle:context/instructions.md    # ✅ Preferred: inline in markdown body
 ```
 
-**Why it's wrong**: The `context.include` YAML section is the **behavior pattern** - it's meant for `behaviors/*.yaml` files that programmatically inject context into bundles that include them. Main `bundle.md` files should use `@mentions` directly in the markdown body.
+```markdown
+<!-- ALSO VALID but less common in bundle.md -->
+---
+bundle:
+  name: my-bundle
+context:                              # ⚠️ Works, but typically used in behaviors
+  include:
+    - my-bundle:context/instructions.md
+---
+
+# Instructions here
+```
+
+**Recommendation**: Use `@mentions` in the markdown body for bundle.md files. The `context.include` YAML section is more commonly used in `behaviors/*.yaml` files that programmatically inject context into bundles that include them. However, **both patterns work correctly** - choose based on your preference and consistency needs.
 
 ### ❌ force-include Shadowing Python Namespace
 
