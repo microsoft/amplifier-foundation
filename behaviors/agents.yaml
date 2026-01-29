@@ -1,0 +1,19 @@
+bundle:
+  name: behavior-agents
+  version: 1.0.0
+  description: |
+    Agent orchestration capability - task tool and delegation patterns.
+    Provides the infrastructure for agent delegation without specifying
+    which agents to include. Agent selection is owned by root bundles
+    and other behaviors that compose this one.
+
+tools:
+  - module: tool-task
+    source: git+https://github.com/microsoft/amplifier-module-tool-task@main
+    config:
+      exclude_tools: [tool-task]
+
+context:
+  include:
+    - foundation:context/agents/delegation-instructions.md
+    - foundation:context/agents/multi-agent-patterns.md
