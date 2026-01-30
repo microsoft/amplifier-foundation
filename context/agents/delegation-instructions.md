@@ -46,9 +46,51 @@ Before attempting ANY of the following yourself, you MUST delegate:
 
 ---
 
+## The Context Sink Pattern
+
+**Agents are context sinks** - they absorb the token cost of exploration and return only distilled insights.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Root Session (YOUR context)                                │
+│  - Orchestration decisions                                  │
+│  - User interaction                                         │
+│  - ~500 token summaries from agents                         │
+└────────────────────────┬────────────────────────────────────┘
+                         │ delegate()
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Agent Session (AGENT's context)                            │
+│  - Heavy @-mentioned documentation                          │
+│  - 20+ file reads (~20k tokens)                             │
+│  - Specialized tools and analysis                           │
+│  - Returns: concise summary to parent                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Why This Matters
+
+| Without Context Sink | With Context Sink |
+|---------------------|-------------------|
+| 20 file reads = 20k tokens in YOUR context | 20 file reads in AGENT context |
+| Session fills quickly | Session stays lean |
+| Can't run long tasks | Can orchestrate for hours |
+| Loses history to compaction | Preserves important history |
+
+### Applying the Pattern
+
+1. **Expert agents carry heavy docs** - @-mentioned documentation loads in THEIR context
+2. **Root sessions get thin pointers** - "This capability exists, delegate to X"
+3. **Zero partial knowledge** - If capability isn't composed, zero context about it
+4. **Summarize, don't relay** - Agents return insights, not raw data
+
+---
+
 ## Why Delegation Matters
 
-Agents are **context sinks** that provide critical benefits:
+Agents as **context sinks** provide critical benefits:
 
 1. **Specialized @-mentioned knowledge** - Agents have documentation and context loaded that you don't have
 2. **Token efficiency** - Their work consumes THEIR context, not the main session's
@@ -89,76 +131,91 @@ Agent domain claims are authoritative. The agent descriptions contain expertise 
 
 ---
 
-## Task Tool Usage
+## Delegate Tool Usage
 
-- When doing file search, prefer to use the task tool in order to reduce context usage.
-- You should proactively use the task tool with specialized agents when the task at hand matches the agent's description.
-- If the user specifies that they want you to run tools "in parallel", you MUST send a single message with multiple tool use content blocks.
-- **Git operations**: ALWAYS delegate git operations to `foundation:git-ops` including:
-  - Commits and PRs (creates quality messages with context, has safety protocols)
-  - Multi-repo sync operations (fetch, pull, status checks)
-  - Branch management and conflict resolution
-  
-  When delegating, pass context: what was accomplished, files changed, and intent.
+The `delegate` tool spawns specialized agents for autonomous task handling.
 
-- VERY IMPORTANT: When exploring local files (codebase, etc.) to gather context or to answer a question that is not a needle query for a specific file/class/function, it is CRITICAL that you use the task tool with agent=foundation:explorer instead of running search commands directly.
+### Basic Delegation
 
----
-
-## Context Management for Agent Delegation
-
-### Default: Clean Context (Preferred)
-
-By default, agents start with clean context (no main conversation history).
-This provides:
-- Focused, unbiased execution
-- Token efficiency (agent work doesn't consume main session tokens)
-- Fresh context space for agent
-- Parallel execution capability
-
-**Use clean context for:**
-- Independent tasks
-- Initial delegations
-- Parallel agent execution
-- Tasks with explicit specifications
-
-### Context Inheritance: When to Use
-
-Override default with `inherit_context` when agent needs recent discussion context:
-
-**Good for:**
-- Follow-up questions building on recent work ("analyze the design we just discussed")
-- Iterative refinement with user feedback from conversation
-- Meta-analysis tasks (analyzing the conversation itself)
-
-**Avoid for:**
-- Initial calls (no prior context needed)
-- Independent tasks (specification is sufficient)
-- Parallel execution (agents should be independent)
-
-**Usage:**
 ```python
-task(agent="foundation:zen-architect",
-     instruction="Analyze failure modes in the design we discussed",
-     inherit_context="recent",
-     inherit_context_turns=3)
+delegate(agent="foundation:explorer", instruction="Survey the authentication module")
 ```
 
-**Prefer `recent` (3-5 turns) over `all`** - keeps tokens reasonable.
+### Special Agent Values
+
+- `agent="self"` - Spawn yourself as a sub-agent (maximum token conservation)
+- `agent="namespace:path/to/bundle"` - Delegate to any bundle directly
+
+### Context Control (Two Independent Parameters)
+
+The delegate tool provides fine-grained control over context inheritance:
+
+**Parameter 1: `context_depth`** - HOW MUCH context to inherit
+
+| Value | Behavior |
+|-------|----------|
+| `"none"` | Clean slate - agent starts fresh (use for independent tasks) |
+| `"recent"` | Last N turns (default, controlled by `context_turns`) |
+| `"all"` | Full conversation history |
+
+**Parameter 2: `context_scope`** - WHICH content to include
+
+| Value | What's Included |
+|-------|-----------------|
+| `"conversation"` | User/assistant text only (default, safest) |
+| `"agents"` | + results from delegate tool calls (for multi-agent collaboration) |
+| `"full"` | + ALL tool results (complete context mirror) |
+
+### Context Usage Examples
+
+```python
+# Default: Recent conversation text (most common)
+delegate(agent="foundation:explorer", instruction="...")
+
+# Independent task - fresh perspective
+delegate(agent="foundation:zen-architect", instruction="Review design",
+         context_depth="none")
+
+# Multi-agent collaboration - agent B sees agent A's output
+delegate(agent="foundation:architect", instruction="Design based on findings",
+         context_scope="agents")
+
+# Self-delegation with full context (recommended for "self")
+delegate(agent="self", instruction="Continue this analysis",
+         context_depth="all", context_scope="full")
+
+# Debugging - bug-hunter needs to see everything
+delegate(agent="foundation:bug-hunter", instruction="Why did this fail?",
+         context_depth="all", context_scope="full")
+```
+
+### Git Operations
+
+**ALWAYS delegate git operations to `foundation:git-ops`** including:
+- Commits and PRs (creates quality messages with context, has safety protocols)
+- Multi-repo sync operations (fetch, pull, status checks)
+- Branch management and conflict resolution
+
+When delegating, pass context: what was accomplished, files changed, and intent.
 
 ---
 
-## Follow-up Sessions
+## Session Resumption
 
-You can resume agent sessions to continue work or ask follow-up questions:
+Delegate returns a `short_id` (6-8 characters) for easy session resume:
 
+```python
+# Initial delegation
+result = delegate(agent="foundation:explorer", instruction="Survey codebase")
+# result.short_id = "a3f2b8"
+
+# Resume with short ID
+delegate(session_id="a3f2b8", instruction="Now also check the tests")
 ```
-[task session_id="previous-session-id" instruction="Now also check for edge cases"]
-```
 
-Use follow-ups when:
+Use session resumption when:
 - Initial findings need deeper investigation
-- You want the same agent to continue with accumulated context
+- You want the agent to continue with accumulated context
 - Breaking a large task into progressive refinements
 
 ---
@@ -167,10 +224,11 @@ Use follow-ups when:
 
 For large codebases or complex investigations, dispatch MULTIPLE instances of the same agent with different scopes:
 
-```
-[task agent=foundation:explorer instruction="Survey the auth/ directory"]
-[task agent=foundation:explorer instruction="Survey the api/ directory"]  
-[task agent=foundation:explorer instruction="Survey the models/ directory"]
+```python
+# Parallel dispatch - independent surveys
+delegate(agent="foundation:explorer", instruction="Survey auth/", context_depth="none")
+delegate(agent="foundation:explorer", instruction="Survey api/", context_depth="none")
+delegate(agent="foundation:explorer", instruction="Survey models/", context_depth="none")
 ```
 
 **When to scale:**

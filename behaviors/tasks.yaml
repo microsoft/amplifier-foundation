@@ -1,0 +1,19 @@
+bundle:
+  name: behavior-tasks
+  version: 1.0.0
+  description: |
+    Legacy task tool behavior for backwards compatibility.
+    For new development, consider using the 'agents' behavior with the
+    enhanced delegate tool (two-parameter context, short session IDs, etc.)
+
+tools:
+  # Legacy task tool - maintained for backwards compatibility
+  - module: tool-task
+    source: git+https://github.com/microsoft/amplifier-module-tool-task@main
+    config:
+      exclude_tools: [tool-task]
+
+context:
+  include:
+    - foundation:context/agents/delegation-instructions.md
+    - foundation:context/agents/multi-agent-patterns.md
