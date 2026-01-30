@@ -48,7 +48,6 @@ All experimental bundles use the `exp-` prefix:
 
 **How to Use:**
 ```bash
-amplifier bundle add foundation:experiments/exp-foundation --name exp-foundation
 amplifier bundle use exp-foundation
 ```
 
@@ -63,7 +62,6 @@ amplifier bundle use exp-foundation
 
 **How to Use:**
 ```bash
-amplifier bundle add foundation:experiments/exp-amplifier-dev --name exp-amplifier-dev
 amplifier bundle use exp-amplifier-dev
 ```
 
