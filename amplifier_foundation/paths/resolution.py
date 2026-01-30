@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+# Precompiled regex for parsing git+https:// URI paths.
+# Extracts path and optional ref (branch/tag) from patterns like /org/repo@feat/branch
+# - 'path' group: repository path (everything before @)
+# - 'ref' group: optional branch/tag/commit (everything after @, can contain slashes)
+_GIT_PATH_PATTERN = re.compile(r"^(?P<path>[^@]+)(?:@(?P<ref>.+))?$")
+
 
 def get_amplifier_home() -> Path:
     """Get the Amplifier home directory.
@@ -217,15 +223,17 @@ def _parse_vcs_uri(uri: str, prefix: str) -> ParsedURI:
 
     parsed = urlparse(uri_without_prefix)
 
-    # Extract ref from path (e.g., /org/repo@main)
+    # Extract path and optional ref (e.g., /org/repo@main or /org/repo@feat/branch)
+    # Only git+ URIs support @ref syntax - zip archives don't have branches
+    # Default ref to "main" when not specified for git+ URIs
     path = parsed.path
     ref = ""
 
-    if "@" in path:
-        match = re.match(r"^([^@]+)@([^/]+)$", path)
+    if prefix == "git+":
+        match = _GIT_PATH_PATTERN.match(path)
         if match:
-            path = match.group(1)
-            ref = match.group(2)
+            path = match.group("path")
+            ref = match.group("ref") or "main"
 
     return ParsedURI(
         scheme=prefix + parsed.scheme,

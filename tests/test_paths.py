@@ -19,9 +19,72 @@ class TestParseUri:
         assert result.path == "/user/repo"
         assert result.ref == "main"
 
+    def test_git_https_uri_with_slash_in_branch_name(self) -> None:
+        """Parses git+https:// URIs with branch names containing slashes.
+
+        Branch naming conventions like feat/, fix/, bugfix/ are standard.
+        The ref pattern must allow slashes in the branch name portion.
+        Regression test for: https://github.com/microsoft-amplifier/amplifier-support/issues/15
+        """
+        # feat/ prefix (common feature branch pattern)
+        result = parse_uri(
+            "git+https://github.com/robotdad/amplifier-module-provider-openai@feat/deep-research-support"
+        )
+        assert result.scheme == "git+https"
+        assert result.host == "github.com"
+        assert result.path == "/robotdad/amplifier-module-provider-openai"
+        assert result.ref == "feat/deep-research-support"
+
+        # fix/ prefix
+        result = parse_uri("git+https://github.com/user/repo@fix/critical-bug")
+        assert result.ref == "fix/critical-bug"
+
+        # Multiple slashes in branch name
+        result = parse_uri("git+https://github.com/org/repo@feature/2026/q1-release")
+        assert result.ref == "feature/2026/q1-release"
+
+        # bugfix/ prefix
+        result = parse_uri(
+            "git+https://github.com/org/repo@bugfix/issue-123/memory-leak"
+        )
+        assert result.ref == "bugfix/issue-123/memory-leak"
+
+    def test_git_https_uri_with_slash_branch_and_subdirectory(self) -> None:
+        """Parses git+https:// URIs with slashes in branch AND subdirectory fragment.
+
+        Ensures both ref and subpath are correctly parsed when branch has slashes.
+        """
+        result = parse_uri(
+            "git+https://github.com/org/repo@feat/new-feature#subdirectory=bundles/foundation"
+        )
+        assert result.scheme == "git+https"
+        assert result.host == "github.com"
+        assert result.path == "/org/repo"
+        assert result.ref == "feat/new-feature"
+        assert result.subpath == "bundles/foundation"
+
+    def test_git_https_uri_without_ref_defaults_to_main(self) -> None:
+        """Git URIs without explicit ref default to 'main' branch.
+
+        When no @ref is specified, the parser assumes 'main' as the default branch.
+        """
+        result = parse_uri("git+https://github.com/user/repo")
+        assert result.scheme == "git+https"
+        assert result.host == "github.com"
+        assert result.path == "/user/repo"
+        assert result.ref == "main"  # Default when not specified
+
+        # With subdirectory but no ref - should still default to main
+        result = parse_uri("git+https://github.com/org/repo#subdirectory=bundles/core")
+        assert result.path == "/org/repo"
+        assert result.ref == "main"
+        assert result.subpath == "bundles/core"
+
     def test_git_uri_with_subdirectory_fragment(self) -> None:
         """Parses git URI with pip/uv standard #subdirectory= fragment."""
-        result = parse_uri("git+https://github.com/org/repo@main#subdirectory=bundles/foundation")
+        result = parse_uri(
+            "git+https://github.com/org/repo@main#subdirectory=bundles/foundation"
+        )
         assert result.scheme == "git+https"
         assert result.host == "github.com"
         assert result.path == "/org/repo"
@@ -30,7 +93,9 @@ class TestParseUri:
 
     def test_zip_https_uri(self) -> None:
         """Parses zip+https:// URIs."""
-        result = parse_uri("zip+https://releases.example.com/bundle.zip#subdirectory=foundation")
+        result = parse_uri(
+            "zip+https://releases.example.com/bundle.zip#subdirectory=foundation"
+        )
         assert result.scheme == "zip+https"
         assert result.host == "releases.example.com"
         assert result.path == "/bundle.zip"
