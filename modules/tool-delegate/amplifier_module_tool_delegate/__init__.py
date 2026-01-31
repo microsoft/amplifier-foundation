@@ -450,33 +450,12 @@ Agent usage notes:
         sanitized = []
         agent_tools = {"delegate", "task"}
 
-        # First pass: Build mapping of tool_call_id -> tool_name
-        # Tool results only have tool_call_id, name is in the assistant message
-        tool_call_names: dict[str, str] = {}
-        for msg in messages:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg.get("tool_calls", []):
-                    tc_id = tc.get("id", "")
-                    # Handle both OpenAI format (function.name) and flat format (name)
-                    tc_name = tc.get("function", {}).get("name", "") or tc.get(
-                        "name", ""
-                    )
-                    if tc_id and tc_name:
-                        tool_call_names[tc_id] = tc_name
-
-        # Second pass: Process messages
         for msg in messages:
             role = msg.get("role")
 
             # Include tool results only from agent tools
             if role == "tool":
-                # Try direct name field first (some formats include it)
                 tool_name = msg.get("name", "")
-                # Fall back to looking up by tool_call_id
-                if not tool_name:
-                    tool_call_id = msg.get("tool_call_id", "")
-                    tool_name = tool_call_names.get(tool_call_id, "")
-
                 if tool_name in agent_tools:
                     content = msg.get("content", "")
                     if content:
@@ -489,19 +468,9 @@ Agent usage notes:
                         )
                 continue
 
-            # Skip tool result messages without role="tool" (some formats use tool_call_id)
             if msg.get("tool_call_id"):
-                tool_call_id = msg.get("tool_call_id", "")
-                tool_name = tool_call_names.get(tool_call_id, "")
-                if tool_name in agent_tools:
-                    content = msg.get("content", "")
-                    if content:
-                        sanitized.append(
-                            {
-                                "role": "assistant",
-                                "content": f"[Agent Result from {tool_name}]: {content}",
-                            }
-                        )
+                # Check if this is a result from an agent tool
+                # Tool call ID doesn't tell us the tool name, so skip
                 continue
 
             # User and assistant messages

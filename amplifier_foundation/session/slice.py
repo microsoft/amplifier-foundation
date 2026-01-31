@@ -97,13 +97,14 @@ def slice_to_turn(
 
     if turn > max_turns:
         raise ValueError(
-            f"Turn {turn} exceeds max turns ({max_turns}). "
-            f"Valid range: 1-{max_turns}"
+            f"Turn {turn} exceeds max turns ({max_turns}). Valid range: 1-{max_turns}"
         )
 
     # Find end index: start of turn N+1, or end of messages
     if turn < max_turns:
-        end_idx = boundaries[turn]  # Start of next turn (0-indexed, so turn N+1 = boundaries[turn])
+        end_idx = boundaries[
+            turn
+        ]  # Start of next turn (0-indexed, so turn N+1 = boundaries[turn])
     else:
         end_idx = len(messages)  # Include all messages
 
@@ -182,18 +183,44 @@ def add_synthetic_tool_results(
     if not orphaned_ids:
         return messages
 
+    # Build mapping of tool_call_id -> tool_name from assistant messages
+    tool_names: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            # Handle OpenAI format: tool_calls array
+            for tc in msg.get("tool_calls", []):
+                tc_id = tc.get("id", "")
+                tc_name = tc.get("function", {}).get("name", "") or tc.get("name", "")
+                if tc_id and tc_name:
+                    tool_names[tc_id] = tc_name
+            # Handle Anthropic format: content blocks with tool_use
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tc_id = block.get("id", "")
+                        tc_name = block.get("name", "")
+                        if tc_id and tc_name:
+                            tool_names[tc_id] = tc_name
+
     result = list(messages)
     for tool_id in orphaned_ids:
-        result.append({
+        tool_name = tool_names.get(tool_id)
+        msg: dict[str, Any] = {
             "role": "tool",
             "tool_call_id": tool_id,
-            "content": json.dumps({
-                "error": "Tool execution interrupted by session fork",
-                "forked": True,
-                "message": "This tool call was in progress when the session was forked. "
-                           "The result is not available in this forked session."
-            }),
-        })
+            "content": json.dumps(
+                {
+                    "error": "Tool execution interrupted by session fork",
+                    "forked": True,
+                    "message": "This tool call was in progress when the session was forked. "
+                    "The result is not available in this forked session.",
+                }
+            ),
+        }
+        if tool_name:
+            msg["name"] = tool_name
+        result.append(msg)
     return result
 
 
@@ -223,7 +250,8 @@ def _remove_orphaned_tool_calls(
             # Filter tool_calls array
             if "tool_calls" in new_msg:
                 new_msg["tool_calls"] = [
-                    tc for tc in new_msg["tool_calls"]
+                    tc
+                    for tc in new_msg["tool_calls"]
                     if tc.get("id") not in orphaned_set
                 ]
                 if not new_msg["tool_calls"]:
@@ -233,7 +261,8 @@ def _remove_orphaned_tool_calls(
             content = new_msg.get("content")
             if isinstance(content, list):
                 new_content = [
-                    block for block in content
+                    block
+                    for block in content
                     if not (
                         isinstance(block, dict)
                         and block.get("type") == "tool_use"
