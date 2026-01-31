@@ -7,7 +7,7 @@ bundle:
     
     This bundle uses the enhanced agent delegation system with:
     - Two-parameter context inheritance (context_depth + context_scope)
-    - Short session ID resolution (6+ character prefixes)
+    - Session resume (use full session_id from delegate calls)
     - Fixed tool inheritance (explicit declarations always honored)
     
     USE FOR: Testing and validating the new delegate tool before wider rollout.
@@ -91,7 +91,7 @@ This is an **EXPERIMENTAL** bundle for testing the new delegate tool.
 |---------|--------------------|--------------------|
 | Delegation tool | `task` (legacy) | `delegate` (new) |
 | Context params | `inherit_context` | `context_depth` + `context_scope` |
-| Session resume | Full UUID only | Short ID (6+ chars) |
+| Session resume | N/A | Full session_id from delegate |
 | Tool inheritance | Bug: exclusions override declarations | Fixed: declarations honored |
 
 ## New Delegate Tool Features
@@ -106,14 +106,14 @@ context_depth: "none" | "recent" | "all"
 context_scope: "conversation" | "agents" | "full"
 ```
 
-### Short Session IDs
+### Session Resume
 
 ```python
 result = delegate(agent="foundation:explorer", instruction="...")
-# result.short_id = "a3f2b8"
+# result.session_id = "abc123-def456-..._foundation:explorer"
 
-# Resume with short ID
-delegate(session_id="a3f2b8", instruction="Continue...")
+# Resume with full session_id
+delegate(session_id=result.session_id, instruction="Continue...")
 ```
 
 ## Feedback

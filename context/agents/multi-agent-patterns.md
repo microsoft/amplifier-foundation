@@ -66,7 +66,7 @@ result_c = delegate(agent="foundation:modular-builder",
 
 ## Session Resumption for Iterative Work
 
-Delegate returns `short_id` for easy session management:
+Delegate returns `session_id` for multi-turn engagement:
 
 ```python
 # Round 1 - Initial analysis
@@ -75,16 +75,16 @@ critic = delegate(agent="foundation:critic",
                   instruction=f"Critique: {analyst.response}",
                   context_scope="agents")
 
-# Round 2 - Resume sessions using short IDs
-analyst2 = delegate(session_id=analyst.short_id, 
+# Round 2 - Resume sessions using full session_id
+analyst2 = delegate(session_id=analyst.session_id, 
                     instruction=f"Address feedback: {critic.response}")
-critic2 = delegate(session_id=critic.short_id,
+critic2 = delegate(session_id=critic.session_id,
                    instruction="Review the revision")
 
 # Continue rounds until convergence
 while not is_converged(analyst_result, critic_result):
-    analyst_result = delegate(session_id=analyst.short_id, ...)
-    critic_result = delegate(session_id=critic.short_id, ...)
+    analyst_result = delegate(session_id=analyst.session_id, ...)
+    critic_result = delegate(session_id=critic.session_id, ...)
 ```
 
 ---

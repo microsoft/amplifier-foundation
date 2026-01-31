@@ -6,7 +6,7 @@ bundle:
     
     Features:
     - Two-parameter context inheritance (depth + scope)
-    - Short session ID resolution (6+ chars)
+    - Session resume (use full session_id from delegate calls)
     - Fixed tool inheritance (agent declarations honored)
     - Multi-agent collaboration patterns
     

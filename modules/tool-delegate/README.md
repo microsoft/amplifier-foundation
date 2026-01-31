@@ -22,12 +22,12 @@ Control context inheritance with two orthogonal parameters:
   - `agents` - Includes delegate/task tool results
   - `full` - Includes ALL tool results
 
-### Short Session ID Resolution
+### Session Resume
 
-Resume sessions using just the first 6+ characters of a session ID:
+Resume sessions using the full `session_id` returned by previous delegate calls:
 
 ```
-session_id: "a3f2b1"  # Resolves to full session ID
+session_id: "abc123-def456-..._foundation:explorer"
 ```
 
 ### Tool Inheritance Fix
@@ -40,7 +40,7 @@ Agent's explicit tool declarations are always honored, even when parent excludes
 |-----------|------|---------|-------------|
 | `agent` | string | required | Agent to delegate to (e.g., 'foundation:explorer', 'self') |
 | `instruction` | string | required | Clear instruction for the agent |
-| `session_id` | string | - | Resume existing session (supports 6+ char prefixes) |
+| `session_id` | string | - | Resume existing session (use full session_id from previous call) |
 | `context_depth` | enum | "recent" | How much context: none, recent, all |
 | `context_turns` | integer | 5 | Number of turns when context_depth is 'recent' |
 | `context_scope` | enum | "conversation" | Which content: conversation, agents, full |

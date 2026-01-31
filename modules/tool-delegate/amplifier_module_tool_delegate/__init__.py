@@ -250,7 +250,7 @@ Agent usage notes:
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Resume existing agent session (supports short 6+ char prefixes)",
+                    "description": "Resume existing agent session (use full session_id from previous delegate call)",
                 },
                 "context_depth": {
                     "type": "string",

@@ -57,14 +57,14 @@ delegate(agent="foundation:architect", context_scope="agents", ...)
 delegate(agent="self", context_depth="all", context_scope="full", ...)
 ```
 
-### Short Session IDs
+### Session Resume
 
 ```python
 result = delegate(agent="foundation:explorer", instruction="Survey codebase")
-# result.short_id = "a3f2b8"
+# result.session_id = "abc123-def456-..._foundation:explorer"
 
-# Resume with short prefix
-delegate(session_id="a3f2b8", instruction="Now check the tests")
+# Resume with full session_id
+delegate(session_id=result.session_id, instruction="Now check the tests")
 ```
 
 ## Use Cases

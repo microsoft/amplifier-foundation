@@ -202,15 +202,15 @@ When delegating, pass context: what was accomplished, files changed, and intent.
 
 ## Session Resumption
 
-Delegate returns a `short_id` (6-8 characters) for easy session resume:
+Delegate returns `session_id` for multi-turn engagement:
 
 ```python
 # Initial delegation
 result = delegate(agent="foundation:explorer", instruction="Survey codebase")
-# result.short_id = "a3f2b8"
+# result.session_id = "abc123-def456-..._foundation:explorer"
 
-# Resume with short ID
-delegate(session_id="a3f2b8", instruction="Now also check the tests")
+# Resume with full session_id
+delegate(session_id=result.session_id, instruction="Now also check the tests")
 ```
 
 Use session resumption when:
