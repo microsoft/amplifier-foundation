@@ -16,7 +16,7 @@ bundle:
 tools:
   # New delegate tool with enhanced features
   - module: tool-delegate
-    source: ./modules/tool-delegate
+    source: ../modules/tool-delegate
     config:
       features:
         self_delegation:
