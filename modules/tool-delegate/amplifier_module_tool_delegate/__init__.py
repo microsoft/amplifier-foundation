@@ -24,7 +24,7 @@ Config Options:
 Tool Parameters:
 - agent: Agent to delegate to (e.g., 'foundation:explorer', 'self')
 - instruction: Clear instruction for the agent
-- session_id: Resume existing session (supports 6+ char prefixes)
+- session_id: Resume existing session (use full session_id from previous delegate call)
 - context_depth: "none" | "recent" | "all" - HOW MUCH context (default: "recent")
 - context_turns: Number of turns for "recent" mode (default: 5)
 - context_scope: "conversation" | "agents" | "full" - WHICH content (default: "conversation")
@@ -83,7 +83,7 @@ class DelegateTool:
     Key improvements over task tool:
     - Two-parameter context: depth (how much) and scope (which content)
     - Fixed tool inheritance: agent declarations always honored
-    - Returns short_id for human reference (resume requires full session_id)
+    - Session resume requires full session_id (returned by each delegate call)
     """
 
     name = "delegate"
@@ -149,7 +149,7 @@ class DelegateTool:
             {
                 "name": "session_resume",
                 "enabled": self.session_resume_enabled,
-                "description": "- Use session_id to resume an existing agent session (supports 6+ char prefixes)",
+                "description": "- Use session_id to resume an existing agent session (must be full session_id from previous delegate call)",
                 "disabled_note": "- Session resumption is disabled",
             },
             {
@@ -831,16 +831,12 @@ Agent usage notes:
                 )
 
             # Return output with session_id for multi-turn capability
-            # Use child_span[:8] as short_id - this is unique per child session
-            # (session_id[:8] would return parent's prefix, causing collisions)
             session_id_result = result["session_id"]
             return ToolResult(
                 success=True,
                 output={
                     "response": result["output"],
                     "session_id": session_id_result,
-                    "short_id": child_span[:8],
-                    "child_span": child_span,  # Full span for precise matching
                     "agent": agent_name,
                     "turn_count": result.get("turn_count", 1),
                 },
@@ -869,7 +865,7 @@ Agent usage notes:
         """Resume existing agent session.
 
         Args:
-            session_id: Agent session ID (or short prefix) to resume
+            session_id: Full agent session ID to resume (from previous delegate call)
             instruction: Follow-up instruction
             hooks: Hook coordinator for event emission
 
@@ -931,7 +927,6 @@ Agent usage notes:
                 output={
                     "response": result["output"],
                     "session_id": session_id_result,
-                    "short_id": session_id_result[:8],
                     "agent": agent_name,
                     "turn_count": result.get("turn_count", 1),
                 },
