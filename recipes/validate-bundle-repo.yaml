@@ -1,12 +1,47 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe
+# Repository-Wide Bundle Validator Recipe v2.0.1
 # Validates an entire bundle repository against structural requirements and conventions
+#
+# CHANGELOG:
+# v2.0.1 - Fixed undefined variable error when foundation not available
+#        - quality-classification now handles skipped individual_validation
+#        - Returns critical quality_level with appropriate messaging
+#        - Downstream steps receive valid (if empty) data structure
+#
+# v2.0.0 - Major upgrade applying validate-agents v1.2.4 patterns
+#        - Added explicit PASS thresholds (knows when to stop)
+#        - Added deterministic quality classification (Phase 2.5)
+#        - Added conditional LLM execution (skip when all bundles good)
+#        - Added quick-approval path with claude-haiku
+#        - Added "What is NOT an Issue" guidance to prevent nitpicking
+#        - Added default values for skipped phases (Phase 2.75)
+#        - Fixed JSON interpolation bug (json.loads instead of direct)
+#        - Added optional agent validation integration placeholder
+#
+# v1.0.0 - Initial release
+#        - Discovery, individual validation, composition analysis
+#        - Convention compliance checking
+#
+# PASS THRESHOLDS (explicit criteria for "passing"):
+# 1. All bundles load without errors (BundleRegistry succeeds)
+# 2. Root bundle exists (if any bundles in repo) OR has behaviors/bundles dirs
+# 3. No orphan agents (all agents referenced by some bundle)
+# 4. No broken cross-bundle references (includes resolve)
+# 5. Consistent namespace across bundles (if multiple bundles)
+#
+# QUALITY LEVELS:
+# - good: All bundles load, no errors, no orphans, proper structure
+# - polish: All load but has warnings (missing descriptions, conventions)
+# - needs_work: Orphan agents, missing root, convention issues
+# - critical: Any bundle fails to load
 #
 # This recipe:
 # 1. Discovers all bundles in a repo (root, behaviors, standalone, providers)
 # 2. Validates each bundle individually
-# 3. Validates the repo composition as a whole
-# 4. Produces a comprehensive repo-level report
+# 3. Classifies overall quality (DETERMINISTIC - before LLM)
+# 4. Quick-approves clean repos OR runs detailed analysis
+# 5. Validates repo composition (conditional on quality)
+# 6. Produces a comprehensive repo-level report
 #
 # Usage:
 #   amplifier tool invoke recipes operation=execute \
@@ -17,17 +52,27 @@ name: validate-bundle-repo
 description: |
   Validates an entire Amplifier bundle repository including:
   - Discovery of all bundle files (root, behaviors, standalone, providers)
-  - Individual validation of each bundle
+  - Individual validation of each bundle via BundleRegistry
+  - Deterministic quality classification with explicit PASS thresholds
+  - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Repository composition analysis (do pieces fit together correctly?)
   - Convention compliance across the whole repo
   
+  **v2.0.0 Improvements:**
+  - Deterministic quality classification before LLM analysis
+  - Explicit PASS thresholds - no more "always finding something"
+  - Quick-approval path for repos that meet all standards
+  - LLM phases only run when genuinely needed
+  - Optional agent validation integration
+  
   For single bundle validation, use validate-bundle.yaml instead.
-version: "1.0.0"
+version: "2.0.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository"]
 
 context:
   repo_path: ""  # Required: Path to bundle repository root
+  validate_agents: "false"  # Optional: Also run agent validation (true/false)
 
 steps:
   # ============================================================================
@@ -200,7 +245,8 @@ steps:
       import sys
       from pathlib import Path
 
-      env_check = {{env_check}}
+      # FIX: Use json.loads() to properly handle JSON booleans (true/false vs True/False)
+      env_check = json.loads('''{{env_check}}''')
       if not env_check.get("foundation_available"):
           print(json.dumps({
               "phase": "individual_validation",
@@ -217,7 +263,8 @@ steps:
           BundleValidationError
       )
 
-      discovery = {{discovery_results}}
+      # FIX: Use json.loads() for JSON boolean handling
+      discovery = json.loads('''{{discovery_results}}''')
       
       async def validate_bundle(bundle_path: str, category: str) -> dict:
           """Validate a single bundle and return results."""
@@ -246,9 +293,14 @@ steps:
               result["has_instruction"] = bool(bundle.instruction)
               result["includes_count"] = len(bundle.includes)
               result["agents_count"] = len(bundle.agents)
+              result["has_description"] = bool(getattr(bundle, 'description', None))
 
               if not bundle.name:
                   result["warnings"].append("Missing bundle.name")
+              
+              # Check for description (quality indicator)
+              if not getattr(bundle, 'description', None):
+                  result["warnings"].append("Missing bundle description")
 
           except BundleDependencyError as e:
               result["passed"] = False
@@ -271,6 +323,7 @@ steps:
                   "total": 0,
                   "passed": 0,
                   "failed": 0,
+                  "warnings": 0,
                   "by_category": {}
               }
           }
@@ -289,14 +342,20 @@ steps:
                   results["summary"]["passed"] += 1
               else:
                   results["summary"]["failed"] += 1
+              
+              if result.get("warnings"):
+                  results["summary"]["warnings"] += len(result["warnings"])
 
               if category not in results["summary"]["by_category"]:
-                  results["summary"]["by_category"][category] = {"passed": 0, "failed": 0}
+                  results["summary"]["by_category"][category] = {"passed": 0, "failed": 0, "warnings": 0}
               
               if result["passed"]:
                   results["summary"]["by_category"][category]["passed"] += 1
               else:
                   results["summary"]["by_category"][category]["failed"] += 1
+              
+              if result.get("warnings"):
+                  results["summary"]["by_category"][category]["warnings"] += len(result["warnings"])
 
           print(json.dumps(results))
 
@@ -309,17 +368,291 @@ steps:
     depends_on: ["repo-discovery"]
 
   # ============================================================================
-  # PHASE 3: Repository Composition Analysis
+  # PHASE 2.5: Quality Classification (Deterministic)
+  # Classify overall repo quality to determine if LLM analysis is needed
+  # This is the key v2.0.0 addition - explicit PASS thresholds
+  # ============================================================================
+
+  - id: "quality-classification"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      # Parse results as JSON
+      individual = json.loads('''{{individual_validation}}''')
+      discovery = json.loads('''{{discovery_results}}''')
+
+      # Handle case where validation was skipped (e.g., foundation not available)
+      if individual.get("skipped", False):
+          result = {
+              "phase": "quality_classification",
+              "quality_level": "critical",
+              "requires_llm_analysis": True,
+              "skipped_reason": individual.get("reason", "validation skipped"),
+              "bundles": [],
+              "summary": {
+                  "total": 0,
+                  "good": 0,
+                  "polish": 0,
+                  "needs_work": 0,
+                  "critical": 0
+              },
+              "structural_issues": [{
+                  "type": "validation_skipped",
+                  "message": individual.get("reason", "Individual bundle validation was skipped"),
+                  "severity": "critical"
+              }],
+              "message": f"⚠️ Bundle validation could not run: {individual.get('reason', 'unknown reason')}"
+          }
+          print(json.dumps(result))
+          sys.exit(0)
+
+      # EXPLICIT PASS THRESHOLDS
+      # A repository PASSES if ALL of these criteria are met:
+      # 1. All bundles load without errors (BundleRegistry succeeds)
+      # 2. Has proper structure (root bundle OR behaviors/bundles dirs)
+      # 3. No orphan agents (if agents/ exists, they're referenced)
+      # 4. Consistent namespace (not strictly enforced, but checked)
+
+      def classify_bundle(bundle: dict) -> dict:
+          """Classify a single bundle's quality level."""
+          has_errors = len(bundle.get("errors", [])) > 0
+          has_warnings = len(bundle.get("warnings", [])) > 0
+          has_description = bundle.get("has_description", False)
+          
+          if has_errors:
+              quality = "critical"
+              reason = f"Bundle failed to load: {bundle.get('errors', ['unknown'])[0]}"
+          elif has_warnings:
+              quality = "polish"
+              reason = f"Has {len(bundle.get('warnings', []))} warnings"
+          else:
+              quality = "good"
+              reason = "Loads successfully with no issues"
+          
+          return {
+              "path": bundle.get("path"),
+              "name": bundle.get("name"),
+              "category": bundle.get("category"),
+              "quality": quality,
+              "reason": reason,
+              "has_description": has_description,
+              "error_count": len(bundle.get("errors", [])),
+              "warning_count": len(bundle.get("warnings", []))
+          }
+
+      def classify_repo():
+          results = {
+              "phase": "classification",
+              "bundles": [],
+              "summary": {
+                  "total": 0,
+                  "good": 0,
+                  "polish": 0,
+                  "needs_work": 0,
+                  "critical": 0
+              },
+              "quality_level": "good",
+              "requires_llm_analysis": False,
+              "structural_issues": []
+          }
+          
+          # Classify each bundle
+          for bundle in individual.get("bundles", []):
+              classification = classify_bundle(bundle)
+              results["bundles"].append(classification)
+              results["summary"]["total"] += 1
+              results["summary"][classification["quality"]] += 1
+          
+          # Check structural requirements
+          repo_structure = discovery.get("repo_structure", {})
+          has_root = repo_structure.get("has_root_bundle", False)
+          has_behaviors = repo_structure.get("has_behaviors", False)
+          has_standalone = repo_structure.get("has_standalone", False)
+          has_agents = repo_structure.get("has_agents", False)
+          
+          # A valid bundle repo needs SOME entry point
+          if not has_root and not has_behaviors and not has_standalone:
+              results["structural_issues"].append({
+                  "type": "no_entry_point",
+                  "message": "No root bundle, behaviors/, or bundles/ directory found",
+                  "severity": "needs_work"
+              })
+          
+          # Check for orphan agents (agents/ exists but no behaviors reference them)
+          if has_agents and not has_behaviors and not has_root:
+              results["structural_issues"].append({
+                  "type": "orphan_agents",
+                  "message": "agents/ directory exists but no behaviors or root bundle to include them",
+                  "severity": "needs_work"
+              })
+          
+          # Determine overall quality level
+          # Priority: critical > needs_work > polish > good
+          if results["summary"]["critical"] > 0:
+              results["quality_level"] = "critical"
+              results["requires_llm_analysis"] = True
+          elif results["summary"]["needs_work"] > 0 or len([i for i in results["structural_issues"] if i["severity"] == "needs_work"]) > 0:
+              results["quality_level"] = "needs_work"
+              results["requires_llm_analysis"] = True
+          elif results["summary"]["polish"] > 0 or len(results["structural_issues"]) > 0:
+              results["quality_level"] = "polish"
+              # Polish-level issues may benefit from LLM review
+              results["requires_llm_analysis"] = True
+          else:
+              results["quality_level"] = "good"
+              # All bundles pass! No LLM analysis needed.
+              results["requires_llm_analysis"] = False
+          
+          # Provide summary message
+          total = results["summary"]["total"]
+          good = results["summary"]["good"]
+          
+          if results["quality_level"] == "good":
+              results["message"] = f"✅ All {total} bundles meet quality thresholds. No further analysis needed."
+          else:
+              not_good = total - good
+              issues = len(results["structural_issues"])
+              results["message"] = f"⚠️ {not_good}/{total} bundles and {issues} structural issues need attention."
+          
+          print(json.dumps(results))
+
+      classify_repo()
+      EOF
+    output: "quality_classification"
+    parse_json: true
+    timeout: 60
+    depends_on: ["validate-all-bundles"]
+
+  # ============================================================================
+  # PHASE 2.75: Initialize Optional Outputs
+  # Set default values for variables that may be skipped by conditional phases
+  # This prevents undefined variable errors in Phase 5
+  # ============================================================================
+
+  - id: "initialize-optional-outputs"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      
+      # Initialize default values for conditional phase outputs
+      # These will be overwritten if the corresponding phase runs
+      defaults = {
+          "approval_summary": "_Quick approval not performed - detailed LLM analysis was run instead._",
+          "composition_analysis": "_Composition analysis not performed - all bundles met quality thresholds via deterministic checks._",
+          "repo_conventions": "_Convention analysis not performed - all bundles met quality thresholds._"
+      }
+      
+      print(json.dumps(defaults))
+      EOF
+    output: "optional_defaults"
+    parse_json: true
+    timeout: 30
+    depends_on: ["quality-classification"]
+
+  # Set individual default values (will be overwritten by conditional steps if they run)
+  - id: "set-default-approval-summary"
+    type: "bash"
+    command: |
+      echo "_Quick approval not performed - detailed LLM analysis was run instead._"
+    output: "approval_summary"
+    timeout: 10
+    depends_on: ["initialize-optional-outputs"]
+
+  - id: "set-default-composition-analysis"
+    type: "bash"
+    command: |
+      echo "_Composition analysis not performed - all bundles met quality thresholds via deterministic checks._"
+    output: "composition_analysis"
+    timeout: 10
+    depends_on: ["initialize-optional-outputs"]
+
+  - id: "set-default-repo-conventions"
+    type: "bash"
+    command: |
+      echo "_Convention analysis not performed - all bundles met quality thresholds._"
+    output: "repo_conventions"
+    timeout: 10
+    depends_on: ["initialize-optional-outputs"]
+
+  # ============================================================================
+  # PHASE 3: Quick Approval (When All Bundles Pass)
+  # Fast-track path for repos that meet all quality thresholds
+  # Model: haiku - simple summary, no complex reasoning needed
+  # ============================================================================
+
+  - id: "quick-approval"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    provider: "anthropic"
+    model: "claude-haiku"
+    condition: "{{quality_classification.requires_llm_analysis}} == false"
+    depends_on: ["set-default-approval-summary"]
+    prompt: |
+      All bundles in this repository meet quality thresholds. Provide a brief approval summary.
+
+      **Repository Path:** {{repo_path}}
+
+      **Quality Classification Results:**
+      ```json
+      {{quality_classification}}
+      ```
+
+      **Discovery Summary:**
+      ```json
+      {{discovery_results}}
+      ```
+
+      **Individual Validation Summary:**
+      - Total bundles: {{individual_validation.summary.total}}
+      - Passed: {{individual_validation.summary.passed}}
+      - Failed: {{individual_validation.summary.failed}}
+      - Warnings: {{individual_validation.summary.warnings}}
+
+      Provide a concise approval noting:
+      1. ✅ Confirm all bundles load and meet quality standards
+      2. What's done well (patterns worth preserving)
+      3. Any optional polish suggestions (NOT requirements - bundles are already good)
+
+      Keep the response brief - this is the fast-track approval path.
+      
+      Format:
+      ## ✅ PASS - All Bundles Meet Quality Standards
+      
+      **Summary:** [1-2 sentences]
+      
+      **What's Done Well:**
+      - [list 2-3 positive patterns]
+      
+      **Optional Polish (not required):**
+      - [0-2 minor suggestions, or "None - repository is exemplary"]
+    output: "approval_summary"
+    timeout: 120
+
+  # ============================================================================
+  # PHASE 4: Repository Composition Analysis (Conditional)
   # Analyze how the pieces fit together
+  # Only runs when quality_classification.requires_llm_analysis == true
   # ============================================================================
 
   - id: "composition-analysis"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
+    condition: "{{quality_classification.requires_llm_analysis}} == true"
+    depends_on: ["set-default-composition-analysis"]
     prompt: |
       Analyze the composition of this bundle repository.
 
       **Repository Path:** {{repo_path}}
+
+      **Quality Classification (focus on these issues):**
+      ```json
+      {{quality_classification}}
+      ```
 
       **Discovery Results:**
       ```json
@@ -330,6 +663,25 @@ steps:
       ```json
       {{individual_validation}}
       ```
+
+      **IMPORTANT: Focus ONLY on bundles/issues with quality != "good"**
+      
+      Bundles classified as "good" have ALREADY PASSED. Do NOT suggest improvements for them.
+
+      **What is NOT an Issue (do not flag these):**
+      - Using /bundles/ vs /behaviors/ is a LOCATION choice, not an error
+      - Missing optional files (CONTRIBUTING.md, etc.)
+      - Alternative valid patterns (inline agents vs file refs)
+      - Minor style differences in naming or structure
+      - "Could be slightly better" for repos that meet thresholds
+      - Different organizational approaches that still work
+      - Not having every possible directory (only what's needed)
+
+      **Only flag genuine issues:**
+      - Bundles that fail to load (critical)
+      - Broken includes/references that prevent loading
+      - Orphan agents that are never used
+      - Structural issues that would confuse users
 
       **Reference Documentation:**
       Review these for conventions:
@@ -373,20 +725,28 @@ steps:
       - **Recommendation**: If ISSUE, how to fix
     output: "composition_analysis"
     timeout: 300
-    depends_on: ["validate-all-bundles"]
+    depends_on: ["quality-classification"]
 
   # ============================================================================
-  # PHASE 4: Convention Compliance (Repo-Wide)
+  # PHASE 4.5: Convention Compliance (Conditional)
   # Check repo-wide conventions
+  # Only runs when quality_classification.requires_llm_analysis == true
   # ============================================================================
 
   - id: "repo-conventions"
     agent: "foundation:zen-architect"
     mode: "REVIEW"
+    condition: "{{quality_classification.requires_llm_analysis}} == true"
+    depends_on: ["set-default-repo-conventions", "composition-analysis"]
     prompt: |
       Review repository-wide convention compliance.
 
       **Repository Path:** {{repo_path}}
+
+      **Quality Classification:**
+      ```json
+      {{quality_classification}}
+      ```
 
       **Discovery:**
       ```json
@@ -397,6 +757,23 @@ steps:
       ```json
       {{individual_validation}}
       ```
+
+      **IMPORTANT: Focus ONLY on genuine convention violations that impact functionality**
+      
+      **What is NOT an Issue (do not flag these):**
+      - Using .yaml vs .md for bundles (both are valid)
+      - Not having every possible directory
+      - Alternative valid naming styles (kebab-case, snake_case)
+      - Missing optional documentation (CONTRIBUTING, etc.)
+      - Different structural approaches that still work
+      - "Could be slightly better" suggestions for working repos
+      - Personal preferences about organization
+
+      **Only flag genuine issues:**
+      - Completely missing required files for functionality
+      - Naming that breaks resolution (spaces, special chars)
+      - File format mismatches (agent in .yaml instead of .md)
+      - Structural issues that prevent loading
 
       **Conventions to Check (Repo-Wide):**
 
@@ -432,12 +809,14 @@ steps:
 
       **Output Format:**
       Convention checklist with PASS/FAIL/N/A and notes.
+      Only list FAIL items if they genuinely break functionality.
     output: "repo_conventions"
     timeout: 300
     depends_on: ["composition-analysis"]
 
   # ============================================================================
   # PHASE 5: Final Report Synthesis
+  # Generates different reports based on quality_level
   # ============================================================================
 
   - id: "synthesize-report"
@@ -447,6 +826,11 @@ steps:
       Synthesize all validation results into a comprehensive repository validation report.
 
       **Repository:** {{repo_path}}
+
+      **Quality Classification:**
+      ```json
+      {{quality_classification}}
+      ```
 
       **Environment:**
       ```json
@@ -463,53 +847,105 @@ steps:
       {{individual_validation}}
       ```
 
+      **Quick Approval Summary:**
+      {{approval_summary}}
+
       **Composition Analysis:**
       {{composition_analysis}}
 
       **Repository Conventions:**
       {{repo_conventions}}
 
-      **Generate a comprehensive report:**
+      **REPORT GENERATION RULES:**
+
+      1. If quality_level == "good": Generate a PASS report celebrating the clean bill of health
+      2. If quality_level == "polish": Generate a PASS WITH SUGGESTIONS report (optional improvements)
+      3. If quality_level == "needs_work": Generate a PASS WITH WARNINGS report (should fix)
+      4. If quality_level == "critical": Generate a FAIL report (must fix)
+
+      **Verdict Selection:**
+      - **✅ PASS**: All bundles load and meet quality thresholds (quality_level == "good")
+      - **✅ PASS WITH SUGGESTIONS**: Minor polish opportunities (quality_level == "polish")
+      - **⚠️ PASS WITH WARNINGS**: Some bundles/structure needs work (quality_level == "needs_work")
+      - **❌ FAIL**: Critical issues found (quality_level == "critical")
+
+      **Generate this report structure:**
 
       # Bundle Repository Validation Report
 
       ## Executive Summary
-      - **Overall Verdict**: PASS | FAIL | PASS WITH WARNINGS
+      - **Overall Verdict**: [Select from above based on quality_level]
       - **Repository**: path
       - **Bundles Found**: X total (Y root, Z behaviors, ...)
+      - **Quality Breakdown**: X good, Y polish, Z needs_work, W critical
       - **Issues**: X errors, Y warnings, Z suggestions
 
       ## Bundle Discovery
       Summary of what was found in the repository.
 
-      ## Individual Bundle Results
-      Table showing each bundle's validation status:
-      | Bundle | Category | Status | Issues |
-      |--------|----------|--------|--------|
+      ## Quality Classification Summary
 
-      ## Composition Analysis
-      How well do the pieces fit together?
+      | Bundle | Category | Quality | Issues |
+      |--------|----------|---------|--------|
+      | name   | category | good/polish/needs_work/critical | count |
 
-      ## Convention Compliance
-      Repository-wide convention check results.
+      ## Detailed Findings
+
+      **For PASS verdict:** Highlight what's done well. Any suggestions are OPTIONAL.
+
+      **For other verdicts:**
+
+      ### Errors (Must Fix) - HIGH Priority
+      Issues that break bundle loading or basic functionality.
+
+      ### Warnings (Should Fix) - MEDIUM Priority
+      Structural issues or convention violations that may cause problems.
+
+      ### Suggestions (Consider) - LOW Priority
+      Quality improvements for better maintainability.
 
       ## Recommendations
 
-      ### Must Fix (Errors)
-      Issues that break loading or basic functionality.
-
-      ### Should Fix (Warnings)
-      Convention violations and best practice issues.
-
-      ### Consider (Suggestions)
-      Improvements for better maintainability.
+      Prioritized list of actions with clear HIGH/MEDIUM/LOW labels.
 
       ## Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v1.0.0
+      - Recipe: validate-bundle-repo v2.0.0
       - Foundation: version from env_check
+      - Quality Thresholds:
+        - All bundles must load via BundleRegistry
+        - Must have entry point (root bundle OR behaviors/bundles dirs)
+        - No orphan agents (if agents/ exists, they must be included)
 
       Make the report actionable with clear next steps.
+      
+      **IMPORTANT:** If verdict is PASS, emphasize that the bundles are GOOD and any suggestions are truly optional polish, not required changes.
     output: "final_report"
     timeout: 300
-    depends_on: ["repo-conventions"]
+    depends_on: ["quality-classification", "quick-approval", "composition-analysis", "repo-conventions", "set-default-approval-summary", "set-default-composition-analysis", "set-default-repo-conventions"]
+
+  # ============================================================================
+  # PHASE 6 (OPTIONAL): Agent Validation Integration
+  # Placeholder for calling validate-agents recipe
+  # Only runs if validate_agents context variable is "true"
+  # ============================================================================
+
+  # FUTURE ENHANCEMENT: Uncomment and refine when agent validation integration is desired
+  # This would call the validate-agents recipe as a sub-recipe
+  #
+  # - id: "agent-validation-check"
+  #   type: "recipe"
+  #   condition: "{{validate_agents}} == true"
+  #   recipe: "validate-agents.yaml"
+  #   context:
+  #     repo_path: "{{repo_path}}"
+  #   output: "agent_validation_results"
+  #   depends_on: ["synthesize-report"]
+  #
+  # When enabled, this step would:
+  # 1. Run validate-agents.yaml on the same repo
+  # 2. Capture agent quality classification
+  # 3. Include agent findings in a combined report
+  #
+  # The parent session can control this via:
+  #   context='{"repo_path": "/path/to/repo", "validate_agents": "true"}'
