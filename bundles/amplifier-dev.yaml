@@ -14,9 +14,9 @@ includes:
   # Base foundation (has delegate tool)
   - bundle: foundation
   # Amplifier dev behavior (agents + context)
-  - bundle: foundation:behaviors/amplifier-dev
-  # Shadow environments with Amplifier-specific helpers
-  - bundle: foundation:behaviors/shadow-amplifier
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/amplifier-dev.yaml
+  # Shadow environments with Amplifier-specific helpers (includes generic shadow bundle)
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/shadow-amplifier.yaml
 
 # Development-specific session settings
 session:
