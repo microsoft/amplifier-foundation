@@ -1,6 +1,6 @@
 # Domain Validator Authoring Guide
 
-This guide captures the methodology for creating accurate, actionable domain validators as Amplifier recipes. It is based on learnings from building the bundle validator and **significantly updated** based on the validate-agents v1.2.4 iteration, where we discovered critical patterns for avoiding false positives and creating validators that know when to stop.
+This guide captures the methodology for creating accurate, actionable domain validators as Amplifier recipes. It codifies the critical patterns for avoiding false positives and creating validators that know when to stop.
 
 ---
 
@@ -36,7 +36,7 @@ A good validator:
 
 ## The "Always Finds Something" Anti-Pattern
 
-> **Critical Learning (v1.2.4)**: Without explicit PASS thresholds, validators will always find something to suggest. This creates user frustration and distrust.
+> **Critical Principle**: Without explicit PASS thresholds, validators will always find something to suggest. This creates user frustration and distrust.
 
 ### The Problem
 
@@ -59,6 +59,36 @@ Every validator MUST define what "passing" means:
 # ✅ Has at least ONE strong trigger (MUST, ALWAYS, REQUIRED, PROACTIVELY, DO NOT)
 # ✅ Has at least ONE `<example>` block
 ```
+
+### Domain-Specific Thresholds
+
+Different domains have different PASS criteria. What makes an agent "good" differs fundamentally from what makes a bundle repository "good":
+
+| Domain | Threshold Focus | Rationale |
+|--------|-----------------|-----------|
+| **Agent descriptions** | Behavioral quality | Agents need clear triggers and examples so orchestrators select them correctly |
+| **Bundle repositories** | Structural integrity | Bundles need to load correctly and compose properly |
+
+**Agent Description Thresholds:**
+```yaml
+# Behavioral quality criteria
+- Has strong trigger (MUST, ALWAYS, REQUIRED, PROACTIVELY, DO NOT)
+- Has at least one <example> block
+- Has explicit tools: section
+- Description ≥ 100 characters
+```
+
+**Bundle Repository Thresholds:**
+```yaml
+# Structural integrity criteria
+- All bundles load without errors (BundleRegistry succeeds)
+- Has entry point (root bundle OR behaviors/bundles dirs)
+- No orphan agents (all .md files referenced)
+- All references resolve (includes, @mentions)
+- Consistent namespace usage
+```
+
+The key insight: agent validators focus on **how well the agent communicates its purpose**, while bundle validators focus on **whether the bundle will actually work when loaded**.
 
 ### Quality Tiers (Not Just Pass/Fail)
 
@@ -120,6 +150,80 @@ This respects users' time and builds trust in the validator.
 
 ---
 
+## Graceful Degradation Pattern
+
+> **Principle**: Validators should provide useful output even when infrastructure is unavailable, rather than failing with stack traces.
+
+### The Problem
+
+Validators often depend on infrastructure that may not be available:
+- Framework libraries (e.g., `amplifier_foundation` not installed)
+- External services (APIs, registries)
+- Optional tools (LSP servers, linters)
+
+When dependencies are missing, validators shouldn't crash—they should degrade gracefully while still providing value.
+
+### The Solution: Environment Check + Fallback
+
+```yaml
+# Phase 0: Environment check (always runs first)
+- id: "check-environment"
+  type: "bash"
+  command: |
+    python3 << 'EOF'
+    import json
+    result = {"phase": "environment_check"}
+    
+    # Check for optional infrastructure
+    try:
+        from amplifier_foundation import BundleRegistry
+        result["foundation_available"] = True
+    except ImportError:
+        result["foundation_available"] = False
+        result["fallback_mode"] = "llm_analysis_only"
+    
+    print(json.dumps(result))
+    EOF
+  output: "env_check"
+
+# Phase 2: Conditional based on infrastructure
+- id: "validate-with-registry"
+  condition: "{{env_check.foundation_available}} == true"
+  # Full validation with BundleRegistry...
+
+- id: "validate-with-llm-fallback"
+  condition: "{{env_check.foundation_available}} == false"
+  agent: "foundation:zen-architect"
+  prompt: |
+    BundleRegistry not available. Perform structural analysis using 
+    file inspection instead. Check for:
+    - YAML syntax validity
+    - Required fields present
+    - File references exist
+```
+
+### Progressive Enhancement
+
+When full infrastructure IS available, validators provide richer feedback:
+
+| Infrastructure | Validation Capability |
+|----------------|----------------------|
+| **Minimal** (files only) | Syntax, structure, file existence |
+| **Framework available** | Registry loading, namespace resolution, composition |
+| **Full tooling** | LSP analysis, type checking, deep reference tracing |
+
+### User Experience
+
+| Scenario | Old Pattern | Graceful Degradation |
+|----------|-------------|---------------------|
+| Missing dependency | `ImportError: No module named 'amplifier_foundation'` | "Running in fallback mode - structural analysis only" |
+| API unavailable | Stack trace, recipe failure | "API check skipped - using cached rules" |
+| Optional tool missing | Recipe hangs or fails | "LSP unavailable - using regex-based analysis" |
+
+Users get useful output instead of error messages, and can still benefit from validation even in constrained environments.
+
+---
+
 ## Severity Classification Framework
 
 This taxonomy is **critical** for validator usefulness. Misclassified severity causes either:
@@ -173,7 +277,7 @@ grep -r "should|must|required" docs/ | grep "your_concept"
 
 Often you need both: repo-wide discovers items, then delegates to single-item for deep validation.
 
-### The 6-Phase Architecture (Updated v1.2.4)
+### The 6-Phase Architecture
 
 Based on learnings from validate-agents, validators should follow this structure:
 
@@ -189,21 +293,21 @@ steps:
   - id: structural-validation
     type: bash  # or Python with parse_json
     
-  # Phase 2.5: QUALITY CLASSIFICATION (deterministic) ← NEW
+  # Phase 2.5: QUALITY CLASSIFICATION (deterministic)
   # Classify items as good/polish/needs_work/critical
   # Set requires_llm_analysis flag
   - id: quality-classification
     type: bash  # Python script, NOT agent
     output: "quality_classification"
     
-  # Phase 2.75: DEFAULT VALUES (deterministic) ← NEW
+  # Phase 2.75: DEFAULT VALUES (deterministic)
   # Set defaults for optional outputs BEFORE conditional phases
   - id: set-default-quality-results
     type: bash
     command: "echo 'Not performed - all items met thresholds'"
     output: "quality_results"
     
-  # Phase 3: QUICK APPROVAL (conditional) ← NEW
+  # Phase 3: QUICK APPROVAL (conditional)
   # Fast path when all items pass
   - id: quick-approval
     condition: "{{quality_classification.requires_llm_analysis}} == false"
@@ -255,7 +359,7 @@ steps:
 
 ## Conditional Execution Pattern
 
-> **Critical Learning (v1.2.4)**: Don't run LLM phases when items already pass. This wastes time and creates opportunities for the LLM to find things that shouldn't be flagged.
+> **Critical Principle**: Don't run LLM phases when items already pass. This wastes time and creates opportunities for the LLM to find things that shouldn't be flagged.
 
 ### The Pattern
 
@@ -301,7 +405,7 @@ steps:
 
 ## "What is NOT an Issue" Guidance
 
-> **Critical Learning (v1.2.4)**: LLMs naturally want to be helpful by finding things. You must explicitly tell them what NOT to flag.
+> **Critical Principle**: LLMs naturally want to be helpful by finding things. You must explicitly tell them what NOT to flag.
 
 ### The Problem
 
@@ -350,7 +454,7 @@ Validators should clearly separate these and ONLY flag bar issues for items othe
 
 ## Default Values for Skipped Phases
 
-> **Critical Learning (v1.2.4)**: When phases are conditional, downstream steps may reference undefined variables.
+> **Critical Principle**: When phases are conditional, downstream steps may reference undefined variables.
 
 ### The Problem
 
@@ -421,8 +525,8 @@ Ensure proper `depends_on` ordering:
 Phase 1: CREATE
 ├── Consult domain expert agent first (understand the domain)
 ├── Write initial recipe from documentation + intuition
-├── Define EXPLICIT PASS THRESHOLDS (what means "good enough")  ← NEW
-├── Include deterministic classification BEFORE LLM phases      ← NEW
+├── Define EXPLICIT PASS THRESHOLDS (what means "good enough")
+├── Include deterministic classification BEFORE LLM phases
 └── Define severity levels (likely wrong at this stage!)
 
 Phase 2: TEST (Three-Repo Pattern)
@@ -435,25 +539,25 @@ Phase 3: VERIFY
 ├── Use LSP: findReferences, hover, incomingCalls
 ├── Document evidence for each rule
 ├── Identify FALSE findings (both positives and negatives)
-└── Verify threshold boundaries ("barely pass" vs "barely fail") ← NEW
+└── Verify threshold boundaries ("barely pass" vs "barely fail")
 
 Phase 4: FIX
 ├── Remove/downgrade overstated rules (ERROR → WARNING)
 ├── Upgrade understated rules (SUGGESTION → ERROR)
 ├── Reword misleading messages
-├── Add "not an issue" guidance to LLM prompts               ← NEW
+├── Add "not an issue" guidance to LLM prompts
 └── Update documentation if code differs from docs
 
 Phase 5: RE-TEST
 ├── Run on all 3 repos again
 ├── Confirm false positives removed
-├── Confirm PASS threshold gives clean bill of health        ← NEW
+├── Confirm PASS threshold gives clean bill of health
 └── Confirm real issues still caught
 
 Phase 6: RESULT-VALIDATE
 ├── Use recipes:result-validator for objective assessment
 ├── Criteria: accuracy, completeness, actionability
-├── Verify edge cases at threshold boundaries                ← NEW
+├── Verify edge cases at threshold boundaries
 └── Ship or iterate
 ```
 
@@ -469,7 +573,7 @@ Different repositories reveal different types of issues:
 | **Real-world** | Typical usage with natural drift | True positives, edge cases |
 | **Experimental** | Boundary cases, intentional deviations | Severity misclassification |
 
-### Threshold Boundary Testing (NEW)
+### Threshold Boundary Testing
 
 Create test fixtures that probe the exact threshold boundaries:
 
@@ -483,7 +587,7 @@ Create test fixtures that probe the exact threshold boundaries:
 
 This ensures the classification logic is correctly calibrated at the boundaries.
 
-### Example from validate-agents v1.2.4
+### Example from validate-agents
 
 | Repo | Expected | Actual | Insight |
 |------|----------|--------|---------|
@@ -512,10 +616,10 @@ After recipe-author creates or updates a validator, **MUST** validate against or
 | Catches known real issues | ✅ Yes |
 | Severity correctly classified | ✅ Yes |
 | Actionable remediation guidance | ✅ Yes |
-| **Has explicit PASS thresholds** | ✅ Yes (NEW) |
-| **Has deterministic classification** | ✅ Yes (NEW) |
-| **Has "clean bill of health" path** | ✅ Yes (NEW) |
-| **Threshold boundaries tested** | ✅ Yes (NEW) |
+| **Has explicit PASS thresholds** | ✅ Yes |
+| **Has deterministic classification** | ✅ Yes |
+| **Has "clean bill of health" path** | ✅ Yes |
+| **Threshold boundaries tested** | ✅ Yes |
 | Consistent scoring format | Nice to have |
 
 ---
@@ -553,7 +657,7 @@ When validators find discrepancies between documentation and code:
 
 Reference these as working examples:
 
-### Agent Validation (NEW - Primary Exemplar)
+### Agent Validation (Primary Exemplar)
 
 **Recipe**: `@foundation:recipes/validate-agents.yaml`
 
@@ -604,15 +708,52 @@ Validates a single bundle file for:
 - Convention compliance (naming, organization)
 - Common gotchas (anti-patterns, mistakes)
 
-### Repository-Wide Validation
+### Repository-Wide Validation (Second Gold Standard)
 
 **Recipe**: `@foundation:recipes/validate-bundle-repo.yaml`
 
-Validates an entire bundle repository:
-- Discovers all bundle files (root, behaviors, standalone, providers)
-- Validates each individually (delegates to single-bundle recipe pattern)
-- Checks composition (do pieces fit together?)
-- Convention compliance across the whole repo
+The **second gold standard** for domain validators, demonstrating all the patterns from validate-agents plus infrastructure handling:
+
+- ✅ Graceful degradation when `amplifier_foundation` unavailable
+- ✅ Domain-specific structural thresholds (loads + entry point + no orphans)
+- ✅ Environment check phase (Phase 0)
+- ✅ Deterministic quality classification (Phase 2.5)
+- ✅ Conditional execution (skip LLM when all bundles good)
+- ✅ Quick-approval path (uses claude-haiku for speed)
+- ✅ "Not an issue" guidance in LLM prompts
+- ✅ Default values for skipped phases
+
+**Key patterns to study:**
+```yaml
+# Environment check with fallback
+- id: "check-environment"
+  type: "bash"
+  command: |
+    python3 << 'EOF'
+    try:
+        from amplifier_foundation import BundleRegistry
+        result["foundation_available"] = True
+    except ImportError:
+        result["foundation_available"] = False
+    EOF
+
+# Conditional validation based on infrastructure
+- id: "validate-with-registry"
+  condition: "{{env_check.foundation_available}} == true"
+  
+# Structural thresholds for bundles (different from agents!)
+thresholds = {
+    "all_bundles_load": True,
+    "has_entry_point": True,
+    "no_orphan_agents": True,
+    "references_resolve": True
+}
+```
+
+**When to use as exemplar:**
+- Building validators that need infrastructure (registries, APIs, services)
+- Validating structural/compositional domains (vs behavioral/content domains)
+- Domains where "loads without error" is the primary success criterion
 
 ### Using the Exemplars
 
@@ -681,7 +822,7 @@ Create recipe → Test once → Ship
 Create → Test 3 repos → Verify with code → Fix → Re-test → Result-validate → Ship
 ```
 
-### ❌ No PASS Threshold (NEW)
+### ❌ No PASS Threshold
 
 ```yaml
 # BAD: Always finds something
@@ -696,7 +837,7 @@ Create → Test 3 repos → Verify with code → Fix → Re-test → Result-vali
     - Has at least one example ✓
 ```
 
-### ❌ LLM Classifies Severity (NEW)
+### ❌ LLM Classifies Severity
 
 ```yaml
 # BAD: LLM decides what's critical
@@ -713,7 +854,7 @@ Create → Test 3 repos → Verify with code → Fix → Re-test → Result-vali
   prompt: "Explain why these items need work: {{items}}"
 ```
 
-### ❌ JSON Interpolation Gotchas (NEW)
+### ❌ JSON Interpolation Gotchas
 
 ```python
 # BAD: ast.literal_eval can't handle JSON's true/false
@@ -725,7 +866,7 @@ structural = json.loads('''{{structural_results}}''')
 # Works because json.loads expects JSON's true/false
 ```
 
-### ❌ Multiline Content in JSON (NEW)
+### ❌ Multiline Content in JSON
 
 ```python
 # BAD: Including fields with multiline strings breaks interpolation
@@ -750,16 +891,16 @@ print(json.dumps(results))
     [ ] Consult domain expert agent
     [ ] List all rules (code-enforced, conventions, best practices)
     [ ] For each rule, note evidence source
-    [ ] DEFINE EXPLICIT PASS THRESHOLDS                          ← NEW
+    [ ] DEFINE EXPLICIT PASS THRESHOLDS
 
 [ ] Phase 2: Recipe Creation
     [ ] Use recipe-author agent (don't write YAML directly)
-    [ ] Follow 6-phase architecture (with Phase 2.5 classification) ← UPDATED
-    [ ] Add deterministic quality classification step             ← NEW
-    [ ] Add conditional execution for LLM phases                  ← NEW
-    [ ] Add default values for skipped phases                     ← NEW
+    [ ] Follow 6-phase architecture (with Phase 2.5 classification)
+    [ ] Add deterministic quality classification step
+    [ ] Add conditional execution for LLM phases
+    [ ] Add default values for skipped phases
     [ ] Define clear severity for each check
-    [ ] Include "not an issue" guidance in LLM prompts            ← NEW
+    [ ] Include "not an issue" guidance in LLM prompts
 
 [ ] Phase 3: Code Verification
     [ ] For each ERROR, find code enforcement point
@@ -767,21 +908,21 @@ print(json.dumps(results))
     [ ] Document evidence in recipe comments
 
 [ ] Phase 4: Three-Repo Testing
-    [ ] Test on exemplar (should PASS with clean bill of health) ← UPDATED
+    [ ] Test on exemplar (should PASS with clean bill of health)
     [ ] Test on real-world (should find issues)
     [ ] Test on experimental (should handle edge cases)
-    [ ] Create threshold boundary test fixtures                   ← NEW
+    [ ] Create threshold boundary test fixtures
 
 [ ] Phase 5: Fix and Re-test
     [ ] Remove false positives
     [ ] Adjust severity based on evidence
-    [ ] Verify threshold boundaries work correctly               ← NEW
+    [ ] Verify threshold boundaries work correctly
     [ ] Update related documentation
 
 [ ] Phase 6: Result Validation
     [ ] Run result-validator
     [ ] Confirm: accuracy, completeness, actionability
-    [ ] Confirm: clean bill of health for passing items          ← NEW
+    [ ] Confirm: clean bill of health for passing items
     [ ] Ship or iterate
 ```
 
@@ -805,12 +946,12 @@ Building accurate domain validators requires:
 
 1. **Code verification first** - Don't trust assumptions
 2. **Correct severity classification** - ERROR vs WARNING vs SUGGESTION
-3. **Explicit PASS thresholds** - Know when to stop finding things (NEW)
-4. **Deterministic classification before LLM** - Reduce variance (NEW)
-5. **Conditional execution** - Skip LLM for passing items (NEW)
-6. **"Not an issue" guidance** - Tell LLM what to ignore (NEW)
+3. **Explicit PASS thresholds** - Know when to stop finding things
+4. **Deterministic classification before LLM** - Reduce variance
+5. **Conditional execution** - Skip LLM for passing items
+6. **"Not an issue" guidance** - Tell LLM what to ignore
 7. **Three-repo testing** - Exemplar + real-world + experimental
-8. **Threshold boundary testing** - "Barely pass" vs "barely fail" (NEW)
+8. **Threshold boundary testing** - "Barely pass" vs "barely fail"
 9. **The validation loop** - Create → Test → Verify → Fix → Re-test → Validate
 10. **Documentation alignment** - Update docs when code differs
 
@@ -819,7 +960,7 @@ The investment pays off in:
 - Reduced support burden
 - Faster onboarding
 - Codified expertise that scales
-- **User trust** - Clean bills of health for well-maintained code (NEW)
+- **User trust** - Clean bills of health for well-maintained code
 
 ---
 
