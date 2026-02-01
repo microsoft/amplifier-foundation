@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -24,7 +25,7 @@ class InstallStateManager:
     If fingerprint matches, we can skip `uv pip install` entirely.
 
     Self-healing: corrupted JSON or schema mismatch creates fresh state.
-    Invalidates all entries if Python executable changes.
+    Invalidates all entries if Python executable or its mtime changes.
     """
 
     VERSION = 1
@@ -39,6 +40,21 @@ class InstallStateManager:
         self._state_file = cache_dir / self.FILENAME
         self._dirty = False
         self._state = self._load()
+
+    def _get_python_mtime(self) -> int | None:
+        """Get Python executable mtime as integer seconds.
+
+        Returns None if mtime cannot be determined (e.g., file doesn't exist).
+        Integer avoids float comparison issues across JSON serialization.
+
+        This detects when the Python environment was recreated (e.g., via
+        `uv tool install --force`), which changes the executable's mtime
+        even if the path stays the same.
+        """
+        try:
+            return int(os.path.getmtime(sys.executable))
+        except OSError:
+            return None
 
     def _load(self) -> dict:
         """Load state from disk, creating fresh state if needed."""
@@ -66,6 +82,16 @@ class InstallStateManager:
             )
             return self._fresh_state()
 
+        # Python executable mtime changed - environment was recreated
+        # This catches `uv tool install --force` which recreates the venv
+        current_mtime = self._get_python_mtime()
+        stored_mtime = data.get("python_mtime")
+        if current_mtime is None or stored_mtime != current_mtime:
+            logger.debug(
+                f"Clearing install state (Python mtime changed: {stored_mtime} -> {current_mtime})"
+            )
+            return self._fresh_state()
+
         return data
 
     def _fresh_state(self) -> dict:
@@ -74,6 +100,7 @@ class InstallStateManager:
         return {
             "version": self.VERSION,
             "python": sys.executable,
+            "python_mtime": self._get_python_mtime(),
             "modules": {},
         }
 
