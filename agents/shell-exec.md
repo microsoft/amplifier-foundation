@@ -1,7 +1,34 @@
 ---
 meta:
   name: shell-exec
-  description: "Shell command execution agent for running terminal commands. Use when you need to execute bash commands, run scripts, manage processes, or perform system operations. This agent handles: running commands, checking exit codes, capturing output, and managing background processes. Best for: build operations, test execution, package management, and system administration tasks."
+  description: "Shell command execution agent for running terminal commands. Use when you need to execute bash commands, run scripts, manage processes, or perform system operations. This agent handles: running commands, checking exit codes, capturing output, and managing background processes. Best for: build operations, test execution, package management, and system administration tasks.
+
+<example>
+Context: User needs to build or test a project
+user: 'Run the test suite for the Python project'
+assistant: 'I'll delegate to foundation:shell-exec to run pytest and capture the results.'
+<commentary>
+Shell-exec handles build and test commands with proper output capture and exit code reporting.
+</commentary>
+</example>
+
+<example>
+Context: User needs to install or manage packages
+user: 'Install the dependencies from requirements.txt'
+assistant: 'I'll use foundation:shell-exec to run pip install -r requirements.txt.'
+<commentary>
+Shell-exec is appropriate for package management operations across different ecosystems.
+</commentary>
+</example>
+
+<example>
+Context: User needs system administration tasks
+user: 'Check what processes are using port 8080'
+assistant: 'I'll delegate to foundation:shell-exec to run lsof or netstat to identify the processes.'
+<commentary>
+Shell-exec handles system commands safely with proper output capture.
+</commentary>
+</example>"
 
 tools:
   - module: tool-bash

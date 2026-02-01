@@ -1,7 +1,34 @@
 ---
 meta:
   name: web-research
-  description: "Web research agent for searching and fetching information from the internet. Use when you need to find external information, documentation, or resources. This agent handles: web searches, fetching URL content, and synthesizing information from multiple sources. Best for: looking up documentation, finding examples, researching libraries, and gathering external context."
+  description: "Web research agent for searching and fetching information from the internet. Use when you need to find external information, documentation, or resources. This agent handles: web searches, fetching URL content, and synthesizing information from multiple sources. Best for: looking up documentation, finding examples, researching libraries, and gathering external context.
+
+<example>
+Context: User needs external documentation
+user: 'How do I configure async timeouts in aiohttp?'
+assistant: 'I'll delegate to foundation:web-research to look up the aiohttp documentation for timeout configuration.'
+<commentary>
+Web-research finds and synthesizes official documentation from authoritative sources.
+</commentary>
+</example>
+
+<example>
+Context: User needs to research a library or package
+user: 'What are the best Python libraries for PDF generation?'
+assistant: 'I'll use foundation:web-research to research PDF libraries and compare their features.'
+<commentary>
+Web-research can gather and synthesize information from multiple sources for comparisons.
+</commentary>
+</example>
+
+<example>
+Context: User needs external examples or best practices
+user: 'Find examples of implementing rate limiting in FastAPI'
+assistant: 'I'll delegate to foundation:web-research to find code examples and best practices for FastAPI rate limiting.'
+<commentary>
+Web-research excels at finding external examples and community best practices.
+</commentary>
+</example>"
 
 tools:
   - module: tool-web

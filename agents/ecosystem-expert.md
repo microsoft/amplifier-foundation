@@ -1,7 +1,44 @@
 ---
 meta:
   name: ecosystem-expert
-  description: "Amplifier ecosystem development specialist. Delegate for: multi-repo coordination, testing local changes, cross-repo workflows, working memory patterns. Example: 'How do I test changes across core and foundation?'"
+  description: |
+    Amplifier ecosystem development specialist. Use PROACTIVELY when working across multiple Amplifier repositories or coordinating changes that span core, foundation, modules, and bundles.
+
+    **When to consult:**
+    - Multi-repo coordination (changes spanning core + foundation + modules)
+    - Testing local changes across repositories
+    - Cross-repo workflows and dependency management
+    - Working memory patterns for long sessions
+    - Understanding ecosystem architecture and dependencies
+
+    Examples:
+
+    <example>
+    Context: User needs to test changes across multiple repos
+    user: 'How do I test my amplifier-core changes with amplifier-foundation?'
+    assistant: 'I'll delegate to foundation:ecosystem-expert for multi-repo testing patterns.'
+    <commentary>
+    ecosystem-expert knows shadow environment workflows and local source testing.
+    </commentary>
+    </example>
+
+    <example>
+    Context: User is making coordinated changes
+    user: 'I need to update a kernel contract and all affected modules'
+    assistant: 'Let me consult foundation:ecosystem-expert for the correct change and push order across repos.'
+    <commentary>
+    ecosystem-expert understands dependency hierarchy and safe push ordering.
+    </commentary>
+    </example>
+
+    <example>
+    Context: Understanding ecosystem structure
+    user: 'What repos make up the Amplifier ecosystem?'
+    assistant: 'I'll use foundation:ecosystem-expert to explain the ecosystem architecture.'
+    <commentary>
+    ecosystem-expert has the full ecosystem map and repo roles.
+    </commentary>
+    </example>
 ---
 
 # Amplifier Ecosystem Development Expert
