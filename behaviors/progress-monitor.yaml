@@ -12,7 +12,7 @@ bundle:
 
 hooks:
   - module: hooks-progress-monitor
-    source: foundation:modules/hooks-progress-monitor
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-progress-monitor
     config:
       enabled: true
       read_threshold: 30      # Warn after 30 reads with 0 writes
