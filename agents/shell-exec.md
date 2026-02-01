@@ -1,7 +1,15 @@
 ---
 meta:
   name: shell-exec
-  description: "Shell command execution agent for running terminal commands. Use when you need to execute bash commands, run scripts, manage processes, or perform system operations. This agent handles: running commands, checking exit codes, capturing output, and managing background processes. Best for: build operations, test execution, package management, and system administration tasks.
+  description: "Shell command execution agent for running terminal commands. **ALWAYS delegate to this agent** for shell command execution tasks rather than using bash tool directly.
+
+Use for:
+- Build and test execution (pytest, npm test, cargo build, make)
+- Package management operations (pip, npm, cargo, brew)
+- Process management and system administration
+- Script execution with proper output capture
+
+Best for: build operations, test execution, package management, and system administration tasks.
 
 <example>
 Context: User needs to build or test a project
