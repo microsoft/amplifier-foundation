@@ -1193,6 +1193,72 @@ An issue is properly resolved when:
 
 ---
 
+## Autonomy Guidelines
+
+These guidelines help the system handle issues more autonomously, reducing unnecessary human intervention.
+
+### 1. GATE 1 Presentation Pattern
+
+When presenting investigation findings at GATE 1, always include:
+
+1. **Clear recommendation** (not just options)
+2. **Reasoning** for the recommendation
+3. **Default action** with indication of proceeding unless redirected
+
+**Anti-pattern:** "Here are options A, B, C, D. Which would you like?"
+**Correct pattern:** "Based on investigation, I recommend Option C (shadow test to verify, then respond with clarification request) because this validates our finding before responding. Proceeding with shadow test unless you redirect me."
+
+### 2. Unknown Terms = Custom Code Heuristic
+
+When issue reports mention terms not found in the Amplifier codebase:
+
+1. **Assume custom app-layer code** until proven otherwise
+2. **Proactively hypothesize** the most likely explanation
+3. **Include workaround for custom code** in initial response if applicable
+
+**Example:**
+> Reporter mentions "the foreman" which doesn't exist in Amplifier.
+> Most likely: Custom orchestrator that bypasses PreparedBundle.
+> Action: Include manual capability registration workaround in response.
+
+### 3. Test-Before-Advising Rule
+
+**NEVER propose posting code advice/workarounds without first:**
+
+1. Shadow testing the exact code pattern
+2. Verifying it works in a realistic scenario
+3. Having specific evidence the advice is correct
+
+**Anti-pattern:** "I can add a follow-up comment suggesting they try X"
+**Correct pattern:** "I tested X in shadow environment [evidence]. Ready to post."
+
+This applies even when the advice seems obviously correct. Test it.
+
+### 4. Multi-Scenario Test Planning
+
+When issue could have multiple explanations:
+
+1. **List all plausible scenarios** before testing
+2. **Design test plan covering all scenarios** in single round
+3. **Run comprehensive test** rather than iterating
+
+**Example for timing issues:**
+- Scenario A: Standard PreparedBundle flow → test with shadow-operator
+- Scenario B: Custom orchestrator bypassing PreparedBundle → test with amplifier-smoke-test
+- Run BOTH tests before presenting findings
+
+### 5. Version Mismatch Detection
+
+When reporter describes code that doesn't match current main:
+
+1. **Verify reporter's version** - Ask what version they're running
+2. **Compare against main** - Check if the fix already exists
+3. **Provide update instructions** - If fix exists, explain how to get it
+
+**Key pattern:** If reporter's line numbers or code descriptions don't match current main, this is likely a version mismatch, not a missing fix.
+
+---
+
 ## Remember
 
 > "My time is cheaper than yours. I should do all the investigation, testing, and validation before bringing you a complete, proven solution. Only bring you design decisions, not missing research."
