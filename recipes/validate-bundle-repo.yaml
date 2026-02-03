@@ -1,9 +1,16 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.0.0
+# Repository-Wide Bundle Validator Recipe v3.1.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.1.0 - Inheritance-aware tool placement analysis
+#        - Phase 2.5 now parses delegate tool's exclude_tools config
+#        - Agents only flagged for redundant tools if they INHERIT them (not excluded)
+#        - Tools in exclude_tools list require explicit agent declaration (CORRECT pattern)
+#        - Default exclude_tools: ["delegate"] - agents correctly redeclare delegate if needed
+#        - Removed naive "redundant declaration" flagging that didn't understand inheritance
+#
 # v3.0.0 - Major upgrade with comprehensive bundle hygiene validation
 #        - Enhanced Phase 1: Separate tracking for behaviors/standalone/experiments/root
 #        - Phase 2.1: Behavior Hygiene Validation (no root includes, no session config, context limits)
@@ -61,6 +68,12 @@ description: |
   - Repository composition analysis (do pieces fit together correctly?)
   - Convention compliance across the whole repo
   
+  **v3.1.0 Enhancements:**
+  - Inheritance-aware tool placement analysis
+  - Understands delegate tool's exclude_tools config (default: ["delegate"])
+  - Only flags agent tool declarations as redundant if they're actually inherited
+  - Tools in exclude_tools correctly require explicit agent declaration
+  
   **v3.0.0 Philosophy Alignment:**
   - Enforces context sink pattern (heavy context → agents, not root/behaviors)
   - Enforces thin behavior pattern (behaviors should be small, focused)
@@ -68,7 +81,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.0.0"
+version: "3.1.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -1459,11 +1472,14 @@ steps:
     depends_on: ["validate-all-bundles"]
 
   # ============================================================================
-  # PHASE 2.5: Tool Placement Analysis (NEW in v3.0.0)
-  # Analyzes tool placement philosophy:
+  # PHASE 2.5: Tool Placement Analysis (Enhanced in v3.1.0)
+  # Inheritance-aware tool placement analysis:
+  # - Agents inherit ALL parent tools EXCEPT those in delegate's exclude_tools
+  # - Default exclude_tools: ["delegate"] - only delegate is excluded by default
+  # - If tool is in parent AND NOT excluded → agent declaration is REDUNDANT
+  # - If tool is in parent AND excluded → agent declaration is CORRECT
   # - Universal tools (filesystem, bash, web, search, todo) → OK in root
-  # - Capability tools → should be in behaviors
-  # - Specialized tools used by only one agent → SUGGESTION to move behind agent
+  # - Specialized tools used by only one behavior → SUGGESTION to move to behavior
   # ============================================================================
 
   - id: "tool-placement-analysis"
@@ -1484,7 +1500,12 @@ steps:
           "errors": [],
           "warnings": [],
           "suggestions": [],
-          "tool_inventory": []
+          "tool_inventory": [],
+          "inheritance_analysis": {
+              "exclude_tools": ["delegate"],  # Default
+              "exclude_tools_source": "default",
+              "agent_tool_analysis": []
+          }
       }
 
       # Universal tools that are always OK in root
@@ -1501,26 +1522,65 @@ steps:
 
       repo_path = Path(discovery.get("repo_path", ".")).resolve()
 
-      # Collect all tools from all bundles
-      tool_locations = {}  # tool_name -> [{"bundle": ..., "category": ...}, ...]
+      # Collect all tools from all bundles and track agents
+      tool_locations = {}  # tool_name -> [{"bundle": ..., "category": ..., "in_agent": ...}, ...]
+      bundle_tools = {}    # bundle_path -> [tool_names]
+      agent_tools = {}     # "bundle_path:agent_name" -> [tool_names]
+      exclude_tools = ["delegate"]  # Default per foundation-expert
       
       all_bundles = []
       for category, paths in discovery.get("bundles_found", {}).items():
           for path in paths:
               all_bundles.append((path, category))
 
+      def parse_yaml_section(content: str, section: str) -> str:
+          """Extract a YAML section from content."""
+          # Handle markdown with frontmatter
+          if content.strip().startswith('---'):
+              match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+              if match:
+                  content = match.group(1)
+          
+          pattern = rf'^{section}:\s*\n((?:\s+.*\n)*)'
+          match = re.search(pattern, content, re.MULTILINE)
+          return match.group(1) if match else ""
+
+      def extract_tool_modules(tools_section: str) -> list:
+          """Extract tool module names from a tools section."""
+          return re.findall(r'module:\s*([^\s\n]+)', tools_section)
+
+      def extract_delegate_config(tools_section: str) -> dict:
+          """Extract delegate tool config including exclude_tools."""
+          config = {}
+          # Look for tool-delegate section
+          delegate_match = re.search(
+              r'-\s*module:\s*tool-delegate.*?(?=\n\s*-\s*module:|\Z)',
+              tools_section,
+              re.DOTALL
+          )
+          if delegate_match:
+              delegate_section = delegate_match.group(0)
+              # Look for exclude_tools in config
+              exclude_match = re.search(
+                  r'exclude_tools:\s*\n((?:\s+-\s*.*\n)*)',
+                  delegate_section
+              )
+              if exclude_match:
+                  excludes = re.findall(r'-\s*([^\s\n]+)', exclude_match.group(1))
+                  config["exclude_tools"] = excludes
+          return config
+
+      # First pass: collect bundle-level tools and find delegate config
       for bundle_path, category in all_bundles:
           path = Path(bundle_path)
           try:
               content = path.read_text()
               
-              # Find tools section
-              tools_match = re.search(r'^tools:\s*\n((?:\s+-.*\n|\s+\w.*\n)*)', content, re.MULTILINE)
-              if tools_match:
-                  tools_section = tools_match.group(1)
-                  
-                  # Extract tool module names
-                  tool_modules = re.findall(r'module:\s*([^\s\n]+)', tools_section)
+              # Find tools section at bundle level
+              tools_section = parse_yaml_section(content, "tools")
+              if tools_section:
+                  tool_modules = extract_tool_modules(tools_section)
+                  bundle_tools[str(path)] = tool_modules
                   
                   for tool_name in tool_modules:
                       results["tools_analyzed"] += 1
@@ -1531,8 +1591,56 @@ steps:
                       tool_locations[tool_name].append({
                           "bundle": str(path),
                           "bundle_name": path.stem if path.name not in ["bundle.md", "bundle.yaml"] else path.parent.name,
-                          "category": category
+                          "category": category,
+                          "in_agent": None
                       })
+                  
+                  # Check for delegate tool config
+                  if category in ["root", "behaviors"]:
+                      delegate_config = extract_delegate_config(tools_section)
+                      if "exclude_tools" in delegate_config:
+                          exclude_tools = delegate_config["exclude_tools"]
+                          results["inheritance_analysis"]["exclude_tools"] = exclude_tools
+                          results["inheritance_analysis"]["exclude_tools_source"] = str(path)
+              
+              # Find agents section and their tools
+              agents_section = parse_yaml_section(content, "agents")
+              if agents_section:
+                  # Split by agent entries
+                  agent_entries = re.split(r'\n\s*-\s*(?=name:|id:)', agents_section)
+                  for agent_entry in agent_entries:
+                      if not agent_entry.strip():
+                          continue
+                      
+                      # Get agent name
+                      name_match = re.search(r'(?:name|id):\s*([^\s\n]+)', agent_entry)
+                      if not name_match:
+                          continue
+                      agent_name = name_match.group(1).strip('"\'')
+                      
+                      # Get agent tools
+                      agent_tools_match = re.search(r'tools:\s*\n((?:\s+.*\n)*)', agent_entry)
+                      if agent_tools_match:
+                          agent_tool_modules = extract_tool_modules(agent_tools_match.group(1))
+                          agent_key = f"{path}:{agent_name}"
+                          agent_tools[agent_key] = {
+                              "tools": agent_tool_modules,
+                              "bundle_path": str(path),
+                              "bundle_category": category
+                          }
+                          
+                          for tool_name in agent_tool_modules:
+                              results["tools_analyzed"] += 1
+                              
+                              if tool_name not in tool_locations:
+                                  tool_locations[tool_name] = []
+                              
+                              tool_locations[tool_name].append({
+                                  "bundle": str(path),
+                                  "bundle_name": path.stem if path.name not in ["bundle.md", "bundle.yaml"] else path.parent.name,
+                                  "category": category,
+                                  "in_agent": agent_name
+                              })
                       
           except Exception as e:
               results["warnings"].append({
@@ -1541,22 +1649,74 @@ steps:
                   "message": f"Could not parse bundle for tools: {e}"
               })
 
-      # Analyze tool placement
+      # Second pass: Analyze agent tool inheritance
+      for agent_key, agent_info in agent_tools.items():
+          bundle_path = agent_info["bundle_path"]
+          agent_name = agent_key.split(":")[-1]
+          agent_tool_list = agent_info["tools"]
+          
+          # Get parent bundle tools
+          parent_tools = bundle_tools.get(bundle_path, [])
+          
+          # Also check root bundle tools if this is a behavior
+          root_tools = []
+          for root_path in discovery.get("bundles_found", {}).get("root", []):
+              root_tools.extend(bundle_tools.get(root_path, []))
+          
+          # Combined parent tools (what agent inherits from)
+          all_parent_tools = set(parent_tools) | set(root_tools)
+          
+          agent_analysis = {
+              "agent": agent_name,
+              "bundle": bundle_path,
+              "declared_tools": agent_tool_list,
+              "inherited_tools": list(all_parent_tools - set(exclude_tools)),
+              "excluded_tools": exclude_tools,
+              "redundant_declarations": [],
+              "correct_explicit_declarations": []
+          }
+          
+          for tool in agent_tool_list:
+              if tool in all_parent_tools:
+                  if tool in exclude_tools:
+                      # Tool is excluded from inheritance - agent MUST declare it explicitly
+                      agent_analysis["correct_explicit_declarations"].append(tool)
+                  else:
+                      # Tool is inherited - agent declaration is REDUNDANT
+                      agent_analysis["redundant_declarations"].append(tool)
+                      results["suggestions"].append({
+                          "tool": tool,
+                          "agent": agent_name,
+                          "bundle": bundle_path,
+                          "type": "redundant_agent_tool",
+                          "message": f"Tool '{tool}' in agent '{agent_name}' is redundant - inherited from parent bundle",
+                          "severity": "SUGGESTION",
+                          "suggestion": f"Remove '{tool}' from agent tools list. It's inherited automatically (not in exclude_tools: {exclude_tools})"
+                      })
+          
+          results["inheritance_analysis"]["agent_tool_analysis"].append(agent_analysis)
+
+      # Analyze tool placement at bundle level
       for tool_name, locations in tool_locations.items():
+          # Filter to bundle-level only (not in agents)
+          bundle_locations = [loc for loc in locations if loc["in_agent"] is None]
+          
           tool_info = {
               "name": tool_name,
               "is_universal": any(u in tool_name.lower() for u in UNIVERSAL_TOOLS),
               "locations": locations,
+              "bundle_locations": bundle_locations,
               "location_count": len(locations),
-              "in_root": any(loc["category"] == "root" for loc in locations),
-              "in_behaviors": any(loc["category"] == "behaviors" for loc in locations),
+              "bundle_location_count": len(bundle_locations),
+              "in_root": any(loc["category"] == "root" and loc["in_agent"] is None for loc in locations),
+              "in_behaviors": any(loc["category"] == "behaviors" and loc["in_agent"] is None for loc in locations),
+              "in_agents": any(loc["in_agent"] is not None for loc in locations),
               "issues": []
           }
           
-          # Check for non-universal tools in root
+          # Check for non-universal tools in root that are only used by specific behaviors
           if tool_info["in_root"] and not tool_info["is_universal"]:
-              # This is OK but worth noting if it's only used by specific behaviors/agents
-              behavior_users = [loc for loc in locations if loc["category"] == "behaviors"]
+              behavior_users = [loc for loc in bundle_locations if loc["category"] == "behaviors"]
               if len(behavior_users) == 1:
                   results["suggestions"].append({
                       "tool": tool_name,
@@ -1567,25 +1727,18 @@ steps:
                   })
                   tool_info["issues"].append("specialized_in_root")
           
-          # Check for duplicate tool declarations
-          if len(locations) > 1:
-              categories = set(loc["category"] for loc in locations)
-              if "root" in categories and len(categories) > 1:
-                  # Tool in root AND in behaviors - redundant
-                  results["suggestions"].append({
-                      "tool": tool_name,
-                      "type": "redundant_tool_declaration",
-                      "message": f"Tool '{tool_name}' declared in root and also in {len(locations)-1} other location(s)",
-                      "severity": "INFO",
-                      "suggestion": "If in root, behaviors inherit it - remove from behaviors unless overriding config"
-                  })
-                  tool_info["issues"].append("redundant_declaration")
+          # Note: We no longer flag root+behavior declarations as redundant without
+          # understanding the full include chain. Behaviors may be used standalone.
           
           results["tool_inventory"].append(tool_info)
 
       # Summary statistics
       universal_count = len([t for t in results["tool_inventory"] if t["is_universal"]])
       specialized_count = len(results["tool_inventory"]) - universal_count
+      redundant_agent_tools = sum(
+          len(a.get("redundant_declarations", [])) 
+          for a in results["inheritance_analysis"]["agent_tool_analysis"]
+      )
 
       results["passed"] = len(results["errors"]) == 0
       results["summary"] = {
@@ -1594,7 +1747,9 @@ steps:
           "universal_tools": universal_count,
           "specialized_tools": specialized_count,
           "suggestions": len(results["suggestions"]),
-          "warnings": len(results["warnings"])
+          "warnings": len(results["warnings"]),
+          "redundant_agent_tools": redundant_agent_tools,
+          "exclude_tools_config": results["inheritance_analysis"]["exclude_tools"]
       }
 
       print(json.dumps(results))
@@ -2105,10 +2260,12 @@ steps:
          - Individual files >2000 tokens → INFO (candidate for agent)
          - Root owns >50% of context → INFO
 
-      5. **Tool Placement (INFO):**
+      5. **Tool Placement (INFO/SUGGESTION) - v3.1.0 Inheritance-Aware:**
          - Universal tools OK in root
          - Specialized tools used by one behavior → suggest moving to behavior
-         - Redundant declarations → info
+         - Agent tool declarations checked against inheritance:
+           - Tools in exclude_tools (default: ["delegate"]) → agent MUST declare (CORRECT)
+           - Tools NOT in exclude_tools → agent declaration is REDUNDANT (SUGGESTION to remove)
 
       **What is NOT an Issue:**
       - Using /bundles/ vs /behaviors/ is a LOCATION choice
@@ -2270,7 +2427,7 @@ steps:
 
       **Generate this report structure:**
 
-      # Bundle Repository Validation Report v3.0.0
+      # Bundle Repository Validation Report v3.1.0
 
       ## Executive Summary
       - **Overall Verdict**: [✅ PASS | ✅ PASS WITH SUGGESTIONS | ⚠️ PASS WITH WARNINGS | ❌ FAIL]
@@ -2322,9 +2479,11 @@ steps:
       - Large files (>2000 tokens): [list]
       - Root context ratio: Z%
 
-      ### Tool Placement
+      ### Tool Placement (v3.1.0 Inheritance-Aware)
       - Universal tools: X
       - Specialized tools: Y
+      - exclude_tools config: [list from delegate tool, default: ["delegate"]]
+      - Redundant agent tool declarations: X (tools agents declare but already inherit)
       - Suggestions: [list]
 
       ## Detailed Findings
@@ -2348,7 +2507,7 @@ steps:
 
       ## Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v3.0.0
+      - Recipe: validate-bundle-repo v3.1.0
       - Foundation: version
       - Quality Thresholds:
         - All bundles must load via BundleRegistry
