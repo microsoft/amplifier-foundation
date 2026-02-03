@@ -943,19 +943,19 @@ class PreparedBundle:
             # Fresh deduplicator each call (files may have changed)
             deduplicator = ContentDeduplicator()
 
-            # Collect context file blocks (XML format for consistency)
-            context_blocks: list[str] = []
+            # Build mention_to_path map for context block attribution
+            # This includes BOTH bundle context files AND @mentions from instruction
+            mention_to_path: dict[str, Path] = {}
 
-            # 1. Bundle context files (from context: section) - formatted as XML
+            # 1. Bundle context files (from context: section)
+            # Add to deduplicator and mention_to_path for unified formatting
             for context_name, context_path in captured_bundle.context.items():
                 if context_path.exists():
                     content = context_path.read_text(encoding="utf-8")
-                    # Use XML format: show context name and resolved path
-                    paths_attr = f"{context_name} → {context_path.resolve()}"
-                    block = f'<context_file paths="{paths_attr}">\n{content}\n</context_file>'
-                    context_blocks.append(block)
-                    # Add to deduplicator to prevent duplicate loading via @mentions
+                    # Add to deduplicator for content-based deduplication
                     deduplicator.add_file(context_path, content)
+                    # Add to mention_to_path for attribution (context_name → path)
+                    mention_to_path[context_name] = context_path
 
             # 2. Resolve @mentions from main instruction (re-loads files each call)
             mention_results = await load_mentions(
@@ -964,22 +964,15 @@ class PreparedBundle:
                 deduplicator=deduplicator,
             )
 
-            # Build mention_to_path map for context block attribution
-            mention_to_path: dict[str, Path] = {}
+            # Add @mention results to mention_to_path for attribution
             for mr in mention_results:
                 if mr.resolved_path:
                     mention_to_path[mr.mention] = mr.resolved_path
 
-            # 3. Format @mention context as XML blocks (same format as bundle context)
-            mention_context_block = format_context_block(deduplicator, mention_to_path)
-
-            # Combine all context blocks (bundle context files + @mention files)
-            # Note: format_context_block only returns files not already in context_blocks
-            # because we added bundle context files to deduplicator first
-            if mention_context_block:
-                context_blocks.append(mention_context_block)
-
-            all_context = "\n\n".join(context_blocks)
+            # 3. Format ALL context as XML blocks (bundle context + @mentions)
+            # format_context_block uses deduplicator for unique content and
+            # mention_to_path for attribution (showing name → resolved path)
+            all_context = format_context_block(deduplicator, mention_to_path)
 
             # Final structure: main instruction FIRST, then all context files
             if all_context:
