@@ -16,12 +16,8 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-bundle-shadow@main
 
 # Amplifier-specific agents
+# Context is loaded via @mentions in the agent files (context sink pattern)
 agents:
   include:
     # Agent file contains full description and tool configuration
     - foundation:amplifier-smoke-test
-
-# Amplifier-specific context
-context:
-  include:
-    - foundation:context/amplifier-shadow-tests.md
