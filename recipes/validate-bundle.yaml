@@ -11,15 +11,16 @@ name: validate-bundle
 description: |
   Validates a single Amplifier bundle file against:
   - Structural requirements (actual loading via amplifier_foundation)
+  - Context health checks (token sizes, @mention cycles, cascading includes)
   - Convention patterns (from terminology framework)
   - Common gotchas and mistakes
   
   Produces a validation report with pass/fail verdicts and actionable recommendations.
   
   For repo-wide validation, use validate-bundle-repo.yaml instead.
-version: "1.0.0"
+version: "1.1.0"
 author: "Amplifier Foundation Team"
-tags: ["bundle", "validation", "quality", "conventions"]
+tags: ["bundle", "validation", "quality", "conventions", "context-health"]
 
 context:
   bundle_path: ""  # Required: Path to bundle file to validate
@@ -188,6 +189,7 @@ steps:
                   "providers_count": len(bundle.providers),
                   "hooks_count": len(bundle.hooks) if hasattr(bundle, 'hooks') else 0,
                   "context_count": len(bundle.context),
+                  "context_entries": dict(bundle.context) if bundle.context else {},
                   "source_namespaces": list(bundle.source_base_paths.keys()) if hasattr(bundle, 'source_base_paths') else []
               }
 
@@ -361,6 +363,625 @@ steps:
     depends_on: ["structural-validation"]
 
   # ============================================================================
+  # PHASE 2.5: Context Health Checks (Code-Based)
+  # Check for @mentions in behavior context files, token sizes, cycles, etc.
+  # ============================================================================
+
+  # Step 2.5a: Check for @mentions in behavior context.include files
+  - id: "behavior-context-mentions"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      import yaml
+      from pathlib import Path
+
+      def check_behavior_context_mentions(bundle_path: str) -> dict:
+          """Check for @mentions in context.include files for behaviors (WARNING)."""
+          results = {
+              "phase": "behavior_context_mentions",
+              "violations": [],
+              "behaviors_checked": 0,
+              "context_files_checked": 0,
+              "passed": True
+          }
+
+          path = Path(bundle_path).resolve()
+          bundle_dir = path.parent if path.is_file() else path
+          behaviors_dir = bundle_dir / "behaviors"
+
+          if not behaviors_dir.exists():
+              results["skipped"] = True
+              results["reason"] = "No behaviors/ directory found"
+              print(json.dumps(results))
+              return results
+
+          # Pattern to match @mentions (but not in code blocks)
+          mention_pattern = re.compile(r'@[a-zA-Z0-9_][a-zA-Z0-9_-]*:[a-zA-Z0-9_./-]+')
+
+          # Find all behavior YAML files
+          behavior_files = list(behaviors_dir.glob("*.yaml")) + list(behaviors_dir.glob("*.yml"))
+          
+          for behavior_file in behavior_files:
+              results["behaviors_checked"] += 1
+              try:
+                  content = behavior_file.read_text()
+                  
+                  # Parse YAML (handle markdown frontmatter if present)
+                  if content.startswith("---"):
+                      parts = content.split("---", 2)
+                      if len(parts) >= 2:
+                          yaml_content = parts[1]
+                      else:
+                          yaml_content = content
+                  else:
+                      yaml_content = content
+                  
+                  data = yaml.safe_load(yaml_content)
+                  if not data:
+                      continue
+
+                  # Check context.include entries
+                  context_includes = []
+                  if isinstance(data.get("context"), dict):
+                      includes = data["context"].get("include", [])
+                      if isinstance(includes, list):
+                          context_includes = includes
+                      elif isinstance(includes, str):
+                          context_includes = [includes]
+
+                  # Resolve and check each context file
+                  for include_ref in context_includes:
+                      # Parse namespace:path format (no @ prefix in YAML)
+                      if ":" in include_ref:
+                          namespace, rel_path = include_ref.split(":", 1)
+                          # Try to find the context file relative to bundle_dir
+                          context_file = bundle_dir / rel_path
+                          if not context_file.exists():
+                              # Try without namespace prefix in path
+                              context_file = bundle_dir / "context" / Path(rel_path).name
+                      else:
+                          context_file = bundle_dir / include_ref
+
+                      if context_file.exists():
+                          results["context_files_checked"] += 1
+                          context_content = context_file.read_text()
+                          
+                          # Remove code blocks before checking for @mentions
+                          # Remove fenced code blocks
+                          cleaned = re.sub(r'```[\s\S]*?```', '', context_content)
+                          # Remove inline code
+                          cleaned = re.sub(r'`[^`]+`', '', cleaned)
+                          
+                          # Find @mentions
+                          mentions = mention_pattern.findall(cleaned)
+                          if mentions:
+                              results["passed"] = False
+                              for mention in mentions:
+                                  # Find line number
+                                  line_num = None
+                                  for i, line in enumerate(context_content.split('\n'), 1):
+                                      if mention in line:
+                                          line_num = i
+                                          break
+                                  
+                                  results["violations"].append({
+                                      "severity": "WARNING",
+                                      "behavior_file": str(behavior_file.relative_to(bundle_dir)),
+                                      "context_file": str(context_file.relative_to(bundle_dir)),
+                                      "line": line_num,
+                                      "mention": mention,
+                                      "message": f"Behavior context file contains @mention '{mention}' which creates hidden cascading dependencies",
+                                      "fix": "Move @mentions to agent markdown instructions, or inline the content into the context file"
+                                  })
+
+              except Exception as e:
+                  results["violations"].append({
+                      "severity": "ERROR",
+                      "behavior_file": str(behavior_file.relative_to(bundle_dir)),
+                      "message": f"Failed to parse behavior file: {e}"
+                  })
+
+          print(json.dumps(results))
+
+      check_behavior_context_mentions("{{bundle_path}}")
+      EOF
+    output: "behavior_context_results"
+    parse_json: true
+    timeout: 60
+    depends_on: ["structure-analysis"]
+
+  # Step 2.5b: Check token sizes of individual context.include files
+  - id: "context-token-analysis"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import yaml
+      from pathlib import Path
+
+      # Token thresholds
+      WARNING_TOKENS = 4000
+      ERROR_TOKENS = 8000
+
+      def analyze_context_tokens(bundle_path: str) -> dict:
+          """Analyze token sizes of context.include files."""
+          results = {
+              "phase": "context_token_analysis",
+              "files_analyzed": [],
+              "warnings": [],
+              "errors": [],
+              "total_files": 0,
+              "passed": True
+          }
+
+          path = Path(bundle_path).resolve()
+          bundle_dir = path.parent if path.is_file() else path
+
+          # Collect all context files referenced via context.include
+          context_files = set()
+
+          # Check root bundle.md/bundle.yaml
+          for bundle_file in [bundle_dir / "bundle.md", bundle_dir / "bundle.yaml"]:
+              if bundle_file.exists():
+                  context_files.update(extract_context_includes(bundle_file, bundle_dir))
+
+          # Check behaviors
+          behaviors_dir = bundle_dir / "behaviors"
+          if behaviors_dir.exists():
+              for behavior_file in list(behaviors_dir.glob("*.yaml")) + list(behaviors_dir.glob("*.yml")) + list(behaviors_dir.glob("*.md")):
+                  context_files.update(extract_context_includes(behavior_file, bundle_dir))
+
+          # Check agents
+          agents_dir = bundle_dir / "agents"
+          if agents_dir.exists():
+              for agent_file in list(agents_dir.glob("*.yaml")) + list(agents_dir.glob("*.yml")) + list(agents_dir.glob("*.md")):
+                  context_files.update(extract_context_includes(agent_file, bundle_dir))
+
+          # Analyze each context file
+          for context_file in context_files:
+              if context_file.exists():
+                  results["total_files"] += 1
+                  content = context_file.read_text()
+                  char_count = len(content)
+                  estimated_tokens = char_count // 4  # chars / 4 = estimated tokens
+
+                  file_info = {
+                      "file": str(context_file.relative_to(bundle_dir)),
+                      "chars": char_count,
+                      "estimated_tokens": estimated_tokens
+                  }
+                  results["files_analyzed"].append(file_info)
+
+                  if estimated_tokens > ERROR_TOKENS:
+                      results["passed"] = False
+                      results["errors"].append({
+                          "severity": "ERROR",
+                          "file": str(context_file.relative_to(bundle_dir)),
+                          "chars": char_count,
+                          "estimated_tokens": estimated_tokens,
+                          "threshold": ERROR_TOKENS,
+                          "message": f"Context file exceeds {ERROR_TOKENS} tokens ({estimated_tokens} est.) - must refactor",
+                          "fix": "Split into smaller files, move to agent context sink pattern, or extract less critical content"
+                      })
+                  elif estimated_tokens > WARNING_TOKENS:
+                      results["warnings"].append({
+                          "severity": "WARNING",
+                          "file": str(context_file.relative_to(bundle_dir)),
+                          "chars": char_count,
+                          "estimated_tokens": estimated_tokens,
+                          "threshold": WARNING_TOKENS,
+                          "message": f"Context file exceeds {WARNING_TOKENS} tokens ({estimated_tokens} est.) - consider splitting",
+                          "fix": "Consider splitting or moving heavy content to agent context sink pattern"
+                      })
+
+          print(json.dumps(results))
+
+      def extract_context_includes(file_path: Path, bundle_dir: Path) -> set:
+          """Extract context.include paths from a bundle/behavior/agent file."""
+          context_files = set()
+          try:
+              content = file_path.read_text()
+              
+              # Handle markdown with YAML frontmatter
+              if content.startswith("---"):
+                  parts = content.split("---", 2)
+                  if len(parts) >= 2:
+                      yaml_content = parts[1]
+                  else:
+                      return context_files
+              else:
+                  yaml_content = content
+
+              data = yaml.safe_load(yaml_content)
+              if not data:
+                  return context_files
+
+              # Get context.include entries
+              includes = []
+              if isinstance(data.get("context"), dict):
+                  inc = data["context"].get("include", [])
+                  if isinstance(inc, list):
+                      includes = inc
+                  elif isinstance(inc, str):
+                      includes = [inc]
+
+              # Resolve paths
+              for include_ref in includes:
+                  if ":" in include_ref:
+                      namespace, rel_path = include_ref.split(":", 1)
+                      context_file = bundle_dir / rel_path
+                      if not context_file.exists():
+                          context_file = bundle_dir / "context" / Path(rel_path).name
+                  else:
+                      context_file = bundle_dir / include_ref
+                  
+                  if context_file.exists():
+                      context_files.add(context_file.resolve())
+
+          except Exception:
+              pass
+          
+          return context_files
+
+      analyze_context_tokens("{{bundle_path}}")
+      EOF
+    output: "context_token_results"
+    parse_json: true
+    timeout: 60
+    depends_on: ["structure-analysis"]
+
+  # Step 2.5c: Calculate total bundle context load (with @mention resolution)
+  - id: "total-context-load"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      import yaml
+      from pathlib import Path
+
+      # Token thresholds for total load
+      WARNING_TOTAL_TOKENS = 8000
+      ERROR_TOTAL_TOKENS = 16000
+
+      def calculate_total_context_load(bundle_path: str) -> dict:
+          """Calculate total context load including recursive @mention resolution."""
+          results = {
+              "phase": "total_context_load",
+              "context_include_files": [],
+              "mention_resolved_files": [],
+              "total_context_include_tokens": 0,
+              "total_mention_tokens": 0,
+              "total_tokens": 0,
+              "warnings": [],
+              "errors": [],
+              "passed": True
+          }
+
+          path = Path(bundle_path).resolve()
+          bundle_dir = path.parent if path.is_file() else path
+
+          # Track all files and their sizes
+          processed_files = {}  # path -> tokens (for deduplication)
+          mention_pattern = re.compile(r'@([a-zA-Z0-9_][a-zA-Z0-9_-]*):([a-zA-Z0-9_./-]+)')
+
+          def resolve_path(namespace: str, rel_path: str) -> Path:
+              """Try to resolve a namespace:path reference to an actual file."""
+              # Try direct path under bundle_dir
+              candidates = [
+                  bundle_dir / rel_path,
+                  bundle_dir / "context" / Path(rel_path).name,
+                  bundle_dir / rel_path.lstrip("/"),
+              ]
+              for candidate in candidates:
+                  if candidate.exists():
+                      return candidate.resolve()
+              return None
+
+          def process_file(file_path: Path, depth: int = 0) -> int:
+              """Process a file, extract @mentions, and return total tokens."""
+              if depth > 10:  # Prevent infinite recursion
+                  return 0
+              
+              resolved = file_path.resolve()
+              if resolved in processed_files:
+                  return 0  # Already counted (deduplication)
+              
+              if not resolved.exists():
+                  return 0
+              
+              content = resolved.read_text()
+              char_count = len(content)
+              tokens = char_count // 4
+              processed_files[resolved] = tokens
+              
+              # Find @mentions (excluding code blocks)
+              cleaned = re.sub(r'```[\s\S]*?```', '', content)
+              cleaned = re.sub(r'`[^`]+`', '', cleaned)
+              
+              mentions = mention_pattern.findall(cleaned)
+              for namespace, rel_path in mentions:
+                  mentioned_file = resolve_path(namespace, rel_path)
+                  if mentioned_file:
+                      process_file(mentioned_file, depth + 1)
+              
+              return tokens
+
+          # Step 1: Collect context.include files
+          context_include_files = set()
+          
+          for bundle_file in [bundle_dir / "bundle.md", bundle_dir / "bundle.yaml"]:
+              if bundle_file.exists():
+                  context_include_files.update(extract_context_includes(bundle_file, bundle_dir))
+
+          behaviors_dir = bundle_dir / "behaviors"
+          if behaviors_dir.exists():
+              for behavior_file in list(behaviors_dir.glob("*.yaml")) + list(behaviors_dir.glob("*.yml")) + list(behaviors_dir.glob("*.md")):
+                  context_include_files.update(extract_context_includes(behavior_file, bundle_dir))
+
+          agents_dir = bundle_dir / "agents"
+          if agents_dir.exists():
+              for agent_file in list(agents_dir.glob("*.yaml")) + list(agents_dir.glob("*.yml")) + list(agents_dir.glob("*.md")):
+                  context_include_files.update(extract_context_includes(agent_file, bundle_dir))
+
+          # Step 2: Process each context.include file (with recursive @mention resolution)
+          for context_file in context_include_files:
+              if context_file.exists():
+                  before_count = len(processed_files)
+                  process_file(context_file)
+                  
+                  file_tokens = processed_files.get(context_file.resolve(), 0)
+                  results["context_include_files"].append({
+                      "file": str(context_file.relative_to(bundle_dir)),
+                      "tokens": file_tokens
+                  })
+                  results["total_context_include_tokens"] += file_tokens
+
+          # Step 3: Calculate @mention resolved files (files discovered via @mentions)
+          for file_path, tokens in processed_files.items():
+              rel_path = str(file_path.relative_to(bundle_dir)) if file_path.is_relative_to(bundle_dir) else str(file_path)
+              
+              # Check if this was a direct context.include or resolved via @mention
+              is_direct = any(str(cf.relative_to(bundle_dir)) == rel_path for cf in context_include_files if cf.exists())
+              if not is_direct:
+                  results["mention_resolved_files"].append({
+                      "file": rel_path,
+                      "tokens": tokens
+                  })
+                  results["total_mention_tokens"] += tokens
+
+          # Step 4: Calculate totals
+          results["total_tokens"] = sum(processed_files.values())
+
+          # Step 5: Generate warnings/errors
+          if results["total_tokens"] > ERROR_TOTAL_TOKENS:
+              results["passed"] = False
+              results["errors"].append({
+                  "severity": "ERROR",
+                  "total_tokens": results["total_tokens"],
+                  "threshold": ERROR_TOTAL_TOKENS,
+                  "message": f"Total bundle context load ({results['total_tokens']} tokens) exceeds {ERROR_TOTAL_TOKENS} - refactor required",
+                  "breakdown": f"context.include: {results['total_context_include_tokens']} tokens, @mentions: {results['total_mention_tokens']} tokens",
+                  "fix": "Use context sink pattern for heavy content, split into multiple behaviors, or remove non-essential context"
+              })
+          elif results["total_tokens"] > WARNING_TOTAL_TOKENS:
+              results["warnings"].append({
+                  "severity": "WARNING",
+                  "total_tokens": results["total_tokens"],
+                  "threshold": WARNING_TOTAL_TOKENS,
+                  "message": f"Total bundle context load ({results['total_tokens']} tokens) exceeds {WARNING_TOTAL_TOKENS} - consider optimization",
+                  "breakdown": f"context.include: {results['total_context_include_tokens']} tokens, @mentions: {results['total_mention_tokens']} tokens",
+                  "fix": "Consider context sink pattern for heavy content to reduce base token budget"
+              })
+
+          print(json.dumps(results))
+
+      def extract_context_includes(file_path: Path, bundle_dir: Path) -> set:
+          """Extract context.include paths from a bundle/behavior/agent file."""
+          context_files = set()
+          try:
+              content = file_path.read_text()
+              
+              if content.startswith("---"):
+                  parts = content.split("---", 2)
+                  if len(parts) >= 2:
+                      yaml_content = parts[1]
+                  else:
+                      return context_files
+              else:
+                  yaml_content = content
+
+              data = yaml.safe_load(yaml_content)
+              if not data:
+                  return context_files
+
+              includes = []
+              if isinstance(data.get("context"), dict):
+                  inc = data["context"].get("include", [])
+                  if isinstance(inc, list):
+                      includes = inc
+                  elif isinstance(inc, str):
+                      includes = [inc]
+
+              for include_ref in includes:
+                  if ":" in include_ref:
+                      namespace, rel_path = include_ref.split(":", 1)
+                      context_file = bundle_dir / rel_path
+                      if not context_file.exists():
+                          context_file = bundle_dir / "context" / Path(rel_path).name
+                  else:
+                      context_file = bundle_dir / include_ref
+                  
+                  if context_file.exists():
+                      context_files.add(context_file.resolve())
+
+          except Exception:
+              pass
+          
+          return context_files
+
+      calculate_total_context_load("{{bundle_path}}")
+      EOF
+    output: "total_context_results"
+    parse_json: true
+    timeout: 120
+    depends_on: ["structure-analysis"]
+
+  # Step 2.5d: Detect cycles in @mention dependencies
+  - id: "mention-cycle-detection"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      from pathlib import Path
+      from collections import defaultdict
+
+      def detect_mention_cycles(bundle_path: str) -> dict:
+          """Detect cycles in @mention dependency graph."""
+          results = {
+              "phase": "mention_cycle_detection",
+              "files_analyzed": 0,
+              "edges_found": 0,
+              "cycles_detected": [],
+              "dependency_graph": {},
+              "passed": True
+          }
+
+          path = Path(bundle_path).resolve()
+          bundle_dir = path.parent if path.is_file() else path
+          
+          mention_pattern = re.compile(r'@([a-zA-Z0-9_][a-zA-Z0-9_-]*):([a-zA-Z0-9_./-]+)')
+          
+          # Build dependency graph
+          graph = defaultdict(set)  # file -> set of files it mentions
+          
+          def resolve_path(namespace: str, rel_path: str) -> Path:
+              """Try to resolve a namespace:path reference."""
+              candidates = [
+                  bundle_dir / rel_path,
+                  bundle_dir / "context" / Path(rel_path).name,
+              ]
+              for candidate in candidates:
+                  if candidate.exists():
+                      return candidate.resolve()
+              return None
+          
+          def get_relative_key(file_path: Path) -> str:
+              """Get a relative path key for the graph."""
+              try:
+                  return str(file_path.relative_to(bundle_dir))
+              except ValueError:
+                  return str(file_path)
+          
+          def scan_file_for_mentions(file_path: Path):
+              """Scan a file for @mentions and add to graph."""
+              if not file_path.exists():
+                  return
+              
+              results["files_analyzed"] += 1
+              content = file_path.read_text()
+              
+              # Remove code blocks
+              cleaned = re.sub(r'```[\s\S]*?```', '', content)
+              cleaned = re.sub(r'`[^`]+`', '', cleaned)
+              
+              source_key = get_relative_key(file_path)
+              
+              mentions = mention_pattern.findall(cleaned)
+              for namespace, rel_path in mentions:
+                  target_file = resolve_path(namespace, rel_path)
+                  if target_file:
+                      target_key = get_relative_key(target_file)
+                      graph[source_key].add(target_key)
+                      results["edges_found"] += 1
+
+          # Scan all relevant files
+          for ext in ["*.md", "*.yaml", "*.yml"]:
+              # Context files
+              context_dir = bundle_dir / "context"
+              if context_dir.exists():
+                  for f in context_dir.rglob(ext):
+                      scan_file_for_mentions(f)
+              
+              # Agent files
+              agents_dir = bundle_dir / "agents"
+              if agents_dir.exists():
+                  for f in agents_dir.rglob(ext):
+                      scan_file_for_mentions(f)
+              
+              # Behavior files
+              behaviors_dir = bundle_dir / "behaviors"
+              if behaviors_dir.exists():
+                  for f in behaviors_dir.rglob(ext):
+                      scan_file_for_mentions(f)
+              
+              # Docs files
+              docs_dir = bundle_dir / "docs"
+              if docs_dir.exists():
+                  for f in docs_dir.rglob(ext):
+                      scan_file_for_mentions(f)
+
+          # Convert graph for JSON output
+          results["dependency_graph"] = {k: list(v) for k, v in graph.items()}
+          
+          # Detect cycles using DFS
+          def find_cycles():
+              visited = set()
+              rec_stack = set()
+              cycles = []
+              
+              def dfs(node, path):
+                  visited.add(node)
+                  rec_stack.add(node)
+                  path.append(node)
+                  
+                  for neighbor in graph.get(node, []):
+                      if neighbor not in visited:
+                          cycle = dfs(neighbor, path)
+                          if cycle:
+                              return cycle
+                      elif neighbor in rec_stack:
+                          # Found cycle
+                          cycle_start = path.index(neighbor)
+                          return path[cycle_start:] + [neighbor]
+                  
+                  path.pop()
+                  rec_stack.remove(node)
+                  return None
+              
+              for node in graph:
+                  if node not in visited:
+                      cycle = dfs(node, [])
+                      if cycle:
+                          cycles.append(cycle)
+              
+              return cycles
+          
+          cycles = find_cycles()
+          if cycles:
+              results["passed"] = False
+              for cycle in cycles:
+                  cycle_path = " → ".join(cycle)
+                  results["cycles_detected"].append({
+                      "severity": "ERROR",
+                      "cycle_path": cycle,
+                      "message": f"Circular @mention dependency detected: {cycle_path}",
+                      "fix": "Break the cycle by removing one of the @mentions or restructuring the context files"
+                  })
+
+          print(json.dumps(results))
+
+      detect_mention_cycles("{{bundle_path}}")
+      EOF
+    output: "cycle_detection_results"
+    parse_json: true
+    timeout: 60
+    depends_on: ["structure-analysis"]
+
+  # ============================================================================
   # PHASE 3: Convention Analysis (Agent-Based)
   # Check against documented conventions using LLM reasoning
   # ============================================================================
@@ -381,6 +1002,28 @@ steps:
       **File Structure Analysis:**
       ```json
       {{structure_analysis}}
+      ```
+
+      **Context Health Check Results:**
+
+      Behavior Context @Mentions:
+      ```json
+      {{behavior_context_results}}
+      ```
+
+      Context Token Analysis:
+      ```json
+      {{context_token_results}}
+      ```
+
+      Total Context Load:
+      ```json
+      {{total_context_results}}
+      ```
+
+      @Mention Cycle Detection:
+      ```json
+      {{cycle_detection_results}}
       ```
 
       **Conventions Reference:**
@@ -414,6 +1057,12 @@ steps:
          (either defined directly OR via includes). If the bundle is intended for
          composition into other bundles, it should be in `/behaviors/` instead.
 
+      7. **Context Health** (from code-based checks above):
+         - Behavior context.include files should NOT contain @mentions (cascading dependencies)
+         - Individual context files should be under 4K tokens (8K is ERROR threshold)
+         - Total bundle context load should be under 8K tokens (16K is ERROR threshold)
+         - No cycles in @mention dependencies
+
       **Output Format:**
       For each convention, provide:
       - **Status**: PASS | FAIL | N/A (not applicable)
@@ -421,6 +1070,7 @@ steps:
       - **Recommendation**: If FAIL, how to fix it
     output: "convention_results"
     timeout: 300
+    depends_on: ["behavior-context-mentions", "context-token-analysis", "total-context-load", "mention-cycle-detection"]
 
   # ============================================================================
   # PHASE 4: Gotcha Detection (Agent-Based)
@@ -443,6 +1093,28 @@ steps:
       **Structure:**
       ```json
       {{structure_analysis}}
+      ```
+
+      **Context Health Results:**
+      
+      Behavior Context @Mentions:
+      ```json
+      {{behavior_context_results}}
+      ```
+
+      Context Token Analysis:
+      ```json
+      {{context_token_results}}
+      ```
+
+      Total Context Load:
+      ```json
+      {{total_context_results}}
+      ```
+
+      @Mention Cycle Detection:
+      ```json
+      {{cycle_detection_results}}
       ```
 
       **Known Gotchas to Check:**
@@ -468,6 +1140,11 @@ steps:
       7. **Inline providers in root** (CONVENTION, not error): Root bundles typically
          don't hardcode providers - letting composing apps or `/bundles/` variants handle
          provider choice is recommended for flexibility, but not required.
+
+      8. **Context Health Gotchas** (from automated checks):
+         - @mentions in behavior context.include files create hidden cascading dependencies
+         - Large context files (>4K tokens) bloat the base prompt
+         - Circular @mention dependencies cause loading issues
 
       **Read the actual bundle file to check these:**
       Use the filesystem tool to read {{bundle_path}} and any referenced files.
@@ -511,6 +1188,28 @@ steps:
       {{structure_analysis}}
       ```
 
+      **Context Health Checks:**
+
+      Behavior Context @Mentions:
+      ```json
+      {{behavior_context_results}}
+      ```
+
+      Context Token Analysis:
+      ```json
+      {{context_token_results}}
+      ```
+
+      Total Context Load:
+      ```json
+      {{total_context_results}}
+      ```
+
+      @Mention Cycle Detection:
+      ```json
+      {{cycle_detection_results}}
+      ```
+
       **Convention Analysis:**
       {{convention_results}}
 
@@ -533,6 +1232,12 @@ steps:
       - Mount plan compilation
       - Include resolution
 
+      ### Context Health Summary
+      - **Behavior Context @Mentions**: # of violations (cascading include anti-pattern)
+      - **Individual File Sizes**: List any files exceeding 4K tokens
+      - **Total Context Load**: X tokens (threshold: 8K warning, 16K error)
+      - **Cycle Detection**: Any cycles found in @mention dependencies
+
       ### Convention Compliance
       Summary table of convention checks with pass/fail status.
 
@@ -541,13 +1246,13 @@ steps:
 
       ### Recommendations
       Prioritized list of actions:
-      1. **Must Fix** (errors that break loading)
-      2. **Should Fix** (convention violations)
+      1. **Must Fix** (errors that break loading or exceed hard limits)
+      2. **Should Fix** (convention violations, context health warnings)
       3. **Consider** (suggestions for improvement)
 
       ### Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle v1.0.0
+      - Recipe: validate-bundle v1.1.0
       - Foundation available: yes/no (from env_check)
 
       Make the report actionable and clear.
