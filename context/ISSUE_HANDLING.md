@@ -491,6 +491,24 @@ Mention that `amplifier update` won't work because the update mechanism itself i
 |-------|-------------|-------------------|
 | `foundation:git-ops` | Always for commits/pushes | Quality messages, safety protocols |
 
+### Delegation Discovers What Direct Work Misses
+
+Direct tool calls (reading files, grepping) consume tokens in YOUR context. Delegation to expert agents is not just efficient—it surfaces insights you would miss.
+
+**Comparative example from PR review:**
+
+| Approach | Files Read | Tokens Consumed | Insights Found |
+|----------|------------|-----------------|----------------|
+| Direct investigation | 8 | ~15,000 | Formatting bug only |
+| Delegated investigation | 0 | ~1,000 (summaries) | Formatting bug + token cost concern + propagation mechanism + architectural issue |
+
+**Why delegation found more:**
+- `amplifier:amplifier-expert` had MODULES.md @-mentioned, knew token implications
+- `foundation:foundation-expert` had bundle composition docs, explained propagation mechanics
+- Direct file reading would have required knowing WHICH docs to read
+
+**Lesson:** Expert agents carry @-mentioned documentation you don't have. They find architectural issues because they have architectural context loaded.
+
 ---
 
 ## Process Checklist
@@ -943,6 +961,102 @@ The ISSUE_HANDLING.md we just created says:
 **The irony:** We shipped the methodology document in the SAME commit that violated it (d340ca3 + 87e42ae pushed together).
 
 **Lesson:** Follow your own process, especially the parts designed to catch exactly this kind of error.
+
+---
+
+## Case Study: PR Review - Understanding Mechanisms First
+
+### Situation
+
+Reviewed PR #211 proposing to add `MODULES.md` to an agent's `context.include` to enable "check before building" functionality.
+
+### The Trap
+
+On surface inspection, the PR looked reasonable:
+- Good intent (prevent duplicate work)
+- Added a file to context
+- Had a related PR for guidance text
+
+Direct file reading showed WHAT changed but not WHY it mattered.
+
+### What Delegation Revealed
+
+**Delegated to `amplifier:amplifier-expert`:**
+- MODULES.md is ~20KB (~4,600 tokens)
+- It's already @-mentioned in the agent's markdown body (line 88)
+- The agent can fetch it on-demand; auto-loading may be unnecessary
+
+**Delegated to `foundation:foundation-expert`:**
+- `@mentions` in markdown body → load at instruction-time, DON'T propagate
+- `context.include` in YAML → load at composition-time, PROPAGATE to parents
+- The PR would cause MODULES.md to propagate to ALL parent bundles
+
+### The Architectural Issue
+
+The agent is designed as a **context sink**—it absorbs heavy docs so parent sessions stay lightweight. Adding MODULES.md to `context.include` would:
+1. Propagate 20KB to every bundle that includes the behavior
+2. Defeat the context sink pattern entirely
+3. Bloat sessions that just want to DELEGATE to the expert, not BE the expert
+
+### Process That Worked
+
+1. `web_fetch` for PR content (no agent for GitHub PRs)
+2. Delegate to `amplifier:amplifier-expert` - "What's the current state and token implications?"
+3. Delegate to `foundation:foundation-expert` - "How do these mechanisms actually work?"
+4. Synthesize findings into architectural assessment
+
+### Key Learning
+
+**Understand mechanisms before reviewing changes to those mechanisms.**
+
+Direct file reading would have shown the diff. Expert delegation revealed:
+- The difference between `@mentions` and `context.include`
+- Why one propagates and the other doesn't
+- The architectural pattern being violated
+
+**Lesson:** When reviewing PRs that modify system behavior, delegate to experts who have the mechanism documentation loaded. They can explain not just WHAT but WHY it matters.
+
+---
+
+## PR Review as Issue Investigation
+
+**Treat PRs as proposed solutions to implicit issues.** Apply the same investigation methodology:
+
+### The Parallel
+
+| Issue Investigation | PR Review |
+|---------------------|-----------|
+| What's broken? | What problem is this solving? |
+| What's the root cause? | Is the approach correct? |
+| What's the fix? | Does the implementation match the intent? |
+| What are side effects? | What are architectural implications? |
+
+### PR Review Process
+
+1. **Understand the implicit problem** - What is the PR trying to solve?
+2. **Investigate the approach** - Does the proposed solution actually solve it?
+3. **Check for side effects** - What are the architectural implications?
+4. **Verify mechanism understanding** - Do you understand HOW the changed system works?
+
+### Multi-Repo PR Coordination
+
+When PRs span multiple repos:
+- Identify all related PRs
+- Understand the dependency/merge order
+- Review each for architectural soundness independently
+- Note coordination concerns in reviews
+
+### Delegation for PR Review
+
+| Question | Delegate To |
+|----------|-------------|
+| "What does this system currently do?" | Domain expert (amplifier-expert, foundation-expert) |
+| "How does this mechanism work?" | Domain expert with mechanism docs |
+| "Is this the right pattern?" | `foundation:zen-architect` |
+| "Are there security implications?" | `foundation:security-guardian` |
+
+**Anti-pattern:** Reading the diff and approving based on "looks reasonable"
+**Correct pattern:** Delegate to understand the system, THEN evaluate the change
 
 ---
 
