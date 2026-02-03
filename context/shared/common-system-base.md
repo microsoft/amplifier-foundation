@@ -135,9 +135,9 @@ Never accumulate broken tests - they compound confusion.
 
 @foundation:context/shared/common-agent-base.md
 
-@foundation:context/ISSUE_HANDLING.md
+For detailed issue handling patterns, see foundation:context/ISSUE_HANDLING.md
 
-@foundation:context/KERNEL_PHILOSOPHY.md
+For kernel philosophy, see foundation:context/KERNEL_PHILOSOPHY.md (loaded by specialist agents)
 
 @foundation:context/shared/AWARENESS_INDEX.md
 

@@ -1,0 +1,530 @@
+# validate-single-bundle.yaml
+# Single Bundle Validator Recipe with Accurate Dependency Tracing
+# Validates a SINGLE bundle by tracing its ACTUAL includes
+#
+# Called by validate-bundle.yaml for each discovered bundle.
+# Can also be used directly for single-bundle validation.
+#
+# Usage:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=foundation:recipes/validate-single-bundle.yaml \
+#     context='{"bundle_path": "/path/to/bundle.md", "bundle_name": "foundation", "bundle_type": "root", "repo_root": "/path/to/repo"}'
+
+name: validate-single-bundle
+description: |
+  Validates a single Amplifier bundle by tracing its ACTUAL includes.
+  
+  KEY IMPROVEMENT: Only counts context from behaviors that are actually
+  included via `includes:`, not all behaviors in the repo.
+  
+  For example, if `shadow-amplifier` behavior is not in this bundle's
+  includes chain, its context files won't be counted.
+version: "2.0.0"
+author: "Amplifier Foundation Team"
+tags: ["bundle", "validation", "single", "dependency-tracing"]
+
+context:
+  bundle_path: ""     # Required: Path to bundle file
+  bundle_name: ""     # Required: Bundle name for reporting
+  bundle_type: ""     # Required: "root" or "standalone"
+  repo_root: ""       # Required: Repository root directory
+
+steps:
+  # ============================================================================
+  # STEP 1: Trace actual includes for this specific bundle
+  # ============================================================================
+
+  - id: "trace-dependencies"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      import yaml
+      from pathlib import Path
+
+      def trace_bundle_dependencies(bundle_path: str, repo_root: str) -> dict:
+          """Trace the actual includes for a specific bundle.
+          
+          This follows the `includes:` declarations to find which behaviors
+          are ACTUALLY part of this bundle's dependency tree. Only local
+          behaviors (same repo) are traced for context analysis.
+          """
+          results = {
+              "phase": "dependency_trace",
+              "bundle_path": bundle_path,
+              "bundle_name": None,
+              "bundle_version": None,
+              "local_includes": [],      # Local behaviors included
+              "external_includes": [],   # External bundles (git URLs)
+              "context_files": [],       # All context.include files from traced deps
+              "agents_included": [],     # All agents included
+              "markdown_mentions": [],   # @mentions in bundle markdown body
+              "errors": []
+          }
+          
+          path = Path(bundle_path).resolve()
+          repo_root = Path(repo_root).resolve()
+          
+          if not path.exists():
+              results["errors"].append(f"Bundle file not found: {bundle_path}")
+              print(json.dumps(results))
+              return results
+          
+          # Track processed files to avoid cycles
+          processed_bundles = set()
+          
+          def parse_yaml_frontmatter(file_path: Path) -> tuple:
+              """Parse YAML frontmatter and return (yaml_data, markdown_body)."""
+              try:
+                  content = file_path.read_text()
+                  yaml_data = None
+                  markdown_body = ""
+                  
+                  if content.startswith("---"):
+                      parts = content.split("---", 2)
+                      if len(parts) >= 2:
+                          yaml_data = yaml.safe_load(parts[1])
+                          if len(parts) >= 3:
+                              markdown_body = parts[2]
+                  else:
+                      yaml_data = yaml.safe_load(content)
+                  
+                  return yaml_data, markdown_body
+              except Exception as e:
+                  return None, ""
+          
+          def resolve_local_behavior(include_ref: str) -> Path:
+              """Resolve a local behavior reference to a file path.
+              
+              Handles formats like:
+              - foundation:behaviors/sessions
+              - foundation:behaviors/agents.yaml
+              """
+              if ":" not in include_ref:
+                  return None
+              
+              namespace, rel_path = include_ref.split(":", 1)
+              
+              # Try multiple resolution strategies
+              candidates = [
+                  repo_root / rel_path,
+                  repo_root / f"{rel_path}.yaml",
+                  repo_root / f"{rel_path}.yml",
+                  repo_root / f"{rel_path}.md",
+              ]
+              
+              for candidate in candidates:
+                  if candidate.exists():
+                      return candidate.resolve()
+              
+              return None
+          
+          def extract_context_includes(yaml_data: dict) -> list:
+              """Extract context.include entries from YAML data."""
+              if not yaml_data:
+                  return []
+              
+              includes = []
+              if isinstance(yaml_data.get("context"), dict):
+                  inc = yaml_data["context"].get("include", [])
+                  if isinstance(inc, list):
+                      includes = inc
+                  elif isinstance(inc, str):
+                      includes = [inc]
+              
+              return includes
+          
+          def extract_agents_include(yaml_data: dict) -> list:
+              """Extract agents.include entries from YAML data."""
+              if not yaml_data:
+                  return []
+              
+              agents = []
+              if isinstance(yaml_data.get("agents"), dict):
+                  inc = yaml_data["agents"].get("include", [])
+                  if isinstance(inc, list):
+                      agents = inc
+                  elif isinstance(inc, str):
+                      agents = [inc]
+              
+              return agents
+          
+          def process_bundle_file(file_path: Path, depth: int = 0):
+              """Process a bundle/behavior file and trace its includes."""
+              if depth > 10:  # Prevent infinite recursion
+                  return
+              
+              resolved = file_path.resolve()
+              if resolved in processed_bundles:
+                  return
+              processed_bundles.add(resolved)
+              
+              yaml_data, markdown_body = parse_yaml_frontmatter(file_path)
+              if not yaml_data:
+                  return
+              
+              # Get bundle name/version from root bundle
+              if depth == 0:
+                  if isinstance(yaml_data.get("bundle"), dict):
+                      results["bundle_name"] = yaml_data["bundle"].get("name")
+                      results["bundle_version"] = yaml_data["bundle"].get("version")
+                  else:
+                      results["bundle_name"] = yaml_data.get("bundle.name") or yaml_data.get("name")
+                      results["bundle_version"] = yaml_data.get("bundle.version") or yaml_data.get("version")
+              
+              # Extract context.include files
+              context_includes = extract_context_includes(yaml_data)
+              for ctx_ref in context_includes:
+                  # Resolve to actual file
+                  if ":" in ctx_ref:
+                      namespace, rel_path = ctx_ref.split(":", 1)
+                      ctx_file = repo_root / rel_path
+                      if not ctx_file.exists():
+                          ctx_file = repo_root / "context" / Path(rel_path).name
+                  else:
+                      ctx_file = repo_root / ctx_ref
+                  
+                  if ctx_file.exists():
+                      ctx_resolved = str(ctx_file.resolve())
+                      if ctx_resolved not in [c["path"] for c in results["context_files"]]:
+                          results["context_files"].append({
+                              "path": ctx_resolved,
+                              "source_bundle": str(file_path.relative_to(repo_root)),
+                              "reference": ctx_ref
+                          })
+              
+              # Extract agents.include
+              agents = extract_agents_include(yaml_data)
+              for agent_ref in agents:
+                  if agent_ref not in results["agents_included"]:
+                      results["agents_included"].append(agent_ref)
+              
+              # Process includes (follow local behaviors)
+              includes = yaml_data.get("includes", [])
+              for inc in includes:
+                  if isinstance(inc, dict):
+                      bundle_ref = inc.get("bundle", "")
+                  else:
+                      bundle_ref = str(inc)
+                  
+                  # Check if it's a local behavior or external
+                  if bundle_ref.startswith("git+") or bundle_ref.startswith("http"):
+                      # External bundle - just record it
+                      if bundle_ref not in results["external_includes"]:
+                          results["external_includes"].append(bundle_ref)
+                  elif ":" in bundle_ref:
+                      # Could be local (foundation:behaviors/...) or external namespace
+                      local_path = resolve_local_behavior(bundle_ref)
+                      if local_path:
+                          # Local behavior - trace it
+                          rel_path = str(local_path.relative_to(repo_root))
+                          if rel_path not in results["local_includes"]:
+                              results["local_includes"].append(rel_path)
+                          process_bundle_file(local_path, depth + 1)
+                      else:
+                          # Unresolved - might be external namespace
+                          if bundle_ref not in results["external_includes"]:
+                              results["external_includes"].append(bundle_ref)
+                  else:
+                      # Bare name like "foundation" - likely referring to parent bundle
+                      # Skip these as they would cause circular references
+                      pass
+          
+          # Start tracing from the main bundle
+          process_bundle_file(path)
+          
+          # Also extract @mentions from the bundle's markdown body
+          mention_pattern = re.compile(r'@([a-zA-Z0-9_][a-zA-Z0-9_.-]*):([a-zA-Z0-9_./-]+)')
+          
+          yaml_data, markdown_body = parse_yaml_frontmatter(path)
+          if markdown_body:
+              # Remove code blocks before searching
+              cleaned = re.sub(r'```[\s\S]*?```', '', markdown_body)
+              cleaned = re.sub(r'`[^`]+`', '', cleaned)
+              
+              mentions = mention_pattern.findall(cleaned)
+              for namespace, rel_path in mentions:
+                  mention_str = f"@{namespace}:{rel_path}"
+                  if mention_str not in results["markdown_mentions"]:
+                      results["markdown_mentions"].append(mention_str)
+          
+          print(json.dumps(results))
+      
+      trace_bundle_dependencies("{{bundle_path}}", "{{repo_root}}")
+      EOF
+    output: "traced_deps"
+    parse_json: true
+    timeout: 60
+
+  # ============================================================================
+  # STEP 2: Context analysis using ONLY traced dependencies
+  # ============================================================================
+
+  - id: "context-analysis"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      from pathlib import Path
+
+      # Token thresholds
+      WARNING_TOKENS = 4000
+      ERROR_TOKENS = 8000
+      WARNING_TOTAL_TOKENS = 8000
+      ERROR_TOTAL_TOKENS = 16000
+
+      def analyze_context_for_bundle(bundle_path: str, repo_root: str, traced_deps_json: str) -> dict:
+          """Analyze context load using ONLY the traced dependencies.
+          
+          This is the KEY IMPROVEMENT: we only count context files that are
+          actually reachable from this bundle's includes, not all behaviors
+          in the repo.
+          """
+          traced_deps = json.loads(traced_deps_json)
+          
+          results = {
+              "phase": "context_analysis",
+              "bundle_name": "{{bundle_name}}",
+              "bundle_path": bundle_path,
+              "source_breakdown": {
+                  "context_include": [],
+                  "bundle_markdown_mentions": [],
+                  "cascading_mentions": []
+              },
+              "total_context_include_tokens": 0,
+              "total_bundle_markdown_tokens": 0,
+              "total_cascading_tokens": 0,
+              "total_tokens": 0,
+              "files_analyzed": [],
+              "warnings": [],
+              "errors": [],
+              "passed": True
+          }
+          
+          path = Path(bundle_path).resolve()
+          repo_root = Path(repo_root).resolve()
+          
+          # Track all files and tokens
+          all_files = {}  # path -> {"tokens": N, "source": str}
+          processed_for_mentions = set()
+          
+          mention_pattern = re.compile(r'@([a-zA-Z0-9_][a-zA-Z0-9_.-]*):([a-zA-Z0-9_./-]+)')
+          
+          def resolve_path(namespace: str, rel_path: str) -> Path:
+              """Try to resolve a namespace:path reference."""
+              candidates = [
+                  repo_root / rel_path,
+                  repo_root / "context" / rel_path,
+                  repo_root / "context" / Path(rel_path).name,
+              ]
+              for candidate in candidates:
+                  if candidate.exists():
+                      return candidate.resolve()
+              return None
+          
+          def scan_and_follow_mentions(file_path: Path, source_type: str, depth: int = 0):
+              """Scan a file for @mentions and recursively follow them."""
+              if depth > 10:
+                  return
+              
+              resolved = file_path.resolve()
+              if resolved in processed_for_mentions:
+                  return
+              processed_for_mentions.add(resolved)
+              
+              if not resolved.exists():
+                  return
+              
+              content = resolved.read_text()
+              tokens = len(content) // 4
+              
+              # Record this file
+              if resolved not in all_files:
+                  all_files[resolved] = {"tokens": tokens, "source": source_type}
+              
+              # Find @mentions (excluding code blocks)
+              cleaned = re.sub(r'```[\s\S]*?```', '', content)
+              cleaned = re.sub(r'`[^`]+`', '', cleaned)
+              
+              mentions = mention_pattern.findall(cleaned)
+              for namespace, rel_path in mentions:
+                  mentioned_file = resolve_path(namespace, rel_path)
+                  if mentioned_file and mentioned_file not in all_files:
+                      scan_and_follow_mentions(mentioned_file, "cascading_mentions", depth + 1)
+          
+          # Process @mentions from bundle markdown body
+          for mention_str in traced_deps.get("markdown_mentions", []):
+              # Parse @namespace:path
+              match = mention_pattern.match(mention_str)
+              if match:
+                  namespace, rel_path = match.groups()
+                  resolved = resolve_path(namespace, rel_path)
+                  if resolved:
+                      scan_and_follow_mentions(resolved, "bundle_markdown_mentions")
+          
+          # Process context.include files from traced dependencies
+          for ctx_info in traced_deps.get("context_files", []):
+              ctx_path = Path(ctx_info["path"])
+              if ctx_path.exists():
+                  resolved = ctx_path.resolve()
+                  if resolved not in all_files:
+                      scan_and_follow_mentions(resolved, "context_include")
+                  else:
+                      # Update source to context_include (higher priority)
+                      all_files[resolved]["source"] = "context_include"
+          
+          # Categorize and calculate totals
+          context_include_paths = {Path(c["path"]).resolve() for c in traced_deps.get("context_files", [])}
+          markdown_mention_files = set()
+          for mention_str in traced_deps.get("markdown_mentions", []):
+              match = mention_pattern.match(mention_str)
+              if match:
+                  resolved = resolve_path(match.group(1), match.group(2))
+                  if resolved:
+                      markdown_mention_files.add(resolved)
+          
+          for file_path, info in all_files.items():
+              try:
+                  rel_path = str(file_path.relative_to(repo_root))
+              except ValueError:
+                  rel_path = str(file_path)
+              
+              tokens = info["tokens"]
+              
+              # Categorize by entry point priority
+              if file_path in markdown_mention_files:
+                  source = "bundle_markdown_mentions"
+                  results["total_bundle_markdown_tokens"] += tokens
+              elif file_path in context_include_paths:
+                  source = "context_include"
+                  results["total_context_include_tokens"] += tokens
+              else:
+                  source = "cascading_mentions"
+                  results["total_cascading_tokens"] += tokens
+              
+              results["source_breakdown"][source].append(rel_path)
+              results["files_analyzed"].append({
+                  "file": rel_path,
+                  "tokens": tokens,
+                  "source": source
+              })
+              
+              # Check individual file thresholds
+              if tokens > ERROR_TOKENS:
+                  results["errors"].append({
+                      "severity": "ERROR",
+                      "file": rel_path,
+                      "tokens": tokens,
+                      "threshold": ERROR_TOKENS,
+                      "message": f"Context file exceeds {ERROR_TOKENS} tokens ({tokens} est.)"
+                  })
+              elif tokens > WARNING_TOKENS:
+                  results["warnings"].append({
+                      "severity": "WARNING",
+                      "file": rel_path,
+                      "tokens": tokens,
+                      "threshold": WARNING_TOKENS,
+                      "message": f"Context file exceeds {WARNING_TOKENS} tokens ({tokens} est.)"
+                  })
+          
+          # Calculate total
+          results["total_tokens"] = sum(info["tokens"] for info in all_files.values())
+          
+          # Check total thresholds
+          if results["total_tokens"] > ERROR_TOTAL_TOKENS:
+              results["passed"] = False
+              results["errors"].append({
+                  "severity": "ERROR",
+                  "total_tokens": results["total_tokens"],
+                  "threshold": ERROR_TOTAL_TOKENS,
+                  "message": f"Total context load ({results['total_tokens']} tokens) exceeds {ERROR_TOTAL_TOKENS}",
+                  "breakdown": {
+                      "bundle_markdown_mentions": results["total_bundle_markdown_tokens"],
+                      "context_include": results["total_context_include_tokens"],
+                      "cascading_mentions": results["total_cascading_tokens"]
+                  }
+              })
+          elif results["total_tokens"] > WARNING_TOTAL_TOKENS:
+              results["warnings"].append({
+                  "severity": "WARNING",
+                  "total_tokens": results["total_tokens"],
+                  "threshold": WARNING_TOTAL_TOKENS,
+                  "message": f"Total context load ({results['total_tokens']} tokens) exceeds {WARNING_TOTAL_TOKENS}",
+                  "breakdown": {
+                      "bundle_markdown_mentions": results["total_bundle_markdown_tokens"],
+                      "context_include": results["total_context_include_tokens"],
+                      "cascading_mentions": results["total_cascading_tokens"]
+                  }
+              })
+          
+          # Sort by tokens descending
+          results["files_analyzed"].sort(key=lambda x: x["tokens"], reverse=True)
+          
+          print(json.dumps(results))
+      
+      # Get traced deps from previous step
+      traced_deps_json = '''{{traced_deps}}'''
+      analyze_context_for_bundle("{{bundle_path}}", "{{repo_root}}", traced_deps_json)
+      EOF
+    output: "context_results"
+    parse_json: true
+    timeout: 60
+    depends_on: ["trace-dependencies"]
+
+  # ============================================================================
+  # STEP 3: Generate validation report for this bundle
+  # ============================================================================
+
+  - id: "generate-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Generate a validation report for this bundle.
+
+      **Bundle:** {{bundle_name}} ({{bundle_type}})
+      **Path:** {{bundle_path}}
+
+      **Dependency Trace:**
+      ```json
+      {{traced_deps}}
+      ```
+
+      **Context Analysis:**
+      ```json
+      {{context_results}}
+      ```
+
+      **Generate a report with:**
+
+      ## Bundle: {{bundle_name}}
+      
+      **Verdict:** PASS | FAIL | PASS WITH WARNINGS
+      
+      **Summary:**
+      - Type: {{bundle_type}}
+      - Name: (from traced_deps.bundle_name)
+      - Version: (from traced_deps.bundle_version)
+      - Local includes: (count and list from traced_deps.local_includes)
+      - External includes: (count from traced_deps.external_includes)
+      
+      **Context Load:**
+      Show the token breakdown:
+      - Total: X tokens (threshold: 8K warning, 16K error)
+      - Bundle @mentions: X tokens
+      - context.include: X tokens  
+      - Cascading @mentions: X tokens
+      
+      **Issues:**
+      List any errors or warnings found, with recommended fixes.
+      
+      **Key Files:**
+      List the top 5 largest context files with their token counts and source category.
+      
+      **Dependency Insight:**
+      Note which local behaviors were traced and how many context files each contributed.
+      This helps identify where context bloat originates.
+    output: "bundle_report"
+    timeout: 180
+    depends_on: ["context-analysis"]

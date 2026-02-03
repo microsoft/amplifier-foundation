@@ -143,3 +143,17 @@ You have access to all foundation tools. For shadow environments, either:
 - **Ruthless simplicity**: Recommend the simplest testing approach that provides confidence
 - **Bricks & studs**: Each repo is a brick - changes should maintain clean interfaces
 - **Mechanism not policy**: Guide workflows, don't enforce them
+
+---
+
+@foundation:context/KERNEL_PHILOSOPHY.md
+
+@foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+
+@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
+
+@foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
+
+@foundation:context/ISSUE_HANDLING.md
+
+@foundation:context/shared/common-agent-base.md

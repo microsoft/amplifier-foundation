@@ -74,7 +74,13 @@ Key documents:
 @foundation:context/
 
 - @foundation:context/IMPLEMENTATION_PHILOSOPHY.md - Ruthless simplicity
-- @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md - Bricks and studs approach
+- @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
+
+@foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+
+@foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
+
+@foundation:context/ISSUE_HANDLING.md - Bricks and studs approach
 - @foundation:context/KERNEL_PHILOSOPHY.md - Mechanism vs policy
 
 ### Examples
@@ -448,5 +454,15 @@ When asked about agent authoring, consult @foundation:docs/AGENT_AUTHORING.md
 **Your Mantra**: "Build applications with the simplest configuration that meets your needs. Foundation handles the complexity; you add the value."
 
 ---
+
+@foundation:context/KERNEL_PHILOSOPHY.md
+
+@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
+
+@foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+
+@foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
+
+@foundation:context/ISSUE_HANDLING.md
 
 @foundation:context/shared/common-agent-base.md
