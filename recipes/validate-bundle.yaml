@@ -15,10 +15,14 @@ description: |
   - Convention patterns (from terminology framework)
   - Common gotchas and mistakes
   
+  v1.2.0 CRITICAL FIX: Now traces @mentions from bundle.md MARKDOWN BODY,
+  not just context.include files. This catches the full @mention cascade chain
+  like bundle.md -> @common-system-base.md -> @ISSUE_HANDLING.md (9K+ tokens).
+  
   Produces a validation report with pass/fail verdicts and actionable recommendations.
   
   For repo-wide validation, use validate-bundle-repo.yaml instead.
-version: "1.1.0"
+version: "1.2.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "context-health"]
 
@@ -492,12 +496,16 @@ steps:
     timeout: 60
     depends_on: ["structure-analysis"]
 
-  # Step 2.5b: Check token sizes of individual context.include files
+  # Step 2.5b: Check token sizes of ALL context files
+  # CRITICAL: This now includes files discovered via @mention chains from bundle.md
+  # markdown body, not just context.include files. This is where large files like
+  # ISSUE_HANDLING.md (9K+ tokens) get flagged.
   - id: "context-token-analysis"
     type: "bash"
     command: |
       python3 << 'EOF'
       import json
+      import re
       import yaml
       from pathlib import Path
 
@@ -506,75 +514,194 @@ steps:
       ERROR_TOKENS = 8000
 
       def analyze_context_tokens(bundle_path: str) -> dict:
-          """Analyze token sizes of context.include files."""
+          """Analyze token sizes of ALL context files loaded by the bundle.
+          
+          This includes:
+          1. context.include files from YAML frontmatter
+          2. Files referenced via @mentions in bundle.md markdown body
+          3. Files referenced via recursive @mention chains
+          
+          This comprehensive analysis catches large files like ISSUE_HANDLING.md
+          that are loaded via @mention chains.
+          """
           results = {
               "phase": "context_token_analysis",
               "files_analyzed": [],
               "warnings": [],
               "errors": [],
               "total_files": 0,
+              "source_breakdown": {
+                  "context_include": [],
+                  "bundle_markdown_mentions": [],
+                  "cascading_mentions": []
+              },
               "passed": True
           }
 
           path = Path(bundle_path).resolve()
           bundle_dir = path.parent if path.is_file() else path
+          
+          mention_pattern = re.compile(r'@([a-zA-Z0-9_][a-zA-Z0-9_.-]*):([a-zA-Z0-9_./-]+)')
+          
+          # Track all discovered files
+          all_context_files = {}  # path -> {"tokens": N, "source": "context_include"|"bundle_markdown"|"cascading"}
+          processed_for_mentions = set()  # Files we've already scanned for @mentions
+          
+          def resolve_path(namespace: str, rel_path: str) -> Path:
+              """Try to resolve a namespace:path reference to an actual file."""
+              candidates = [
+                  bundle_dir / rel_path,
+                  bundle_dir / "context" / rel_path,
+                  bundle_dir / "context" / Path(rel_path).name,
+                  bundle_dir / rel_path.lstrip("/"),
+              ]
+              for candidate in candidates:
+                  if candidate.exists():
+                      return candidate.resolve()
+              return None
+          
+          def scan_and_follow_mentions(file_path: Path, source_type: str, depth: int = 0):
+              """Scan a file for @mentions and recursively follow them."""
+              if depth > 10:  # Prevent infinite recursion
+                  return
+              
+              resolved = file_path.resolve()
+              if resolved in processed_for_mentions:
+                  return
+              processed_for_mentions.add(resolved)
+              
+              if not resolved.exists():
+                  return
+              
+              content = resolved.read_text()
+              char_count = len(content)
+              tokens = char_count // 4
+              
+              # Record this file if not already recorded
+              if resolved not in all_context_files:
+                  all_context_files[resolved] = {
+                      "tokens": tokens,
+                      "chars": char_count,
+                      "source": source_type
+                  }
+              
+              # Find @mentions (excluding code blocks)
+              cleaned = re.sub(r'```[\s\S]*?```', '', content)
+              cleaned = re.sub(r'`[^`]+`', '', cleaned)
+              
+              mentions = mention_pattern.findall(cleaned)
+              for namespace, rel_path in mentions:
+                  mentioned_file = resolve_path(namespace, rel_path)
+                  if mentioned_file and mentioned_file not in all_context_files:
+                      # New file discovered via @mention chain
+                      scan_and_follow_mentions(mentioned_file, "cascading_mentions", depth + 1)
 
-          # Collect all context files referenced via context.include
-          context_files = set()
-
-          # Check root bundle.md/bundle.yaml
+          # =====================================================================
+          # STEP 1: Extract @mentions from bundle.md MARKDOWN BODY
+          # This is where the big @mention chains start!
+          # =====================================================================
+          
           for bundle_file in [bundle_dir / "bundle.md", bundle_dir / "bundle.yaml"]:
               if bundle_file.exists():
-                  context_files.update(extract_context_includes(bundle_file, bundle_dir))
+                  content = bundle_file.read_text()
+                  
+                  # Extract markdown body (after YAML frontmatter)
+                  markdown_body = ""
+                  if content.startswith("---"):
+                      parts = content.split("---", 2)
+                      if len(parts) >= 3:
+                          markdown_body = parts[2]
+                  else:
+                      markdown_body = content
+                  
+                  # Remove code blocks before searching
+                  cleaned = re.sub(r'```[\s\S]*?```', '', markdown_body)
+                  cleaned = re.sub(r'`[^`]+`', '', cleaned)
+                  
+                  # Find all @mentions in markdown body
+                  mentions = mention_pattern.findall(cleaned)
+                  for namespace, rel_path in mentions:
+                      resolved = resolve_path(namespace, rel_path)
+                      if resolved:
+                          scan_and_follow_mentions(resolved, "bundle_markdown_mentions")
 
-          # Check behaviors
+          # =====================================================================
+          # STEP 2: Collect context.include files from YAML frontmatter
+          # =====================================================================
+          
+          context_include_files = set()
+          
+          for bundle_file in [bundle_dir / "bundle.md", bundle_dir / "bundle.yaml"]:
+              if bundle_file.exists():
+                  context_include_files.update(extract_context_includes(bundle_file, bundle_dir))
+
           behaviors_dir = bundle_dir / "behaviors"
           if behaviors_dir.exists():
               for behavior_file in list(behaviors_dir.glob("*.yaml")) + list(behaviors_dir.glob("*.yml")) + list(behaviors_dir.glob("*.md")):
-                  context_files.update(extract_context_includes(behavior_file, bundle_dir))
+                  context_include_files.update(extract_context_includes(behavior_file, bundle_dir))
 
-          # Check agents
           agents_dir = bundle_dir / "agents"
           if agents_dir.exists():
               for agent_file in list(agents_dir.glob("*.yaml")) + list(agents_dir.glob("*.yml")) + list(agents_dir.glob("*.md")):
-                  context_files.update(extract_context_includes(agent_file, bundle_dir))
+                  context_include_files.update(extract_context_includes(agent_file, bundle_dir))
 
-          # Analyze each context file
-          for context_file in context_files:
+          # Process context.include files and their @mention chains
+          for context_file in context_include_files:
               if context_file.exists():
-                  results["total_files"] += 1
-                  content = context_file.read_text()
-                  char_count = len(content)
-                  estimated_tokens = char_count // 4  # chars / 4 = estimated tokens
+                  resolved = context_file.resolve()
+                  if resolved not in all_context_files:
+                      scan_and_follow_mentions(resolved, "context_include")
+                  else:
+                      # Update source if it was discovered as cascading but is actually direct
+                      all_context_files[resolved]["source"] = "context_include"
 
-                  file_info = {
-                      "file": str(context_file.relative_to(bundle_dir)),
-                      "chars": char_count,
-                      "estimated_tokens": estimated_tokens
-                  }
-                  results["files_analyzed"].append(file_info)
+          # =====================================================================
+          # STEP 3: Analyze all discovered files and check thresholds
+          # =====================================================================
+          
+          for file_path, info in all_context_files.items():
+              results["total_files"] += 1
+              
+              try:
+                  rel_path = str(file_path.relative_to(bundle_dir))
+              except ValueError:
+                  rel_path = str(file_path)
+              
+              file_info = {
+                  "file": rel_path,
+                  "chars": info["chars"],
+                  "estimated_tokens": info["tokens"],
+                  "source": info["source"]
+              }
+              results["files_analyzed"].append(file_info)
+              results["source_breakdown"][info["source"]].append(rel_path)
 
-                  if estimated_tokens > ERROR_TOKENS:
-                      results["passed"] = False
-                      results["errors"].append({
-                          "severity": "ERROR",
-                          "file": str(context_file.relative_to(bundle_dir)),
-                          "chars": char_count,
-                          "estimated_tokens": estimated_tokens,
-                          "threshold": ERROR_TOKENS,
-                          "message": f"Context file exceeds {ERROR_TOKENS} tokens ({estimated_tokens} est.) - must refactor",
-                          "fix": "Split into smaller files, move to agent context sink pattern, or extract less critical content"
-                      })
-                  elif estimated_tokens > WARNING_TOKENS:
-                      results["warnings"].append({
-                          "severity": "WARNING",
-                          "file": str(context_file.relative_to(bundle_dir)),
-                          "chars": char_count,
-                          "estimated_tokens": estimated_tokens,
-                          "threshold": WARNING_TOKENS,
-                          "message": f"Context file exceeds {WARNING_TOKENS} tokens ({estimated_tokens} est.) - consider splitting",
-                          "fix": "Consider splitting or moving heavy content to agent context sink pattern"
-                      })
+              if info["tokens"] > ERROR_TOKENS:
+                  results["passed"] = False
+                  results["errors"].append({
+                      "severity": "ERROR",
+                      "file": rel_path,
+                      "chars": info["chars"],
+                      "estimated_tokens": info["tokens"],
+                      "threshold": ERROR_TOKENS,
+                      "source": info["source"],
+                      "message": f"Context file exceeds {ERROR_TOKENS} tokens ({info['tokens']} est.) - must refactor",
+                      "fix": "Split into smaller files, move to agent context sink pattern, or extract less critical content"
+                  })
+              elif info["tokens"] > WARNING_TOKENS:
+                  results["warnings"].append({
+                      "severity": "WARNING",
+                      "file": rel_path,
+                      "chars": info["chars"],
+                      "estimated_tokens": info["tokens"],
+                      "threshold": WARNING_TOKENS,
+                      "source": info["source"],
+                      "message": f"Context file exceeds {WARNING_TOKENS} tokens ({info['tokens']} est.) - consider splitting",
+                      "fix": "Consider splitting or moving heavy content to agent context sink pattern"
+                  })
+          
+          # Sort files_analyzed by tokens descending for easier reading
+          results["files_analyzed"].sort(key=lambda x: x["estimated_tokens"], reverse=True)
 
           print(json.dumps(results))
 
@@ -633,6 +760,10 @@ steps:
     depends_on: ["structure-analysis"]
 
   # Step 2.5c: Calculate total bundle context load (with @mention resolution)
+  # CRITICAL: This step traces @mentions from BOTH:
+  #   1. context.include files in YAML frontmatter
+  #   2. @mentions in the bundle.md MARKDOWN BODY (the instruction text)
+  # The markdown body @mentions are where the big token loads often hide!
   - id: "total-context-load"
     type: "bash"
     command: |
@@ -647,11 +778,21 @@ steps:
       ERROR_TOTAL_TOKENS = 16000
 
       def calculate_total_context_load(bundle_path: str) -> dict:
-          """Calculate total context load including recursive @mention resolution."""
+          """Calculate total context load including recursive @mention resolution.
+          
+          IMPORTANT: This traces @mentions from TWO sources:
+          1. context.include entries in YAML frontmatter (behaviors, agents, root bundle)
+          2. @mentions directly in the bundle.md MARKDOWN BODY (instruction text)
+          
+          The second source is critical - it's where large @mention chains often hide,
+          like bundle.md -> @common-system-base.md -> @ISSUE_HANDLING.md (9K+ tokens)
+          """
           results = {
               "phase": "total_context_load",
+              "bundle_markdown_mentions": [],  # @mentions found in bundle.md markdown body
               "context_include_files": [],
               "mention_resolved_files": [],
+              "total_bundle_markdown_tokens": 0,  # Tokens from bundle.md @mention chain
               "total_context_include_tokens": 0,
               "total_mention_tokens": 0,
               "total_tokens": 0,
@@ -665,16 +806,21 @@ steps:
 
           # Track all files and their sizes
           processed_files = {}  # path -> tokens (for deduplication)
-          mention_pattern = re.compile(r'@([a-zA-Z0-9_][a-zA-Z0-9_-]*):([a-zA-Z0-9_./-]+)')
+          bundle_markdown_files = set()  # Files discovered from bundle.md markdown body
+          mention_pattern = re.compile(r'@([a-zA-Z0-9_][a-zA-Z0-9_.-]*):([a-zA-Z0-9_./-]+)')
 
           def resolve_path(namespace: str, rel_path: str) -> Path:
               """Try to resolve a namespace:path reference to an actual file."""
-              # Try direct path under bundle_dir
+              # Try multiple resolution strategies
               candidates = [
                   bundle_dir / rel_path,
+                  bundle_dir / "context" / rel_path,
                   bundle_dir / "context" / Path(rel_path).name,
                   bundle_dir / rel_path.lstrip("/"),
               ]
+              # Also try stripping "context/" prefix if already present
+              if rel_path.startswith("context/"):
+                  candidates.append(bundle_dir / rel_path)
               for candidate in candidates:
                   if candidate.exists():
                       return candidate.resolve()
@@ -709,7 +855,81 @@ steps:
               
               return tokens
 
-          # Step 1: Collect context.include files
+          def extract_markdown_body_mentions(bundle_file: Path) -> list:
+              """Extract @mentions from the markdown BODY of a bundle file.
+              
+              This is DIFFERENT from context.include - these are @mentions
+              embedded directly in the instruction text (markdown body after
+              YAML frontmatter).
+              
+              Example: bundle.md might have:
+                ---
+                bundle.name: foundation
+                ---
+                # Foundation Bundle
+                
+                This bundle provides @foundation:context/shared/common-system-base.md
+                
+              The @mention in the markdown body creates a cascading context load.
+              """
+              mentions = []
+              try:
+                  content = bundle_file.read_text()
+                  
+                  # Extract markdown body (after YAML frontmatter)
+                  markdown_body = ""
+                  if content.startswith("---"):
+                      parts = content.split("---", 2)
+                      if len(parts) >= 3:
+                          markdown_body = parts[2]
+                  else:
+                      # No frontmatter, entire file is markdown
+                      markdown_body = content
+                  
+                  # Remove code blocks before searching
+                  cleaned = re.sub(r'```[\s\S]*?```', '', markdown_body)
+                  cleaned = re.sub(r'`[^`]+`', '', cleaned)
+                  
+                  # Find all @mentions
+                  found = mention_pattern.findall(cleaned)
+                  for namespace, rel_path in found:
+                      resolved = resolve_path(namespace, rel_path)
+                      if resolved:
+                          mentions.append({
+                              "mention": f"@{namespace}:{rel_path}",
+                              "resolved_path": resolved
+                          })
+              except Exception as e:
+                  pass
+              
+              return mentions
+
+          # =====================================================================
+          # STEP 1: Extract @mentions from bundle.md MARKDOWN BODY
+          # This is the CRITICAL addition - traces the @mention chain from the
+          # root bundle's instruction text, not just context.include
+          # =====================================================================
+          
+          # Track the @mention strings for bundle.md direct mentions (for output)
+          bundle_markdown_mention_strings = {}  # resolved_path -> mention string
+          
+          for bundle_file in [bundle_dir / "bundle.md", bundle_dir / "bundle.yaml"]:
+              if bundle_file.exists():
+                  markdown_mentions = extract_markdown_body_mentions(bundle_file)
+                  
+                  for mention_info in markdown_mentions:
+                      resolved_path = mention_info["resolved_path"]
+                      bundle_markdown_files.add(resolved_path)
+                      bundle_markdown_mention_strings[resolved_path] = mention_info["mention"]
+                      
+                      # Process this file and its recursive @mentions
+                      # Files get added to processed_files with their tokens
+                      process_file(resolved_path)
+
+          # =====================================================================
+          # STEP 2: Collect context.include files from YAML frontmatter
+          # =====================================================================
+          
           context_include_files = set()
           
           for bundle_file in [bundle_dir / "bundle.md", bundle_dir / "bundle.yaml"]:
@@ -726,36 +946,64 @@ steps:
               for agent_file in list(agents_dir.glob("*.yaml")) + list(agents_dir.glob("*.yml")) + list(agents_dir.glob("*.md")):
                   context_include_files.update(extract_context_includes(agent_file, bundle_dir))
 
-          # Step 2: Process each context.include file (with recursive @mention resolution)
+          # =====================================================================
+          # STEP 3: Process each context.include file (with recursive @mention resolution)
+          # Just process the files - categorization happens in STEP 4
+          # =====================================================================
+          
           for context_file in context_include_files:
               if context_file.exists():
-                  before_count = len(processed_files)
+                  # Process this file and its recursive @mentions
+                  # Files get added to processed_files with their tokens
                   process_file(context_file)
-                  
-                  file_tokens = processed_files.get(context_file.resolve(), 0)
-                  results["context_include_files"].append({
-                      "file": str(context_file.relative_to(bundle_dir)),
-                      "tokens": file_tokens
-                  })
-                  results["total_context_include_tokens"] += file_tokens
 
-          # Step 3: Calculate @mention resolved files (files discovered via @mentions)
+          # =====================================================================
+          # STEP 4: Categorize ALL files based on their entry point priority
+          # Priority: bundle_markdown > context_include > cascading
+          # Each file is counted EXACTLY ONCE in the category matching its
+          # highest-priority entry point. This ensures category totals sum
+          # to total_tokens with no double-counting.
+          # =====================================================================
+          
           for file_path, tokens in processed_files.items():
-              rel_path = str(file_path.relative_to(bundle_dir)) if file_path.is_relative_to(bundle_dir) else str(file_path)
+              try:
+                  rel_path = str(file_path.relative_to(bundle_dir))
+              except ValueError:
+                  rel_path = str(file_path)
               
-              # Check if this was a direct context.include or resolved via @mention
-              is_direct = any(str(cf.relative_to(bundle_dir)) == rel_path for cf in context_include_files if cf.exists())
-              if not is_direct:
+              # Check entry points (a file can be in multiple, but we categorize by priority)
+              is_direct_bundle_mention = file_path in bundle_markdown_files
+              is_direct_context_include = file_path in context_include_files
+              
+              if is_direct_bundle_mention:
+                  # Highest priority: direct @mention in bundle.md markdown body
+                  results["bundle_markdown_mentions"].append({
+                      "mention": bundle_markdown_mention_strings.get(file_path, f"@unknown:{rel_path}"),
+                      "file": rel_path,
+                      "tokens": tokens
+                  })
+                  results["total_bundle_markdown_tokens"] += tokens
+              elif is_direct_context_include:
+                  # Second priority: direct context.include entry
+                  results["context_include_files"].append({
+                      "file": rel_path,
+                      "tokens": tokens
+                  })
+                  results["total_context_include_tokens"] += tokens
+              else:
+                  # Lowest priority: discovered only via cascading @mentions
                   results["mention_resolved_files"].append({
                       "file": rel_path,
                       "tokens": tokens
                   })
                   results["total_mention_tokens"] += tokens
 
-          # Step 4: Calculate totals
+          # =====================================================================
+          # STEP 5: Calculate totals and generate warnings/errors
+          # =====================================================================
+          
           results["total_tokens"] = sum(processed_files.values())
 
-          # Step 5: Generate warnings/errors
           if results["total_tokens"] > ERROR_TOTAL_TOKENS:
               results["passed"] = False
               results["errors"].append({
@@ -763,7 +1011,11 @@ steps:
                   "total_tokens": results["total_tokens"],
                   "threshold": ERROR_TOTAL_TOKENS,
                   "message": f"Total bundle context load ({results['total_tokens']} tokens) exceeds {ERROR_TOTAL_TOKENS} - refactor required",
-                  "breakdown": f"context.include: {results['total_context_include_tokens']} tokens, @mentions: {results['total_mention_tokens']} tokens",
+                  "breakdown": {
+                      "bundle_markdown_mentions": results["total_bundle_markdown_tokens"],
+                      "context_include": results["total_context_include_tokens"],
+                      "cascading_mentions": results["total_mention_tokens"]
+                  },
                   "fix": "Use context sink pattern for heavy content, split into multiple behaviors, or remove non-essential context"
               })
           elif results["total_tokens"] > WARNING_TOTAL_TOKENS:
@@ -772,14 +1024,18 @@ steps:
                   "total_tokens": results["total_tokens"],
                   "threshold": WARNING_TOTAL_TOKENS,
                   "message": f"Total bundle context load ({results['total_tokens']} tokens) exceeds {WARNING_TOTAL_TOKENS} - consider optimization",
-                  "breakdown": f"context.include: {results['total_context_include_tokens']} tokens, @mentions: {results['total_mention_tokens']} tokens",
+                  "breakdown": {
+                      "bundle_markdown_mentions": results["total_bundle_markdown_tokens"],
+                      "context_include": results["total_context_include_tokens"],
+                      "cascading_mentions": results["total_mention_tokens"]
+                  },
                   "fix": "Consider context sink pattern for heavy content to reduce base token budget"
               })
 
           print(json.dumps(results))
 
       def extract_context_includes(file_path: Path, bundle_dir: Path) -> set:
-          """Extract context.include paths from a bundle/behavior/agent file."""
+          """Extract context.include paths from a bundle/behavior/agent file's YAML."""
           context_files = set()
           try:
               content = file_path.read_text()
