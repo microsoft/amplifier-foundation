@@ -36,16 +36,21 @@ class ContentDeduplicator:
             (but path is still tracked for attribution).
         """
         content_hash = hashlib.sha256(content.encode()).hexdigest()
+        # Resolve path to canonical form for consistent comparison
+        # (relative vs absolute paths to same file should be deduplicated)
+        resolved_path = path.resolve()
 
         if content_hash not in self._content_by_hash:
             # New content
             self._content_by_hash[content_hash] = content
-            self._paths_by_hash[content_hash] = [path]
+            self._paths_by_hash[content_hash] = [resolved_path]
             return True
 
         # Duplicate content - add path if not already tracked
-        if path not in self._paths_by_hash[content_hash]:
-            self._paths_by_hash[content_hash].append(path)
+        # Compare resolved paths to handle relative vs absolute correctly
+        existing_resolved = [p.resolve() for p in self._paths_by_hash[content_hash]]
+        if resolved_path not in existing_resolved:
+            self._paths_by_hash[content_hash].append(resolved_path)
         return False
 
     def get_unique_files(self) -> list[ContextFile]:
