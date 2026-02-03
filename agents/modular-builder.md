@@ -175,6 +175,12 @@ For **complex code navigation**, request delegation to `lsp:code-navigator` or `
 
 Always follow @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 
+@foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
+
+@foundation:context/KERNEL_PHILOSOPHY.md
+
+@foundation:context/ISSUE_HANDLING.md
+
 ### Brick Philosophy
 
 - **A brick** = Self-contained directory/module with ONE clear responsibility
@@ -588,5 +594,15 @@ A well-implemented module:
 Remember: You are the builder who brings specifications to life. Build modules like LEGO bricks - self-contained, with clear connection points, ready to be regenerated or replaced. Focus on correct, simple implementation that exactly matches the specification.
 
 ---
+
+@foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+
+@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
+
+@foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
+
+@foundation:context/KERNEL_PHILOSOPHY.md
+
+@foundation:context/ISSUE_HANDLING.md
 
 @foundation:context/shared/common-agent-base.md

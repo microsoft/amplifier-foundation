@@ -227,6 +227,12 @@ Remember: Focus on finding and fixing the ROOT CAUSE, not just the symptoms. Kee
 
 @foundation:context/ISSUE_HANDLING.md
 
----
+@foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+
+@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
+
+@foundation:context/KERNEL_PHILOSOPHY.md
+
+@foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
 
 @foundation:context/shared/common-agent-base.md

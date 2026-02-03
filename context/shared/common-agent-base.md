@@ -1,8 +1,8 @@
 # Agent Core Instructions
 
-Operational guidance: @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
+Operational guidance: See foundation:context/IMPLEMENTATION_PHILOSOPHY.md and foundation:context/MODULAR_DESIGN_PHILOSOPHY.md (loaded by specialist agents)
 
-Problem-solving methodology: @foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
+Problem-solving methodology: See foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md (loaded by specialist agents)
 
 ## 💎 CRITICAL: Respect User Time - Test Before Presenting
 
