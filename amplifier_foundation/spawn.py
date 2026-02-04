@@ -273,6 +273,12 @@ async def spawn_bundle(
     background: bool = False,
     # === Event routing (for background completion) ===
     event_router: Any | None = None,
+    # === Additional setup ===
+    system_instruction: str | None = None,
+    additional_capabilities: dict[str, Any] | None = None,
+    pre_execute_hook: Any
+    | None = None,  # Callable[[AmplifierSession], Awaitable[None]]
+    metadata_extra: dict[str, Any] | None = None,  # Extra metadata for persistence
 ) -> SpawnResult:
     """
     Spawn a bundle as a sub-session.
@@ -297,6 +303,10 @@ async def spawn_bundle(
         timeout: Maximum execution time in seconds
         background: If True, return immediately, session runs in background
         event_router: EventRouter for background completion events
+        system_instruction: System instruction to inject before execution
+        additional_capabilities: Dict of capabilities to register on child session
+        pre_execute_hook: Async callback(session) called after init, before execution
+        metadata_extra: Extra metadata to merge into persistence metadata
 
     Returns:
         SpawnResult with output, session_id, and turn_count
@@ -468,9 +478,26 @@ async def spawn_bundle(
         "session.spawn", child_spawn_capability
     )
 
+    # --- Additional capabilities from caller ---
+    if additional_capabilities:
+        for name, capability in additional_capabilities.items():
+            child_session.coordinator.register_capability(name, capability)
+        logger.debug(
+            f"Registered {len(additional_capabilities)} additional capabilities"
+        )
+
     # =========================================================================
-    # PHASE 8: Context Inheritance
+    # PHASE 8: System Instruction & Context Inheritance
     # =========================================================================
+
+    # --- System instruction injection ---
+    if system_instruction:
+        child_context = child_session.coordinator.get("context")
+        if child_context and hasattr(child_context, "add_message"):
+            await child_context.add_message(
+                {"role": "system", "content": system_instruction}
+            )
+            logger.debug("Injected system instruction")
 
     if context_depth != "none":
         parent_messages = await _build_context_messages(
@@ -484,7 +511,15 @@ async def spawn_bundle(
                 logger.debug(f"Inherited {len(parent_messages)} context messages")
 
     # =========================================================================
-    # PHASE 9: Execution
+    # PHASE 9: Pre-Execute Hook
+    # =========================================================================
+
+    if pre_execute_hook:
+        await pre_execute_hook(child_session)
+        logger.debug("Executed pre_execute_hook")
+
+    # =========================================================================
+    # PHASE 10: Execution
     # =========================================================================
 
     if background:
@@ -522,7 +557,7 @@ async def spawn_bundle(
             logger.debug(f"Unregistered child cancellation for {session_id}")
 
     # =========================================================================
-    # PHASE 10: Persistence
+    # PHASE 11: Persistence
     # =========================================================================
 
     if session_storage:
@@ -542,11 +577,15 @@ async def spawn_bundle(
             "turn_count": 1,
         }
 
+        # Merge any extra metadata from caller
+        if metadata_extra:
+            metadata.update(metadata_extra)
+
         session_storage.save(session_id, transcript, metadata)
         logger.debug(f"Persisted session {session_id}")
 
     # =========================================================================
-    # PHASE 11: Cleanup & Return
+    # PHASE 12: Cleanup & Return
     # =========================================================================
 
     await child_session.cleanup()
@@ -559,7 +598,7 @@ async def spawn_bundle(
 
 
 async def _execute_background_session(
-    session: AmplifierSession,
+    session: "AmplifierSession",
     instruction: str,
     session_id: str,
     bundle_name: str,
