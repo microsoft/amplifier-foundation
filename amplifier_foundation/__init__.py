@@ -81,6 +81,11 @@ from amplifier_foundation.spawn_utils import apply_provider_preferences
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 from amplifier_foundation.spawn_utils import is_glob_pattern
 from amplifier_foundation.spawn_utils import resolve_model_pattern
+
+# Spawn primitive
+from amplifier_foundation.spawn import SessionStorage
+from amplifier_foundation.spawn import SpawnResult
+from amplifier_foundation.spawn import spawn_bundle
 from amplifier_foundation.sources.protocol import SourceHandlerProtocol
 from amplifier_foundation.sources.protocol import SourceHandlerWithStatusProtocol
 from amplifier_foundation.sources.protocol import SourceResolverProtocol
@@ -179,4 +184,8 @@ __all__ = [
     "apply_provider_preferences_with_resolution",
     "is_glob_pattern",
     "resolve_model_pattern",
+    # Spawn primitive
+    "SessionStorage",
+    "SpawnResult",
+    "spawn_bundle",
 ]
