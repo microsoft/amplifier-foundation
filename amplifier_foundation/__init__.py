@@ -86,6 +86,11 @@ from amplifier_foundation.spawn_utils import resolve_model_pattern
 from amplifier_foundation.spawn import SessionStorage
 from amplifier_foundation.spawn import SpawnResult
 from amplifier_foundation.spawn import spawn_bundle
+
+# Event routing
+from amplifier_foundation.events import EventRouter
+from amplifier_foundation.events import SessionEmitter
+from amplifier_foundation.events import SessionEvent
 from amplifier_foundation.sources.protocol import SourceHandlerProtocol
 from amplifier_foundation.sources.protocol import SourceHandlerWithStatusProtocol
 from amplifier_foundation.sources.protocol import SourceResolverProtocol
@@ -188,4 +193,8 @@ __all__ = [
     "SessionStorage",
     "SpawnResult",
     "spawn_bundle",
+    # Event routing
+    "EventRouter",
+    "SessionEvent",
+    "SessionEmitter",
 ]
