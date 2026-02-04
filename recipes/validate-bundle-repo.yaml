@@ -164,9 +164,7 @@ steps:
               "impact": "Cannot validate individual bundles via BundleRegistry",
               "skipped_checks": ["individual_validation", "standalone_completeness (full)"]
           })
-          results["install_instructions"].append(
-              "pip install git+https://github.com/microsoft/amplifier-foundation@main"
-          )
+          # Note: amplifier-core must be installed first (foundation depends on it)
 
       # Check 2: hatchling (enables Python package build validation)
       try:
@@ -178,7 +176,41 @@ steps:
               "impact": "Cannot validate Python package builds",
               "skipped_checks": ["build_check"]
           })
-          results["install_instructions"].append("pip install hatchling")
+
+      # Build comprehensive install instructions if anything is missing
+      foundation_available = results["capabilities"]["foundation_available"]
+      hatchling_available = results["capabilities"]["hatchling_available"]
+      
+      if not foundation_available or not hatchling_available:
+          results["install_instructions"] = {
+              "summary": "Install missing dependencies, then re-run this recipe for full validation.",
+              "standard": [],
+              "pep668": []
+          }
+          
+          # Standard pip commands (in correct order)
+          if not hatchling_available:
+              results["install_instructions"]["standard"].append("pip install hatchling")
+          if not foundation_available:
+              results["install_instructions"]["standard"].append(
+                  "pip install git+https://github.com/microsoft/amplifier-core@main"
+              )
+              results["install_instructions"]["standard"].append(
+                  "pip install git+https://github.com/microsoft/amplifier-foundation@main"
+              )
+          
+          # PEP 668 commands (with --break-system-packages)
+          if not hatchling_available:
+              results["install_instructions"]["pep668"].append(
+                  "pip install --break-system-packages hatchling"
+              )
+          if not foundation_available:
+              results["install_instructions"]["pep668"].append(
+                  "pip install --break-system-packages git+https://github.com/microsoft/amplifier-core@main"
+              )
+              results["install_instructions"]["pep668"].append(
+                  "pip install --break-system-packages git+https://github.com/microsoft/amplifier-foundation@main"
+              )
 
       # Check 3: pip wheel capability
       try:
@@ -2683,8 +2715,24 @@ steps:
       
       **If any limitations exist:**
       - What checks were skipped
-      - How to enable full validation (install instructions)
       - Clarify: "Environment limitations are NOT bundle problems"
+      - Include clear install instructions from `install_instructions` in env_check:
+      
+      ### Enable Full Validation
+      
+      Install missing dependencies, then **re-run this recipe** for complete validation.
+      
+      **Standard pip (if allowed):**
+      ```bash
+      [commands from install_instructions.standard]
+      ```
+      
+      **PEP 668 systems (externally-managed Python):**
+      ```bash
+      [commands from install_instructions.pep668]
+      ```
+      
+      > After installing, re-run: `amplifier tool invoke recipes operation=execute recipe_path=foundation:recipes/validate-bundle-repo.yaml context='{"repo_path": "/path/to/repo"}'`
 
       ## Bundle Discovery
       Summary of what was found in the repository by category.
