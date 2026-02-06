@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -245,6 +247,15 @@ async def _build_context_messages(
     return messages
 
 
+def _generate_root_session_id(bundle_name: str) -> str:
+    """Generate a session ID for a root session (no parent)."""
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    short_uuid = uuid.uuid4().hex[:8]
+    # Sanitize bundle name for use in ID
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in bundle_name)
+    return f"session_{timestamp}_{safe_name}_{short_uuid}"
+
+
 # =============================================================================
 # Main Function
 # =============================================================================
@@ -254,7 +265,7 @@ async def spawn_bundle(
     # === What to spawn ===
     bundle: PreparedBundle | Bundle | str,
     instruction: str,
-    parent_session: AmplifierSession,
+    parent_session: AmplifierSession | None = None,  # Optional for standalone use
     # === Inheritance controls ===
     inherit_providers: bool = True,
     inherit_tools: bool | list[str] = False,
@@ -281,16 +292,20 @@ async def spawn_bundle(
     metadata_extra: dict[str, Any] | None = None,  # Extra metadata for persistence
 ) -> SpawnResult:
     """
-    Spawn a bundle as a sub-session.
+    Spawn a bundle as a session.
 
     This is THE primitive for all session spawning in Amplifier. All other
     spawning patterns (agents, self-delegation, workers) should use this
     function or build on it.
 
+    Can be used with or without a parent session:
+    - With parent: Enables inheritance of providers, tools, hooks, context
+    - Without parent: Standalone session (bundle must have providers)
+
     Args:
         bundle: What to spawn - PreparedBundle, Bundle, or URI string
         instruction: The prompt/instruction to execute
-        parent_session: Parent for inheritance and lineage
+        parent_session: Optional parent for inheritance and lineage
         inherit_providers: Copy parent's providers if bundle has none
         inherit_tools: Which parent tools to include (False/True/list)
         inherit_hooks: Which parent hooks to include (False/True/list)
@@ -314,11 +329,12 @@ async def spawn_bundle(
     Raises:
         BundleLoadError: If bundle URI cannot be loaded
         BundleValidationError: If bundle is invalid
+        ValueError: If no parent and bundle has no providers
         TimeoutError: If execution exceeds timeout
     """
     from amplifier_core import AmplifierSession
 
-    from amplifier_foundation import generate_sub_session_id, load_bundle
+    from amplifier_foundation import load_bundle
     from amplifier_foundation.bundle import Bundle
 
     # =========================================================================
@@ -343,23 +359,30 @@ async def spawn_bundle(
 
     config = dict(prepared.mount_plan)
 
-    # --- Provider inheritance ---
-    if inherit_providers and not config.get("providers"):
+    # --- Provider inheritance (only if parent exists) ---
+    if parent_session and inherit_providers and not config.get("providers"):
         parent_providers = parent_session.config.get("providers", [])
         if parent_providers:
             config["providers"] = list(parent_providers)
             logger.debug(f"Inherited {len(parent_providers)} providers from parent")
 
-    # --- Tool inheritance ---
-    if inherit_tools:
+    # --- Validate providers exist when no parent ---
+    if not parent_session and not config.get("providers"):
+        raise ValueError(
+            "Bundle must have providers configured when spawning without parent_session. "
+            "Either provide a parent_session to inherit from, or configure providers in the bundle."
+        )
+
+    # --- Tool inheritance (only if parent exists) ---
+    if parent_session and inherit_tools:
         parent_tools = parent_session.config.get("tools", [])
         bundle_tools = config.get("tools", [])
         filtered_parent = _filter_modules(parent_tools, inherit_tools)
         config["tools"] = _merge_module_lists(filtered_parent, bundle_tools)
         logger.debug(f"Inherited {len(filtered_parent)} tools from parent")
 
-    # --- Hook inheritance ---
-    if inherit_hooks:
+    # --- Hook inheritance (only if parent exists) ---
+    if parent_session and inherit_hooks:
         parent_hooks = parent_session.config.get("hooks", [])
         bundle_hooks = config.get("hooks", [])
         filtered_parent = _filter_modules(parent_hooks, inherit_hooks)
@@ -371,11 +394,18 @@ async def spawn_bundle(
     # =========================================================================
 
     if not session_id:
-        session_id = generate_sub_session_id(
-            agent_name=session_name or bundle_name,
-            parent_session_id=parent_session.session_id,
-            parent_trace_id=getattr(parent_session, "trace_id", None),
-        )
+        if parent_session:
+            # Import here to avoid circular dependency
+            from amplifier_foundation import generate_sub_session_id
+
+            session_id = generate_sub_session_id(
+                agent_name=session_name or bundle_name,
+                parent_session_id=parent_session.session_id,
+                parent_trace_id=getattr(parent_session, "trace_id", None),
+            )
+        else:
+            # Root session - generate standalone ID
+            session_id = _generate_root_session_id(session_name or bundle_name)
 
     # session_id is guaranteed to be set at this point
     assert session_id is not None
@@ -384,14 +414,21 @@ async def spawn_bundle(
     # PHASE 4: Session Creation
     # =========================================================================
 
-    approval_system = parent_session.coordinator.approval_system
-    display_system = parent_session.coordinator.display_system
+    # Get UX systems from parent if available
+    approval_system = None
+    display_system = None
+    parent_id = None
+
+    if parent_session:
+        approval_system = parent_session.coordinator.approval_system
+        display_system = parent_session.coordinator.display_system
+        parent_id = parent_session.session_id
 
     child_session = AmplifierSession(
         config=config,
         loader=None,  # Each session gets its own loader
         session_id=session_id,
-        parent_id=parent_session.session_id,
+        parent_id=parent_id,
         approval_system=approval_system,
         display_system=display_system,
     )
@@ -400,22 +437,26 @@ async def spawn_bundle(
     # PHASE 5: Infrastructure Wiring (BEFORE initialize)
     # =========================================================================
 
-    # --- Module resolver ---
-    parent_resolver = parent_session.coordinator.get("module-source-resolver")
-    if parent_resolver:
-        await child_session.coordinator.mount("module-source-resolver", parent_resolver)
+    # --- Module resolver (from parent or bundle) ---
+    if parent_session:
+        parent_resolver = parent_session.coordinator.get("module-source-resolver")
+        if parent_resolver:
+            await child_session.coordinator.mount(
+                "module-source-resolver", parent_resolver
+            )
     elif hasattr(prepared, "resolver") and prepared.resolver:
         await child_session.coordinator.mount(
             "module-source-resolver", prepared.resolver
         )
 
-    # --- sys.path sharing ---
-    paths_to_share = _share_sys_paths(parent_session)
-    for path in paths_to_share:
-        if path not in sys.path:
-            sys.path.insert(0, path)
-    if paths_to_share:
-        logger.debug(f"Shared {len(paths_to_share)} sys.path entries")
+    # --- sys.path sharing (only if parent exists) ---
+    if parent_session:
+        paths_to_share = _share_sys_paths(parent_session)
+        for path in paths_to_share:
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        if paths_to_share:
+            logger.debug(f"Shared {len(paths_to_share)} sys.path entries")
 
     # =========================================================================
     # PHASE 6: Initialization
@@ -427,41 +468,48 @@ async def spawn_bundle(
     # PHASE 7: Post-Initialize Wiring
     # =========================================================================
 
-    # --- Cancellation propagation (skip for background) ---
+    # --- Cancellation propagation (only if parent exists and not background) ---
     parent_cancellation = None
     child_cancellation = None
-    if not background:
+    if parent_session and not background:
         parent_cancellation = parent_session.coordinator.cancellation
         child_cancellation = child_session.coordinator.cancellation
         if parent_cancellation and child_cancellation:
             parent_cancellation.register_child(child_cancellation)
             logger.debug(f"Registered child cancellation for {session_id}")
 
-    # --- Mention resolver inheritance ---
-    parent_mention_resolver = parent_session.coordinator.get_capability(
-        "mention_resolver"
-    )
-    if parent_mention_resolver:
-        child_session.coordinator.register_capability(
-            "mention_resolver", parent_mention_resolver
+    # --- Inherit capabilities from parent (only if parent exists) ---
+    if parent_session:
+        # Mention resolver
+        parent_mention_resolver = parent_session.coordinator.get_capability(
+            "mention_resolver"
         )
+        if parent_mention_resolver:
+            child_session.coordinator.register_capability(
+                "mention_resolver", parent_mention_resolver
+            )
 
-    # --- Mention deduplicator inheritance ---
-    parent_deduplicator = parent_session.coordinator.get_capability(
-        "mention_deduplicator"
-    )
-    if parent_deduplicator:
-        child_session.coordinator.register_capability(
-            "mention_deduplicator", parent_deduplicator
+        # Mention deduplicator
+        parent_deduplicator = parent_session.coordinator.get_capability(
+            "mention_deduplicator"
         )
+        if parent_deduplicator:
+            child_session.coordinator.register_capability(
+                "mention_deduplicator", parent_deduplicator
+            )
 
-    # --- Working directory inheritance ---
-    parent_working_dir = parent_session.coordinator.get_capability(
-        "session.working_dir"
-    )
-    if parent_working_dir:
+        # Working directory
+        parent_working_dir = parent_session.coordinator.get_capability(
+            "session.working_dir"
+        )
+        if parent_working_dir:
+            child_session.coordinator.register_capability(
+                "session.working_dir", parent_working_dir
+            )
+    else:
+        # No parent - set working directory to cwd
         child_session.coordinator.register_capability(
-            "session.working_dir", parent_working_dir
+            "session.working_dir", lambda: os.getcwd()
         )
 
     # --- Nested spawning capability ---
@@ -510,7 +558,8 @@ async def spawn_bundle(
             )
             logger.debug("Injected system instruction")
 
-    if context_depth != "none":
+    # --- Context inheritance (only if parent exists) ---
+    if parent_session and context_depth != "none":
         parent_messages = await _build_context_messages(
             parent_session, context_depth, context_scope, context_turns
         )
@@ -580,13 +629,16 @@ async def spawn_bundle(
             else:
                 transcript = context.get_messages()
 
-        metadata = {
+        metadata: dict[str, Any] = {
             "session_id": session_id,
-            "parent_id": parent_session.session_id,
             "bundle_name": bundle_name,
             "created": datetime.now(UTC).isoformat(),
             "turn_count": 1,
         }
+
+        # Add parent_id only if we have a parent
+        if parent_session:
+            metadata["parent_id"] = parent_session.session_id
 
         # Merge any extra metadata from caller
         if metadata_extra:
