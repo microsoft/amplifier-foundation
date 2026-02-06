@@ -64,7 +64,9 @@ class TestBundleValidator:
 
     def test_validate_module_entry_invalid_config(self) -> None:
         """Module entry with non-dict config is invalid."""
-        bundle = Bundle(name="test", providers=[{"module": "provider-test", "config": "string"}])
+        bundle = Bundle(
+            name="test", providers=[{"module": "provider-test", "config": "string"}]
+        )
         validator = BundleValidator()
         result = validator.validate(bundle)
         assert result.valid is False
@@ -138,7 +140,9 @@ class TestCompletenessValidation:
         # Provider-only bundle - this is valid as a bundle but incomplete for mounting
         provider_bundle = Bundle(
             name="anthropic-opus",
-            providers=[{"module": "provider-anthropic", "config": {"model": "claude-opus-4"}}],
+            providers=[
+                {"module": "provider-anthropic", "config": {"model": "claude-opus-4-6"}}
+            ],
         )
         validator = BundleValidator()
 

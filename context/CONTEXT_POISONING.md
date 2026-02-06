@@ -118,7 +118,7 @@ The --model flag is required. Command fails without it.
 amplifier provider use anthropic
 
 # docs/USER_GUIDE.md
-amplifier provider use anthropic --model claude-opus-4
+amplifier provider use anthropic --model claude-opus-4-6
 
 # POISON: Which example is correct?
 ```
