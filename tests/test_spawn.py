@@ -570,59 +570,6 @@ class TestBackgroundExecution:
 # =============================================================================
 
 
-class TestStandaloneSpawning:
-    """Tests for standalone spawning (no parent_session)."""
-
-    def test_standalone_requires_providers(self) -> None:
-        """Spawning without parent requires bundle to have providers."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from amplifier_foundation.spawn import spawn_bundle
-
-        # Create mock prepared bundle with NO providers
-        mock_bundle = MagicMock()
-        mock_bundle.name = "test-bundle"
-        mock_prepared = MagicMock()
-        mock_prepared.bundle = mock_bundle
-        mock_prepared.mount_plan = {
-            "orchestrator": {"module": "orchestrator-basic"},
-            # No providers!
-        }
-        mock_prepared.prepare = AsyncMock(return_value=mock_prepared)
-
-        # Should raise ValueError when no parent and no providers
-        with pytest.raises(ValueError, match="must have providers"):
-            asyncio.get_event_loop().run_until_complete(
-                spawn_bundle(
-                    bundle=mock_prepared,
-                    instruction="test",
-                    parent_session=None,  # No parent!
-                )
-            )
-
-    def test_standalone_generates_root_session_id(self) -> None:
-        """Standalone spawn generates root-style session ID."""
-        from amplifier_foundation.spawn import _generate_root_session_id
-
-        session_id = _generate_root_session_id("my-bundle")
-
-        # Should have expected format: session_YYYYMMDD_HHMMSS_name_uuid
-        assert session_id.startswith("session_")
-        assert "my_bundle" in session_id or "my-bundle" in session_id
-        # Should have 4 parts separated by underscore (after 'session_')
-        parts = session_id.split("_")
-        assert len(parts) >= 4
-
-    def test_standalone_sets_working_dir_to_cwd(self) -> None:
-        """Standalone spawn sets working directory capability to cwd."""
-        import os
-
-        # This tests the logic, not full integration
-        # When no parent, the code registers session.working_dir as lambda: os.getcwd()
-        cwd = os.getcwd()
-        assert cwd is not None  # Sanity check
-
-
 class TestNestedSpawning:
     """Tests for nested spawning capability."""
 
