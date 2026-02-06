@@ -81,6 +81,29 @@ from amplifier_foundation.spawn_utils import apply_provider_preferences
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 from amplifier_foundation.spawn_utils import is_glob_pattern
 from amplifier_foundation.spawn_utils import resolve_model_pattern
+
+# Spawn primitive
+from amplifier_foundation.spawn import SessionStorage
+from amplifier_foundation.spawn import SpawnResult
+from amplifier_foundation.spawn import spawn_bundle
+
+# Event routing
+from amplifier_foundation.events import EventRouter
+from amplifier_foundation.events import SessionEmitter
+from amplifier_foundation.events import SessionEvent
+
+# Triggers
+from amplifier_foundation.triggers import ManualTrigger
+from amplifier_foundation.triggers import SessionEventTrigger
+from amplifier_foundation.triggers import TimerTrigger
+from amplifier_foundation.triggers import TriggerEvent
+from amplifier_foundation.triggers import TriggerSource
+from amplifier_foundation.triggers import TriggerType
+
+# Background session management
+from amplifier_foundation.background import BackgroundSessionConfig
+from amplifier_foundation.background import BackgroundSessionManager
+from amplifier_foundation.background import BackgroundSessionState
 from amplifier_foundation.sources.protocol import SourceHandlerProtocol
 from amplifier_foundation.sources.protocol import SourceHandlerWithStatusProtocol
 from amplifier_foundation.sources.protocol import SourceResolverProtocol
@@ -179,4 +202,23 @@ __all__ = [
     "apply_provider_preferences_with_resolution",
     "is_glob_pattern",
     "resolve_model_pattern",
+    # Spawn primitive
+    "SessionStorage",
+    "SpawnResult",
+    "spawn_bundle",
+    # Event routing
+    "EventRouter",
+    "SessionEvent",
+    "SessionEmitter",
+    # Triggers
+    "TriggerType",
+    "TriggerEvent",
+    "TriggerSource",
+    "SessionEventTrigger",
+    "TimerTrigger",
+    "ManualTrigger",
+    # Background session management
+    "BackgroundSessionConfig",
+    "BackgroundSessionManager",
+    "BackgroundSessionState",
 ]
