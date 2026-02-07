@@ -1095,6 +1095,40 @@ When suggesting code changes in a review, show enough surrounding code that the 
 **Anti-pattern:** Showing only the changed lines, leaving the reader to figure out how the new code interacts with what follows
 **Correct pattern:** Showing the complete method or block, so the reader can immediately see: "one copy stored, caller's original untouched, timestamp in metadata"
 
+### Batch PR Review
+
+When reviewing multiple open PRs on a repo:
+
+1. **List all open PRs** with `gh pr list --state open`
+2. **Triage by type**: blocked (waiting on dependencies), reviewable (ready for review), stale (no activity)
+3. **Check for superseded PRs**: If your own work implemented the same feature as an open PR, close the original with attribution — credit the design influence and link to the replacement
+4. **Check merge conflicts before reviewing**: `git fetch origin pull/N/head:pr-N-test && git merge --no-commit --no-ff pr-N-test` — if it conflicts, note that in the review; if it merges clean, proceed
+5. **Review in dependency order**: If PR B builds on PR A, review and merge A first
+6. **Create follow-up PRs immediately**: If reviewing a PR reveals an enhancement opportunity, merge the PR first, then create a follow-up PR that builds on it — don't scope-creep the original
+
+### Superseding PRs
+
+When your implementation replaces an open PR from another contributor:
+
+```
+gh pr close N --repo org/repo --comment "Closing in favor of #X, which implemented
+the same feature set along with [additional fixes]. The design from this PR directly
+informed the implementation — thank you @author for the proposal."
+```
+
+Always: credit the original author's design contribution, link to the replacement PR, and note where the features are documented.
+
+### Follow-Up PRs
+
+When reviewing a PR reveals an immediate enhancement:
+
+1. **Merge the original PR first** — don't delay it with scope creep
+2. **Create a new branch from updated main**
+3. **Implement the enhancement** that builds on the merged code
+4. **Reference the original PR** in the follow-up commit message
+
+This keeps PRs focused and gives the original contributor clean attribution.
+
 ---
 
 ## Templates
@@ -1201,6 +1235,30 @@ When the fix involves trade-offs or design choices:
 3. Let user make the call
 4. Document the decision in commit message
 
+### Bundle Cache and Module Loading
+
+After merging a PR to a bundle repository (amplifier-bundle-recipes, amplifier-bundle-notify, etc.):
+
+1. **The running Amplifier process has the old code in memory.** Python loads modules from the bundle cache at startup and stores them in `sys.modules`. Patching the `.py` file in the cache directory does NOT affect the running process.
+2. **Tell the user to restart.** "You'll need to restart Amplifier to pick up the new bundle cache."
+3. **If the cache doesn't refresh**, the user may need to delete the stale cache directory.
+4. **Never attempt more than one retry** after patching a cached module file. If it doesn't work the first time, the module is already loaded in memory — stop and communicate the restart requirement.
+
+**Anti-pattern:** Patching a cached `.py` file, clearing `.pyc`, re-running, seeing the same error, patching again, clearing again...
+**Correct pattern:** Merge upstream, tell user to restart, wait.
+
+### Incremental Testing Strategy
+
+When a complex integration fails, decompose into progressive tests:
+
+1. **Unit-level test** — the smallest possible reproduction (5-10 lines). Isolate the single feature that's failing.
+2. **Feature interaction test** — combine two features that need to work together.
+3. **Integration test** — the real workflow with all features combined.
+
+Run each level before moving to the next. The level where the failure first appears is where the bug lives.
+
+This is faster than repeatedly running the full system and hoping the error message is diagnostic enough. Each level isolates one variable.
+
 ---
 
 ## Anti-Patterns to Avoid
@@ -1214,6 +1272,7 @@ When the fix involves trade-offs or design choices:
 ❌ **"Consider doing X"** → If your analysis supports X, recommend X decisively  
 ❌ **"Issue 1: mutation. Issue 3: nesting."** → If they're one change, present one item  
 ❌ **"X has no cost, so make it optional"** → If there's no cost, there's no reason for a toggle  
+❌ **Same approach, fourth attempt** → If it failed three times, the approach is wrong — re-investigate from scratch
 
 ---
 
