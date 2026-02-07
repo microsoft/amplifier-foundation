@@ -1031,69 +1031,86 @@ Direct file reading would have shown the diff. Expert delegation revealed:
 
 ---
 
-## PR Review as Issue Investigation
+## External PRs Are Communication, Not Proposals
 
-**Treat PRs as proposed solutions to implicit issues.** Apply the same investigation methodology:
+**A PR from a contributor is just another form of communication. It is NOT a proposal to merge, NOT a reliable diagnosis, and NOT necessarily even pointing at the right problem.**
 
-### The Parallel
+Do not presume:
+- That what the PR is "fixing" is actually a bug
+- That the behavior it changes is undesirable
+- That the files it touches are the right files
+- That the approach has any relationship to the correct solution
 
-| Issue Investigation | PR Review |
-|---------------------|-----------|
-| What's broken? | What problem is this solving? |
-| What's the root cause? | Is the approach correct? |
-| What's the fix? | Does the implementation match the intent? |
-| What are side effects? | What are architectural implications? |
+A PR is someone's *interpretation* of a symptom they experienced, expressed as code. That interpretation may be wrong at every level — wrong about what's broken, wrong about why, wrong about where to look.
 
-### PR Review Process
+### PRs vs Issues
 
-1. **Understand the implicit problem** - What is the PR trying to solve?
-2. **Investigate the approach** - Does the proposed solution actually solve it?
-3. **Check for side effects** - What are the architectural implications?
-4. **Verify mechanism understanding** - Do you understand HOW the changed system works?
+**Context-rich issues are generally MORE useful than PRs.** A good issue describes symptoms, reproduction steps, and user impact — the raw observations that investigation needs. A PR skips all of that and jumps straight to a conclusion (the diff), which may be built on faulty premises. The issue tells you what happened; the PR tells you what someone *thinks* should change. The former is evidence; the latter is opinion.
 
-### Multi-Repo PR Coordination
+When an issue and PR arrive together, **start with the issue.** The PR is supplementary context at best.
 
-When PRs span multiple repos:
-- Identify all related PRs
-- Understand the dependency/merge order
-- Review each for architectural soundness independently
-- Note coordination concerns in reviews
+### The Principle
 
-### Delegation for PR Review
+We presume contributors do NOT know our vision, philosophy, or design intent. Therefore:
 
-| Question | Delegate To |
-|----------|-------------|
-| "What does this system currently do?" | Domain expert (amplifier-expert, foundation-expert) |
-| "How does this mechanism work?" | Domain expert with mechanism docs |
-| "Is this the right pattern?" | `foundation:zen-architect` |
-| "Are there security implications?" | `foundation:security-guardian` |
+1. **ALL changes go through our full process** — investigation, root cause analysis, determination of whether a change is even warranted, our own solution design
+2. **The PR carries zero weight** beyond its value as communication — it is one person's idea, nothing more
+3. **Our position/intent/design/vision/philosophy is what we maintain** — a PR that conflicts with it is simply wrong, regardless of technical correctness
+4. **If our design happens to align** with the PR's approach, that's incidental — not a reason to merge their code
 
-**Anti-pattern:** Reading the diff and approving based on "looks reasonable"
-**Correct pattern:** Delegate to understand the system, THEN evaluate the change
+Contributors have been informed of this policy. No hard feelings. Most contributions are from other Amplifier instances reporting a bug with a possible solution attached.
 
-### Consolidate Findings Into Cohesive Changes
+### The Process
 
-**Before presenting review feedback, group related observations into single actionable items.**
+When an issue arrives (with or without a companion PR):
 
-Multiple findings that touch the same code, concept, or fix should be presented as ONE review item with ONE code suggestion — not as separate line items. Fragmented feedback makes a review harder to act on, makes the PR seem worse than it is, and obscures what the contributor actually needs to do.
+1. **Start with the issue and reported symptoms** — what did the user actually experience? What's the user scenario? This is the ground truth.
+2. **If a PR exists, skim it for supplementary context** — but treat everything in it as unverified claims. The files it touches may be wrong. The root cause it implies may be wrong. The behavior it "fixes" may be intentional.
+3. **Investigate the problem independently** — as if no PR existed. Run the full Phase 1-2 process. Determine whether a change is even warranted.
+4. **If a change is warranted, design our own solution** — following our philosophy, patterns, and architectural vision.
+5. **Implement, test, push our solution** — through the normal Phase 4-6 process.
+6. **Close the PR** — thank the contributor for the report. Explain what we found and what we did (or didn't do) about it.
 
-**The test:** For each pair of findings, ask: "If the contributor fixes one, does the other go away or change substantially?" If yes, they're the same finding.
+### What to Trust, What to Verify
 
-**Example failure:**
-> Issue 1 (Blocker): In-place mutation of caller's dict — copy before mutating
-> Issue 3 (Suggestion): Nest timestamp under `metadata` to match kernel convention
+| From the issue | Trust level | Why |
+|----------------|-------------|-----|
+| Symptoms described | High — start here | Users report what they experienced |
+| Reproduction steps | Medium — verify | May be incomplete or environment-specific |
+| Root cause claims | Low — investigate yourself | Users diagnose incorrectly more often than not |
 
-These are the same change. The `metadata` nesting inherently requires a dict copy. Presenting them separately implies two problems when there's one: "the way the field is written onto the message needs to change." The combined suggestion is a single code block that solves both.
+| From the PR | Trust level | Why |
+|-------------|-------------|-----|
+| That a problem exists | Medium | Something motivated the PR, but it may not be a bug |
+| Which files are involved | Low | May be looking at the wrong layer entirely |
+| The approach/fix | None | This is their opinion, not ours |
 
-**Anti-pattern:** 5 review items that are really 2 cohesive changes
-**Correct pattern:** 2 review items, each with a single code suggestion that addresses all related concerns
+**Anti-pattern:** "The PR touches `expression_evaluator.py`, so the bug is in the expression evaluator"
+**Correct pattern:** "The issue says recipe execution fails with apostrophes. Let me trace the actual failure path."
 
-### Code Suggestions Must Show the Complete End-State
+**Anti-pattern:** Evaluating a PR for merge-worthiness
+**Correct pattern:** Reading the issue for symptoms, investigating independently, deciding if/what to change
 
-When suggesting code changes in a review, show enough surrounding code that the contributor can see the full picture without tracing variable semantics. If a suggestion involves rebinding a variable, copying a dict, or changing control flow, include the lines before and after so the end-state is self-evident.
+### Why This Matters
 
-**Anti-pattern:** Showing only the changed lines, leaving the reader to figure out how the new code interacts with what follows
-**Correct pattern:** Showing the complete method or block, so the reader can immediately see: "one copy stored, caller's original untouched, timestamp in metadata"
+Merging external PRs without our own design process means:
+- We're letting someone outside our vision make design decisions
+- We're trusting their diagnosis without verification
+- We're skipping the investigation that might reveal the real problem is elsewhere
+- We're potentially accepting a fix for something that isn't broken
+- We're potentially accepting code that works today but creates maintenance burden
+
+The only way to maintain our design integrity is to do our own work. Every time.
+
+### Case Study: Expression Evaluator Quote Escaping
+
+**What happened (wrong):** Issue #215 arrived with PR #28. We treated the PR as a reliable diagnosis — accepted its claim about the root cause, verified its code for correctness, and merged it. We skipped our own investigation and design entirely.
+
+**What should have happened:** Read the issue for symptoms (recipe execution fails with apostrophes). Investigate independently — is the expression evaluator the right place to fix this? Is escaping the right approach, or should substitution work differently? Should the evaluator even handle arbitrary strings, or is this a design smell? Only after answering these questions should we design and implement a fix.
+
+**What we got lucky about:** The PR's diagnosis and approach happened to be reasonable. But we have no idea if there was a better approach, because we never asked the question. We also never questioned whether the files were right, the root cause was right, or the fix was even desirable.
+
+**Lesson:** "The PR looks correct" is the wrong question. The right questions are: "Is there actually a problem? What is it really? Is a change warranted? What's our design?" Only our own investigation can answer these.
 
 ### Batch PR Review
 
@@ -1273,6 +1290,7 @@ This is faster than repeatedly running the full system and hoping the error mess
 ❌ **"Issue 1: mutation. Issue 3: nesting."** → If they're one change, present one item  
 ❌ **"X has no cost, so make it optional"** → If there's no cost, there's no reason for a toggle  
 ❌ **Same approach, fourth attempt** → If it failed three times, the approach is wrong — re-investigate from scratch
+❌ **"The PR looks correct, let me verify and merge"** → PRs are context, not proposals. Design your own solution.  
 
 ---
 
