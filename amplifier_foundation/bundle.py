@@ -80,6 +80,21 @@ class Bundle:
         default_factory=dict
     )  # Context refs needing namespace resolution
 
+    def __post_init__(self) -> None:
+        """Ensure collection fields are never None.
+
+        Protects against callers passing None explicitly (e.g., via
+        dataclasses.replace or direct construction) which bypasses
+        default_factory. Without this guard, 'x in self.context' raises
+        TypeError: argument of type 'NoneType' is not iterable.
+        """
+        if self.context is None:
+            self.context = {}
+        if self.source_base_paths is None:
+            self.source_base_paths = {}
+        if self._pending_context is None:
+            self._pending_context = {}
+
     def compose(self, *others: Bundle) -> Bundle:
         """Compose this bundle with others (later overrides earlier).
 
