@@ -439,7 +439,37 @@ Mention that `amplifier update` won't work because the update mechanism itself i
 
 **Lesson:** Don't rely solely on your own testing.
 
-### Pitfall 4: **Not Comparing Similar Code Paths**
+### Pitfall 4: **Not Checking Existing Precedent**
+
+Before evaluating whether a change is appropriate, ask: "Does the codebase already do this?" Finding that the kernel's `events.py` already had ~10 unused vocabulary constants (defined but never emitted) completely reframed an analysis — what looked like "adding something new" was actually "following the established pattern." Existing precedent legitimizes or undermines a proposal far more effectively than abstract reasoning.
+
+**Lesson:** Ask "what's the existing precedent?" before designing or evaluating solutions.
+
+### Pitfall 5: **Not Testing the Right Layer**
+
+PR authors may verify a bug correctly but at the wrong abstraction level — checking an intermediate Python attribute that shows `None` when the underlying SDK correctly resolves the value. Always verify claimed behavior at the *end behavior* layer.
+
+**Lesson:** Test what the user actually experiences, not intermediate state.
+
+### Pitfall 6: **Attributing Test Failures to a PR Without Checking Main**
+
+Before rejecting a PR for test failures, run the same failing tests on main. Failures may be pre-existing. This prevents both false blame (rejecting good PRs) and false confidence (assuming a PR's tests are clean because the same failures exist on main).
+
+**Lesson:** Always baseline test failures against main.
+
+### Pitfall 7: **Not Asking What Each Layer Can Know**
+
+When evaluating where a change belongs, ask: "Does this layer have the information needed?" The kernel can't emit `session:end` because `execute()` returns per-turn and only the caller knows when a session is truly done. This "what can this layer know?" test is a precise heuristic for layer-boundary decisions.
+
+**Lesson:** If a layer doesn't have the information, it can't own the behavior.
+
+### Pitfall 8: **Averaging Expert Disagreement**
+
+When expert agents disagree, evaluate the *reasoning quality* of each position — don't average or defer to the one that seems more authoritative. When foundation-expert and core-expert disagreed on component placement, the two-implementation-rule argument was structurally stronger regardless of which expert made it.
+
+**Lesson:** When experts disagree, the stronger reasoning wins, not the louder voice.
+
+### Pitfall 9: **Not Comparing Similar Code Paths**
 
 **Example scenario:**
 - Two commands should have same behavior
@@ -1066,10 +1096,11 @@ When an issue arrives (with or without a companion PR):
 
 1. **Start with the issue and reported symptoms** — what did the user actually experience? What's the user scenario? This is the ground truth.
 2. **If a PR exists, skim it for supplementary context** — but treat everything in it as unverified claims. The files it touches may be wrong. The root cause it implies may be wrong. The behavior it "fixes" may be intentional.
-3. **Investigate the problem independently** — as if no PR existed. Run the full Phase 1-2 process. Determine whether a change is even warranted.
-4. **If a change is warranted, design our own solution** — following our philosophy, patterns, and architectural vision.
-5. **Implement, test, push our solution** — through the normal Phase 4-6 process.
-6. **Close the PR** — thank the contributor for the report. Explain what we found and what we did (or didn't do) about it.
+3. **Ask: "Can they do this without our changes?"** — Before investigating whether a change is correct, check whether the public APIs already support what the contributor needs. If they can build it as their own bundle/module using existing primitives, no change to our codebase is warranted. This filter can save the entire investigation cycle for large architectural PRs.
+4. **Investigate the problem independently** — as if no PR existed. Run the full Phase 1-2 process. Determine whether a change is even warranted.
+5. **If a change is warranted, design our own solution** — following our philosophy, patterns, and architectural vision.
+6. **Implement, test, push our solution** — through the normal Phase 4-6 process.
+7. **Close the PR** — thank the contributor for the report. Explain what we found and what we did (or didn't do) about it.
 
 ### What to Trust, What to Verify
 
@@ -1090,6 +1121,9 @@ When an issue arrives (with or without a companion PR):
 
 **Anti-pattern:** Evaluating a PR for merge-worthiness
 **Correct pattern:** Reading the issue for symptoms, investigating independently, deciding if/what to change
+
+**Anti-pattern:** "The author tested it and showed the bug exists"
+**Correct pattern:** Verify the claimed bug at the *end behavior* layer, not intermediate state. Authors often test correctly but at the wrong abstraction level — checking a Python attribute that shows `None` when the underlying SDK correctly resolves the value from an env var.
 
 ### Why This Matters
 
@@ -1118,10 +1152,12 @@ When reviewing multiple open PRs on a repo:
 
 1. **List all open PRs** with `gh pr list --state open`
 2. **Triage by type**: blocked (waiting on dependencies), reviewable (ready for review), stale (no activity)
-3. **Check for superseded PRs**: If your own work implemented the same feature as an open PR, close the original with attribution — credit the design influence and link to the replacement
-4. **Check merge conflicts before reviewing**: `git fetch origin pull/N/head:pr-N-test && git merge --no-commit --no-ff pr-N-test` — if it conflicts, note that in the review; if it merges clean, proceed
-5. **Review in dependency order**: If PR B builds on PR A, review and merge A first
-6. **Create follow-up PRs immediately**: If reviewing a PR reveals an enhancement opportunity, merge the PR first, then create a follow-up PR that builds on it — don't scope-creep the original
+3. **Triage by effort**: Quick wins first (dependabot bumps, obvious closes, small doc fixes), deep dives last. Clearing the board early builds momentum and sometimes reveals that later PRs are superseded by the quick wins.
+4. **Check for superseded PRs**: If your own work implemented the same feature as an open PR, close the original with attribution — credit the design influence and link to the replacement
+5. **Check merge conflicts before reviewing**: `git fetch origin pull/N/head:pr-N-test && git merge --no-commit --no-ff pr-N-test` — if it conflicts, note that in the review; if it merges clean, proceed
+6. **Review in dependency order**: If PR B builds on PR A, review and merge A first
+7. **Create follow-up PRs immediately**: If reviewing a PR reveals an enhancement opportunity, merge the PR first, then create a follow-up PR that builds on it — don't scope-creep the original
+8. **Understand author intent before finalizing feedback**: External context (internal posts, Slack, issue comments) can reframe a PR from "wrong" to "valid experiment with cleanup needed." We don't trust their *diagnosis*, but understanding their *hypothesis* improves our feedback quality and contributor relationships.
 
 ### Superseding PRs
 
