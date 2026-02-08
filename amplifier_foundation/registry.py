@@ -24,13 +24,14 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from amplifier_foundation.bundle import Bundle
-from amplifier_foundation.exceptions import BundleDependencyError
-from amplifier_foundation.exceptions import BundleLoadError
-from amplifier_foundation.exceptions import BundleNotFoundError
+from amplifier_foundation.exceptions import (
+    BundleDependencyError,
+    BundleLoadError,
+    BundleNotFoundError,
+)
 from amplifier_foundation.io.frontmatter import parse_frontmatter
 from amplifier_foundation.io.yaml import read_yaml
 from amplifier_foundation.paths.resolution import get_amplifier_home
@@ -164,7 +165,7 @@ class BundleRegistry:
         bundle = await registry.load("foundation")
     """
 
-    def __init__(self, home: Path | None = None) -> None:
+    def __init__(self, home: Path | None = None, *, strict: bool = False) -> None:
         """Initialize registry.
 
         Args:
@@ -172,8 +173,11 @@ class BundleRegistry:
                   1. Explicit parameter
                   2. AMPLIFIER_HOME env var
                   3. ~/.amplifier (default)
+            strict: If True, include failures raise exceptions instead of
+                    logging warnings. Useful for CI and validation workflows.
         """
         self._home = self._resolve_home(home)
+        self._strict = strict
         self._registry: dict[str, BundleState] = {}
         self._source_resolver = SimpleSourceResolver(
             cache_dir=self._home / "cache",
@@ -614,12 +618,21 @@ class BundleRegistry:
                                     f"Include resolution failed: '{include_source}'. "
                                     f"Namespace '{namespace}' is registered but the path doesn't exist."
                                 )
+                        if self._strict:
+                            raise BundleDependencyError(
+                                f"Include resolution failed (strict mode): '{include_source}' "
+                                f"could not be resolved (unregistered namespace)"
+                            )
                         logger.warning(
                             f"Include skipped (unregistered namespace): {include_source}"
                         )
                         continue
                     include_sources.append(resolved_source)
                 except BundleNotFoundError:
+                    if self._strict:
+                        raise BundleDependencyError(
+                            f"Include not found (strict mode): '{include_source}'"
+                        ) from None
                     # Includes are opportunistic - but warn so users know
                     logger.warning(f"Include not found (skipping): {include_source}")
 
@@ -1204,8 +1217,10 @@ class BundleRegistry:
 # Convenience function for simple usage
 async def load_bundle(
     source: str,
+    *,
     auto_include: bool = True,
     registry: BundleRegistry | None = None,
+    strict: bool = False,
 ) -> Bundle:
     """Convenience function to load a bundle.
 
@@ -1213,11 +1228,14 @@ async def load_bundle(
         source: URI or bundle name.
         auto_include: Whether to load includes.
         registry: Optional registry (creates default if not provided).
+        strict: If True, include failures raise exceptions instead of
+                logging warnings.
 
     Returns:
         Loaded Bundle.
     """
-    registry = registry or BundleRegistry()
+    if registry is None:
+        registry = BundleRegistry(strict=strict)
     return await registry._load_single(
         source, auto_register=True, auto_include=auto_include
     )

@@ -120,7 +120,9 @@ class TestUnregister:
             registry = BundleRegistry(home=base / "home")
 
             # Register a bundle
-            registry.register({"test-bundle": "git+https://github.com/example/test@main"})
+            registry.register(
+                {"test-bundle": "git+https://github.com/example/test@main"}
+            )
 
             # Unregister should return True
             assert registry.unregister("test-bundle") is True
@@ -141,14 +143,20 @@ class TestUnregister:
             registry = BundleRegistry(home=base / "home")
 
             # Register bundles
-            registry.register({
-                "bundle-a": "git+https://github.com/example/a@main",
-                "bundle-b": "git+https://github.com/example/b@main",
-                "bundle-c": "git+https://github.com/example/c@main",
-            })
+            registry.register(
+                {
+                    "bundle-a": "git+https://github.com/example/a@main",
+                    "bundle-b": "git+https://github.com/example/b@main",
+                    "bundle-c": "git+https://github.com/example/c@main",
+                }
+            )
 
             # Verify all are registered
-            assert sorted(registry.list_registered()) == ["bundle-a", "bundle-b", "bundle-c"]
+            assert sorted(registry.list_registered()) == [
+                "bundle-a",
+                "bundle-b",
+                "bundle-c",
+            ]
 
             # Unregister bundle-b
             registry.unregister("bundle-b")
@@ -163,7 +171,9 @@ class TestUnregister:
             registry = BundleRegistry(home=base / "home")
 
             # Register and save
-            registry.register({"test-bundle": "git+https://github.com/example/test@main"})
+            registry.register(
+                {"test-bundle": "git+https://github.com/example/test@main"}
+            )
             registry.save()
 
             # Unregister (without calling save)
@@ -180,11 +190,13 @@ class TestUnregister:
             registry = BundleRegistry(home=base / "home")
 
             # Register bundles
-            registry.register({
-                "parent": "git+https://github.com/example/parent@main",
-                "child-a": "git+https://github.com/example/child-a@main",
-                "child-b": "git+https://github.com/example/child-b@main",
-            })
+            registry.register(
+                {
+                    "parent": "git+https://github.com/example/parent@main",
+                    "child-a": "git+https://github.com/example/child-a@main",
+                    "child-b": "git+https://github.com/example/child-b@main",
+                }
+            )
 
             # Manually set up relationships (simulating what happens after loading)
             parent_state = registry.get_state("parent")
@@ -212,11 +224,13 @@ class TestUnregister:
             registry = BundleRegistry(home=base / "home")
 
             # Register bundles
-            registry.register({
-                "parent-a": "git+https://github.com/example/parent-a@main",
-                "parent-b": "git+https://github.com/example/parent-b@main",
-                "child": "git+https://github.com/example/child@main",
-            })
+            registry.register(
+                {
+                    "parent-a": "git+https://github.com/example/parent-a@main",
+                    "parent-b": "git+https://github.com/example/parent-b@main",
+                    "child": "git+https://github.com/example/child@main",
+                }
+            )
 
             # Manually set up relationships
             parent_a_state = registry.get_state("parent-a")
@@ -244,10 +258,12 @@ class TestUnregister:
             registry = BundleRegistry(home=base / "home")
 
             # Register bundles
-            registry.register({
-                "bundle-a": "git+https://github.com/example/a@main",
-                "bundle-b": "git+https://github.com/example/b@main",
-            })
+            registry.register(
+                {
+                    "bundle-a": "git+https://github.com/example/a@main",
+                    "bundle-b": "git+https://github.com/example/b@main",
+                }
+            )
 
             # Set up partial relationships
             bundle_a_state = registry.get_state("bundle-a")
@@ -269,7 +285,9 @@ class TestSubdirectoryBundleLoading:
             base = Path(tmpdir)
 
             # Create root bundle (bundle.md with frontmatter)
-            (base / "bundle.md").write_text("---\nbundle:\n  name: root-bundle\n  version: 1.0.0\n---\n# Root Bundle")
+            (base / "bundle.md").write_text(
+                "---\nbundle:\n  name: root-bundle\n  version: 1.0.0\n---\n# Root Bundle"
+            )
 
             # Create shared context
             context_dir = base / "context"
@@ -281,14 +299,18 @@ class TestSubdirectoryBundleLoading:
             behaviors.mkdir()
             recipes = behaviors / "recipes"
             recipes.mkdir()
-            (recipes / "bundle.yaml").write_text("bundle:\n  name: recipes\n  version: 1.0.0")
+            (recipes / "bundle.yaml").write_text(
+                "bundle:\n  name: recipes\n  version: 1.0.0"
+            )
 
             # Create registry and load subdirectory bundle via file source
             registry = BundleRegistry(home=base / "home")
 
             # Load the subdirectory bundle with a subpath
             # This simulates loading via git+https://...#subdirectory=behaviors/recipes
-            bundle = await registry._load_single(f"file://{base}#subdirectory=behaviors/recipes")
+            bundle = await registry._load_single(
+                f"file://{base}#subdirectory=behaviors/recipes"
+            )
 
             # The bundle should have source_base_paths set up
             assert bundle.name == "recipes"
@@ -301,7 +323,9 @@ class TestSubdirectoryBundleLoading:
             base = Path(tmpdir)
 
             # Create root bundle (bundle.md with frontmatter)
-            (base / "bundle.md").write_text("---\nbundle:\n  name: root-bundle\n  version: 1.0.0\n---\n# Root Bundle")
+            (base / "bundle.md").write_text(
+                "---\nbundle:\n  name: root-bundle\n  version: 1.0.0\n---\n# Root Bundle"
+            )
 
             registry = BundleRegistry(home=base / "home")
             bundle = await registry._load_single(f"file://{base}")
@@ -323,10 +347,14 @@ class TestSubdirectoryBundleLoading:
             # Create subdirectory bundle (YAML needs nested bundle: key)
             subdir = base / "components" / "auth"
             subdir.mkdir(parents=True)
-            (subdir / "bundle.yaml").write_text("bundle:\n  name: auth\n  version: 1.0.0")
+            (subdir / "bundle.yaml").write_text(
+                "bundle:\n  name: auth\n  version: 1.0.0"
+            )
 
             registry = BundleRegistry(home=base / "home")
-            bundle = await registry._load_single(f"file://{base}#subdirectory=components/auth")
+            bundle = await registry._load_single(
+                f"file://{base}#subdirectory=components/auth"
+            )
 
             # Without a root bundle, source_base_paths won't be populated
             assert bundle.name == "auth"
@@ -376,9 +404,7 @@ class TestDiamondAndCircularDependencies:
             bundle_c = base / "bundle-c"
             bundle_c.mkdir()
             (bundle_c / "bundle.yaml").write_text(
-                "bundle:\n"
-                "  name: bundle-c\n"
-                "  version: 1.0.0\n"
+                "bundle:\n  name: bundle-c\n  version: 1.0.0\n"
             )
 
             # Create registry and load bundle A
@@ -445,9 +471,7 @@ class TestDiamondAndCircularDependencies:
             bundle_dir = base / "test-bundle"
             bundle_dir.mkdir()
             (bundle_dir / "bundle.yaml").write_text(
-                "bundle:\n"
-                "  name: test-bundle\n"
-                "  version: 1.0.0\n"
+                "bundle:\n  name: test-bundle\n  version: 1.0.0\n"
             )
 
             registry = BundleRegistry(home=base / "home")
@@ -519,7 +543,9 @@ class TestDiamondAndCircularDependencies:
             assert bundle.name == "bundle-a"
 
     @pytest.mark.asyncio
-    async def test_circular_dependency_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_circular_dependency_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Circular dependency should log a helpful warning message.
 
         Structure:
@@ -564,5 +590,104 @@ class TestDiamondAndCircularDependencies:
             assert bundle is not None
 
             # Should have logged a warning about circular dependency
-            warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+            warning_messages = [
+                r.message for r in caplog.records if r.levelno == logging.WARNING
+            ]
             assert any("Circular Include Skipped" in msg for msg in warning_messages)
+
+
+class TestStrictMode:
+    """Tests for strict mode in BundleRegistry."""
+
+    @pytest.mark.asyncio
+    async def test_default_non_strict_skips_missing_includes(self) -> None:
+        """Default (non-strict) mode logs warnings and succeeds when includes are missing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create bundle that includes a non-existent bundle
+            bundle_dir = base / "test-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: test-bundle\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                "  - nonexistent-namespace:some/path\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            bundle = await registry._load_single(f"file://{bundle_dir}")
+
+            # Should succeed - missing include is skipped
+            assert bundle is not None
+            assert bundle.name == "test-bundle"
+
+    @pytest.mark.asyncio
+    async def test_strict_mode_raises_on_unresolvable_include(self) -> None:
+        """Strict mode raises BundleDependencyError when an include cannot be resolved."""
+        from amplifier_foundation.exceptions import BundleDependencyError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create bundle that includes a non-existent namespace
+            bundle_dir = base / "test-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: test-bundle\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                "  - nonexistent-namespace:some/path\n"
+            )
+
+            registry = BundleRegistry(home=base / "home", strict=True)
+
+            with pytest.raises(BundleDependencyError, match="strict mode"):
+                await registry._load_single(f"file://{bundle_dir}")
+
+    @pytest.mark.asyncio
+    async def test_strict_mode_succeeds_with_valid_includes(self) -> None:
+        """Strict mode does not interfere when all includes resolve successfully."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create included bundle
+            child_dir = base / "child-bundle"
+            child_dir.mkdir()
+            (child_dir / "bundle.yaml").write_text(
+                "bundle:\n  name: child-bundle\n  version: 1.0.0\n"
+            )
+
+            # Create parent bundle that includes child via file URI
+            parent_dir = base / "parent-bundle"
+            parent_dir.mkdir()
+            (parent_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: parent-bundle\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{child_dir}\n"
+            )
+
+            registry = BundleRegistry(home=base / "home", strict=True)
+            bundle = await registry._load_single(f"file://{parent_dir}")
+
+            # Should succeed - all includes are valid
+            assert bundle is not None
+            assert bundle.name == "parent-bundle"
+
+    def test_strict_defaults_to_false(self) -> None:
+        """BundleRegistry strict parameter defaults to False."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            registry = BundleRegistry(home=base / "home")
+            assert registry._strict is False
+
+    def test_strict_can_be_set_to_true(self) -> None:
+        """BundleRegistry strict parameter can be set to True."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            registry = BundleRegistry(home=base / "home", strict=True)
+            assert registry._strict is True

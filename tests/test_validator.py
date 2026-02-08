@@ -1,14 +1,18 @@
 """Tests for Bundle validator."""
 
+from pathlib import Path
+
 import pytest
 from amplifier_foundation.bundle import Bundle
 from amplifier_foundation.exceptions import BundleValidationError
-from amplifier_foundation.validator import BundleValidator
-from amplifier_foundation.validator import ValidationResult
-from amplifier_foundation.validator import validate_bundle
-from amplifier_foundation.validator import validate_bundle_completeness
-from amplifier_foundation.validator import validate_bundle_completeness_or_raise
-from amplifier_foundation.validator import validate_bundle_or_raise
+from amplifier_foundation.validator import (
+    BundleValidator,
+    ValidationResult,
+    validate_bundle,
+    validate_bundle_completeness,
+    validate_bundle_completeness_or_raise,
+    validate_bundle_or_raise,
+)
 
 
 class TestValidationResult:
@@ -193,3 +197,58 @@ class TestConvenienceFunctions:
         bundle = Bundle(name="incomplete")
         with pytest.raises(BundleValidationError):
             validate_bundle_completeness_or_raise(bundle)
+
+
+class TestStrictMode:
+    """Tests for strict mode in BundleValidator."""
+
+    def test_strict_defaults_to_false(self) -> None:
+        """BundleValidator strict parameter defaults to False."""
+        validator = BundleValidator()
+        assert validator._strict is False
+
+    def test_strict_can_be_set_to_true(self) -> None:
+        """BundleValidator strict parameter can be set to True."""
+        validator = BundleValidator(strict=True)
+        assert validator._strict is True
+
+    def test_non_strict_missing_context_path_is_warning(self, tmp_path: Path) -> None:
+        """Non-strict mode: missing context path produces a warning, not an error."""
+        bundle = Bundle(
+            name="test",
+            base_path=tmp_path,
+            context={"missing": tmp_path / "nonexistent.md"},
+        )
+        validator = BundleValidator()
+        result = validator.validate(bundle)
+        assert result.valid is True
+        assert any("nonexistent" in w for w in result.warnings)
+        assert result.errors == []
+
+    def test_strict_missing_context_path_is_error(self, tmp_path: Path) -> None:
+        """Strict mode: missing context path produces an error."""
+        bundle = Bundle(
+            name="test",
+            base_path=tmp_path,
+            context={"missing": tmp_path / "nonexistent.md"},
+        )
+        validator = BundleValidator(strict=True)
+        result = validator.validate(bundle)
+        assert result.valid is False
+        assert any("nonexistent" in e for e in result.errors)
+
+    def test_strict_existing_context_path_no_error(self, tmp_path: Path) -> None:
+        """Strict mode: existing context path produces no error."""
+        context_file = tmp_path / "exists.md"
+        context_file.write_text("# Context")
+
+        bundle = Bundle(
+            name="test",
+            base_path=tmp_path,
+            context={"exists": context_file},
+        )
+        validator = BundleValidator(strict=True)
+        result = validator.validate(bundle)
+        assert result.valid is True
+        assert result.errors == []
+        assert result.warnings == []

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import field
-from typing import TYPE_CHECKING
-from typing import Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from amplifier_foundation.exceptions import BundleValidationError
 
@@ -48,6 +46,14 @@ class BundleValidator:
 
     Apps may extend for additional validation rules.
     """
+
+    def __init__(self, *, strict: bool = False) -> None:
+        """Initialize validator.
+
+        Args:
+            strict: If True, missing context paths are errors instead of warnings.
+        """
+        self._strict = strict
 
     def validate(self, bundle: Bundle) -> ValidationResult:
         """Validate a bundle.
@@ -185,7 +191,11 @@ class BundleValidator:
         if bundle.base_path:
             for name, path in bundle.context.items():
                 if not path.exists():
-                    result.add_warning(f"context.{name}: Path does not exist: {path}")
+                    message = f"context.{name}: Path does not exist: {path}"
+                    if self._strict:
+                        result.add_error(message)
+                    else:
+                        result.add_warning(message)
 
     def validate_completeness(self, bundle: Bundle) -> ValidationResult:
         """Validate that a bundle is complete for direct mounting.
