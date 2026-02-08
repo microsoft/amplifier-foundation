@@ -691,3 +691,106 @@ class TestStrictMode:
             base = Path(tmpdir)
             registry = BundleRegistry(home=base / "home", strict=True)
             assert registry._strict is True
+
+    @pytest.mark.asyncio
+    async def test_strict_mode_raises_on_include_load_failure(self) -> None:
+        """Strict mode raises when a resolved include fails to load (Phase 2).
+
+        A child bundle with broken YAML resolves in Phase 1 (URI is valid)
+        but fails to parse in Phase 2 (_load_single raises a non-circular error).
+        """
+        from amplifier_foundation.exceptions import BundleDependencyError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create a child bundle with broken YAML that will fail to parse
+            child_dir = base / "broken-bundle"
+            child_dir.mkdir()
+            (child_dir / "bundle.yaml").write_text("{{{{ not valid yaml at all")
+
+            # Create parent that includes the child via file URI
+            parent_dir = base / "parent-bundle"
+            parent_dir.mkdir()
+            (parent_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: parent-bundle\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{child_dir}\n"
+            )
+
+            registry = BundleRegistry(home=base / "home", strict=True)
+
+            with pytest.raises(BundleDependencyError, match="strict mode"):
+                await registry._load_single(f"file://{parent_dir}")
+
+    @pytest.mark.asyncio
+    async def test_non_strict_skips_include_load_failure(self) -> None:
+        """Non-strict mode logs warning and continues when include fails to load."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create a child bundle with broken YAML that will fail to parse
+            child_dir = base / "broken-bundle"
+            child_dir.mkdir()
+            (child_dir / "bundle.yaml").write_text("{{{{ not valid yaml at all")
+
+            # Create parent that includes the child
+            parent_dir = base / "parent-bundle"
+            parent_dir.mkdir()
+            (parent_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: parent-bundle\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{child_dir}\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")  # default non-strict
+            bundle = await registry._load_single(f"file://{parent_dir}")
+
+            # Should succeed - failed include is skipped
+            assert bundle is not None
+            assert bundle.name == "parent-bundle"
+
+
+class TestLoadBundleConvenience:
+    """Tests for load_bundle() convenience function."""
+
+    @pytest.mark.asyncio
+    async def test_load_bundle_strict_with_registry_raises(self) -> None:
+        """Passing strict=True with an existing registry raises ValueError."""
+        from amplifier_foundation.registry import load_bundle
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            registry = BundleRegistry(home=base / "home")
+
+            with pytest.raises(ValueError, match="Cannot pass strict=True"):
+                await load_bundle("some-bundle", strict=True, registry=registry)
+
+    @pytest.mark.asyncio
+    async def test_load_bundle_strict_without_registry_creates_strict_registry(
+        self,
+    ) -> None:
+        """Passing strict=True without registry creates a strict registry."""
+        from amplifier_foundation.exceptions import BundleDependencyError
+        from amplifier_foundation.registry import load_bundle
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create bundle with unresolvable include
+            bundle_dir = base / "test-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: test-bundle\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                "  - nonexistent-namespace:some/path\n"
+            )
+
+            with pytest.raises(BundleDependencyError, match="strict mode"):
+                await load_bundle(f"file://{bundle_dir}", strict=True)

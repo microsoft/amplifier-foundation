@@ -662,6 +662,10 @@ class BundleRegistry:
                         source, result, _loading_chain
                     )
                 else:
+                    if self._strict:
+                        raise BundleDependencyError(
+                            f"Include failed to load (strict mode): '{source}' - {result}"
+                        ) from result
                     source_name = self._extract_bundle_name(source)
                     lines = [
                         f"Bundle: {source_name}",
@@ -1228,12 +1232,23 @@ async def load_bundle(
         source: URI or bundle name.
         auto_include: Whether to load includes.
         registry: Optional registry (creates default if not provided).
+                  If provided, the ``strict`` parameter is ignored—configure
+                  strictness on the registry itself.
         strict: If True, include failures raise exceptions instead of
-                logging warnings.
+                logging warnings. Only used when ``registry`` is not provided.
 
     Returns:
         Loaded Bundle.
+
+    Raises:
+        ValueError: If ``strict`` is True and ``registry`` is also provided,
+                    since the registry's own strict setting takes precedence.
     """
+    if registry is not None and strict:
+        raise ValueError(
+            "Cannot pass strict=True with an existing registry. "
+            "Configure strict mode on the BundleRegistry directly."
+        )
     if registry is None:
         registry = BundleRegistry(strict=strict)
     return await registry._load_single(
