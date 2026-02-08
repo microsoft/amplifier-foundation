@@ -19,7 +19,7 @@ Config Options:
 - features.provider_selection.enabled: Allow provider preferences (default: True)
 - settings.exclude_tools: Tools spawned agents should NOT inherit (default: ["delegate"])
 - settings.exclude_hooks: Hooks spawned agents should NOT inherit (default: [])
-- settings.timeout: Maximum execution time in seconds (default: 300)
+- settings.timeout: Maximum total execution time for child session in seconds (default: None/disabled)
 
 Tool Parameters:
 - agent: Agent to delegate to (e.g., 'foundation:explorer', 'self')
@@ -34,6 +34,7 @@ Tool Parameters:
 # Amplifier module metadata
 __amplifier_module_type__ = "tool"
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -123,7 +124,7 @@ class DelegateTool:
         # Settings
         self.exclude_tools: list[str] = settings.get("exclude_tools", ["delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
-        self.timeout: int = settings.get("timeout", 300)
+        self.timeout: int | None = settings.get("timeout", None)
 
         # Build feature registry for dynamic description composition
         self._feature_registry = self._build_feature_registry()
@@ -848,8 +849,8 @@ Agent usage notes:
             else:
                 child_self_delegation_depth = 0  # Named agents start fresh chain
 
-            # Spawn agent sub-session
-            result = await spawn_fn(
+            # Spawn agent sub-session (with optional session-level timeout)
+            spawn_coro = spawn_fn(
                 agent_name=agent_name,
                 instruction=effective_instruction,
                 parent_session=parent_session,
@@ -861,6 +862,11 @@ Agent usage notes:
                 provider_preferences=provider_preferences,
                 self_delegation_depth=child_self_delegation_depth,
             )
+            if self.timeout is not None:
+                async with asyncio.timeout(self.timeout):
+                    result = await spawn_coro
+            else:
+                result = await spawn_coro
 
             # Emit delegate:agent_completed event
             if hooks:
