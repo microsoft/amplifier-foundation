@@ -1031,6 +1031,86 @@ Direct file reading would have shown the diff. Expert delegation revealed:
 
 ---
 
+## Case Study: Multi-Round Kernel PR Review (Error Taxonomy)
+
+### Problem
+
+PR #10 on amplifier-core added kernel vocabulary: an LLM error taxonomy (7 exception types), new optional fields on Usage (cache/reasoning tokens), and new optional fields on ChatRequest (model, tool_choice, stop, reasoning_effort, timeout). ~65 lines of new model code, additive with None defaults, claimed zero-breakage.
+
+### What Happened (3 rounds)
+
+**Round 1: Independent investigation found 3 issues the author missed**
+
+Dispatched 3 expert agents in parallel (kernel philosophy, ecosystem impact, architectural design). All three converged on the same concerns:
+
+1. `tool_choice: str | dict[str, str] | None` was too narrow — OpenAI's function-forcing form uses nested dicts (`dict[str, dict]`), which the type annotation rejected
+2. `type: ignore[arg-type]` comments in kernel code — the `**kwargs: object` forwarding pattern in error subclasses couldn't be type-checked
+3. `model` field had no precedence documentation — with model on both provider config and ChatRequest, every provider would independently invent conflicting resolution rules
+
+**Round 2: Adversarial re-review of fix commit found 3 MORE issues**
+
+The author addressed all round 1 fixes. Dispatched agents again with explicit instruction to be adversarial. They found:
+
+4. **No tests for retryable override** — The error signatures changed from `**kwargs` to explicit kwargs, but the test file was byte-for-byte identical. No test proved `RateLimitError("msg", retryable=False).retryable is False` — the entire mechanism-vs-policy contract was unguarded.
+5. **`model` field used inline comment instead of `Field(description=...)`** — Invisible in IDE hover, `help()`, JSON schema, and auto-generated docs. For a kernel field every provider author touches, the contract must be on a discoverable surface.
+6. **`LLMError.__repr__` dropped all structured info** — `repr(error)` gave `RateLimitError('too fast')` with no provider, status_code, or retryable. The whole point of the taxonomy vanished in logs and tracebacks.
+
+**Round 3: Final verification found a tautology test**
+
+All 6 issues addressed. Line-by-line verification passed. But one new test was deceptive:
+
+```python
+assert "retry_after=30.0" in repr(err) or "RateLimitError(" in r
+```
+
+The second condition is always true (repr always starts with the class name). The test passes regardless of whether `retry_after` appears in the repr — and it doesn't, because `LLMError.__repr__` has no knowledge of subclass-specific attributes.
+
+Approved with the tautology test flagged as non-blocking cleanup. Squash-merged.
+
+### Key Learnings
+
+**Each fix round reveals new concerns:**
+- Round 1 found type annotation and documentation issues
+- Round 2 found missing contract tests and discoverability gaps — concerns that weren't visible until the signatures changed in round 1
+- Round 3 found a deceptive test — not visible until the repr was implemented in round 2
+
+**Lesson:** Never rubber-stamp fix commits. Each round changes the attack surface. Dispatch expert agents adversarially every time.
+
+**Tests must guard contracts, not implementations:**
+- The retryable override was the key mechanism-vs-policy design decision
+- The test suite had tests for "retryable by default" but none for "default can be overridden"
+- Without the override test, someone could refactor and accidentally hardcode `retryable=True` without the test suite catching it
+
+**Lesson:** When the design claim is "X is overridable," there must be a test that exercises the override. Test the contract, not just the happy path.
+
+**Inline comments are not kernel contract surfaces:**
+- An inline comment after `None` is invisible in IDE hover, `help()`, JSON schema
+- Kernel fields with ambiguous semantics need `Field(description=...)` so the contract is discoverable where developers actually look
+- This applies to any field where "what happens when two values conflict" is non-obvious
+
+**Lesson:** For kernel models, use `Field(description=...)` on any field with precedence ambiguity or non-obvious interaction semantics.
+
+**Parallel expert dispatch catches what individual review misses:**
+
+| Agent | What it found that others didn't |
+|-------|----------------------------------|
+| kernel philosophy expert | `retryable` default crosses mechanism/policy line, `type: ignore` violates kernel standards |
+| ecosystem expert | `tool_choice` type rejects real OpenAI formats, provider migration path concerns |
+| architectural reviewer | `model` precedence ambiguity, `reasoning_effort` two-implementation rule question |
+
+All three converged on the same blocking issues, which gave confidence. But each also found unique concerns from their specialized perspective.
+
+**Lesson:** For kernel PRs, always dispatch ≥2 expert agents with different perspectives. Convergence validates findings; divergence reveals blind spots.
+
+**Even owner PRs need independent review:**
+- This PR was from the repo owner, not an external contributor
+- Independent expert agents still found 6 issues across 3 rounds that the author missed
+- The "External PRs are Communication" principle applies in spirit: even when the author knows the vision, independent investigation surfaces gaps
+
+**Lesson:** Authorship doesn't substitute for adversarial review. The kernel deserves the same rigor regardless of who wrote the code.
+
+---
+
 ## External PRs Are Communication, Not Proposals
 
 **A PR from a contributor is just another form of communication. It is NOT a proposal to merge, NOT a reliable diagnosis, and NOT necessarily even pointing at the right problem.**
@@ -1145,6 +1225,58 @@ When reviewing a PR reveals an immediate enhancement:
 4. **Reference the original PR** in the follow-up commit message
 
 This keeps PRs focused and gives the original contributor clean attribution.
+
+### Multi-Round PR Review
+
+When a PR goes through fix iterations, each round requires a fresh adversarial review — not a checkbox confirmation.
+
+**Why:** Fix commits change the attack surface. Round 1 might find type annotation issues. Round 2 (after fixes) might reveal missing contract tests that weren't visible until the signatures changed. Round 3 might find a deceptive test. Each round surfaces concerns that the previous round's fixes made visible.
+
+**The pattern:**
+
+1. **Round 1: Independent investigation** — Dispatch expert agents in parallel. Don't just read the diff; understand the mechanisms being changed. Produce a clear verdict with required fixes.
+2. **Round N: Adversarial re-review** — After each fix commit, dispatch agents again with explicit instruction to be adversarial. The prompt should be "find what's WRONG" not "confirm what's fixed." Check that:
+   - The fix actually addresses the concern (not just superficially)
+   - The fix didn't introduce new issues
+   - Tests were updated to exercise changed signatures
+   - Contract claims have regression guards
+3. **Final round: Verify and approve** — Line-by-line checklist of every previously flagged item. Any remaining findings get classified as blocking vs. non-blocking. Clear verdict.
+
+**Key rule:** Never assume a fix commit is correct because the author says it addresses your feedback. Verify against the actual code. Authors frequently address the letter of feedback but miss the spirit.
+
+**Pre-merge hygiene:**
+- **Squash** multi-round PRs into one clean commit. Intermediate states with known bugs don't belong in kernel git history.
+- **Formatting noise** — Reformatting unrelated lines in the same PR muddies `git blame`. Flag and request separation.
+
+### Kernel PR Review Criteria
+
+Kernel PRs have a higher bar than module PRs. In addition to correctness, check:
+
+| Criterion | What to verify | Why it matters |
+|-----------|---------------|----------------|
+| **Zero `type: ignore`** | No type suppression comments in kernel code | Kernel should be the cleanest, most auditable code in the ecosystem |
+| **Contract tests** | Every overridable default has a test proving the override works | If the design claim is "X is overridable," a test must prove it |
+| **`Field(description=...)` on ambiguous fields** | Fields with non-obvious semantics use Pydantic `Field()`, not inline comments | Inline comments are invisible in IDE hover, `help()`, JSON schema, and auto-generated docs |
+| **`__repr__` on diagnostic types** | Exception classes include structured attributes in repr | Kernel philosophy demands "actionable, text-first diagnostics" |
+| **Mechanism, not policy** | Defaults are overridable; the kernel doesn't dictate behavior | Apply the litmus test: "Could two teams want different behavior?" |
+| **Two-implementation rule** | New kernel concepts are needed by ≥2 independent modules | Don't promote single-provider concepts to kernel vocabulary |
+| **Complexity budget** | Additions retire equivalent or greater complexity elsewhere | Every kernel line must "pay rent" |
+
+### Tautology Test Detection
+
+Watch for tests that can never fail:
+
+```python
+# ❌ TAUTOLOGY — second condition is always true
+assert "retry_after=30.0" in repr(err) or "RateLimitError(" in r
+
+# ✅ REAL — actually tests the claim
+assert "retry_after=30.0" in repr(err)
+```
+
+The `or` creates an escape hatch where the test passes even if the feature doesn't work. This is worse than no test — it provides false confidence that a capability exists.
+
+**Detection heuristic:** Any `assert X or Y` where `Y` is trivially true (e.g., checking that a class name appears in its own repr) is a tautology. Also watch for `assert X or True`, `assert X or len(Y) >= 0`, or conditions that test something already guaranteed.
 
 ---
 
@@ -1291,6 +1423,9 @@ This is faster than repeatedly running the full system and hoping the error mess
 ❌ **"X has no cost, so make it optional"** → If there's no cost, there's no reason for a toggle  
 ❌ **Same approach, fourth attempt** → If it failed three times, the approach is wrong — re-investigate from scratch
 ❌ **"The PR looks correct, let me verify and merge"** → PRs are context, not proposals. Design your own solution.  
+❌ **Rubber-stamping fix commits** → Each fix round changes the attack surface. Review adversarially every time.
+❌ **`assert X or always_true`** → Tautology tests always pass regardless of behavior. A test that can't fail is worse than no test — it gives false confidence. Watch for `or` conditions where one branch is trivially true.
+❌ **Unchanged tests after signature changes** → When code signatures change (e.g., `**kwargs` → explicit kwargs), existing tests don't exercise the new signatures. If the key design claim is "X is overridable," there must be a test proving the override works.
 
 ---
 
