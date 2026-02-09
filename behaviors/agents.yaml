@@ -31,7 +31,6 @@ tools:
       settings:
         exclude_tools: [delegate]  # Spawned agents can't further delegate by default
         exclude_hooks: []
-        timeout: 300
 
 context:
   include:

@@ -892,8 +892,18 @@ Agent usage notes:
                 },
             )
 
-        except Exception as e:
-            # Emit delegate:error event
+        except TimeoutError:
+            # asyncio.timeout raises TimeoutError (which may propagate as
+            # CancelledError internally).  Surface the source clearly so the
+            # caller knows this was a delegation-level wall-clock timeout,
+            # not a provider or network issue.
+            timeout_msg = (
+                f"Agent '{agent_name}' timed out after {self.timeout}s "
+                f"(delegate tool session-level timeout). "
+                f"Increase or disable the timeout in tool-delegate settings "
+                f"(settings.timeout) to allow longer-running agents."
+            )
+            logger.warning(timeout_msg)
             if hooks:
                 await hooks.emit(
                     "delegate:error",
@@ -901,13 +911,29 @@ Agent usage notes:
                         "agent": agent_name,
                         "sub_session_id": sub_session_id,
                         "parent_session_id": parent_session_id,
-                        "error": str(e),
+                        "error": timeout_msg,
+                    },
+                )
+            return ToolResult(success=False, error={"message": timeout_msg})
+
+        except Exception as e:
+            # Emit delegate:error event — include the exception type so the
+            # caller can distinguish provider errors, kernel errors, etc.
+            error_type = type(e).__name__
+            error_detail = str(e) or "(no detail)"
+            error_msg = f"Agent delegation failed ({error_type}): {error_detail}"
+            if hooks:
+                await hooks.emit(
+                    "delegate:error",
+                    {
+                        "agent": agent_name,
+                        "sub_session_id": sub_session_id,
+                        "parent_session_id": parent_session_id,
+                        "error": error_msg,
                     },
                 )
 
-            return ToolResult(
-                success=False, error={"message": f"Agent delegation failed: {str(e)}"}
-            )
+            return ToolResult(success=False, error={"message": error_msg})
 
     async def _resume_existing_session(
         self, session_id: str, instruction: str, hooks
@@ -948,11 +974,16 @@ Agent usage notes:
                     },
                 )
 
-            # Resume agent session
-            result = await resume_fn(
+            # Resume agent session (with optional session-level timeout)
+            resume_coro = resume_fn(
                 sub_session_id=full_session_id,
                 instruction=instruction,
             )
+            if self.timeout is not None:
+                async with asyncio.timeout(self.timeout):
+                    result = await resume_coro
+            else:
+                result = await resume_coro
 
             # Emit delegate:agent_completed event
             if hooks:
@@ -1013,17 +1044,41 @@ Agent usage notes:
                 },
             )
 
-        except Exception as e:
-            # Other errors
+        except TimeoutError:
+            # Extract agent name for the message
+            resume_agent = "unknown"
+            if "_" in session_id:
+                resume_agent = session_id.split("_")[-1]
+            timeout_msg = (
+                f"Resumed agent '{resume_agent}' timed out after {self.timeout}s "
+                f"(delegate tool session-level timeout). "
+                f"Increase or disable the timeout in tool-delegate settings "
+                f"(settings.timeout) to allow longer-running agents."
+            )
+            logger.warning(timeout_msg)
             if hooks:
                 await hooks.emit(
                     "delegate:error",
                     {
                         "session_id": session_id,
                         "parent_session_id": parent_session_id,
-                        "error": str(e),
+                        "error": timeout_msg,
                     },
                 )
-            return ToolResult(
-                success=False, error={"message": f"Agent resume failed: {str(e)}"}
-            )
+            return ToolResult(success=False, error={"message": timeout_msg})
+
+        except Exception as e:
+            # Other errors — include exception type for clear source attribution
+            error_type = type(e).__name__
+            error_detail = str(e) or "(no detail)"
+            error_msg = f"Agent resume failed ({error_type}): {error_detail}"
+            if hooks:
+                await hooks.emit(
+                    "delegate:error",
+                    {
+                        "session_id": session_id,
+                        "parent_session_id": parent_session_id,
+                        "error": error_msg,
+                    },
+                )
+            return ToolResult(success=False, error={"message": error_msg})
