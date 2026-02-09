@@ -112,8 +112,15 @@ an agent to retrieve the specific lessons from that case study before designing 
 2. Root cause with evidence (file:line references)
 3. Proposed fix with rationale
 4. What will be tested and how
+5. **Draft GH text** (if the gate concludes with a GH interaction):
+   - If "no fix needed" → draft closing/response comment (close, request info, by design)
+   - If "fix needed" → approach only (GH text comes at Gate 2)
 
 **Wait for explicit approval before proceeding.**
+
+**Gate efficiency rule:** If the investigation concludes with a GH interaction (close,
+request info, etc.), the user approves the action AND the text in one pass. Never
+present the decision in one round and the text in a follow-up.
 
 ---
 
@@ -195,16 +202,22 @@ must demonstrate the fix from the user's perspective.
    - Before/after comparison
    - Independent smoke test results (PASS verdict)
    - Commit hash ready to push
+   - **Draft GH closing comment** — the exact text to post on the issue:
+     root cause, what changed, testing evidence, and how users get the fix
+     (typically `amplifier reset --remove cache -y` followed by
+     `amplifier provider install <provider>`)
    
-   **Wait for explicit approval before pushing.**
+   **User approves the fix AND the public-facing text in one pass.**
 
 3. **After approval:**
    - Push via git-ops agent (handles rebasing, quality commit messages)
-   - Comment on issue with fix details and resolution steps
-   - Close issue with comment including: root cause, what changed, testing
-     evidence, and how users get the fix (typically `amplifier reset --remove cache -y`
-     followed by `amplifier provider install <provider>`)
+   - Post the approved closing comment on the issue
+   - Close issue
    - Update any related documentation
+   - **Provide post-merge verification steps proactively:**
+     (1) How to verify locally (`git pull && pytest`)
+     (2) How to verify on another machine (fresh clone or shadow environment)
+     (3) What to watch for (regressions, dependency issues)
 
 **IMPORTANT:** If any changes occur after the smoke test (fixing issues it found, user feedback iterations), the smoke test MUST run again before requesting push approval.
 
@@ -259,6 +272,64 @@ changes are invisible to future sessions.
 
 **Anti-pattern:** "I'll capture this later" -> Context is lost to compaction. Capture NOW.
 **Anti-pattern:** "This isn't worth documenting" -> If the user had to tell you, it IS worth documenting.
+
+---
+
+## PR Review Gates
+
+The issue handling process was designed for GH Issues but applies to PR reviews too.
+PR reviews have their own gate structure to ensure all GH interactions are reviewed
+before posting.
+
+### PR Review Gate
+
+When reviewing a PR (any round):
+
+**Present to user:**
+1. Review findings (per-PR verdicts, required fixes, non-blocking notes)
+2. **Draft review comment text** — the exact text to be posted on each PR
+3. For batch reviews: all draft comments together so the user can review the set
+
+**User approves the text before it's posted.** Never post review comments to GH
+without the user seeing the exact text first.
+
+### PR Re-review Gate (Fix Rounds)
+
+When the author addresses feedback and requests re-review:
+
+**Present to user:**
+1. What changed (new commits)
+2. Fix verification status (each required fix: verified or not)
+3. Any new issues found
+4. **Draft re-review comment text** — the exact text to be posted
+
+**User approves before posting.** Each fix round gets adversarial re-review —
+fix commits change the attack surface.
+
+### PR Merge Gate
+
+When recommending merge:
+
+**Present to user:**
+1. Merge recommendation with rationale
+2. **Draft squash commit message** — the exact commit message for the merge
+3. Any pre-merge housekeeping (squash, formatting, etc.)
+
+**User approves the merge AND the commit message in one pass.**
+
+### Gate Efficiency Rule
+
+**Never have two consecutive approval points.** Bundle the draft GH text into
+the nearest existing gate where the decision is made. The user reviews the
+decision and the public-facing text simultaneously:
+
+- Investigation concludes "close issue" → Gate 1 includes the closing comment text
+- Fix is ready to push → Gate 2 includes the closing comment text
+- PR review is ready → PR Review Gate includes the comment text
+- PR is ready to merge → PR Merge Gate includes the commit message
+
+This eliminates the pattern where findings are approved in one round and the
+user has to separately approve (or prompt) the GH text in a follow-up.
 
 ---
 
@@ -611,6 +682,9 @@ X **"Issue 1: mutation. Issue 3: nesting."** -> If they're one change, present o
 X **"X has no cost, so make it optional"** -> If there's no cost, there's no reason for a toggle  
 X **Same approach, fourth attempt** -> If it failed three times, the approach is wrong -- re-investigate from scratch
 X **"The PR looks correct, let me verify and merge"** -> PRs are context, not proposals. Design your own solution.  
+X **Burying status in analysis** -> Lead with the action confirmation on its own line ("Done — posted to PR #10"), then the analytical summary. Action status must be scannable, not embedded in paragraphs.
+X **Adding to a large file without flagging size** -> Before modifying context files, check their current size. If a context file exceeds 500 lines, flag it and propose restructuring before adding more. Growing a problem is not acceptable just because the growth is individually justified.
+X **Posting to GH without gate approval** -> Every GH interaction (comment, review, close) must be reviewed by the user. Bundle the draft text into the nearest existing gate — never post first and report after.
 
 ---
 
@@ -709,6 +783,23 @@ When you have enough information to make a recommendation, **make it.** Don't pr
 **Correct pattern:** "Default True is correct -- timestamps are non-destructive, can't be added retroactively, and the opt-out is trivial."
 
 **Exception:** When there's a genuine trade-off with no clear winner (e.g., two architecturally valid approaches with different maintenance costs), present the trade-off and let the user decide. The key distinction: unresolved trade-offs go to the user; resolved analysis does not.
+
+### 7. Post-Action = Next-Action
+
+After completing any action, propose the logical next step. Never leave conversational
+dead air that requires the user to re-engage.
+
+**Anti-pattern:** "Merged. PR #10 is on main." [silence]
+**Correct pattern:** "Merged. PR #10 is on main. To verify: `git pull && pytest`. Next: review the Phase 2 batch, or run reflection?"
+
+### 8. Follow the Process You Built
+
+When an agreed-upon workflow defines the next step, execute it (or begin it) rather
+than asking permission. Deference is for design decisions, not for executing agreed
+processes.
+
+**Anti-pattern:** "Phase 7 says to reflect now. But you may have something else in mind..."
+**Correct pattern:** Begin the reflection. "Running Phase 7 reflection on this task. [ANALYZE step]..."
 
 ---
 
