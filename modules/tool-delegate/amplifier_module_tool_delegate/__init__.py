@@ -908,6 +908,8 @@ Agent usage notes:
                     "session_id": session_id_result,
                     "agent": agent_name,
                     "turn_count": result.get("turn_count", 1),
+                    "status": result.get("status", "success"),
+                    "metadata": result.get("metadata", {}),
                 },
             )
 
@@ -1029,6 +1031,8 @@ Agent usage notes:
                     "session_id": session_id_result,
                     "agent": agent_name,
                     "turn_count": result.get("turn_count", 1),
+                    "status": result.get("status", "success"),
+                    "metadata": result.get("metadata", {}),
                 },
             )
 
