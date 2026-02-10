@@ -114,7 +114,7 @@ async def test_spawn_returns_defaults_when_no_orchestrator_complete():
     assert result["output"] == "Some response"
     assert result["session_id"] == "test-child-456"
     assert result["status"] == "success"  # default
-    assert result["turn_count"] is None  # default
+    assert result["turn_count"] == 1  # default (matches tool-delegate's .get fallback)
     assert result["metadata"] == {}  # default
 
 

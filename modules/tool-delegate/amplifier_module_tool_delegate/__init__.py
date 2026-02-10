@@ -850,6 +850,25 @@ Agent usage notes:
                 child_self_delegation_depth = 0  # Named agents start fresh chain
 
             # Spawn agent sub-session (with optional session-level timeout)
+            #
+            # The spawn function is an app-layer capability registered on the
+            # coordinator. It receives ALL kwargs below, but not all are handled
+            # by PreparedBundle.spawn() directly.
+            #
+            # Kwargs forwarded to PreparedBundle.spawn():
+            #   instruction, parent_session, sub_session_id (as session_id),
+            #   orchestrator_config, parent_messages, provider_preferences,
+            #   self_delegation_depth
+            #
+            # Kwargs handled by the app-layer spawn capability:
+            #   agent_name: Resolved to a Bundle by the app
+            #   agent_configs: Used by the app to find agent configuration
+            #   tool_inheritance: App-layer policy for tool filtering
+            #   hook_inheritance: App-layer policy for hook filtering
+            #
+            # See session_spawner.py in amplifier-app-cli for the reference
+            # app-layer implementation that handles all kwargs.
+            # See examples/07_full_workflow.py for a minimal reference.
             spawn_coro = spawn_fn(
                 agent_name=agent_name,
                 instruction=effective_instruction,

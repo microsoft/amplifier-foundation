@@ -230,8 +230,18 @@ def register_spawn_capability(session: Any, prepared: PreparedBundle) -> None:
         sub_session_id: str | None = None,
         orchestrator_config: dict[str, Any] | None = None,
         parent_messages: list[dict[str, Any]] | None = None,
+        # Additional kwargs from tool-delegate:
+        tool_inheritance: dict[str, list[str]] | None = None,
+        hook_inheritance: dict[str, list[str]] | None = None,
+        provider_preferences: list | None = None,
+        self_delegation_depth: int = 0,
+        **kwargs: Any,  # Future-proof: accept any new kwargs without crashing
     ) -> dict[str, Any]:
         """Spawn sub-session for agent.
+
+        This is the reference implementation for the session.spawn capability.
+        The production CLI version (session_spawner.py) has additional handling
+        for tool_inheritance, hook_inheritance, and self_delegation_depth.
 
         Args:
             agent_name: Name of the agent to spawn.
@@ -243,6 +253,11 @@ def register_spawn_capability(session: Any, prepared: PreparedBundle) -> None:
                 session (e.g., {"min_delay_between_calls_ms": 500} for rate limiting).
             parent_messages: Optional list of messages from parent session to inject
                 into child's context for context inheritance.
+            tool_inheritance: Tool inheritance config (app-layer, not used here).
+            hook_inheritance: Hook inheritance config (app-layer, not used here).
+            provider_preferences: Provider/model preference list for child.
+            self_delegation_depth: Current delegation depth for depth limiting.
+            **kwargs: Accept future additions without breaking.
         """
         # Resolve agent name to Bundle (APP-LAYER POLICY)
         if agent_name in agent_configs:
@@ -271,7 +286,13 @@ def register_spawn_capability(session: Any, prepared: PreparedBundle) -> None:
             parent_session=parent_session,
             orchestrator_config=orchestrator_config,
             parent_messages=parent_messages,
+            provider_preferences=provider_preferences,
+            self_delegation_depth=self_delegation_depth,
         )
+        # Note: tool_inheritance and hook_inheritance are app-layer concerns
+        # not handled by PreparedBundle.spawn(). They would need custom handling
+        # here if the app wants to support them. The production CLI version
+        # (session_spawner.py) has fuller handling for these.
 
     session.coordinator.register_capability("session.spawn", spawn_capability)
 
