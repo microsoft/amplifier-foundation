@@ -1299,10 +1299,38 @@ class PreparedBundle:
                     {"role": "system", "content": resolved_prompt}
                 )
 
+        # Capture orchestrator:complete event data from child session
+        from amplifier_core.models import HookResult
+
+        completion_data: dict[str, Any] = {}
+
+        async def _capture_orchestrator_complete(
+            event: str, data: dict[str, Any]
+        ) -> HookResult:
+            completion_data.update(data)
+            return HookResult()
+
+        # Register temporary hook to capture structured metadata
+        unregister = child_session.coordinator.hooks.register(
+            "orchestrator:complete",
+            _capture_orchestrator_complete,
+            priority=999,  # Run last — don't interfere with other hooks
+            name="_spawn_completion_capture",
+        )
+
         # Execute instruction and cleanup
         try:
             response = await child_session.execute(instruction)
         finally:
+            # Unregister the temporary hook before cleanup
+            unregister()
             await child_session.cleanup()
 
-        return {"output": response, "session_id": child_session.session_id}
+        return {
+            "output": response,
+            "session_id": child_session.session_id,
+            # Enriched fields from orchestrator:complete event
+            "status": completion_data.get("status", "success"),
+            "turn_count": completion_data.get("turn_count"),
+            "metadata": completion_data.get("metadata", {}),
+        }
