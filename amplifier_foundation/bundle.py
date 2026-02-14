@@ -334,6 +334,34 @@ class Bundle:
                 if isinstance(mod_spec, dict) and "source" in mod_spec:
                     modules_to_activate.append(resolve_source(mod_spec))
 
+        # Pre-activate modules declared in agent configs so child sessions
+        # can find them via the inherited BundleModuleResolver.
+        # Without this, spawned agent sessions fail silently when their
+        # orchestrator/provider/tool modules aren't in the resolver's paths.
+        agents_section = mount_plan.get("agents", {})
+        for _agent_name, agent_def in agents_section.items():
+            if not isinstance(agent_def, dict):
+                continue
+
+            # Agent's session orchestrator and context
+            agent_session = agent_def.get("session", {})
+            if isinstance(agent_session, dict):
+                agent_orch = agent_session.get("orchestrator")
+                if isinstance(agent_orch, dict) and "source" in agent_orch:
+                    modules_to_activate.append(resolve_source(agent_orch))
+
+                agent_ctx = agent_session.get("context")
+                if isinstance(agent_ctx, dict) and "source" in agent_ctx:
+                    modules_to_activate.append(resolve_source(agent_ctx))
+
+            # Agent's providers, tools, hooks
+            for agent_section in ("providers", "tools", "hooks"):
+                agent_mods = agent_def.get(agent_section, [])
+                if isinstance(agent_mods, list):
+                    for mod_spec in agent_mods:
+                        if isinstance(mod_spec, dict) and "source" in mod_spec:
+                            modules_to_activate.append(resolve_source(mod_spec))
+
         # Activate all modules and get their paths
         module_paths = await activator.activate_all(modules_to_activate)
 
