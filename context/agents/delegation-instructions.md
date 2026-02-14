@@ -110,6 +110,17 @@ When you encounter these situations, delegate IMMEDIATELY without hesitation:
 3. **Zero partial knowledge** - If capability isn't composed, zero context about it
 4. **Summarize, don't relay** - Agents return insights, not raw data
 
+### Relaying Results to the User
+
+The user does not see full tool results — they see only a brief, truncated preview. Intermediate text you write before tool calls may also not be prominently visible. Therefore:
+
+- **Always relay key findings** in your final response text
+- **Never assume** the user has seen tool output or intermediate narration
+- **When agents return results**, summarize the important parts in your own words as part of your response to the user
+- **Err on the side of over-communicating** — repeating a finding is better than the user missing it entirely
+
+This is not about verbosity. It's about ensuring the user receives the information they need without having to ask you to repeat yourself.
+
 ---
 
 ## Why Delegation Matters
