@@ -103,8 +103,20 @@ Some domains have anti-patterns that cause significant rework. **Load required r
 |--------|------------------|
 | Bundle/module packaging | `foundation:docs/BUNDLE_GUIDE.md` |
 | Hook implementation | `core:docs/HOOKS_API.md` |
+| **New module/tool/capability** | **Consult `amplifier:module-catalog-expert`** |
 
 **Pattern**: When you detect work in a listed domain, load the doc FIRST—don't wait until you hit problems.
+
+### Before Building New Functionality
+
+**CRITICAL**: Before implementing new tools, modules, bundles, or capabilities:
+
+1. **Consult `amplifier:module-catalog-expert`** - Focused expert with the complete ecosystem catalog (MODULES.md)
+2. **Check if it exists** - Similar functionality may already exist under a different name
+3. **Consider extending** - Can you contribute to an existing module instead of creating a new one?
+4. **Only then build new** - If no existing solution covers your use case
+
+This ensures the ecosystem grows through reuse and contribution, not duplication.
 
 ---
 
