@@ -167,6 +167,21 @@ class ModuleActivator:
             )
             return
 
+        # Check if pyproject.toml actually defines an installable package.
+        # Bundles may have a root pyproject.toml with only [tool.*] sections
+        # for ruff/pyright/pytest configuration — these are NOT installable.
+        import tomllib
+
+        with open(pyproject, "rb") as f:
+            pyproject_data = tomllib.load(f)
+
+        if "project" not in pyproject_data and "build-system" not in pyproject_data:
+            logger.debug(
+                f"pyproject.toml at {bundle_path} has no [project] or [build-system], "
+                "skipping bundle package install (tool-config only)"
+            )
+            return
+
         logger.debug(f"Installing bundle package from {bundle_path}")
         await self._install_dependencies(bundle_path)
 
