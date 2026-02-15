@@ -68,6 +68,29 @@ modules:
       timeout: 300
 ```
 
+## Lifecycle Events
+
+This module emits lifecycle events via the hook system, discoverable by consumers
+through the `observability.events` capability registered at mount time.
+
+All events include a `metadata: None` property bag — an extensibility slot for
+experimentation by consuming hooks. Foundation provides the slot; consumers
+populate it as needed.
+
+| Event | Trigger | Data Includes |
+|-------|---------|---------------|
+| `delegate:agent_spawned` | Agent sub-session created | agent, sub_session_id, parent_session_id, context_depth, context_scope, metadata |
+| `delegate:agent_resumed` | Agent sub-session resumed | sub_session_id, parent_session_id, metadata |
+| `delegate:agent_completed` | Agent sub-session completed (spawn path includes agent) | sub_session_id, parent_session_id, success, metadata |
+| `delegate:error` | Agent delegation failed (spawn path includes agent) | sub_session_id, parent_session_id, error, metadata |
+
+Note: `agent` is only present on spawn-path events where the agent name is
+reliably known. Resume-path events omit it rather than guessing from session ID parsing.
+
+Event constants are defined in this module (`DELEGATE_AGENT_SPAWNED`,
+`DELEGATE_AGENT_RESUMED`, `DELEGATE_AGENT_COMPLETED`, `DELEGATE_ERROR`),
+not in `amplifier_core/events.py`, since delegation is a foundation-level concern.
+
 ## Note
 
 This module is recommended over `tool-task` for new development due to its enhanced context control and bug fixes.
