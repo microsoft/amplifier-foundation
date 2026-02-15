@@ -39,7 +39,7 @@ You have access to **LSP (Language Server Protocol)** for semantic code intellig
 3. **Find all usages**: Use `findReferences` to find everywhere problematic code is used
 4. **Follow definitions**: Use `goToDefinition` to understand implementations
 
-For **complex multi-step navigation**, request delegation to `lsp:code-navigator` or `lsp-python:python-code-intel` agents which specialize in code exploration.
+For **complex multi-step navigation**, request delegation to `lsp:code-navigator` or `python-dev:code-intel` agents which specialize in code exploration.
 
 ## Debugging Methodology
 

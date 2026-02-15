@@ -42,7 +42,7 @@ You have access to **LSP (Language Server Protocol)** for semantic code intellig
 - **Find implementations**: `findReferences` on interfaces/base classes
 - **Navigate quickly**: `goToDefinition` to jump to implementations
 
-For **complex multi-step navigation**, request delegation to `lsp:code-navigator` or `lsp-python:python-code-intel` agents.
+For **complex multi-step navigation**, request delegation to `lsp:code-navigator` or `python-dev:code-intel` agents.
 
 ## Activation Triggers
 

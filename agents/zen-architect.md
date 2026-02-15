@@ -40,7 +40,7 @@ You have access to **LSP (Language Server Protocol)** for semantic code intellig
 - **Map dependencies**: `incomingCalls`/`outgoingCalls` traces module relationships
 - **Assess impact**: Before designing changes, use `findReferences` to understand blast radius
 
-For **complex multi-step navigation**, request delegation to `lsp:code-navigator` or `lsp-python:python-code-intel` agents.
+For **complex multi-step navigation**, request delegation to `lsp:code-navigator` or `python-dev:code-intel` agents.
 
 **Operating Modes:**
 Your mode is determined by task context, not explicit commands. You seamlessly flow between:

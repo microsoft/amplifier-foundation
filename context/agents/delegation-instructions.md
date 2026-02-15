@@ -34,7 +34,7 @@ Before attempting ANY of the following yourself, you MUST delegate:
 | Task Type | Delegate To | Why |
 |-----------|-------------|-----|
 | File exploration (>2 files) | `foundation:explorer` | Context sink |
-| Code understanding | `lsp-python:python-code-intel` | Specialized tools |
+| Code understanding | `python-dev:code-intel` | Specialized tools |
 | Architecture/design | `foundation:zen-architect` | Philosophy context |
 | Implementation | `foundation:modular-builder` | Implementation patterns |
 | Debugging | `foundation:bug-hunter` | Hypothesis methodology |

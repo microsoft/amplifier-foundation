@@ -70,7 +70,7 @@ Common failure mode: Arguing that a feature is non-destructive, low-overhead, an
 3. Delegate investigation to appropriate agents:
    - `amplifier:amplifier-expert` - "What repos/modules are involved?"
    - `foundation:explorer` - "How does this code path work?"
-   - `lsp-python:python-code-intel` - "What calls what?"
+   - `python-dev:code-intel` - "What calls what?"
 
 **Deliverable:** Complete understanding of the problem and affected components.
 
@@ -342,7 +342,7 @@ For complex issues, dispatch multiple agents in parallel:
 ```
 [task agent=foundation:explorer] - Survey the code paths
 [task agent=amplifier:amplifier-expert] - Consult on architecture  
-[task agent=lsp-python:python-code-intel] - Trace call hierarchies
+[task agent=python-dev:code-intel] - Trace call hierarchies
 ```
 
 Different perspectives reveal different aspects of the problem.
@@ -374,7 +374,7 @@ Trace where critical data (config, providers, modules) flows:
 |-------|-------------|-------------------|
 | `amplifier:amplifier-expert` | Always first for Amplifier issues | Ecosystem knowledge, architecture context |
 | `foundation:explorer` | Code path tracing, comparison | Structured survey of code flows |
-| `lsp-python:python-code-intel` | Call hierarchy, definitions | Deterministic code relationships |
+| `python-dev:code-intel` | Call hierarchy, definitions | Deterministic code relationships |
 | `foundation:bug-hunter` | When you have errors/stack traces | Hypothesis-driven debugging |
 
 ### Implementation Phase

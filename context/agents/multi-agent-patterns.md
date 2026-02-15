@@ -12,7 +12,7 @@ When investigating or analyzing, dispatch multiple agents IN PARALLEL in a singl
 
 ```python
 delegate(agent="foundation:explorer", instruction="Survey the authentication module structure")
-delegate(agent="lsp-python:python-code-intel", instruction="Trace the call hierarchy of authenticate()")
+delegate(agent="python-dev:code-intel", instruction="Trace the call hierarchy of authenticate()")
 delegate(agent="foundation:zen-architect", instruction="Review auth module for design patterns")
 ```
 
@@ -27,10 +27,10 @@ delegate(agent="foundation:zen-architect", instruction="Review auth module for d
 
 | Task Type | Agent Combination | Why |
 |-----------|-------------------|-----|
-| **Code investigation** | `python-code-intel` + `explorer` + `zen-architect` | LSP traces actual code; explorer finds related files; architect assesses design |
-| **Bug debugging** | `bug-hunter` + `python-code-intel` | Hypothesis-driven debugging + precise call tracing |
+| **Code investigation** | `python-dev:code-intel` + `explorer` + `zen-architect` | LSP traces actual code; explorer finds related files; architect assesses design |
+| **Bug debugging** | `bug-hunter` + `python-dev:code-intel` | Hypothesis-driven debugging + precise call tracing |
 | **Implementation** | `zen-architect` → `modular-builder` → `zen-architect` | Design → implement → review cycle |
-| **Security review** | `security-guardian` + `explorer` + `python-code-intel` | Security patterns + codebase survey + actual data flow |
+| **Security review** | `security-guardian` + `explorer` + `python-dev:code-intel` | Security patterns + codebase survey + actual data flow |
 
 ---
 

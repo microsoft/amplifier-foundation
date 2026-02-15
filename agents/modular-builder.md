@@ -169,7 +169,7 @@ Before modifying any interface:
 2. **Find all callers**: `findReferences` to understand blast radius of changes
 3. **Trace dependencies**: `incomingCalls` to see what depends on this code
 
-For **complex code navigation**, request delegation to `lsp:code-navigator` or `lsp-python:python-code-intel` agents.
+For **complex code navigation**, request delegation to `lsp:code-navigator` or `python-dev:code-intel` agents.
 
 ## Core Principles
 
