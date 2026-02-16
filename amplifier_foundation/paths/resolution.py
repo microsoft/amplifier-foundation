@@ -254,7 +254,7 @@ def normalize_path(path: str | Path, relative_to: Path | None = None) -> Path:
     Returns:
         Normalized absolute Path.
     """
-    p = Path(path)
+    p = Path(path).expanduser()
 
     if p.is_absolute():
         return p.resolve()

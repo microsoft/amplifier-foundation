@@ -159,6 +159,20 @@ class TestNormalizePath:
         result = normalize_path(Path("/home/user/file.txt"))
         assert result == Path("/home/user/file.txt")
 
+    def test_tilde_path_expands_home(self) -> None:
+        """Tilde paths expand to home directory."""
+        result = normalize_path("~/some/file.txt")
+        assert "~" not in str(result)
+        assert result.is_absolute()
+        assert str(result).endswith("/some/file.txt")
+
+    def test_tilde_path_with_base_expands_home(self) -> None:
+        """Tilde paths expand even when relative_to is provided."""
+        result = normalize_path("~/some/file.txt", relative_to=Path("/ignored"))
+        assert "~" not in str(result)
+        assert result.is_absolute()
+        assert str(result).endswith("/some/file.txt")
+
 
 class TestConstructPaths:
     """Tests for path construction utilities."""
