@@ -36,11 +36,11 @@ __amplifier_module_type__ = "tool"
 
 import asyncio
 import logging
-import uuid
 from typing import Any
 
 from amplifier_core import ModuleCoordinator, ToolResult
 from amplifier_foundation import ProviderPreference
+from amplifier_foundation.tracing import generate_sub_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -771,9 +771,11 @@ Agent usage notes:
         # Get parent session ID
         parent_session_id = self.coordinator.session_id
 
-        # Generate hierarchical sub-session ID
-        child_span = uuid.uuid4().hex[:16]
-        sub_session_id = f"{parent_session_id}-{child_span}_{agent_name}"
+        # Generate hierarchical sub-session ID (sanitized for filesystem safety)
+        sub_session_id = generate_sub_session_id(
+            agent_name=agent_name,
+            parent_session_id=parent_session_id,
+        )
 
         try:
             # Get spawn capability
