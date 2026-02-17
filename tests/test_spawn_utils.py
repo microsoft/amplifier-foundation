@@ -105,7 +105,7 @@ class TestApplyProviderPreferences:
 
         # Anthropic should be promoted to priority 0
         assert result["providers"][0]["config"]["priority"] == 0
-        assert result["providers"][0]["config"]["model"] == "claude-haiku-3"
+        assert result["providers"][0]["config"]["default_model"] == "claude-haiku-3"
         # OpenAI should be unchanged
         assert result["providers"][1]["config"]["priority"] == 20
 
@@ -124,7 +124,7 @@ class TestApplyProviderPreferences:
 
         # OpenAI should be promoted since anthropic isn't available
         assert result["providers"][0]["config"]["priority"] == 0
-        assert result["providers"][0]["config"]["model"] == "gpt-4o-mini"
+        assert result["providers"][0]["config"]["default_model"] == "gpt-4o-mini"
 
     def test_no_preferences_match(self) -> None:
         """Test that mount plan is unchanged when no preferences match."""
@@ -141,7 +141,7 @@ class TestApplyProviderPreferences:
 
         # Should be unchanged
         assert result["providers"][0]["config"]["priority"] == 10
-        assert "model" not in result["providers"][0]["config"]
+        assert "default_model" not in result["providers"][0]["config"]
 
     def test_flexible_provider_matching_short_name(self) -> None:
         """Test that short provider names match full module names."""
@@ -155,7 +155,7 @@ class TestApplyProviderPreferences:
         result = apply_provider_preferences(mount_plan, prefs)
 
         assert result["providers"][0]["config"]["priority"] == 0
-        assert result["providers"][0]["config"]["model"] == "claude-haiku-3"
+        assert result["providers"][0]["config"]["default_model"] == "claude-haiku-3"
 
     def test_flexible_provider_matching_full_name(self) -> None:
         """Test that full module names also work."""
@@ -187,11 +187,11 @@ class TestApplyProviderPreferences:
 
         # Original should be unchanged
         assert mount_plan["providers"][0]["config"]["priority"] == original_priority
-        assert "model" not in mount_plan["providers"][0]["config"]
+        assert "default_model" not in mount_plan["providers"][0]["config"]
 
         # Result should have new values
         assert result["providers"][0]["config"]["priority"] == 0
-        assert result["providers"][0]["config"]["model"] == "claude-haiku-3"
+        assert result["providers"][0]["config"]["default_model"] == "claude-haiku-3"
 
 
 class TestResolveModelPattern:
@@ -295,7 +295,7 @@ class TestApplyProviderPreferencesWithResolution:
         )
 
         # Should resolve pattern to latest model
-        assert result["providers"][0]["config"]["model"] == "claude-3-haiku-20240307"
+        assert result["providers"][0]["config"]["default_model"] == "claude-3-haiku-20240307"
 
     @pytest.mark.asyncio
     async def test_exact_model_not_resolved(self) -> None:
@@ -318,7 +318,7 @@ class TestApplyProviderPreferencesWithResolution:
         )
 
         # Exact model should pass through
-        assert result["providers"][0]["config"]["model"] == "claude-3-haiku-20240307"
+        assert result["providers"][0]["config"]["default_model"] == "claude-3-haiku-20240307"
 
     @pytest.mark.asyncio
     async def test_fallback_with_resolution(self) -> None:
@@ -348,4 +348,4 @@ class TestApplyProviderPreferencesWithResolution:
         # Should use openai with resolved model (gpt-4o sorts after gpt-4o-mini descending)
         assert result["providers"][0]["config"]["priority"] == 0
         # gpt-4o-mini > gpt-4o when sorted descending
-        assert result["providers"][0]["config"]["model"] == "gpt-4o-mini"
+        assert result["providers"][0]["config"]["default_model"] == "gpt-4o-mini"

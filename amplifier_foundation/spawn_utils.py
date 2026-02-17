@@ -379,7 +379,7 @@ def _apply_single_override(
         if i == target_idx:
             # Promote to priority 0 (highest)
             p_copy["config"]["priority"] = 0
-            p_copy["config"]["model"] = model
+            p_copy["config"]["default_model"] = model
             logger.info(
                 "Provider preference applied: %s (priority=0, model=%s)",
                 p_copy.get("module"),
