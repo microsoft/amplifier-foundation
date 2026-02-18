@@ -101,6 +101,60 @@ Why it wasn't caught: [Testing gap]
 3. Check for side effects
 4. Add test to prevent regression
 
+## Long-Running Task Awareness
+
+When debugging containerized processes or recipe executions, understand normal vs problematic behavior:
+
+### Expected Durations
+
+- **Container setup**: 60-90 seconds (image pull, environment setup)
+- **Simple spec (1 endpoint)**: ~13 minutes total
+- **Medium spec (4 CRUD endpoints)**: ~25 minutes total
+- **Complex spec (8+ endpoints)**: ~40 minutes total
+- **Each convergence iteration**: 5-8 minutes per cycle
+- **First run on fresh system**: Add 2-3 minutes for image/module caching
+
+**Don't diagnose "stuck" based on wall clock time** — these durations are normal and expected.
+
+### Check for Error Signals, Not Absence of Progress
+
+Before declaring a long-running process "failed" or "stuck", verify actual error conditions:
+
+✅ **Real error signals:**
+- Process exited with non-zero code
+- Error messages in container logs
+- Process completely stopped/hung
+- Out of memory or disk space
+- Network connectivity lost
+
+❌ **NOT error signals:**
+- Process running 20+ minutes with no visible progress
+- No new console output for several minutes
+- API status not updating frequently
+- Long periods between file modifications
+
+A process that's been running 25 minutes with no error messages is WORKING, not stuck.
+
+### Monitor vs Container Reality
+
+**API status may lag behind actual container state.** When monitoring reports seem inconsistent:
+
+1. **Check container directly**: `docker exec container-name ps aux`
+2. **Check file timestamps**: `docker exec container-name ls -la /workspace/`
+3. **Check process logs**: `docker exec container-name tail -f /path/to/logs`
+4. **Check tracker files**: `docker exec container-name cat tracker.json`
+
+Container reality is authoritative. Monitor APIs can lag by several minutes.
+
+### E2E Observation vs Fixing
+
+When delegated to monitor or observe an E2E run:
+
+**DO:** Report what you observe — failures, progress, completion status
+**DON'T:** Make code changes during the observation period
+
+Let the E2E run complete its full cycle, capture all findings, then address issues systematically after observation ends.
+
 ## Common Bug Patterns
 
 ### Type-Related Bugs
