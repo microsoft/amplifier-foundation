@@ -505,6 +505,11 @@ class BundleRegistry:
             )
             if update_name:
                 state = self._registry[update_name]
+                if state.uri != uri:
+                    logger.debug(
+                        f"Updating URI for '{update_name}': {state.uri} → {uri}"
+                    )
+                    state.uri = uri
                 state.version = bundle.version
                 state.loaded_at = datetime.now()
                 state.local_path = str(local_path)
