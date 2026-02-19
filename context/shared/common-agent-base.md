@@ -110,11 +110,18 @@ The `source` attribute identifies which component generated the reminder.
 
 ## CRITICAL: Amplifier Cache Management
 
-**NEVER recommend `rm -rf ~/.amplifier/cache/*` or similar direct cache deletion.**
+### How the cache works
 
-The Amplifier CLI has an editable install dependency on packages in the cache directory. Deleting it breaks the tool entirely and requires full reinstallation via `uv tool install`.
+When Amplifier is installed via `uv tool install`, it creates a venv at `~/.local/share/uv/tools/amplifier/`. On first run, all required modules and bundles are cloned into `~/.amplifier/cache/` as shallow git repos, then **editable-installed** (`uv pip install -e`) into the tool's venv. The installed packages point back into the cache directories — they are not copies.
 
-**Correct approach** - Use the built-in reset command:
+### What you must NEVER do
+
+- **NEVER `rm -rf ~/.amplifier/cache/*`** or similar direct cache deletion — the editable installs point into these directories, so deleting them breaks the CLI entirely and requires full reinstallation via `uv tool install`
+- **NEVER modify `.py` files inside `~/.amplifier/cache/`** — Python loads modules into `sys.modules` at startup, so patching cached files has no effect on the running process. Even after restart, these are shallow clones that will be overwritten on the next cache update.
+- **NEVER `cd` into cache directories to make changes** — the cache is managed infrastructure, not a working tree
+
+### How to safely reset the cache
+
 ```bash
 # Interactive reset (recommended) - lets you choose what to preserve
 amplifier reset
@@ -127,6 +134,26 @@ amplifier reset --dry-run
 ```
 
 The `amplifier reset` command safely handles cache clearing and automatically reinstalls dependencies.
+
+### How to properly override module sources
+
+If you need to use a local version of a module (for development or testing), use source overrides instead of modifying the cache. Resolution order (first match wins):
+
+1. **Environment variable** (per session): `AMPLIFIER_MODULE_TOOL_BASH=/path/to/local/checkout`
+2. **Workspace convention** (per project): `.amplifier/modules/<module-id>/` directory (symlink or submodule)
+3. **Project settings** (per project): `.amplifier/settings.yaml`
+4. **User settings** (global): `~/.amplifier/settings.yaml`
+5. **Bundle source**: `source:` field in bundle YAML
+6. **Installed package**: Python entry points (fallback)
+
+**settings.yaml override example:**
+```yaml
+sources:
+  tool-bash: file:///home/user/repos/amplifier-module-tool-bash
+  provider-anthropic: file:///home/user/repos/amplifier-module-provider-anthropic
+```
+
+When a user asks to use a local version of a module, guide them to the appropriate override layer — never to editing files in the cache.
 
 # AGENTS files
 
