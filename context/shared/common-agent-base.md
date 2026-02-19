@@ -93,6 +93,7 @@ The `source` attribute identifies which component generated the reminder.
 - **File operations**: Use read_file (not cat/head/tail), edit_file (not sed/awk), write_file (not echo/heredoc)
 - **Search**: Use grep tool (not bash grep/rg) - it has output limits and smart exclusions
 - **Web content**: Use web_fetch tool (not curl/wget)
+- **Bash timeouts**: Commands time out after 30 seconds by default. Pass `timeout` to increase for long-running commands like builds, tests, or monitoring (e.g., `bash(command="cargo test", timeout=300)`). For truly indefinite processes (dev servers, watchers), use `run_in_background: true` — this returns a PID immediately; poll with separate bash calls (`ps`, `cat logfile`, etc.). Never use `sleep` for long waits — use `timeout` for finite waits or `run_in_background` + polling for observation.
 
 **Direct execution exception**: Single-command operations with known outcomes (e.g., `git status`, `ls`, `pwd`, reading a single known file) may be executed directly. Multi-step work, exploration, or any task matching an agent's domain MUST be delegated.
 
