@@ -42,6 +42,14 @@ from amplifier_core import ModuleCoordinator, ToolResult
 from amplifier_foundation import ProviderPreference
 from amplifier_foundation.tracing import generate_sub_session_id
 
+# Delegate lifecycle events — foundation-level constants (not kernel).
+# These are emitted by this module and discovered by consumers via the
+# observability.events capability registered at mount time.
+DELEGATE_AGENT_SPAWNED = "delegate:agent_spawned"
+DELEGATE_AGENT_RESUMED = "delegate:agent_resumed"
+DELEGATE_AGENT_COMPLETED = "delegate:agent_completed"
+DELEGATE_ERROR = "delegate:error"
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,10 +69,10 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     obs_events = coordinator.get_capability("observability.events") or []
     obs_events.extend(
         [
-            "delegate:agent_spawned",  # When agent sub-session spawned
-            "delegate:agent_resumed",  # When agent sub-session resumed
-            "delegate:agent_completed",  # When agent sub-session completed
-            "delegate:error",  # When delegation fails
+            DELEGATE_AGENT_SPAWNED,
+            DELEGATE_AGENT_RESUMED,
+            DELEGATE_AGENT_COMPLETED,
+            DELEGATE_ERROR,
         ]
     )
     coordinator.register_capability("observability.events", obs_events)
@@ -794,13 +802,14 @@ Agent usage notes:
             # Emit delegate:agent_spawned event
             if hooks:
                 await hooks.emit(
-                    "delegate:agent_spawned",
+                    DELEGATE_AGENT_SPAWNED,
                     {
                         "agent": agent_name,
                         "sub_session_id": sub_session_id,
                         "parent_session_id": parent_session_id,
                         "context_depth": context_depth,
                         "context_scope": context_scope,
+                        "metadata": None,
                     },
                 )
 
@@ -892,12 +901,13 @@ Agent usage notes:
             # Emit delegate:agent_completed event
             if hooks:
                 await hooks.emit(
-                    "delegate:agent_completed",
+                    DELEGATE_AGENT_COMPLETED,
                     {
                         "agent": agent_name,
                         "sub_session_id": sub_session_id,
                         "parent_session_id": parent_session_id,
                         "success": True,
+                        "metadata": None,
                     },
                 )
 
@@ -929,12 +939,13 @@ Agent usage notes:
             logger.warning(timeout_msg)
             if hooks:
                 await hooks.emit(
-                    "delegate:error",
+                    DELEGATE_ERROR,
                     {
                         "agent": agent_name,
                         "sub_session_id": sub_session_id,
                         "parent_session_id": parent_session_id,
                         "error": timeout_msg,
+                        "metadata": None,
                     },
                 )
             return ToolResult(success=False, error={"message": timeout_msg})
@@ -947,12 +958,13 @@ Agent usage notes:
             error_msg = f"Agent delegation failed ({error_type}): {error_detail}"
             if hooks:
                 await hooks.emit(
-                    "delegate:error",
+                    DELEGATE_ERROR,
                     {
                         "agent": agent_name,
                         "sub_session_id": sub_session_id,
                         "parent_session_id": parent_session_id,
                         "error": error_msg,
+                        "metadata": None,
                     },
                 )
 
@@ -980,10 +992,11 @@ Agent usage notes:
             # Emit delegate:agent_resumed event
             if hooks:
                 await hooks.emit(
-                    "delegate:agent_resumed",
+                    DELEGATE_AGENT_RESUMED,
                     {
-                        "session_id": full_session_id,
+                        "sub_session_id": full_session_id,
                         "parent_session_id": parent_session_id,
+                        "metadata": None,
                     },
                 )
 
@@ -1011,18 +1024,14 @@ Agent usage notes:
             # Emit delegate:agent_completed event
             if hooks:
                 await hooks.emit(
-                    "delegate:agent_completed",
+                    DELEGATE_AGENT_COMPLETED,
                     {
                         "sub_session_id": full_session_id,
                         "parent_session_id": parent_session_id,
                         "success": True,
+                        "metadata": None,
                     },
                 )
-
-            # Extract agent name from session ID if possible
-            agent_name = "unknown"
-            if "_" in full_session_id:
-                agent_name = full_session_id.split("_")[-1]
 
             # Return output with session info
             session_id_result = result["session_id"]
@@ -1031,7 +1040,6 @@ Agent usage notes:
                 output={
                     "response": result["output"],
                     "session_id": session_id_result,
-                    "agent": agent_name,
                     "turn_count": result.get("turn_count", 1),
                     "status": result.get("status", "success"),
                     "metadata": result.get("metadata", {}),
@@ -1042,11 +1050,12 @@ Agent usage notes:
             # Session ID resolution error
             if hooks:
                 await hooks.emit(
-                    "delegate:error",
+                    DELEGATE_ERROR,
                     {
-                        "session_id": session_id,
+                        "sub_session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "error": str(e),
+                        "metadata": None,
                     },
                 )
             return ToolResult(success=False, error={"message": str(e)})
@@ -1055,11 +1064,12 @@ Agent usage notes:
             # Session not found
             if hooks:
                 await hooks.emit(
-                    "delegate:error",
+                    DELEGATE_ERROR,
                     {
-                        "session_id": session_id,
+                        "sub_session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "error": f"Session not found: {str(e)}",
+                        "metadata": None,
                     },
                 )
             return ToolResult(
@@ -1070,12 +1080,8 @@ Agent usage notes:
             )
 
         except TimeoutError:
-            # Extract agent name for the message
-            resume_agent = "unknown"
-            if "_" in session_id:
-                resume_agent = session_id.split("_")[-1]
             timeout_msg = (
-                f"Resumed agent '{resume_agent}' timed out after {self.timeout}s "
+                f"Resumed agent timed out after {self.timeout}s "
                 f"(delegate tool session-level timeout). "
                 f"Increase or disable the timeout in tool-delegate settings "
                 f"(settings.timeout) to allow longer-running agents."
@@ -1083,11 +1089,12 @@ Agent usage notes:
             logger.warning(timeout_msg)
             if hooks:
                 await hooks.emit(
-                    "delegate:error",
+                    DELEGATE_ERROR,
                     {
-                        "session_id": session_id,
+                        "sub_session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "error": timeout_msg,
+                        "metadata": None,
                     },
                 )
             return ToolResult(success=False, error={"message": timeout_msg})
@@ -1099,11 +1106,12 @@ Agent usage notes:
             error_msg = f"Agent resume failed ({error_type}): {error_detail}"
             if hooks:
                 await hooks.emit(
-                    "delegate:error",
+                    DELEGATE_ERROR,
                     {
-                        "session_id": session_id,
+                        "sub_session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "error": error_msg,
+                        "metadata": None,
                     },
                 )
             return ToolResult(success=False, error={"message": error_msg})
