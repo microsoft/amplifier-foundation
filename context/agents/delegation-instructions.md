@@ -63,6 +63,7 @@ When you encounter these situations, delegate IMMEDIATELY without hesitation:
 | User asks for implementation | `delegate(agent="foundation:modular-builder", ...)` |
 | User asks for design/architecture | `delegate(agent="foundation:zen-architect", ...)` |
 | Any git operation (commit, PR, push) | `delegate(agent="foundation:git-ops", ...)` |
+| User needs to find/discover repos (including private) | `delegate(agent="foundation:git-ops", ...)` — gh CLI sees private repos; web search cannot |
 | Need to read >2 files | `delegate(agent="foundation:explorer", ...)` |
 
 **Do NOT:** Explain what you're about to do, then do it yourself.
