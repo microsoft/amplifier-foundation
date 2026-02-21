@@ -214,3 +214,4 @@ Foundation provides **mechanism** for bundle composition. It doesn't decide whic
 - **[API_REFERENCE.md](API_REFERENCE.md)** - API index pointing to source
 - **[PATTERNS.md](PATTERNS.md)** - Common usage patterns with code examples
 - **[URI_FORMATS.md](URI_FORMATS.md)** - Source URI reference
+- **[APPLICATION_INTEGRATION_GUIDE.md](APPLICATION_INTEGRATION_GUIDE.md)** - Embedding Amplifier in web apps, voice assistants, Slack bots, and more

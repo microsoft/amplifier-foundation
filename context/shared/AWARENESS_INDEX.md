@@ -71,6 +71,7 @@ Load on demand via `read_file` or delegate to expert agents.
 | Core concepts | `foundation:docs/CONCEPTS.md` |
 | API reference | `foundation:docs/API_REFERENCE.md` |
 | URI formats | `foundation:docs/URI_FORMATS.md` |
+| Application integration | `foundation:docs/APPLICATION_INTEGRATION_GUIDE.md` |
 
 ### Kernel & Modules
 | Need | Location |
@@ -103,6 +104,7 @@ Some domains have anti-patterns that cause significant rework. **Load required r
 |--------|------------------|
 | Bundle/module packaging | `foundation:docs/BUNDLE_GUIDE.md` |
 | Hook implementation | `core:docs/HOOKS_API.md` |
+| Embedding Amplifier in apps | `foundation:docs/APPLICATION_INTEGRATION_GUIDE.md` |
 
 **Pattern**: When you detect work in a listed domain, load the doc FIRST—don't wait until you hit problems.
 
