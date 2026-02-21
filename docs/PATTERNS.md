@@ -486,3 +486,7 @@ for prompt in prompts:
     async with prepared.create_session() as session:
         response = await session.execute(prompt)
 ```
+
+## See Also
+
+- **[APPLICATION_INTEGRATION_GUIDE.md](APPLICATION_INTEGRATION_GUIDE.md)** - Application lifecycle patterns, the protocol boundary pattern, and production anti-patterns
