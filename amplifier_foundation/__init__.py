@@ -33,9 +33,6 @@ from amplifier_foundation.dicts.merge import merge_module_lists
 from amplifier_foundation.dicts.navigation import get_nested
 from amplifier_foundation.dicts.navigation import set_nested
 
-# Handoff utilities
-
-
 # Exceptions
 from amplifier_foundation.exceptions import BundleDependencyError
 from amplifier_foundation.exceptions import BundleError
