@@ -794,3 +794,167 @@ class TestLoadBundleConvenience:
 
             with pytest.raises(BundleDependencyError, match="strict mode"):
                 await load_bundle(f"file://{bundle_dir}", strict=True)
+
+
+class TestNestedBundleURIUpdate:
+    """Tests for URI update when a nested bundle is reloaded from a different source.
+
+    Regression tests for https://github.com/microsoft-amplifier/amplifier-support/issues/62
+    When a parent bundle is overridden to a local path, nested bundles previously
+    persisted with git+ URIs must have their registry entries updated.
+    """
+
+    @pytest.mark.asyncio
+    async def test_persisted_nested_bundle_uri_updates_on_reload(self) -> None:
+        """Registry entry URI updates when same bundle loads from a different URI."""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            home = base / "home"
+
+            # Create local bundle files (the "new" local source)
+            local_repo = base / "local-repo"
+            local_repo.mkdir()
+            (local_repo / "bundle.md").write_text(
+                "---\nbundle:\n  name: my-namespace\n  version: 2.0.0\n---\n# Root"
+            )
+            nested = local_repo / "behaviors" / "my-nested"
+            nested.mkdir(parents=True)
+            (nested / "bundle.yaml").write_text(
+                "bundle:\n  name: my-nested\n  version: 2.0.0\n"
+            )
+
+            # Pre-populate registry.json with old git+ URI for the nested bundle
+            home.mkdir(parents=True, exist_ok=True)
+            old_git_uri = (
+                "git+https://github.com/example/my-namespace@main"
+                "#subdirectory=behaviors/my-nested"
+            )
+            registry_data = {
+                "version": 1,
+                "bundles": {
+                    "my-nested": {
+                        "uri": old_git_uri,
+                        "name": "my-nested",
+                        "version": "1.0.0",
+                        "loaded_at": None,
+                        "checked_at": None,
+                        "local_path": None,
+                        "is_root": False,
+                        "root_name": "my-namespace",
+                        "explicitly_requested": False,
+                        "app_bundle": False,
+                    }
+                },
+            }
+            (home / "registry.json").write_text(json.dumps(registry_data, indent=2))
+
+            # Create registry (loads persisted state)
+            registry = BundleRegistry(home=home)
+
+            # Verify old URI is loaded from persisted state
+            old_state = registry.get_state("my-nested")
+            assert old_state is not None
+            assert old_state.uri == old_git_uri
+
+            # Load the same nested bundle from a new file:// URI
+            new_uri = f"file://{local_repo}#subdirectory=behaviors/my-nested"
+            bundle = await registry._load_single(new_uri)
+
+            # Verify the registry entry's URI got updated
+            updated_state = registry.get_state("my-nested")
+            assert updated_state is not None
+            assert updated_state.uri == new_uri
+            assert "git+" not in updated_state.uri
+            assert bundle.name == "my-nested"
+
+    @pytest.mark.asyncio
+    async def test_persisted_uri_update_survives_save_reload(self) -> None:
+        """Updated URI persists across registry save/load cycles."""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            home = base / "home"
+
+            # Create local bundle files
+            local_repo = base / "local-repo"
+            local_repo.mkdir()
+            (local_repo / "bundle.md").write_text(
+                "---\nbundle:\n  name: my-namespace\n  version: 2.0.0\n---\n# Root"
+            )
+            nested = local_repo / "behaviors" / "my-nested"
+            nested.mkdir(parents=True)
+            (nested / "bundle.yaml").write_text(
+                "bundle:\n  name: my-nested\n  version: 2.0.0\n"
+            )
+
+            # Pre-populate registry.json with old git+ URI
+            home.mkdir(parents=True, exist_ok=True)
+            old_git_uri = (
+                "git+https://github.com/example/my-namespace@main"
+                "#subdirectory=behaviors/my-nested"
+            )
+            registry_data = {
+                "version": 1,
+                "bundles": {
+                    "my-nested": {
+                        "uri": old_git_uri,
+                        "name": "my-nested",
+                        "version": "1.0.0",
+                        "loaded_at": None,
+                        "checked_at": None,
+                        "local_path": None,
+                        "is_root": False,
+                        "root_name": "my-namespace",
+                        "explicitly_requested": False,
+                        "app_bundle": False,
+                    }
+                },
+            }
+            (home / "registry.json").write_text(json.dumps(registry_data, indent=2))
+
+            # Load from new URI to trigger update
+            registry = BundleRegistry(home=home)
+            new_uri = f"file://{local_repo}#subdirectory=behaviors/my-nested"
+            await registry._load_single(new_uri)
+
+            # Save and reload into a fresh registry
+            registry.save()
+            registry2 = BundleRegistry(home=home)
+
+            # Verify the new URI persisted
+            state = registry2.get_state("my-nested")
+            assert state is not None
+            assert state.uri == new_uri
+            assert "git+" not in state.uri
+
+    @pytest.mark.asyncio
+    async def test_same_uri_reload_does_not_change_entry(self) -> None:
+        """Reloading a bundle from the same URI does not alter the entry."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            home = base / "home"
+
+            # Create bundle files
+            bundle_dir = base / "my-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.yaml").write_text(
+                "bundle:\n  name: my-bundle\n  version: 1.0.0\n"
+            )
+
+            uri = f"file://{bundle_dir}"
+            registry = BundleRegistry(home=home)
+
+            # First load
+            await registry._load_single(uri)
+            state1 = registry.get_state("my-bundle")
+            assert state1 is not None
+            assert state1.uri == uri
+
+            # Second load with same URI
+            await registry._load_single(uri)
+            state2 = registry.get_state("my-bundle")
+            assert state2 is not None
+            assert state2.uri == uri
