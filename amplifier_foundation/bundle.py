@@ -670,6 +670,7 @@ class PreparedBundle:
         compose: bool = True,
         parent_session: Any = None,
         session_id: str | None = None,
+        on_child_initialized: Any = None,
     ) -> dict[str, Any]:
         """Spawn a sub-session with a child bundle.
 
@@ -741,6 +742,10 @@ class PreparedBundle:
         # Mount resolver and initialize
         await child_session.coordinator.mount("module-source-resolver", self.resolver)
         await child_session.initialize()
+
+        # Call on_child_initialized callback if provided
+        if on_child_initialized:
+            await on_child_initialized(child_session)
 
         # Inject system instruction with resolved @mentions (if present)
         # Also inject context.include files (accumulated from all composed bundles)
