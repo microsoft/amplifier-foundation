@@ -122,7 +122,7 @@ class DelegateTool:
         )
 
         # Settings
-        self.exclude_tools: list[str] = settings.get("exclude_tools", ["delegate"])
+        self.exclude_tools: list[str] = settings.get("exclude_tools", ["tool-delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
         self.timeout: int | None = settings.get("timeout", None)
 
