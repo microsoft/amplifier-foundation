@@ -17,7 +17,7 @@ Config Options:
 - features.context_inheritance.enabled: Allow context passing (default: True)
 - features.context_inheritance.max_turns: Maximum turns for "recent" mode (default: 10)
 - features.provider_selection.enabled: Allow provider preferences (default: True)
-- settings.exclude_tools: Tools spawned agents should NOT inherit (default: ["delegate"])
+- settings.exclude_tools: Tools spawned agents should NOT inherit (default: ["tool-delegate"])
 - settings.exclude_hooks: Hooks spawned agents should NOT inherit (default: [])
 - settings.timeout: Maximum total execution time for child session in seconds (default: None/disabled)
 
@@ -122,7 +122,7 @@ class DelegateTool:
         )
 
         # Settings
-        self.exclude_tools: list[str] = settings.get("exclude_tools", ["delegate"])
+        self.exclude_tools: list[str] = settings.get("exclude_tools", ["tool-delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
         self.timeout: int | None = settings.get("timeout", None)
 

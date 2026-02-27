@@ -29,7 +29,7 @@ tools:
         provider_selection:
           enabled: true
       settings:
-        exclude_tools: [delegate]  # Spawned agents can't further delegate by default
+        exclude_tools: [tool-delegate]  # Spawned agents can't further delegate by default
         exclude_hooks: []
 
 context:
