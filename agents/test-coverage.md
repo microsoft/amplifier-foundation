@@ -3,6 +3,8 @@ meta:
   name: test-coverage
   description: "Expert at analyzing test coverage, identifying gaps, and suggesting comprehensive test cases. MUST be used when writing new features, after bug fixes, or during test reviews. Examples: <example>user: 'Check if our synthesis pipeline has adequate test coverage' assistant: 'I'll use the test-coverage agent to analyze the test coverage and identify gaps in the synthesis pipeline.' <commentary>The test-coverage agent ensures thorough testing without over-testing.</commentary></example> <example>user: 'What tests should I add for this new authentication module?' assistant: 'Let me use the test-coverage agent to analyze your module and suggest comprehensive test cases.' <commentary>Perfect for ensuring quality through strategic testing.</commentary></example>"
 
+model_role: [coding, general]
+
 provider_preferences:
   - provider: anthropic
     model: claude-sonnet-*

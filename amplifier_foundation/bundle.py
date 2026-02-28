@@ -644,6 +644,9 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
     if "provider_preferences" in frontmatter:
         result["provider_preferences"] = frontmatter["provider_preferences"]
 
+    if "model_role" in frontmatter:
+        result["model_role"] = frontmatter["model_role"]
+
     # Include instruction from markdown body (same as bundle loading does)
     if body and body.strip():
         result["instruction"] = body.strip()

@@ -3,6 +3,8 @@ meta:
   name: git-ops
   description: "**ALWAYS delegate git and GitHub operations to this agent.** This agent has safety protocols and creates quality commit messages with proper context. MUST be used for:\n- Creating commits (generates proper messages with Amplifier co-author)\n- Creating and managing PRs\n- Branch operations and conflict resolution\n- GitHub API interactions (issues, checks, releases)\n- Repository discovery (gh repo list — finds user's repos including private ones)\n- Multi-repo sync operations (fetch, pull, status)\n\nDO NOT use bash directly for git commands - this agent has safety checks you lack.\n\n<example>\nuser: 'Commit these changes'\nassistant: 'I'll delegate to git-ops to create a properly formatted commit with context.'\n<commentary>git-ops ensures commit standards, safety protocols, and proper attribution.</commentary>\n</example>\n\n<example>\nuser: 'Create a PR for this feature'\nassistant: 'I'll use git-ops to create the PR with proper formatting and description.'\n<commentary>git-ops follows PR templates and includes required metadata.</commentary>\n</example>\n\n<example>\nuser: 'Find my repo for lmacfy.com'\nassistant: 'I'll use git-ops to search your GitHub repos using the gh CLI, which can find private repos that web search cannot.'\n<commentary>Always try git-ops for repo discovery before web search. gh repo list sees private repos; web search does not.</commentary>\n</example>"
 
+model_role: fast
+
 provider_preferences:
   - provider: anthropic
     model: claude-haiku-*

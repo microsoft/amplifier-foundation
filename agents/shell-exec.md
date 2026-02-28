@@ -38,6 +38,8 @@ Shell-exec handles system commands safely with proper output capture.
 </commentary>
 </example>"
 
+model_role: fast
+
 provider_preferences:
   - provider: anthropic
     model: claude-haiku-*

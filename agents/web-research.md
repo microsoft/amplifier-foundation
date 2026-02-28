@@ -30,6 +30,8 @@ Web-research excels at finding external examples and community best practices.
 </commentary>
 </example>"
 
+model_role: fast
+
 provider_preferences:
   - provider: anthropic
     model: claude-haiku-*

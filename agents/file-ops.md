@@ -30,6 +30,8 @@ File-ops provides grep capabilities for content search with context lines.
 </commentary>
 </example>"
 
+model_role: fast
+
 provider_preferences:
   - provider: anthropic
     model: claude-haiku-*

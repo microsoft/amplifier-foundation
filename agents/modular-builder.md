@@ -47,6 +47,8 @@ meta:
     <commentary>Analysis/design task - NOT for modular-builder. Zen-architect only.</commentary>
     </example>
 
+model_role: [coding, general]
+
 provider_preferences:
   - provider: anthropic
     model: claude-sonnet-*

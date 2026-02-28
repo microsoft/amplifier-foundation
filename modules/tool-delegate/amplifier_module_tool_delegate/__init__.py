@@ -303,6 +303,15 @@ Agent usage notes:
                         "required": ["provider", "model"],
                     },
                 },
+                "model_role": {
+                    "type": "string",
+                    "description": (
+                        "Override the agent's default model role for this delegation. "
+                        "Use when the task requires a different capability than the agent's default "
+                        "(e.g., 'coding-image' for image-related code work, 'planning' for architecture). "
+                        "Available roles are shown in the session context."
+                    ),
+                },
             },
             "required": ["instruction"],
         }
@@ -701,6 +710,37 @@ Agent usage notes:
             provider_preferences = [
                 ProviderPreference.from_dict(p) for p in raw_provider_prefs
             ]
+
+        # Model role resolution via routing matrix (caller override)
+        # provider_preferences wins when both are provided (explicit pin overrides matrix)
+        raw_model_role = input.get("model_role", "").strip()
+        if raw_model_role and provider_preferences is None:
+            routing_state = self.coordinator.session_state.get("routing_matrix")
+            if routing_state:
+                try:
+                    from amplifier_hooks_routing.resolver import resolve_model_role
+
+                    roles = [raw_model_role]
+                    matrix = routing_state.get("roles", {})
+                    providers = self.coordinator.get("providers") or {}
+                    resolved = await resolve_model_role(roles, matrix, providers)
+                    if resolved:
+                        provider_preferences = [
+                            ProviderPreference(
+                                provider=r["provider"], model=r["model"]
+                            )
+                            for r in resolved
+                        ]
+                except ImportError:
+                    logger.warning(
+                        "model_role '%s' specified but amplifier_hooks_routing not available",
+                        raw_model_role,
+                    )
+            else:
+                logger.debug(
+                    "model_role '%s' specified but no routing_matrix in session state",
+                    raw_model_role,
+                )
 
         # Validate instruction (always required)
         if not instruction:

@@ -28,6 +28,8 @@ meta:
     assistant: 'I'll use amplifier-smoke-test to validate both local sources and test their Amplifier integration.'
     </example>
 
+model_role: fast
+
 provider_preferences:
   - provider: anthropic
     model: claude-haiku-*

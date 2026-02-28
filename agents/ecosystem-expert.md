@@ -40,6 +40,8 @@ meta:
     </commentary>
     </example>
 
+model_role: general
+
 provider_preferences:
   - provider: anthropic
     model: claude-sonnet-*
