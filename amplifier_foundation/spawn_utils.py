@@ -289,7 +289,7 @@ async def resolve_model_class(
 
             # Filter by capability or cost tier
             if matching_caps is not None:
-                # Capability-based matching (reasoning, fast, vision, research)
+                # Capability-based matching (vision, research)
                 if not model_caps.intersection(matching_caps):
                     continue
             elif required_cost_tier is not None:
