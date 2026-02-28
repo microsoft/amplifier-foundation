@@ -40,18 +40,6 @@ Shell-exec handles system commands safely with proper output capture.
 
 provider_preferences:
   - class: fast
-  - provider: anthropic
-    model: claude-haiku-*
-  - provider: openai
-    model: gpt-5-mini
-  - provider: openai
-    model: gpt-5-nano
-  - provider: google
-    model: gemini-*-flash
-  - provider: github-copilot
-    model: claude-haiku-*
-  - provider: github-copilot
-    model: gpt-5-mini
 
 tools:
   - module: tool-bash

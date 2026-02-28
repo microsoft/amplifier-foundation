@@ -5,20 +5,6 @@ meta:
 
 provider_preferences:
   - class: reasoning
-  - provider: anthropic
-    model: claude-opus-*
-  - provider: openai
-    model: gpt-5*-pro
-  - provider: openai
-    model: gpt-5.[0-9]
-  - provider: google
-    model: gemini-*-pro-preview
-  - provider: google
-    model: gemini-*-pro
-  - provider: github-copilot
-    model: claude-opus-*
-  - provider: github-copilot
-    model: gpt-5.[0-9]
 
 tools:
   - module: tool-filesystem
