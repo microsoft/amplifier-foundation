@@ -629,7 +629,6 @@ class TestResolveModelClass:
 
     @pytest.mark.asyncio
     async def test_fast_class_filters_to_fast_models(self):
-        """Fast class resolves by cost_tier=low, not capability tags."""
         from amplifier_core import ModelInfo
 
         provider = self._make_mock_provider(
@@ -648,7 +647,7 @@ class TestResolveModelClass:
                     display_name="Claude Haiku 4.5",
                     context_window=200000,
                     max_output_tokens=64000,
-                    capabilities=["tools"],
+                    capabilities=["tools", "fast"],
                     metadata={"cost_tier": "low"},
                 ),
             ],
@@ -845,7 +844,7 @@ class TestResolveModelClass:
                     display_name="Haiku",
                     context_window=200000,
                     max_output_tokens=64000,
-                    capabilities=["tools"],
+                    capabilities=["tools", "fast"],
                     metadata={"cost_tier": "low"},
                 ),
             ],
@@ -883,7 +882,7 @@ class TestApplyPreferencesWithClassResolution:
                     display_name="Claude Haiku 4.5",
                     context_window=200000,
                     max_output_tokens=64000,
-                    capabilities=["tools"],
+                    capabilities=["tools", "fast"],
                     metadata={"cost_tier": "low"},
                 ),
             ]
