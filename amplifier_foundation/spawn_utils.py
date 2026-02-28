@@ -12,7 +12,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,248 @@ class ProviderPreference:
         if "model" not in data:
             raise ValueError("ProviderPreference requires 'model' key")
         return cls(provider=data["provider"], model=data["model"])
+
+
+@dataclass
+class ClassPreference:
+    """A model-class preference for class-based routing.
+
+    Used with provider_preferences to specify a model class (e.g., "fast",
+    "premium") instead of a specific provider/model pair.
+
+    Attributes:
+        class_name: Model class identifier (e.g., "fast", "quality", "balanced").
+        required: If True, the class is mandatory and routing must not fall back.
+    """
+
+    class_name: str
+    required: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary representation.
+
+        Returns dict with 'class' key, plus 'required': True if required.
+        """
+        result: dict[str, Any] = {"class": self.class_name}
+        if self.required:
+            result["required"] = True
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ClassPreference:
+        """Create from dictionary representation.
+
+        Args:
+            data: Dictionary with 'class' key and optional 'required' key.
+
+        Returns:
+            ClassPreference instance.
+
+        Raises:
+            ValueError: If 'class' key is missing.
+        """
+        if "class" not in data:
+            raise ValueError("ClassPreference requires 'class' key")
+        return cls(class_name=data["class"], required=data.get("required", False))
+
+
+@dataclass
+class RoutingConfig:
+    """Configuration for model-class routing strategy.
+
+    Attributes:
+        strategy: Routing strategy — 'cost', 'quality', or 'balanced'.
+        max_tier: Global cost ceiling tier (e.g., "tier-2"), or None.
+        classes: Per-class override configuration, or None.
+    """
+
+    _VALID_STRATEGIES = ("cost", "quality", "balanced")
+
+    strategy: Literal["cost", "quality", "balanced"] = "balanced"
+    max_tier: str | None = None
+    classes: dict[str, dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:
+        """Validate strategy at construction time."""
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Invalid strategy '{self.strategy}': must be one of {self._VALID_STRATEGIES}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary representation.
+
+        Only includes optional fields (max_tier, classes) when set.
+
+        Returns:
+            Dictionary with 'strategy' and any non-None optional fields.
+        """
+        result: dict[str, Any] = {"strategy": self.strategy}
+        if self.max_tier is not None:
+            result["max_tier"] = self.max_tier
+        if self.classes is not None:
+            result["classes"] = self.classes
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingConfig:
+        """Create from dictionary representation.
+
+        Args:
+            data: Dictionary with optional 'strategy', 'max_tier', 'classes' keys.
+
+        Returns:
+            RoutingConfig instance with defaults for missing keys.
+
+        Raises:
+            ValueError: If strategy value is not 'cost', 'quality', or 'balanced'.
+        """
+        strategy = data.get("strategy", "balanced")
+        if strategy not in cls._VALID_STRATEGIES:
+            raise ValueError(
+                f"Invalid strategy '{strategy}': must be one of {cls._VALID_STRATEGIES}"
+            )
+        return cls(
+            strategy=strategy,
+            max_tier=data.get("max_tier"),
+            classes=data.get("classes"),
+        )
+
+
+def preference_from_dict(data: dict[str, Any]) -> ProviderPreference | ClassPreference:
+    """Discriminating deserializer for preference entries.
+
+    Routes to the correct preference type based on which key is present:
+    - 'class' key → ClassPreference
+    - 'provider' key → ProviderPreference
+    - Neither → ValueError
+
+    Args:
+        data: Dictionary with either 'class' or 'provider' key.
+
+    Returns:
+        ClassPreference or ProviderPreference instance.
+
+    Raises:
+        ValueError: If neither 'provider' nor 'class' key is present.
+    """
+    if "class" in data:
+        return ClassPreference.from_dict(data)
+    if "provider" in data:
+        return ProviderPreference.from_dict(data)
+    raise ValueError("Preference entry must contain 'provider' or 'class' key")
+
+
+# Cost tier ordering for sorting
+_COST_TIER_ORDER: dict[str, int] = {
+    "free": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "extreme": 4,
+}
+
+
+async def resolve_model_class(
+    class_name: str,
+    coordinator: Any,
+    routing_config: RoutingConfig | None = None,
+) -> list[ProviderPreference]:
+    """Resolve a model class to concrete provider/model preferences.
+
+    Queries all installed providers' list_models(), matches by capability,
+    filters by cost tier, and sorts by the user's routing strategy.
+
+    Args:
+        class_name: The model class (e.g., "reasoning", "fast", "vision")
+        coordinator: ModuleCoordinator with providers registered
+        routing_config: Optional user routing config. If None, reads from
+            coordinator.get_capability("session.routing").
+
+    Returns:
+        Ordered list of ProviderPreference entries (first = best match).
+        Empty list if no models match.
+    """
+    from amplifier_core.capabilities import MODEL_CLASS_CAPABILITIES
+
+    # 1. Determine which capability tags satisfy this class
+    matching_caps = MODEL_CLASS_CAPABILITIES.get(class_name, [class_name])
+
+    # 2. Get routing config
+    if routing_config is None:
+        routing_config = coordinator.get_capability("session.routing")
+    effective_strategy = routing_config.strategy if routing_config else "balanced"
+
+    # Determine effective max_tier (per-class override > global)
+    effective_max_tier = None
+    if routing_config:
+        effective_max_tier = routing_config.max_tier
+        if routing_config.classes and class_name in routing_config.classes:
+            class_cfg = routing_config.classes[class_name]
+            if "max_tier" in class_cfg:
+                effective_max_tier = class_cfg["max_tier"]
+
+    # Determine per-class provider filter
+    class_providers = None
+    if (
+        routing_config
+        and routing_config.classes
+        and class_name in routing_config.classes
+    ):
+        class_providers = routing_config.classes[class_name].get("providers")
+
+    # 3. Query all installed providers
+    providers = coordinator.get("providers") or {}
+    candidates: list[tuple[str, str, int]] = []  # (provider_name, model_id, tier_rank)
+
+    for module_id, provider in providers.items():
+        # Extract short provider name (strip 'provider-' prefix)
+        provider_name = module_id
+        if provider_name.startswith("provider-"):
+            provider_name = provider_name[len("provider-") :]
+
+        # Apply per-class provider filter
+        if class_providers and provider_name not in class_providers:
+            continue
+
+        try:
+            models = await provider.list_models()
+        except Exception:
+            logger.debug(
+                "resolve_model_class: %s list_models() failed, skipping", module_id
+            )
+            continue
+
+        for model in models:
+            model_caps = set(getattr(model, "capabilities", []))
+            if not model_caps.intersection(matching_caps):
+                continue
+
+            # Check cost tier filter
+            model_metadata = getattr(model, "metadata", {}) or {}
+            cost_tier: str | None = model_metadata.get("cost_tier")
+            tier_rank = _COST_TIER_ORDER.get(cost_tier, 2) if cost_tier else 2
+
+            if effective_max_tier:
+                max_rank = _COST_TIER_ORDER.get(effective_max_tier, 4)
+                if tier_rank > max_rank:
+                    continue
+
+            candidates.append((provider_name, model.id, tier_rank))
+
+    # 4. Sort by strategy
+    if effective_strategy == "cost":
+        candidates.sort(key=lambda c: c[2])  # ascending tier
+    elif effective_strategy == "quality":
+        candidates.sort(key=lambda c: c[2], reverse=True)  # descending tier
+    else:  # "balanced" — prefer medium, then spread outward
+        candidates.sort(key=lambda c: abs(c[2] - 2))  # distance from medium
+
+    # 5. Convert to ProviderPreference list
+    return [
+        ProviderPreference(provider=name, model=model_id)
+        for name, model_id, _ in candidates
+    ]
 
 
 @dataclass
@@ -394,25 +636,30 @@ def _apply_single_override(
 
 async def apply_provider_preferences_with_resolution(
     mount_plan: dict[str, Any],
-    preferences: list[ProviderPreference],
+    preferences: list[ProviderPreference | ClassPreference],
     coordinator: Any,
 ) -> dict[str, Any]:
     """Apply provider preferences with model pattern resolution.
 
     Like apply_provider_preferences(), but also resolves glob patterns
-    in model names (e.g., "claude-haiku-*" -> "claude-3-haiku-20240307").
+    in model names (e.g., "claude-haiku-*" -> "claude-3-haiku-20240307")
+    and ClassPreference entries via resolve_model_class().
 
     Args:
         mount_plan: The mount plan to modify.
-        preferences: Ordered list of ProviderPreference objects.
+        preferences: Ordered list of ProviderPreference or ClassPreference objects.
         coordinator: Amplifier coordinator for querying provider models.
 
     Returns:
         New mount plan with the first matching provider promoted and
         model pattern resolved.
 
+    Raises:
+        ValueError: If a required ClassPreference cannot be satisfied.
+
     Example:
         >>> prefs = [
+        ...     ClassPreference(class_name="fast"),
         ...     ProviderPreference(provider="anthropic", model="claude-haiku-*"),
         ...     ProviderPreference(provider="openai", model="gpt-4o-mini"),
         ... ]
@@ -425,33 +672,72 @@ async def apply_provider_preferences_with_resolution(
 
     providers = mount_plan.get("providers", [])
     if not providers:
+        # Check for required class entries before returning
+        for pref in preferences:
+            if isinstance(pref, ClassPreference) and pref.required:
+                raise ValueError(
+                    f"Required class '{pref.class_name}' cannot be satisfied: "
+                    "no providers in mount plan"
+                )
         logger.warning("Provider preferences specified but no providers in mount plan")
         return mount_plan
 
-    # Build lookup for efficient matching
-    lookup = _build_provider_lookup(providers)
-
     # Find first matching preference and resolve its model pattern
     for pref in preferences:
-        if pref.provider in lookup:
-            target_idx = lookup[pref.provider]
+        if isinstance(pref, ClassPreference):
+            # Resolve class to candidate provider/model pairs
+            candidates = await resolve_model_class(pref.class_name, coordinator)
 
-            # Resolve model pattern if it's a glob
-            resolved_model = pref.model
-            if is_glob_pattern(pref.model):
-                result = await resolve_model_pattern(
-                    pref.model, pref.provider, coordinator
+            if not candidates:
+                if pref.required:
+                    raise ValueError(
+                        f"Required class '{pref.class_name}' resolved to no candidates"
+                    )
+                logger.debug(
+                    "Class '%s' resolved to no candidates, skipping",
+                    pref.class_name,
                 )
-                resolved_model = result.resolved_model
+                continue
 
-            return _apply_single_override(
-                mount_plan, providers, target_idx, resolved_model
+            # Try each candidate against the mount plan
+            for candidate in candidates:
+                target_idx = _find_provider_index(providers, candidate.provider)
+                if target_idx is not None:
+                    return _apply_single_override(
+                        mount_plan, providers, target_idx, candidate.model
+                    )
+
+            # Candidates exist but none in mount plan
+            if pref.required:
+                candidate_providers = [c.provider for c in candidates]
+                raise ValueError(
+                    f"Required class '{pref.class_name}' resolved to providers "
+                    f"{candidate_providers} but none are in the mount plan"
+                )
+            logger.debug(
+                "Class '%s' candidates not in mount plan, skipping",
+                pref.class_name,
             )
+
+        # ProviderPreference handling (unchanged logic)
+        elif isinstance(pref, ProviderPreference):
+            target_idx = _find_provider_index(providers, pref.provider)
+            if target_idx is not None:
+                # Resolve model pattern if it's a glob
+                resolved_model = pref.model
+                if is_glob_pattern(pref.model):
+                    result = await resolve_model_pattern(
+                        pref.model, pref.provider, coordinator
+                    )
+                    resolved_model = result.resolved_model
+
+                return _apply_single_override(
+                    mount_plan, providers, target_idx, resolved_model
+                )
 
     # No preferences matched
     logger.warning(
-        "No preferred providers found in mount plan. Preferences: %s, Available: %s",
-        [p.provider for p in preferences],
+        "No preferred providers found in mount plan. Available: %s",
         list({p.get("module", "?") for p in providers}),
     )
     return mount_plan
