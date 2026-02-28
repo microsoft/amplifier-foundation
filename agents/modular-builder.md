@@ -47,25 +47,6 @@ meta:
     <commentary>Analysis/design task - NOT for modular-builder. Zen-architect only.</commentary>
     </example>
 
-provider_preferences:
-  - class: reasoning
-  - provider: anthropic
-    model: claude-sonnet-*
-  - provider: openai
-    model: gpt-5.[0-9]-codex
-  - provider: openai
-    model: gpt-5.[0-9]
-  - provider: google
-    model: gemini-*-pro-preview
-  - provider: google
-    model: gemini-*-pro
-  - provider: github-copilot
-    model: claude-sonnet-*
-  - provider: github-copilot
-    model: gpt-5.[0-9]-codex
-  - provider: github-copilot
-    model: gpt-5.[0-9]
-
 tools:
   - module: tool-filesystem
     source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
