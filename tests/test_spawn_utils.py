@@ -794,46 +794,6 @@ class TestResolveModelClass:
         assert len(results) == 1
         assert results[0].provider == "openai"
 
-    @pytest.mark.asyncio
-    async def test_standard_class_matches_medium_cost_tier(self):
-        """Standard class should match models with cost_tier=medium."""
-        from amplifier_core import ModelInfo
-
-        provider = self._make_mock_provider(
-            "anthropic",
-            [
-                ModelInfo(
-                    id="claude-opus-4-6",
-                    display_name="Opus",
-                    context_window=200000,
-                    max_output_tokens=64000,
-                    capabilities=["tools", "thinking"],
-                    metadata={"cost_tier": "high"},
-                ),
-                ModelInfo(
-                    id="claude-sonnet-4-6",
-                    display_name="Sonnet",
-                    context_window=200000,
-                    max_output_tokens=64000,
-                    capabilities=["tools", "thinking"],
-                    metadata={"cost_tier": "medium"},
-                ),
-                ModelInfo(
-                    id="claude-haiku-4-5",
-                    display_name="Haiku",
-                    context_window=200000,
-                    max_output_tokens=64000,
-                    capabilities=["tools", "fast"],
-                    metadata={"cost_tier": "low"},
-                ),
-            ],
-        )
-        coordinator = self._make_mock_coordinator({"provider-anthropic": provider})
-
-        results = await resolve_model_class("standard", coordinator)
-        assert len(results) == 1
-        assert results[0].model == "claude-sonnet-4-6"
-
 
 class TestApplyPreferencesWithClassResolution:
     """Tests for ClassPreference handling in apply_provider_preferences_with_resolution()."""

@@ -47,9 +47,6 @@ meta:
     <commentary>Analysis/design task - NOT for modular-builder. Zen-architect only.</commentary>
     </example>
 
-provider_preferences:
-  - class: standard
-
 tools:
   - module: tool-filesystem
     source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main

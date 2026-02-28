@@ -228,14 +228,10 @@ async def resolve_model_class(
         Ordered list of ProviderPreference entries (first = best match).
         Empty list if no models match.
     """
-    from amplifier_core.capabilities import (
-        MODEL_CLASS_CAPABILITIES,
-        MODEL_CLASS_COST_TIERS,
-    )
+    from amplifier_core.capabilities import MODEL_CLASS_CAPABILITIES
 
     # 1. Determine which capability tags satisfy this class
-    matching_caps = MODEL_CLASS_CAPABILITIES.get(class_name)
-    required_cost_tier = MODEL_CLASS_COST_TIERS.get(class_name)
+    matching_caps = MODEL_CLASS_CAPABILITIES.get(class_name, [class_name])
 
     # 2. Get routing config
     if routing_config is None:
@@ -284,22 +280,12 @@ async def resolve_model_class(
 
         for model in models:
             model_caps = set(getattr(model, "capabilities", []))
+            if not model_caps.intersection(matching_caps):
+                continue
+
+            # Check cost tier filter
             model_metadata = getattr(model, "metadata", {}) or {}
             cost_tier: str | None = model_metadata.get("cost_tier")
-
-            # Filter by capability or cost tier
-            if matching_caps is not None:
-                # Capability-based matching (reasoning, fast, vision, research)
-                if not model_caps.intersection(matching_caps):
-                    continue
-            elif required_cost_tier is not None:
-                # Cost-tier-based matching (standard)
-                if cost_tier != required_cost_tier:
-                    continue
-            else:
-                # Fallback: treat class_name as literal capability name
-                if not model_caps.intersection({class_name}):
-                    continue
             tier_rank = _COST_TIER_ORDER.get(cost_tier, 2) if cost_tier else 2
 
             if effective_max_tier:
