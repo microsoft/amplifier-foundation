@@ -14,6 +14,7 @@ Use PROACTIVELY when:
 Covers: OWASP Top 10, hardcoded secrets detection, input/output validation, cryptographic review, dependency vulnerability scanning. <example>Context: User has just implemented a new API endpoint for user data updates. user: 'I've added a new endpoint for updating user profiles. Here's the code...' assistant: 'I'll review this new endpoint for security vulnerabilities using the security-guardian agent.' <commentary>Since new user data handling functionality was added, use the security-guardian agent to check for vulnerabilities.</commentary></example> <example>Context: Preparing for a production deployment. user: 'We're ready to deploy version 2.0 to production' assistant: 'Before deploying to production, let me run a security review with the security-guardian agent.' <commentary>Pre-deployment security review is a critical checkpoint that requires the security-guardian agent.</commentary></example> <example>Context: User has integrated a payment processing service. user: 'I've integrated Stripe for payment processing in our checkout flow' assistant: 'Since this involves payment processing, I'll use the security-guardian agent to review the integration for security issues.' <commentary>Payment and financial data handling requires thorough security review from the security-guardian agent.</commentary></example>"
 
 provider_preferences:
+  - class: reasoning
   - provider: anthropic
     model: claude-opus-*
   - provider: openai

@@ -259,9 +259,19 @@ print(result["output"])
 Use `provider_preferences` for ordered fallback chains when spawning agents:
 
 ```python
-from amplifier_foundation import ProviderPreference
+from amplifier_foundation import ProviderPreference, ClassPreference
 
-# Spawn with provider preference chain (tries in order)
+# Class-based routing (recommended) — let the system find the best model
+result = await prepared.spawn(
+    child_bundle=agent_bundle,
+    instruction="Design the authentication architecture",
+    provider_preferences=[
+        ClassPreference(class_name="reasoning"),  # Resolves to best reasoning model available
+        ProviderPreference(provider="anthropic", model="claude-sonnet-*"),  # Fallback
+    ],
+)
+
+# Explicit provider/model chain (for precise control)
 result = await prepared.spawn(
     child_bundle=agent_bundle,
     instruction="Quick analysis task",
@@ -274,6 +284,87 @@ result = await prepared.spawn(
 # Model patterns use glob matching (fnmatch)
 # "claude-haiku-*" resolves to latest matching model (e.g., "claude-haiku-20250110")
 ```
+
+**Class-based routing** resolves model classes (`reasoning`, `fast`, `vision`, `research`) to
+concrete models by querying available providers for models with matching capabilities. This is
+the preferred approach — it's provider-agnostic and automatically adapts when providers are
+added or removed. Explicit `ProviderPreference` entries after the class entry serve as fallbacks.
+
+In agent `.md` frontmatter, class entries use a compact syntax:
+
+```yaml
+provider_preferences:
+  - class: reasoning          # Class-based (resolved at runtime)
+  - provider: anthropic       # Explicit fallback
+    model: claude-sonnet-*
+  - provider: openai
+    model: gpt-5.[0-9]
+```
+
+### Routing Configuration
+
+The routing strategy controls how class-based preferences resolve to concrete models.
+Configure it in `settings.yaml` under the `routing:` key:
+
+```yaml
+# ~/.amplifier/settings.yaml
+routing:
+  strategy: balanced    # "cost", "quality", or "balanced"
+  max_tier: tier-3      # Optional global cost ceiling
+  classes:              # Optional per-class overrides
+    reasoning:
+      max_tier: tier-4
+      providers: [anthropic, openai]
+    fast:
+      max_tier: tier-1
+```
+
+**Progressive disclosure levels:**
+
+```yaml
+# Level 0: No routing config — uses defaults (balanced strategy)
+# Just works out of the box.
+
+# Level 1: Strategy only — one line
+routing:
+  strategy: cost
+
+# Level 2: Strategy + cost ceiling
+routing:
+  strategy: balanced
+  max_tier: tier-2
+
+# Level 3: Per-class provider restrictions
+routing:
+  strategy: quality
+  classes:
+    reasoning:
+      providers: [anthropic]    # Only use Anthropic for reasoning
+    fast:
+      providers: [openai]       # Only use OpenAI for fast tasks
+
+# Level 4: Full control — strategy, ceiling, and per-class overrides
+routing:
+  strategy: balanced
+  max_tier: tier-3
+  classes:
+    reasoning:
+      max_tier: tier-4          # Allow expensive models for reasoning
+      providers: [anthropic, openai]
+    fast:
+      max_tier: tier-1          # Keep fast tasks cheap
+```
+
+**Strategies:**
+
+| Strategy | Behavior |
+|----------|----------|
+| `cost` | Prefer cheapest matching model |
+| `quality` | Prefer highest-capability matching model |
+| `balanced` | Balance cost and capability (default) |
+
+The routing config is registered as `session.routing` capability and automatically
+inherited by child sessions (delegated agents).
 
 ### Controlling Agent Tool Inheritance
 

@@ -41,6 +41,7 @@ meta:
     </example>
 
 provider_preferences:
+  - class: reasoning
   - provider: anthropic
     model: claude-sonnet-*
   - provider: openai

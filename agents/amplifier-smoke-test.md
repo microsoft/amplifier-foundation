@@ -29,6 +29,7 @@ meta:
     </example>
 
 provider_preferences:
+  - class: fast
   - provider: anthropic
     model: claude-haiku-*
   - provider: openai

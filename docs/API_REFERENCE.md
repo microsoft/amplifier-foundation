@@ -113,7 +113,11 @@ Utilities for spawning sub-sessions with provider/model preferences.
 | Export | Source | Purpose |
 |--------|--------|---------|
 | `ProviderPreference` | `spawn_utils.py` | Dataclass for provider/model preference (supports glob patterns) |
-| `apply_provider_preferences` | `spawn_utils.py` | Apply ordered preferences to mount plan |
+| `ClassPreference` | `spawn_utils.py` | Dataclass for model class preference (e.g., `"reasoning"`, `"fast"`) |
+| `RoutingConfig` | `spawn_utils.py` | Session-level routing configuration (class overrides, default class) |
+| `preference_from_dict` | `spawn_utils.py` | Parse a dict into `ClassPreference` or `ProviderPreference` |
+| `resolve_model_class` | `spawn_utils.py` | Resolve a class name to concrete provider/model via capability matching |
+| `apply_provider_preferences` | `spawn_utils.py` | Apply ordered preferences to mount plan (supports both preference types) |
 | `resolve_model_pattern` | `spawn_utils.py` | Resolve glob patterns (e.g., `claude-haiku-*`) to concrete model names |
 | `is_glob_pattern` | `spawn_utils.py` | Check if model string contains glob characters |
 

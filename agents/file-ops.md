@@ -31,6 +31,7 @@ File-ops provides grep capabilities for content search with context lines.
 </example>"
 
 provider_preferences:
+  - class: fast
   - provider: anthropic
     model: claude-haiku-*
   - provider: openai
