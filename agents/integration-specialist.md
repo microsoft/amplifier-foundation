@@ -3,6 +3,20 @@ meta:
   name: integration-specialist
   description: "Expert at integrating with external services, APIs, and MCP servers while maintaining simplicity. Also analyzes and manages dependencies for security, compatibility, and technical debt. MUST be used when connecting to external services, setting up MCP servers, handling API integrations, or analyzing project dependencies. Examples: <example>user: 'Set up integration with the new payment API' assistant: 'I'll use the integration-specialist agent to create a simple, direct integration with the payment API.' <commentary>The integration-specialist ensures clean, maintainable external connections.</commentary></example> <example>user: 'Connect our system to the MCP notification server' assistant: 'Let me use the integration-specialist agent to set up the MCP server connection properly.' <commentary>Perfect for external system integration without over-engineering.</commentary></example> <example>user: 'Check our dependencies for security vulnerabilities' assistant: 'I'll use the integration-specialist agent to analyze dependencies for vulnerabilities and suggest updates.' <commentary>The agent handles dependency health as part of integration management.</commentary></example>"
 
+provider_preferences:
+  - provider: anthropic
+    model: claude-sonnet-*
+  - provider: openai
+    model: gpt-5.[0-9]
+  - provider: google
+    model: gemini-*-pro-preview
+  - provider: google
+    model: gemini-*-pro
+  - provider: github-copilot
+    model: claude-sonnet-*
+  - provider: github-copilot
+    model: gpt-5.[0-9]
+
 tools:
   - module: tool-filesystem
     source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main

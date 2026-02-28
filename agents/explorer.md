@@ -3,6 +3,20 @@ meta:
   name: explorer
   description: "Deep local-context reconnaissance agent. IMPORTANT: This agent has zero prior context—every invocation must include the full objective, scope hints (directories, file types, keywords), and any constraints the agent should respect. Without that information it will not be aware of such. MUST be used for multi-file exploration. Use this agent whenever the user needs a comprehensive survey of local code, documentation, configuration, or user-provided content (not a precise single-file lookup). Examples:\n\n<example>\nuser: 'What does the overall event handling flow look like?'\nassistant: 'I'll delegate to the foundation:explorer agent to map the event handling modules and summarize the flow.'\n<commentary>The agent conducts a structured sweep of relevant packages and reports the flow.</commentary>\n</example>\n\n<example>\nuser: 'Gather everything we have about client-facing SLAs across docs and configs.'\nassistant: 'I'll use the foundation:explorer agent to survey documentation and configuration files related to client SLAs and summarize the findings.'\n<commentary>The agent spans code, docs, and content to answer the request.</commentary>\n</example>"
 
+provider_preferences:
+  - provider: anthropic
+    model: claude-sonnet-*
+  - provider: openai
+    model: gpt-5.[0-9]
+  - provider: google
+    model: gemini-*-pro-preview
+  - provider: google
+    model: gemini-*-pro
+  - provider: github-copilot
+    model: claude-sonnet-*
+  - provider: github-copilot
+    model: gpt-5.[0-9]
+
 tools:
   - module: tool-filesystem
     source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
