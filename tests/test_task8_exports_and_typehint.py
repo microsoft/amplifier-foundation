@@ -41,24 +41,25 @@ class TestFoundationExports:
 
 
 class TestSpawnTypeHint:
-    """Verify PreparedBundle.spawn() provider_preferences uses broad list type."""
+    """Verify PreparedBundle.spawn() provider_preferences has proper union type."""
 
-    def test_spawn_provider_preferences_accepts_broad_list(self) -> None:
-        """The spawn() method should accept list (not list[ProviderPreference])."""
+    def test_spawn_provider_preferences_typed_union(self) -> None:
+        """The spawn() parameter should have a proper ClassPreference | ProviderPreference union type."""
         from amplifier_foundation.bundle import PreparedBundle
 
         sig = inspect.signature(PreparedBundle.spawn)
         param = sig.parameters["provider_preferences"]
         annotation = param.annotation
 
-        # The annotation should be `list | None` (broad), not `list[ProviderPreference] | None`
         # With `from __future__ import annotations`, annotations are strings
         ann_str = str(annotation)
 
-        # It should NOT contain 'ProviderPreference' in the type hint
-        assert "ProviderPreference" not in ann_str, (
-            f"spawn() provider_preferences should use broad 'list' type, "
-            f"not 'list[ProviderPreference]'. Got: {ann_str}"
+        # Should include both preference types in the union
+        assert "ClassPreference" in ann_str, (
+            f"Expected 'ClassPreference' in annotation, got: {ann_str}"
         )
-        # It should contain 'list'
-        assert "list" in ann_str, f"Expected 'list' in annotation, got: {ann_str}"
+        assert "ProviderPreference" in ann_str, (
+            f"Expected 'ProviderPreference' in annotation, got: {ann_str}"
+        )
+        # Should be optional (None)
+        assert "None" in ann_str, f"Expected 'None' in annotation, got: {ann_str}"
