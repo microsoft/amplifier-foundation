@@ -562,7 +562,8 @@ class TestResolveModelClass:
         return provider
 
     @pytest.mark.asyncio
-    async def test_reasoning_class_matches_thinking_capability(self):
+    async def test_reasoning_class_matches_high_cost_tier(self):
+        """Reasoning class resolves by cost_tier=high, not capability tags."""
         from amplifier_core import ModelInfo
 
         provider = self._make_mock_provider(
@@ -576,18 +577,27 @@ class TestResolveModelClass:
                     capabilities=["tools", "thinking", "streaming"],
                     metadata={"cost_tier": "high"},
                 ),
+                ModelInfo(
+                    id="claude-sonnet-4-6",
+                    display_name="Claude Sonnet 4.6",
+                    context_window=200000,
+                    max_output_tokens=64000,
+                    capabilities=["tools", "thinking", "streaming"],
+                    metadata={"cost_tier": "medium"},
+                ),
             ],
         )
         coordinator = self._make_mock_coordinator({"provider-anthropic": provider})
 
         results = await resolve_model_class("reasoning", coordinator)
-        assert len(results) >= 1
+        assert len(results) == 1
         assert results[0].provider == "anthropic"
         assert results[0].model == "claude-opus-4-6"
 
     @pytest.mark.asyncio
-    async def test_reasoning_class_matches_reasoning_capability(self):
-        """OpenAI uses 'reasoning' tag — should still match class 'reasoning'."""
+    async def test_reasoning_class_excludes_non_high_tier(self):
+        """Reasoning class uses cost_tier=high — medium-tier models are excluded
+        even if they have a 'reasoning' capability tag."""
         from amplifier_core import ModelInfo
 
         provider = self._make_mock_provider(
@@ -601,13 +611,21 @@ class TestResolveModelClass:
                     capabilities=["tools", "reasoning", "streaming"],
                     metadata={"cost_tier": "medium"},
                 ),
+                ModelInfo(
+                    id="gpt-5.2-pro",
+                    display_name="GPT-5.2 Pro",
+                    context_window=400000,
+                    max_output_tokens=128000,
+                    capabilities=["tools", "reasoning", "streaming"],
+                    metadata={"cost_tier": "high"},
+                ),
             ],
         )
         coordinator = self._make_mock_coordinator({"provider-openai": provider})
 
         results = await resolve_model_class("reasoning", coordinator)
-        assert len(results) >= 1
-        assert results[0].model == "gpt-5.2"
+        assert len(results) == 1
+        assert results[0].model == "gpt-5.2-pro"
 
     @pytest.mark.asyncio
     async def test_fast_class_filters_to_fast_models(self):
@@ -642,6 +660,7 @@ class TestResolveModelClass:
 
     @pytest.mark.asyncio
     async def test_max_tier_filters_expensive_models(self):
+        """max_tier caps cost: models above the tier are excluded."""
         from amplifier_core import ModelInfo
 
         provider = self._make_mock_provider(
@@ -652,7 +671,7 @@ class TestResolveModelClass:
                     display_name="Claude Opus 4.6",
                     context_window=200000,
                     max_output_tokens=64000,
-                    capabilities=["tools", "thinking"],
+                    capabilities=["tools", "vision"],
                     metadata={"cost_tier": "high"},
                 ),
                 ModelInfo(
@@ -660,7 +679,7 @@ class TestResolveModelClass:
                     display_name="Claude Sonnet 4.6",
                     context_window=200000,
                     max_output_tokens=64000,
-                    capabilities=["tools", "thinking"],
+                    capabilities=["tools", "vision"],
                     metadata={"cost_tier": "medium"},
                 ),
             ],
@@ -670,12 +689,13 @@ class TestResolveModelClass:
         routing = RoutingConfig(strategy="balanced", max_tier="medium")
         coordinator.get_capability.return_value = routing
 
-        results = await resolve_model_class("reasoning", coordinator)
+        results = await resolve_model_class("vision", coordinator)
         assert len(results) == 1
         assert results[0].model == "claude-sonnet-4-6"
 
     @pytest.mark.asyncio
     async def test_cost_strategy_sorts_cheapest_first(self):
+        """With strategy=cost, cheaper models sort before expensive ones."""
         from amplifier_core import ModelInfo
 
         provider_a = self._make_mock_provider(
@@ -686,7 +706,7 @@ class TestResolveModelClass:
                     display_name="Opus",
                     context_window=200000,
                     max_output_tokens=64000,
-                    capabilities=["tools", "thinking"],
+                    capabilities=["tools", "vision"],
                     metadata={"cost_tier": "high"},
                 ),
             ],
@@ -699,7 +719,7 @@ class TestResolveModelClass:
                     display_name="GPT-5.2",
                     context_window=400000,
                     max_output_tokens=128000,
-                    capabilities=["tools", "reasoning"],
+                    capabilities=["tools", "vision"],
                     metadata={"cost_tier": "medium"},
                 ),
             ],
@@ -713,7 +733,7 @@ class TestResolveModelClass:
         routing = RoutingConfig(strategy="cost")
         coordinator.get_capability.return_value = routing
 
-        results = await resolve_model_class("reasoning", coordinator)
+        results = await resolve_model_class("vision", coordinator)
         assert len(results) == 2
         # cost strategy: medium (gpt-5.2) before high (opus)
         assert results[0].model == "gpt-5.2"
@@ -777,6 +797,7 @@ class TestResolveModelClass:
                     context_window=400000,
                     max_output_tokens=128000,
                     capabilities=["tools", "reasoning"],
+                    metadata={"cost_tier": "high"},
                 ),
             ],
         )
