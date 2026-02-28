@@ -11,7 +11,9 @@ workspace conventions), see amplifier-module-resolution.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+import site
 import subprocess
 import sys
 from pathlib import Path
@@ -199,6 +201,18 @@ class ModuleActivator:
             if src_path_str not in self._bundle_package_paths:
                 self._bundle_package_paths.append(src_path_str)
 
+        # Also handle lib/ layout (e.g. [tool.hatch.build.targets.wheel] packages = ["lib/..."]).
+        # Some bundles (e.g. amplifier-bundle-execution-environments) place their shared
+        # package under lib/ instead of src/, so we need to cover both conventions.
+        lib_dir = bundle_path / "lib"
+        if lib_dir.exists() and lib_dir.is_dir():
+            lib_path_str = str(lib_dir)
+            if lib_path_str not in sys.path:
+                sys.path.insert(0, lib_path_str)
+                logger.debug(f"Added bundle lib directory to sys.path: {lib_path_str}")
+            if lib_path_str not in self._bundle_package_paths:
+                self._bundle_package_paths.append(lib_path_str)
+
     async def _install_dependencies(self, module_path: Path) -> None:
         """Install Python dependencies for a module.
 
@@ -242,6 +256,12 @@ class ModuleActivator:
                 )
                 # Mark as installed after successful install
                 self._install_state.mark_installed(module_path)
+                # Refresh Python's package discovery so subprocess-installed packages
+                # (e.g. editable installs that write .pth files into site-packages) are
+                # immediately visible to the current process without requiring a restart.
+                importlib.invalidate_caches()
+                for site_dir in site.getsitepackages():
+                    site.addsitedir(site_dir)
             except subprocess.CalledProcessError as e:
                 logger.error(
                     f"Failed to install module from {module_path}.\nstdout: {e.stdout}\nstderr: {e.stderr}"
@@ -271,6 +291,12 @@ class ModuleActivator:
                 )
                 # Mark as installed after successful install
                 self._install_state.mark_installed(module_path)
+                # Refresh Python's package discovery so subprocess-installed packages
+                # (e.g. editable installs that write .pth files into site-packages) are
+                # immediately visible to the current process without requiring a restart.
+                importlib.invalidate_caches()
+                for site_dir in site.getsitepackages():
+                    site.addsitedir(site_dir)
             except subprocess.CalledProcessError as e:
                 logger.error(
                     f"Failed to install requirements from {requirements}.\nstdout: {e.stdout}\nstderr: {e.stderr}"
