@@ -20,8 +20,7 @@ from amplifier_foundation.dicts.merge import deep_merge
 from amplifier_foundation.dicts.merge import merge_module_lists
 from amplifier_foundation.exceptions import BundleValidationError
 from amplifier_foundation.paths.construction import construct_context_path
-from amplifier_foundation.spawn_utils import ClassPreference  # noqa: F401 (re-exported)
-from amplifier_foundation.spawn_utils import ProviderPreference  # noqa: F401 (re-exported)
+from amplifier_foundation.spawn_utils import ProviderPreference
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 
 logger = logging.getLogger(__name__)
@@ -1169,7 +1168,7 @@ class PreparedBundle:
         orchestrator_config: dict[str, Any] | None = None,
         parent_messages: list[dict[str, Any]] | None = None,
         session_cwd: Path | None = None,
-        provider_preferences: list[ClassPreference | ProviderPreference] | None = None,
+        provider_preferences: list[ProviderPreference] | None = None,
         self_delegation_depth: int = 0,
     ) -> dict[str, Any]:
         """Spawn a sub-session with a child bundle.

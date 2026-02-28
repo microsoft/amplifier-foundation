@@ -39,7 +39,7 @@ import logging
 from typing import Any
 
 from amplifier_core import ModuleCoordinator, ToolResult
-from amplifier_foundation import ProviderPreference, preference_from_dict  # noqa: F401 - ProviderPreference: base type kept for API compatibility
+from amplifier_foundation import ProviderPreference
 from amplifier_foundation.tracing import generate_sub_session_id
 
 logger = logging.getLogger(__name__)
@@ -287,38 +287,20 @@ Agent usage notes:
                 },
                 "provider_preferences": {
                     "type": "array",
-                    "description": "Ordered list of provider/model preferences with glob pattern support, or intent-based {class} entries for model-class routing",
+                    "description": "Ordered list of provider/model preferences with glob pattern support",
                     "items": {
-                        "oneOf": [
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "provider": {
-                                        "type": "string",
-                                        "description": "Provider name (e.g., 'anthropic', 'openai')",
-                                    },
-                                    "model": {
-                                        "type": "string",
-                                        "description": "Model name or glob pattern (e.g., 'claude-haiku-*')",
-                                    },
-                                },
-                                "required": ["provider", "model"],
+                        "type": "object",
+                        "properties": {
+                            "provider": {
+                                "type": "string",
+                                "description": "Provider name (e.g., 'anthropic', 'openai')",
                             },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "class": {
-                                        "type": "string",
-                                        "description": "Model class name (e.g., 'fast', 'quality', 'balanced')",
-                                    },
-                                    "required": {
-                                        "type": "boolean",
-                                        "description": "If true, the class is mandatory and routing must not fall back",
-                                    },
-                                },
-                                "required": ["class"],
+                            "model": {
+                                "type": "string",
+                                "description": "Model name or glob pattern (e.g., 'claude-haiku-*')",
                             },
-                        ],
+                        },
+                        "required": ["provider", "model"],
                     },
                 },
             },
@@ -716,7 +698,9 @@ Agent usage notes:
         raw_provider_prefs = input.get("provider_preferences", [])
         provider_preferences = None
         if raw_provider_prefs and self.provider_selection_enabled:
-            provider_preferences = [preference_from_dict(p) for p in raw_provider_prefs]
+            provider_preferences = [
+                ProviderPreference.from_dict(p) for p in raw_provider_prefs
+            ]
 
         # Validate instruction (always required)
         if not instruction:
@@ -790,7 +774,7 @@ Agent usage notes:
             agent_default_prefs = agent_cfg.get("provider_preferences", [])
             if agent_default_prefs:
                 provider_preferences = [
-                    preference_from_dict(p) for p in agent_default_prefs
+                    ProviderPreference.from_dict(p) for p in agent_default_prefs
                 ]
 
         # Get parent session ID

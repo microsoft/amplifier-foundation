@@ -39,7 +39,6 @@ Shell-exec handles system commands safely with proper output capture.
 </example>"
 
 provider_preferences:
-  - class: fast
   - provider: anthropic
     model: claude-haiku-*
   - provider: openai
