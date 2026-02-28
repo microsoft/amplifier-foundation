@@ -36,7 +36,7 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-module-hook-shell@main#subdirectory=behaviors/hook-shell.yaml
   - bundle: git+https://github.com/microsoft/amplifier-module-tool-mcp@main#subdirectory=behaviors/mcp.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-filesystem@main#subdirectory=behaviors/apply-patch.yaml
-  - bundle: git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main
+  - bundle: git+https://github.com/bkrabach/amplifier-bundle-routing-matrix@main
 
 
 session:
