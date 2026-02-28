@@ -40,6 +40,9 @@ meta:
     </commentary>
     </example>
 
+provider_preferences:
+  - class: standard
+
 tools:
   - module: tool-bash
     source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
