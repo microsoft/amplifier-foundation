@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from amplifier_foundation.spawn_utils import ProviderPreference
+from amplifier_foundation.spawn_utils import _build_provider_lookup
+from amplifier_foundation.spawn_utils import _find_provider_index
 from amplifier_foundation.spawn_utils import apply_provider_preferences
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 from amplifier_foundation.spawn_utils import is_glob_pattern
@@ -295,7 +297,10 @@ class TestApplyProviderPreferencesWithResolution:
         )
 
         # Should resolve pattern to latest model
-        assert result["providers"][0]["config"]["default_model"] == "claude-3-haiku-20240307"
+        assert (
+            result["providers"][0]["config"]["default_model"]
+            == "claude-3-haiku-20240307"
+        )
 
     @pytest.mark.asyncio
     async def test_exact_model_not_resolved(self) -> None:
@@ -318,7 +323,10 @@ class TestApplyProviderPreferencesWithResolution:
         )
 
         # Exact model should pass through
-        assert result["providers"][0]["config"]["default_model"] == "claude-3-haiku-20240307"
+        assert (
+            result["providers"][0]["config"]["default_model"]
+            == "claude-3-haiku-20240307"
+        )
 
     @pytest.mark.asyncio
     async def test_fallback_with_resolution(self) -> None:
@@ -349,3 +357,30 @@ class TestApplyProviderPreferencesWithResolution:
         assert result["providers"][0]["config"]["priority"] == 0
         # gpt-4o-mini > gpt-4o when sorted descending
         assert result["providers"][0]["config"]["default_model"] == "gpt-4o-mini"
+
+
+class TestBuildProviderLookupMultiInstance:
+    """Tests for _build_provider_lookup with id-based lookup."""
+
+    def test_build_provider_lookup_includes_id(self) -> None:
+        """Lookup dict includes id keys when providers have id field."""
+        providers = [
+            {"module": "provider-anthropic", "id": "anthropic-team-a", "config": {}},
+            {"module": "provider-anthropic", "id": "anthropic-team-b", "config": {}},
+        ]
+        lookup = _build_provider_lookup(providers)
+        assert lookup["anthropic-team-a"] == 0
+        assert lookup["anthropic-team-b"] == 1
+
+
+class TestFindProviderIndexMultiInstance:
+    """Tests for _find_provider_index with id-based matching."""
+
+    def test_find_provider_index_by_id(self) -> None:
+        """Can find a provider by its id field."""
+        providers = [
+            {"module": "provider-anthropic", "id": "anthropic-team-a", "config": {}},
+            {"module": "provider-anthropic", "id": "anthropic-team-b", "config": {}},
+        ]
+        assert _find_provider_index(providers, "anthropic-team-a") == 0
+        assert _find_provider_index(providers, "anthropic-team-b") == 1

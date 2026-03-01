@@ -152,3 +152,59 @@ class TestSetNested:
         data: dict = {}
         set_nested(data, ["a", "b", "c", "d"], "value")
         assert data["a"]["b"]["c"]["d"] == "value"
+
+
+class TestMergeModuleListsMultiInstance:
+    """Tests for multi-instance provider support via optional id field."""
+
+    def test_merge_module_lists_with_same_module_different_id(self) -> None:
+        """Two entries with same module but different id should both survive merge."""
+        parent = [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-team-a",
+                "config": {"key": "a"},
+            },
+        ]
+        child = [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-team-b",
+                "config": {"key": "b"},
+            },
+        ]
+        result = merge_module_lists(parent, child)
+        assert len(result) == 2
+        ids = [r.get("id") for r in result]
+        assert "anthropic-team-a" in ids
+        assert "anthropic-team-b" in ids
+
+    def test_merge_module_lists_without_id_uses_module(self) -> None:
+        """Backward compat: entries without id merge on module as before."""
+        parent = [{"module": "provider-anthropic", "config": {"x": 1, "y": 2}}]
+        child = [{"module": "provider-anthropic", "config": {"y": 3, "z": 4}}]
+        result = merge_module_lists(parent, child)
+        assert len(result) == 1
+        assert result[0]["module"] == "provider-anthropic"
+        assert result[0]["config"] == {"x": 1, "y": 3, "z": 4}
+
+    def test_merge_module_lists_same_id_merges(self) -> None:
+        """Two entries with the same id should merge (deep merge on config)."""
+        parent = [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-prod",
+                "config": {"x": 1, "y": 2},
+            },
+        ]
+        child = [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-prod",
+                "config": {"y": 3, "z": 4},
+            },
+        ]
+        result = merge_module_lists(parent, child)
+        assert len(result) == 1
+        assert result[0]["id"] == "anthropic-prod"
+        assert result[0]["config"] == {"x": 1, "y": 3, "z": 4}

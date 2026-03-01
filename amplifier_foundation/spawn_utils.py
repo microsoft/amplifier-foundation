@@ -267,10 +267,12 @@ def _find_provider_index(
     """
     for i, p in enumerate(providers):
         module_id = p.get("module", "")
+        instance_id = p.get("id", "")
         if provider_id in (
             module_id,
             module_id.replace("provider-", ""),
             f"provider-{provider_id}",
+            instance_id,
         ):
             return i
     return None
@@ -297,6 +299,10 @@ def _build_provider_lookup(
             lookup[short_name] = i
         # And with provider- prefix
         lookup[f"provider-{short_name}"] = i
+        # Add id-based lookup if present
+        instance_id = p.get("id")
+        if instance_id:
+            lookup[instance_id] = i
     return lookup
 
 
