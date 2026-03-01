@@ -64,25 +64,25 @@ def _make_delegate_tool(
 
 
 def _install_mock_resolver(mock_resolve_fn):
-    """Install a mock amplifier_hooks_routing.resolver module in sys.modules.
+    """Install a mock amplifier_module_hooks_routing.resolver module in sys.modules.
 
     Returns a cleanup function to remove it.
     """
-    mock_resolver_mod = types.ModuleType("amplifier_hooks_routing.resolver")
+    mock_resolver_mod = types.ModuleType("amplifier_module_hooks_routing.resolver")
     mock_resolver_mod.resolve_model_role = mock_resolve_fn  # type: ignore[attr-defined]
 
-    mock_hooks_routing_mod = types.ModuleType("amplifier_hooks_routing")
+    mock_hooks_routing_mod = types.ModuleType("amplifier_module_hooks_routing")
 
     originals = {}
-    for mod_name in ("amplifier_hooks_routing", "amplifier_hooks_routing.resolver"):
+    for mod_name in ("amplifier_module_hooks_routing", "amplifier_module_hooks_routing.resolver"):
         if mod_name in sys.modules:
             originals[mod_name] = sys.modules[mod_name]
 
-    sys.modules["amplifier_hooks_routing"] = mock_hooks_routing_mod
-    sys.modules["amplifier_hooks_routing.resolver"] = mock_resolver_mod
+    sys.modules["amplifier_module_hooks_routing"] = mock_hooks_routing_mod
+    sys.modules["amplifier_module_hooks_routing.resolver"] = mock_resolver_mod
 
     def cleanup():
-        for mod_name in ("amplifier_hooks_routing", "amplifier_hooks_routing.resolver"):
+        for mod_name in ("amplifier_module_hooks_routing", "amplifier_module_hooks_routing.resolver"):
             if mod_name in originals:
                 sys.modules[mod_name] = originals[mod_name]
             elif mod_name in sys.modules:

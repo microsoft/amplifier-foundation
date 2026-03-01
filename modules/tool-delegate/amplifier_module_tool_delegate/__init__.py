@@ -718,7 +718,7 @@ Agent usage notes:
             routing_state = self.coordinator.session_state.get("routing_matrix")
             if routing_state:
                 try:
-                    from amplifier_hooks_routing.resolver import resolve_model_role
+                    from amplifier_module_hooks_routing.resolver import resolve_model_role
 
                     roles = [raw_model_role]
                     matrix = routing_state.get("roles", {})
@@ -733,7 +733,7 @@ Agent usage notes:
                         ]
                 except ImportError:
                     logger.warning(
-                        "model_role '%s' specified but amplifier_hooks_routing not available",
+                        "model_role '%s' specified but amplifier_module_hooks_routing not available",
                         raw_model_role,
                     )
             else:
