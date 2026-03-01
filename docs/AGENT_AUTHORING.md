@@ -215,6 +215,80 @@ Your response MUST include:
 
 ---
 
+## Model Selection with `model_role`
+
+Agents can declare what *kind* of model they need rather than pinning a specific provider or model. The routing matrix resolves the role to a concrete provider/model at session start, based on the active matrix and installed providers.
+
+### The `model_role` Frontmatter Field
+
+**String shorthand** — request a single role:
+
+```yaml
+meta:
+  name: my-agent
+  description: "..."
+  model_role: coding
+```
+
+**List form with fallback chain** — try roles in order:
+
+```yaml
+meta:
+  name: my-agent
+  description: "..."
+  model_role: [coding-image, coding, general]
+```
+
+With the list form, the system tries `coding-image` first. If no installed provider matches any candidate for that role, it falls back to `coding`, then `general`.
+
+### Available Roles
+
+| Role | Use for |
+|------|---------|
+| `coding` | Code generation, implementation, debugging |
+| `coding-image` | Image-related code work (UI, diagrams, vision tasks) |
+| `planning` | Architecture, design, complex multi-step reasoning |
+| `fast` | Quick parsing, classification, utility work |
+| `general` | Balanced catch-all for unspecialized tasks |
+| `research` | Deep analysis, web search, long-horizon investigation |
+| `agentic` | Multi-turn autonomous tool use and task execution |
+
+Every routing matrix must define `general` and `fast`. Other roles are optional — if a role isn't defined in the active matrix, the fallback chain skips it.
+
+### Example Agent Frontmatter
+
+```yaml
+---
+meta:
+  name: code-reviewer
+  description: |
+    Use PROACTIVELY when user asks for code review or quality analysis.
+    Systematic review with actionable feedback.
+  model_role: [coding, general]
+---
+
+# Code Reviewer
+
+[Agent instructions...]
+```
+
+### Escape Hatch: `provider_preferences`
+
+If you need to pin a specific provider and model (bypassing routing), `provider_preferences` in agent frontmatter still works:
+
+```yaml
+meta:
+  name: my-agent
+  description: "..."
+  provider_preferences:
+    - provider: anthropic
+      model: claude-opus-4-6
+```
+
+When both `model_role` and `provider_preferences` are present, `provider_preferences` takes priority.
+
+---
+
 ## Agents as Context Sinks
 
 Expert agents serve as **context sinks** - they carry heavy documentation that would bloat every session if always loaded.
