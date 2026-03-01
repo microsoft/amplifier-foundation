@@ -236,22 +236,30 @@ meta:
 meta:
   name: my-agent
   description: "..."
-  model_role: [coding-image, coding, general]
+  model_role: [vision, coding, general]
 ```
 
-With the list form, the system tries `coding-image` first. If no installed provider matches any candidate for that role, it falls back to `coding`, then `general`.
+With the list form, the system tries `vision` first. If no installed provider matches any candidate for that role, it falls back to `coding`, then `general`.
 
 ### Available Roles
 
 | Role | Use for |
 |------|---------|
 | `coding` | Code generation, implementation, debugging |
-| `coding-image` | Image-related code work (UI, diagrams, vision tasks) |
-| `planning` | Architecture, design, complex multi-step reasoning |
-| `fast` | Quick parsing, classification, utility work |
-| `general` | Balanced catch-all for unspecialized tasks |
-| `research` | Deep analysis, web search, long-horizon investigation |
-| `agentic` | Multi-turn autonomous tool use and task execution |
+| `ui-coding` | Frontend/UI code — components, layouts, styling, spatial reasoning |
+| `security-audit` | Vulnerability assessment, attack surface analysis, code auditing |
+| `reasoning` | Deep architectural reasoning, system design, complex multi-step analysis |
+| `critique` | Analytical evaluation — finding flaws in existing work, not generating solutions |
+| `creative` | Design direction, aesthetic judgment, high-quality creative output |
+| `writing` | Long-form content — documentation, marketing, case studies, storytelling |
+| `research` | Deep investigation, information synthesis across multiple sources |
+| `vision` | Understanding visual input — screenshots, diagrams, UI mockups |
+| `image-gen` | Image generation, visual mockup creation, visual ideation |
+| `critical-ops` | High-reliability operational tasks — infrastructure, orchestration, coordination |
+| `fast` | Quick utility tasks — parsing, classification, file ops, bulk work |
+| `general` | Versatile catch-all, no specialization needed |
+
+> **Choosing the right role?** See the routing-matrix bundle's `context/role-definitions.md` for detailed guidance on each role, including "when to use / when NOT to use" recommendations.
 
 Every routing matrix must define `general` and `fast`. Other roles are optional — if a role isn't defined in the active matrix, the fallback chain skips it.
 

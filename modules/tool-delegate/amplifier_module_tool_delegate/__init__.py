@@ -308,7 +308,7 @@ Agent usage notes:
                     "description": (
                         "Override the agent's default model role for this delegation. "
                         "Use when the task requires a different capability than the agent's default "
-                        "(e.g., 'coding-image' for image-related code work, 'planning' for architecture). "
+                        "(e.g., 'vision' for image-related work, 'reasoning' for architecture). "
                         "Available roles are shown in the session context."
                     ),
                 },
