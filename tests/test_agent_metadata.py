@@ -1,9 +1,7 @@
 """Tests for agent file metadata extraction, including model_role support."""
 
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
-import pytest
 
 from amplifier_foundation.bundle import _load_agent_file_metadata
 
@@ -77,3 +75,37 @@ class TestLoadAgentFileMetadata:
         result = _load_agent_file_metadata(agent_file, "plain-agent")
 
         assert "model_role" not in result
+
+
+class TestFoundationAgentModelRoles:
+    """Tests that foundation agent files have correct model_role assignments."""
+
+    AGENTS_DIR = Path(__file__).parent.parent / "agents"
+
+    def test_zen_architect_has_reasoning_role(self) -> None:
+        """zen-architect should use reasoning (not planning) role."""
+        result = _load_agent_file_metadata(
+            self.AGENTS_DIR / "zen-architect.md", "zen-architect"
+        )
+        assert result["model_role"] == ["reasoning", "general"]
+
+    def test_security_guardian_has_security_audit_role(self) -> None:
+        """security-guardian should use security-audit and critique roles."""
+        result = _load_agent_file_metadata(
+            self.AGENTS_DIR / "security-guardian.md", "security-guardian"
+        )
+        assert result["model_role"] == ["security-audit", "critique", "general"]
+
+    def test_no_agent_uses_planning_role(self) -> None:
+        """No foundation agent should reference the deprecated 'planning' role."""
+        for agent_file in sorted(self.AGENTS_DIR.glob("*.md")):
+            result = _load_agent_file_metadata(agent_file, agent_file.stem)
+            role = result.get("model_role")
+            if isinstance(role, list):
+                assert "planning" not in role, (
+                    f"{agent_file.name} still uses deprecated 'planning' role"
+                )
+            else:
+                assert role != "planning", (
+                    f"{agent_file.name} still uses deprecated 'planning' role"
+                )
