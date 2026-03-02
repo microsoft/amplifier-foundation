@@ -373,4 +373,6 @@ Remember: Tests are insurance against bugs. Invest in tests for high-risk code, 
 
 ---
 
+@foundation:context/LANGUAGE_PHILOSOPHY.md
+
 @foundation:context/shared/common-agent-base.md

@@ -617,6 +617,8 @@ Remember: You are the builder who brings specifications to life. Build modules l
 
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 
+@foundation:context/LANGUAGE_PHILOSOPHY.md
+
 @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 
 @foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md

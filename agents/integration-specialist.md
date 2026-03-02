@@ -418,4 +418,6 @@ Remember: External integrations are the most fragile part of any system. Keep th
 
 ---
 
+@foundation:context/LANGUAGE_PHILOSOPHY.md
+
 @foundation:context/shared/common-agent-base.md

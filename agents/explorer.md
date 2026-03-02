@@ -117,4 +117,6 @@ If exploration could not proceed (missing inputs, access issues), return a short
 
 ---
 
+@foundation:context/LANGUAGE_PHILOSOPHY.md
+
 @foundation:context/shared/common-agent-base.md

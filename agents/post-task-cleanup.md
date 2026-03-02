@@ -214,4 +214,6 @@ Remember: Your role is to ensure every completed task leaves the codebase cleane
 
 ---
 
+@foundation:context/LANGUAGE_PHILOSOPHY.md
+
 @foundation:context/shared/common-agent-base.md

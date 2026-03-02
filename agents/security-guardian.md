@@ -470,4 +470,6 @@ Remember: Security is not about perfection - it's about raising the cost of atta
 
 ---
 
+@foundation:context/LANGUAGE_PHILOSOPHY.md
+
 @foundation:context/shared/common-agent-base.md

@@ -303,6 +303,8 @@ Remember: Focus on finding and fixing the ROOT CAUSE, not just the symptoms. Kee
 
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 
+@foundation:context/LANGUAGE_PHILOSOPHY.md
+
 @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 
 @foundation:context/KERNEL_PHILOSOPHY.md

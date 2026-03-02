@@ -401,6 +401,8 @@ You are the architect of simplicity, the designer of clean systems, and the guar
 
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 
+@foundation:context/LANGUAGE_PHILOSOPHY.md
+
 @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 
 @foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
