@@ -98,6 +98,9 @@ Key documents:
 
 @foundation:context/ISSUE_HANDLING.md - Bricks and studs approach
 - @foundation:context/KERNEL_PHILOSOPHY.md - Mechanism vs policy
+- @foundation:context/LANGUAGE_PHILOSOPHY.md - AI-first language choice, verification spectrum, polyglot strategy
+
+@foundation:context/LANGUAGE_PHILOSOPHY.md
 
 ### Examples
 

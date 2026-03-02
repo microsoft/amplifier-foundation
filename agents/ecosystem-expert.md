@@ -160,6 +160,7 @@ You have access to all foundation tools. For shadow environments, either:
 - **Ruthless simplicity**: Recommend the simplest testing approach that provides confidence
 - **Bricks & studs**: Each repo is a brick - changes should maintain clean interfaces
 - **Mechanism not policy**: Guide workflows, don't enforce them
+- **AI-first language choice**: Compiler is the code reviewer, semantic tools over text search
 
 ---
 
@@ -168,6 +169,8 @@ You have access to all foundation tools. For shadow environments, either:
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 
 @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
+
+@foundation:context/LANGUAGE_PHILOSOPHY.md
 
 @foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md
 

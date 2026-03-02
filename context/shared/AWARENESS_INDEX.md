@@ -93,6 +93,7 @@ Load on demand via `read_file` or delegate to expert agents.
 - `foundation:context/IMPLEMENTATION_PHILOSOPHY.md` - Ruthless simplicity
 - `foundation:context/MODULAR_DESIGN_PHILOSOPHY.md` - Bricks and studs
 - `foundation:context/KERNEL_PHILOSOPHY.md` - Mechanism not policy
+- `foundation:context/LANGUAGE_PHILOSOPHY.md` - AI-first language choice, verification spectrum, semantic understanding
 
 ---
 

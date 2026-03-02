@@ -1,6 +1,6 @@
 # Agent Core Instructions
 
-Operational guidance: See foundation:context/IMPLEMENTATION_PHILOSOPHY.md and foundation:context/MODULAR_DESIGN_PHILOSOPHY.md (loaded by specialist agents)
+Operational guidance: See foundation:context/IMPLEMENTATION_PHILOSOPHY.md, foundation:context/MODULAR_DESIGN_PHILOSOPHY.md, and foundation:context/LANGUAGE_PHILOSOPHY.md (loaded by specialist agents)
 
 Problem-solving methodology: See foundation:context/shared/PROBLEM_SOLVING_PHILOSOPHY.md (loaded by specialist agents)
 
