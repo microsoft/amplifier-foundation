@@ -184,6 +184,23 @@ class ModuleActivator:
             )
             return
 
+        # Skip packages that are already importable in the current environment.
+        # This prevents editable-installing packages (like amplifier-core) that were
+        # already installed from PyPI as prebuilt wheels. Without this check, a repo
+        # cloned into the cache for its YAML/context files (via bundle includes) would
+        # trigger a source build that may require native toolchains (Rust, protobuf, etc).
+        pkg_name = pyproject_data.get("project", {}).get("name", "")
+        if pkg_name:
+            import importlib.util
+
+            normalized = pkg_name.replace("-", "_")
+            if importlib.util.find_spec(normalized) is not None:
+                logger.debug(
+                    f"Package '{pkg_name}' already installed, "
+                    f"skipping editable install from {bundle_path}"
+                )
+                return
+
         logger.debug(f"Installing bundle package from {bundle_path}")
         await self._install_dependencies(bundle_path)
 
