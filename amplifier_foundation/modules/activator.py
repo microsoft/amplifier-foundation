@@ -230,6 +230,50 @@ class ModuleActivator:
             if lib_path_str not in self._bundle_package_paths:
                 self._bundle_package_paths.append(lib_path_str)
 
+    @staticmethod
+    def _build_git_dep_overrides(pyproject_path: Path) -> list[str]:
+        """Build override specs for git URL dependencies that are already installed.
+
+        Modules may declare dependencies as direct git URLs in [project.dependencies],
+        e.g. ``amplifier-core @ git+https://...``.  When uv resolves these, it fetches
+        from git and builds from source — which fails for packages that need native
+        toolchains (Rust, protobuf).  If the package is already installed (e.g. from
+        PyPI as a prebuilt wheel), we generate an override that pins it to the
+        installed version so uv never attempts the git fetch.
+
+        Returns a list of ``"name==version"`` strings suitable for a uv overrides file.
+        """
+        import importlib.metadata
+
+        import tomllib
+
+        try:
+            with open(pyproject_path, "rb") as f:
+                data = tomllib.load(f)
+        except Exception:
+            return []
+
+        deps = data.get("project", {}).get("dependencies", [])
+        overrides: list[str] = []
+        for dep in deps:
+            if "git+" not in dep:
+                continue
+            # Extract package name from "name @ git+https://..." or "name@ git+..."
+            pkg_name = dep.split("@")[0].strip()
+            if not pkg_name:
+                continue
+            normalized = pkg_name.replace("-", "_")
+            try:
+                version = importlib.metadata.version(normalized)
+                overrides.append(f"{pkg_name}=={version}")
+                logger.debug(
+                    f"Overriding git dependency '{pkg_name}' with "
+                    f"installed version {version}"
+                )
+            except importlib.metadata.PackageNotFoundError:
+                pass  # Not installed — let uv resolve normally
+        return overrides
+
     async def _install_dependencies(self, module_path: Path) -> None:
         """Install Python dependencies for a module.
 
@@ -255,18 +299,41 @@ class ModuleActivator:
         requirements = module_path / "requirements.txt"
 
         if pyproject.exists():
+            # Build overrides for git URL dependencies that are already installed.
+            # This prevents uv from fetching/building packages from git when a
+            # prebuilt wheel is already available (e.g. amplifier-core from PyPI).
+            overrides = self._build_git_dep_overrides(pyproject)
+            overrides_file = None
             try:
+                cmd = [
+                    "uv",
+                    "pip",
+                    "install",
+                    "-e",
+                    str(module_path),
+                    "--python",
+                    sys.executable,
+                    "--quiet",
+                    # Ignore [tool.uv.sources] in the package's pyproject.toml.
+                    # Modules use this section for dev convenience (pointing
+                    # amplifier-core to git), but at runtime the PyPI wheel is
+                    # already installed. Without this flag, uv would try to
+                    # build amplifier-core from git source, which requires
+                    # native toolchains (Rust, protobuf) that users don't have.
+                    "--no-sources",
+                ]
+                if overrides:
+                    import tempfile
+
+                    overrides_file = tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".txt", delete=False
+                    )
+                    overrides_file.write("\n".join(overrides))
+                    overrides_file.close()
+                    cmd.extend(["--overrides", overrides_file.name])
+
                 subprocess.run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "-e",
-                        str(module_path),
-                        "--python",
-                        sys.executable,
-                        "--quiet",
-                    ],
+                    cmd,
                     check=True,
                     capture_output=True,
                     text=True,
@@ -289,6 +356,9 @@ class ModuleActivator:
                     "uv is not installed. Please install uv: https://docs.astral.sh/uv/getting-started/installation/"
                 )
                 raise
+            finally:
+                if overrides_file is not None:
+                    Path(overrides_file.name).unlink(missing_ok=True)
         elif requirements.exists():
             try:
                 subprocess.run(
