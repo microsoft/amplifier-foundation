@@ -118,6 +118,17 @@ an agent to retrieve the specific lessons from that case study before designing 
 
 **Wait for explicit approval before proceeding.**
 
+**Plain English summary:** After presenting the formal Gate 1 findings, always include
+a plain English explanation. Drop the technical jargon, file:line references, tables,
+and formal structure. Explain in conversational language:
+- What's actually happening (the problem)
+- Why it matters (the impact)
+- What should be done about it (the recommendation)
+
+The user should understand the issue from this summary alone, without needing to parse
+the technical detail above it. The formal structure is for the record; the plain English
+summary is for the human.
+
 **Gate efficiency rule:** If the investigation concludes with a GH interaction (close,
 request info, etc.), the user approves the action AND the text in one pass. Never
 present the decision in one round and the text in a follow-up.
