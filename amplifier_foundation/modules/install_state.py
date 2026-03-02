@@ -48,11 +48,24 @@ class InstallStateManager:
         Integer avoids float comparison issues across JSON serialization.
 
         This detects when the Python environment was recreated (e.g., via
-        `uv tool install --force`), which changes the executable's mtime
-        even if the path stays the same.
+        `uv tool install --force`), which replaces the venv symlink even if
+        the underlying CPython binary is unchanged.
+
+        IMPORTANT: We use os.lstat() (no symlink following) instead of
+        os.path.getmtime() (which follows symlinks via os.stat()).  In a uv
+        tool environment, sys.executable is a *symlink* inside the venv:
+
+            ~/.local/share/uv/tools/amplifier/bin/python -> ~/.local/share/uv/python/.../bin/python3.x
+
+        os.path.getmtime(symlink) returns the mtime of the *target* CPython
+        binary, which never changes across reinstalls.  os.lstat(symlink)
+        returns the mtime of the symlink itself, which IS updated when
+        `uv tool install --force` recreates the venv.  Without lstat, the
+        mtime check always passes after a reinstall, leaving a stale cache
+        that reports all modules as "already installed" in an empty new venv.
         """
         try:
-            return int(os.path.getmtime(sys.executable))
+            return int(os.lstat(sys.executable).st_mtime)
         except OSError:
             return None
 
