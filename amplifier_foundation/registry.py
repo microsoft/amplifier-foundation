@@ -505,14 +505,24 @@ class BundleRegistry:
             )
             if update_name:
                 state = self._registry[update_name]
-                if state.uri != uri:
+                # Don't let a subdirectory bundle overwrite its own root's entry.
+                # The root URI is authoritative for update tracking (it represents
+                # the git repo boundary). The behavior's tools/hooks/context still
+                # load through the include chain, independent of the registry.
+                if state.is_root and "#subdirectory=" in uri:
                     logger.debug(
-                        f"Updating URI for '{update_name}': {state.uri} → {uri}"
+                        f"Skipping registry update for '{update_name}': "
+                        f"root entry preserved over subdirectory load"
                     )
-                    state.uri = uri
-                state.version = bundle.version
-                state.loaded_at = datetime.now()
-                state.local_path = str(local_path)
+                else:
+                    if state.uri != uri:
+                        logger.debug(
+                            f"Updating URI for '{update_name}': {state.uri} → {uri}"
+                        )
+                        state.uri = uri
+                    state.version = bundle.version
+                    state.loaded_at = datetime.now()
+                    state.local_path = str(local_path)
 
             # Load includes and compose (pass the chain for per-chain cycle detection)
             if auto_include and bundle.includes:
