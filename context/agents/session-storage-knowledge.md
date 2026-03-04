@@ -265,67 +265,14 @@ If output is empty → no orphaned tool_calls. If IDs appear → those need synt
 
 ### COMPLETE Workflow
 
-#### Step 1: Identify ALL orphaned tool_calls
-```bash
-ORPHANED=$(comm -23 \
-  <(jq -r '.tool_calls[]?.id' transcript.jsonl 2>/dev/null | sort -u) \
-  <(jq -r 'select(.role == "tool") | .tool_call_id' transcript.jsonl 2>/dev/null | sort -u))
-echo "$ORPHANED"
-```
-
-#### Step 2: For each orphaned ID, find its line and tool name
-```bash
-# Find which line contains the orphaned tool_call
-grep -n "\"$ORPHAN_ID\"" transcript.jsonl | head -1
-```
-
-#### Step 3: Create synthetic tool_result for each
-
-**CRITICAL: Every orphaned tool_call MUST have a synthetic tool_result inserted.** Without this, the provider will reject the transcript on resume. If you cannot determine the actual error, use an unknown error — an unknown error result is infinitely better than no result at all.
-
-```json
-{"role": "tool", "name": "delegate", "tool_call_id": "toolu_xxx", "content": "{\"error\": \"overloaded_error\", \"message\": \"Server overloaded during execution. Please retry.\"}"}
-```
-
-**Important:**
-- `tool_call_id` must EXACTLY match the `id` from the tool_call
-- `name` must match the tool name
-- `content` must be a JSON-encoded STRING (double-escaped)
-
-#### Step 4: Insert after the assistant turn (not replace it)
-```bash
-cp transcript.jsonl transcript.jsonl.backup
-head -n N transcript.jsonl > transcript.tmp
-echo '{"role": "tool", "name": "delegate", "tool_call_id": "toolu_xxx", ...}' >> transcript.tmp
-# ... repeat for each orphaned tool_call
-tail -n +$((N+1)) transcript.jsonl >> transcript.tmp
-mv transcript.tmp transcript.jsonl
-```
-
-#### Step 5: Check if synthetic assistant response also needed
-
-After inserting tool_results, check if the turn structure is complete:
-
-| Pattern | Structure | Action |
-|---------|-----------|--------|
-| **A: Orphaned results** | tool_results → [nothing] → user | INSERT synthetic assistant response |
-| **B: Proper flow** | tool_results → user → assistant | ✅ No action |
-| **C: Continuing work** | tool_results → assistant [more tool_calls] | ✅ No action |
-
-If Scenario A, insert:
-```json
-{"role": "assistant", "content": [{"type": "text", "text": "I encountered errors while processing your request. The tools reported errors. Please retry or provide guidance."}]}
-```
-
-#### Step 6: Final verification
-```bash
-# Verify no orphaned tool_calls remain
-comm -23 \
-  <(jq -r '.tool_calls[]?.id' transcript.jsonl | sort -u) \
-  <(jq -r 'select(.role == "tool") | .tool_call_id' transcript.jsonl | sort -u)
-
-# Should output nothing
-```
+> **Full procedure moved to @foundation:context/agents/session-repair-knowledge.md**
+>
+> That file covers:
+> - 5-step diagnostic framework (transcript parsing → failure-mode detection → severity assessment)
+> - Repair procedures (synthetic tool_result insertion, assistant response completion)
+> - JSON templates for synthetic error messages
+> - Verification checklist (orphan re-scan, turn-structure validation)
+> - `scripts/session-repair.py` usage and CLI interface
 
 ### Synthetic Error Types
 
@@ -338,12 +285,3 @@ Use appropriate error messages based on what likely failed. **If the actual erro
 | Timeout | `{"error": "timeout", "message": "Tool execution exceeded time limit."}` |
 | Connection | `{"error": "connection_error", "message": "Failed to connect to service."}` |
 | Rate limit | `{"error": "rate_limit", "message": "Rate limit exceeded. Please wait and retry."}` |
-
-### Why COMPLETE is Better Than REPLACE
-
-| Aspect | REPLACE | COMPLETE |
-|--------|---------|----------|
-| Original thinking | ❌ Lost | ✅ Preserved |
-| Tool call context | ❌ Lost | ✅ Preserved |
-| Provider on resume | Must inject synthetic errors | ✅ Clean state |
-| User experience | Retry with reduced memory | ✅ Retry with full context |
