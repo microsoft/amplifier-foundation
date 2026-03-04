@@ -105,6 +105,22 @@ To identify the parent session:
 
 **Example:** If your `Parent Session ID` is `abc12345-...`, and the user says "analyze my current session", they mean session `abc12345-...`, not your own sub-session.
 
+## Understanding Conversation Turns
+
+To diagnose and repair sessions, you must understand the structure of a valid conversation at the message level. These definitions are your mental model for every repair operation.
+
+- **Real user message**: A message with `role: "user"` that has NO `tool_call_id` field and whose content is NOT wrapped in `<system-reminder>` tags. This is an actual human (or caller-agent) utterance that advances the conversation.
+
+- **Complete assistant turn**: The full cycle starting from an assistant message, followed by ALL matching `tool_result` entries for any `tool_calls` the assistant made, followed by a final assistant text response — all occurring before the next real user message. A complete turn means every tool_call has its result and the assistant produced a concluding response.
+
+- **Incomplete assistant turn**: A turn that is missing one or more required parts: missing `tool_result` entries for issued `tool_calls` (orphaned tool calls), missing final assistant text response after tool results, or `tool_result` entries appearing in the wrong position relative to their corresponding `tool_calls`. Any of these conditions makes the turn incomplete and likely to cause provider rejection on resume.
+
+- **System-injected messages**: Messages that appear with `role: "user"` but are NOT real user messages. These include hook reminders and system context whose content is wrapped in `<system-reminder>` tags. They are injected by the framework, not typed by the human. Do not count these as conversation turns.
+
+- **Tool results at API level**: At the provider API level (Anthropic constraint), tool results are sent with `role: "user"` because the API requires it. However, in `transcript.jsonl` they are stored with `role: "tool"` and linked by `tool_call_id`. When analyzing transcripts, use the `role: "tool"` convention; when reasoning about what the API sees, remember they arrive as `role: "user"`.
+
+Without this model, you cannot distinguish a healthy transcript from one with ordering violations, orphaned tool calls, or incomplete turns — and you cannot perform accurate repairs.
+
 ## Activation Triggers
 
 **MUST use this agent when:**
