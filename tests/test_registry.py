@@ -958,3 +958,117 @@ class TestNestedBundleURIUpdate:
             state2 = registry.get_state("my-bundle")
             assert state2 is not None
             assert state2.uri == uri
+
+
+class TestRootURIPreservedOnNameCollision:
+    """Tests that root registry entry is preserved when behavior shares the same name.
+
+    Regression tests for the thin bundle pattern where root bundle.md and
+    behaviors/X.yaml both declare the same bundle.name. The root URI must
+    be preserved in the registry for update tracking, even when the behavior
+    loads afterward and triggers the "update state" block.
+    """
+
+    @pytest.mark.asyncio
+    async def test_root_uri_not_overwritten_by_same_name_behavior(self) -> None:
+        """Root URI preserved when behavior with same name loads via subdirectory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create root bundle with name "issues"
+            (base / "bundle.md").write_text(
+                "---\nbundle:\n  name: issues\n  version: 1.0.0\n---\n# Root"
+            )
+
+            # Create behavior with SAME name "issues" in subdirectory
+            behaviors = base / "behaviors"
+            behaviors.mkdir()
+            (behaviors / "issues.yaml").write_text(
+                "bundle:\n  name: issues\n  version: 1.0.0\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            root_uri = f"file://{base}"
+            subdirectory_uri = f"file://{base}#subdirectory=behaviors/issues.yaml"
+
+            # Load root first (simulates full bundle install)
+            await registry._load_single(root_uri)
+
+            # Verify root registered correctly
+            state = registry.get_state("issues")
+            assert state is not None
+            assert state.is_root is True
+            assert "#subdirectory=" not in state.uri
+
+            # Now load the behavior (simulates include processing)
+            await registry._load_single(subdirectory_uri)
+
+            # Root URI must be preserved — not overwritten by behavior's URI
+            state_after = registry.get_state("issues")
+            assert state_after is not None
+            assert state_after.is_root is True
+            assert "#subdirectory=" not in state_after.uri
+
+    @pytest.mark.asyncio
+    async def test_behavior_only_install_preserves_auto_detected_root(self) -> None:
+        """When only behavior is loaded, auto-detected root URI is preserved."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create root bundle with name "issues"
+            (base / "bundle.md").write_text(
+                "---\nbundle:\n  name: issues\n  version: 1.0.0\n---\n# Root"
+            )
+
+            # Create behavior with SAME name "issues" in subdirectory
+            behaviors = base / "behaviors"
+            behaviors.mkdir()
+            (behaviors / "issues.yaml").write_text(
+                "bundle:\n  name: issues\n  version: 1.0.0\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            subdirectory_uri = f"file://{base}#subdirectory=behaviors/issues.yaml"
+
+            # Load ONLY the behavior (simulates behavior-only install)
+            # Root auto-detection at line 435 should find bundle.md and register it
+            await registry._load_single(subdirectory_uri)
+
+            # The auto-detected root URI should be preserved
+            state = registry.get_state("issues")
+            assert state is not None
+            assert state.is_root is True
+            assert "#subdirectory=" not in state.uri
+
+    @pytest.mark.asyncio
+    async def test_different_name_behavior_still_updates_normally(self) -> None:
+        """Behavior with a DIFFERENT name from root still updates its own entry."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create root bundle with name "my-bundle"
+            (base / "bundle.md").write_text(
+                "---\nbundle:\n  name: my-bundle\n  version: 1.0.0\n---\n# Root"
+            )
+
+            # Create behavior with DIFFERENT name "my-behavior"
+            behaviors = base / "behaviors"
+            behaviors.mkdir()
+            (behaviors / "my-behavior.yaml").write_text(
+                "bundle:\n  name: my-behavior\n  version: 1.0.0\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            subdirectory_uri = f"file://{base}#subdirectory=behaviors/my-behavior.yaml"
+
+            # Load behavior (different name from root — no collision)
+            await registry._load_single(subdirectory_uri)
+
+            # Root should be registered under its own name
+            root_state = registry.get_state("my-bundle")
+            assert root_state is not None
+            assert root_state.is_root is True
+
+            # Behavior should be registered under its own name with subdirectory URI
+            behavior_state = registry.get_state("my-behavior")
+            assert behavior_state is not None
