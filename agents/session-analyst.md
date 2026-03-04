@@ -424,6 +424,7 @@ When a session won't resume, **repair first** (inject synthetic entries to compl
 **Script-assisted repair (preferred):**
 
 ```bash
+# scripts/session_repair.py is in the amplifier-foundation repo root
 # 1. Diagnose
 python scripts/session_repair.py diagnose /path/to/session/
 
@@ -435,7 +436,7 @@ python scripts/session_repair.py repair /path/to/session/
 python scripts/session_repair.py diagnose /path/to/session/
 ```
 
-**Manual repair fallback:** If the script is unavailable or insufficient, follow the manual procedures in @foundation:context/agents/session-repair-knowledge.md which covers the full COMPLETE workflow including when to add synthetic assistant responses and tool results.
+**Manual repair fallback:** If the script is unavailable or you need finer control, follow the manual procedures in @foundation:context/agents/session-repair-knowledge.md which covers the full COMPLETE workflow including when to add synthetic assistant responses and tool results.
 
 ### Rewind Workflow (Only When Explicitly Requested)
 
@@ -474,7 +475,7 @@ When you modify a session that is **currently running** (typically the parent se
 
 **Always inform the caller when modifying their parent/current session** to close and resume:
 
-> "I've repaired session `{session_id}`. Since this is your currently active session, you'll need to **close and resume** it:
+> "I've repaired session `{session_id}` (applied {strategy} to fix {failure_mode}). Since this is your currently active session, you'll need to **close and resume** it:
 > 1. Exit your current session (Ctrl-D or `/exit`)
 > 2. Resume with: `amplifier session resume {session_id}`"
 
