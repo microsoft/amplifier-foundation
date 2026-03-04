@@ -205,3 +205,176 @@ class TestIsRealUserMessage:
         """An assistant message is NOT a real user message."""
         entry = {"role": "assistant", "content": "Hi"}
         assert sr.is_real_user_message(entry) is False
+
+
+# ===================================================================
+# Task 2: Diagnostic engine
+# ===================================================================
+
+
+class TestDiagnose:
+    """Tests for diagnose — detects all 3 failure modes."""
+
+    def test_healthy_transcript(self, sr, tmp_path):
+        """A well-formed transcript is diagnosed as healthy."""
+        lines = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "bash", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "name": "bash", "content": "ok"},
+            {"role": "assistant", "content": "Done"},
+        ]
+        session_dir = _write_transcript(tmp_path / "healthy", lines)
+        result = sr.diagnose(session_dir)
+
+        assert result["status"] == "healthy"
+        assert result["failure_modes"] == []
+        assert result["orphaned_tool_ids"] == []
+        assert result["misplaced_tool_ids"] == []
+        assert result["incomplete_turns"] == []
+
+    def test_detects_missing_tool_results(self, sr, tmp_path):
+        """Detects failure mode 1: tool_use with no matching tool_result."""
+        lines = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "bash", "arguments": "{}"}},
+                    {"id": "tc2", "function": {"name": "grep", "arguments": "{}"}},
+                ],
+            },
+            # No tool results at all
+        ]
+        session_dir = _write_transcript(tmp_path / "orphan", lines)
+        result = sr.diagnose(session_dir)
+
+        assert result["status"] == "broken"
+        assert "missing_tool_results" in result["failure_modes"]
+        assert set(result["orphaned_tool_ids"]) == {"tc1", "tc2"}
+
+    def test_detects_ordering_violation(self, sr, tmp_path):
+        """Detects failure mode 2: tool_results exist but a real user message
+        appears between the tool_use and its results."""
+        lines = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "bash", "arguments": "{}"}},
+                ],
+            },
+            # Real user message wedged in (shouldn't be here)
+            {"role": "user", "content": "What happened?"},
+            # Tool result appears AFTER the interrupting user message
+            {"role": "tool", "tool_call_id": "tc1", "name": "bash", "content": "ok"},
+            {"role": "assistant", "content": "Done"},
+        ]
+        session_dir = _write_transcript(tmp_path / "ordering", lines)
+        result = sr.diagnose(session_dir)
+
+        assert result["status"] == "broken"
+        assert "ordering_violation" in result["failure_modes"]
+        assert "tc1" in result["misplaced_tool_ids"]
+
+    def test_detects_incomplete_assistant_turn(self, sr, tmp_path):
+        """Detects failure mode 3: tool results present but no final
+        assistant text response before the next real user message."""
+        lines = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "bash", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "name": "bash", "content": "ok"},
+            # Missing assistant response — next entry is a real user message
+            {"role": "user", "content": "What happened?"},
+        ]
+        session_dir = _write_transcript(tmp_path / "incomplete", lines)
+        result = sr.diagnose(session_dir)
+
+        assert result["status"] == "broken"
+        assert "incomplete_assistant_turn" in result["failure_modes"]
+        assert len(result["incomplete_turns"]) == 1
+        assert result["incomplete_turns"][0]["missing"] == "assistant_response"
+
+    def test_detects_multiple_failure_modes(self, sr, tmp_path):
+        """Detects all three failure modes in a single transcript."""
+        lines = [
+            # Turn 1: normal
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+            # Turn 2: ordering violation + incomplete turn
+            {"role": "user", "content": "Do stuff"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "bash", "arguments": "{}"}},
+                ],
+            },
+            {"role": "user", "content": "Hmm?"},  # interrupting real user message
+            {"role": "tool", "tool_call_id": "tc1", "name": "bash", "content": "ok"},
+            # No assistant response before next user message
+            # Turn 3: missing tool results
+            {"role": "user", "content": "More stuff"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc2", "function": {"name": "grep", "arguments": "{}"}},
+                ],
+            },
+            # No tool result for tc2
+        ]
+        session_dir = _write_transcript(tmp_path / "multi", lines)
+        result = sr.diagnose(session_dir)
+
+        assert result["status"] == "broken"
+        assert "ordering_violation" in result["failure_modes"]
+        assert "incomplete_assistant_turn" in result["failure_modes"]
+        assert "missing_tool_results" in result["failure_modes"]
+
+    def test_no_tool_calls_is_healthy(self, sr, tmp_path):
+        """A transcript with no tool calls at all is healthy."""
+        lines = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+        session_dir = _write_transcript(tmp_path / "notool", lines)
+        result = sr.diagnose(session_dir)
+        assert result["status"] == "healthy"
+
+    def test_recommended_action(self, sr, tmp_path):
+        """Broken transcripts get recommended_action='repair'; healthy get 'none'."""
+        # Healthy
+        lines_ok = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+        session_dir_ok = _write_transcript(tmp_path / "ok", lines_ok)
+        assert sr.diagnose(session_dir_ok)["recommended_action"] == "none"
+
+        # Broken
+        lines_bad = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "bash", "arguments": "{}"}},
+                ],
+            },
+        ]
+        session_dir_bad = _write_transcript(tmp_path / "bad", lines_bad)
+        assert sr.diagnose(session_dir_bad)["recommended_action"] == "repair"
