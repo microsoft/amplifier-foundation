@@ -36,7 +36,7 @@ def parse_transcript(transcript_path: Path) -> list[dict]:
     """
     transcript_path = Path(transcript_path)
     entries: list[dict] = []
-    with open(transcript_path) as f:
+    with open(transcript_path, encoding="utf-8") as f:
         for i, raw_line in enumerate(f, start=1):
             raw_line = raw_line.strip()
             # Skip blank lines; line_num preserves original file position
