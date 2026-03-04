@@ -38,7 +38,9 @@ def _write_transcript(session_dir: Path, lines: list[dict]) -> Path:
     """Write a list of dicts as transcript.jsonl and return the session dir."""
     session_dir.mkdir(parents=True, exist_ok=True)
     transcript = session_dir / "transcript.jsonl"
-    transcript.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    transcript.write_text(
+        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+    )
     return session_dir
 
 
@@ -81,7 +83,7 @@ class TestParseTranscript:
         """An empty transcript returns an empty list."""
         session_dir = tmp_path / "sess3"
         session_dir.mkdir(parents=True)
-        (session_dir / "transcript.jsonl").write_text("")
+        (session_dir / "transcript.jsonl").write_text("", encoding="utf-8")
         entries = sr.parse_transcript(session_dir / "transcript.jsonl")
         assert entries == []
 
