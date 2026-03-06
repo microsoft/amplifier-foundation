@@ -40,7 +40,7 @@ includes:
 
 
 session:
-  debug: true
+  raw: true
   orchestrator:
     module: loop-streaming
     source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main

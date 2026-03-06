@@ -25,7 +25,7 @@ includes:
 
 # Development-specific session settings
 session:
-  raw_debug: true  # Enable raw debug events (debug: true inherited from exp-foundation)
+  raw: true
 ---
 
 # Experimental Amplifier Development Bundle
