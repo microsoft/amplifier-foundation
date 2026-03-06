@@ -105,7 +105,9 @@ class PerformanceMonitor:
             for tool, timings in sorted(self.tool_timings.items()):
                 avg_time = sum(timings) / len(timings)
                 total_time = sum(timings)
-                print(f"  {tool:30} {len(timings):3} calls, avg: {avg_time:.3f}s, total: {total_time:.3f}s")
+                print(
+                    f"  {tool:30} {len(timings):3} calls, avg: {avg_time:.3f}s, total: {total_time:.3f}s"
+                )
 
         # Token usage
         print("\n💰 Token Usage:")
@@ -139,7 +141,9 @@ class RateLimiter:
         self.call_times = [t for t in self.call_times if now - t < 60]
 
         if len(self.call_times) >= self.max_calls:
-            print(f"\n⚠️  RATE LIMIT: Tool {data.get('name')} blocked ({len(self.call_times)} calls in last minute)")
+            print(
+                f"\n⚠️  RATE LIMIT: Tool {data.get('name')} blocked ({len(self.call_times)} calls in last minute)"
+            )
             # Could raise an error or return stop action
             # For demo, just warn and continue
 
@@ -159,7 +163,8 @@ class CostTracker:
         "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
         "claude-haiku": {"input": 0.25, "output": 1.25},
         "claude-opus": {"input": 15.00, "output": 75.00},
-        "gpt-5.2": {"input": 5.00, "output": 15.00},
+        "gpt-5.4": {"input": 2.50, "output": 15.00},
+        "gpt-5.4-pro": {"input": 30.00, "output": 180.00},
     }
 
     def __init__(self, model: str = "claude-sonnet-4-5"):
@@ -281,7 +286,10 @@ class RetryHandler:
         error = data.get("error", "")
 
         # Check if this is a retryable error
-        retryable = any(pattern in str(error).lower() for pattern in ["rate limit", "timeout", "503", "429"])
+        retryable = any(
+            pattern in str(error).lower()
+            for pattern in ["rate limit", "timeout", "503", "429"]
+        )
 
         if retryable:
             key = data.get("name", event)
@@ -291,7 +299,9 @@ class RetryHandler:
                 self.retry_counts[key] = retry_count + 1
                 wait_time = self.backoff_factor**retry_count
 
-                print(f"\n🔄 RETRY: Attempt {retry_count + 1}/{self.max_retries} after {wait_time:.1f}s")
+                print(
+                    f"\n🔄 RETRY: Attempt {retry_count + 1}/{self.max_retries} after {wait_time:.1f}s"
+                )
 
                 await asyncio.sleep(wait_time)
                 # Note: "retry" action is aspirational - Amplifier doesn't support it yet

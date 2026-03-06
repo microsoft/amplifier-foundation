@@ -5,7 +5,7 @@ Example 22: Custom Orchestrator (Model Routing)
 
 AUDIENCE: Teams wanting cost/latency control without changing core modules
 VALUE: Shows how to build and use a custom orchestrator module that routes
-       between GPT-5.2 and GPT-5.1-Codex based on the prompt.
+       between GPT-5.4 and GPT-5-mini based on the prompt.
 
 What this demonstrates:
   - Packaging an orchestrator module (mount() + Orchestrator protocol)
@@ -58,7 +58,11 @@ class RoutingObserver:
 async def main():
     """Demonstrate routing via the custom orchestrator module."""
     parser = argparse.ArgumentParser(description="Custom orchestrator routing demo")
-    parser.add_argument("--verbose", action="store_true", help="Show all router logs and enable raw_debug")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show all router logs and enable raw_debug",
+    )
     args = parser.parse_args()
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -70,22 +74,30 @@ async def main():
     # With --verbose, show all logs (including escalation) and enable raw_debug.
     if not logging.getLogger().handlers:
         if args.verbose:
-            logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+            logging.basicConfig(
+                level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+            )
         else:
-            logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+            logging.basicConfig(
+                level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
+            )
             router_logger = logging.getLogger("amplifier_module_router_orchestrator")
             router_logger.setLevel(logging.INFO)
             router_logger.propagate = False
             handler = logging.StreamHandler()
             handler.setLevel(logging.INFO)
-            handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+            handler.setFormatter(
+                logging.Formatter("%(levelname)s %(name)s: %(message)s")
+            )
             router_logger.addHandler(handler)
 
     repo_root = Path(__file__).parent.parent
 
     # Base + provider bundles (all standard amplifier-foundation)
     foundation = await load_bundle(str(repo_root / "bundles" / "minimal.yaml"))
-    openai_provider = await load_bundle(str(repo_root / "providers" / "openai-gpt-5.yaml"))
+    openai_provider = await load_bundle(
+        str(repo_root / "providers" / "openai-gpt-5.yaml")
+    )
 
     # Overlay: use our local orchestrator module for model routing
     router_overlay = Bundle(
@@ -94,10 +106,12 @@ async def main():
         session={
             "orchestrator": {
                 "module": "router-orchestrator",
-                "source": str(repo_root / "examples" / "modules" / "router-orchestrator"),
+                "source": str(
+                    repo_root / "examples" / "modules" / "router-orchestrator"
+                ),
                 "config": {
-                    "mini_model": "gpt-5.2",
-                    "codex_model": "gpt-5.1-codex",
+                    "mini_model": "gpt-5-mini",
+                    "codex_model": "gpt-5.4",
                     "prefer_mini_first": True,
                     "raw_debug": args.verbose,  # set via --verbose to see all router logs
                 },
@@ -140,7 +154,9 @@ async def main():
     session = await prepared.create_session()
     observer = RoutingObserver()
     session.coordinator.hooks.register(
-        "orchestrator:turn_complete", observer.on_orchestrator_turn_complete, name="routing-observer"
+        "orchestrator:turn_complete",
+        observer.on_orchestrator_turn_complete,
+        name="routing-observer",
     )
 
     async with session:
