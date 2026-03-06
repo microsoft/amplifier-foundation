@@ -31,13 +31,13 @@ class ProviderPreference:
     Attributes:
         provider: Provider identifier (e.g., "anthropic", "openai", "azure").
             Supports flexible matching - "anthropic" matches "provider-anthropic".
-        model: Model name or glob pattern (e.g., "claude-haiku-*", "gpt-4o-mini").
+        model: Model name or glob pattern (e.g., "claude-haiku-*", "gpt-5-mini").
             Patterns are resolved to concrete model names at runtime.
 
     Example:
         >>> prefs = [
         ...     ProviderPreference(provider="anthropic", model="claude-haiku-*"),
-        ...     ProviderPreference(provider="openai", model="gpt-4o-mini"),
+        ...     ProviderPreference(provider="openai", model="gpt-5-mini"),
         ... ]
     """
 
@@ -327,7 +327,7 @@ def apply_provider_preferences(
     Example:
         >>> prefs = [
         ...     ProviderPreference(provider="anthropic", model="claude-haiku-3"),
-        ...     ProviderPreference(provider="openai", model="gpt-4o-mini"),
+        ...     ProviderPreference(provider="openai", model="gpt-5-mini"),
         ... ]
         >>> new_plan = apply_provider_preferences(plan, prefs)
     """
@@ -420,7 +420,7 @@ async def apply_provider_preferences_with_resolution(
     Example:
         >>> prefs = [
         ...     ProviderPreference(provider="anthropic", model="claude-haiku-*"),
-        ...     ProviderPreference(provider="openai", model="gpt-4o-mini"),
+        ...     ProviderPreference(provider="openai", model="gpt-5-mini"),
         ... ]
         >>> new_plan = await apply_provider_preferences_with_resolution(
         ...     plan, prefs, coordinator

@@ -1238,7 +1238,7 @@ class PreparedBundle:
                 "Analyze this code",
                 provider_preferences=[
                     ProviderPreference(provider="anthropic", model="claude-haiku-*"),
-                    ProviderPreference(provider="openai", model="gpt-4o-mini"),
+                    ProviderPreference(provider="openai", model="gpt-5-mini"),
                 ],
             )
         """

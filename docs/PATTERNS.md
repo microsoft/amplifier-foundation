@@ -152,7 +152,7 @@ providers:
   - module: provider-openai
     source: git+...
     config:
-      default_model: gpt-5.2
+      default_model: gpt-5.4
       priority: 2
 ```
 
@@ -267,7 +267,7 @@ result = await prepared.spawn(
     instruction="Quick analysis task",
     provider_preferences=[
         ProviderPreference(provider="anthropic", model="claude-haiku-*"),
-        ProviderPreference(provider="openai", model="gpt-4o-mini"),
+        ProviderPreference(provider="openai", model="gpt-5-mini"),
     ],
 )
 
