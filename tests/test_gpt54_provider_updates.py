@@ -127,3 +127,42 @@ def test_no_stale_strings_in_modified_files():
             if pattern in content:
                 violations.append(f"{fpath.name} contains '{pattern}'")
     assert violations == [], f"Stale strings found: {violations}"
+
+
+# ---------------------------------------------------------------------------
+# Router-orchestrator module defaults
+# ---------------------------------------------------------------------------
+
+ROUTER_INIT = (
+    REPO_ROOT
+    / "examples"
+    / "modules"
+    / "router-orchestrator"
+    / "amplifier_module_router_orchestrator"
+    / "__init__.py"
+)
+
+
+def test_router_orchestrator_mini_model_default_updated():
+    """RoutingOrchestrator default mini_model must be gpt-5-mini, not gpt-5.2."""
+    content = ROUTER_INIT.read_text()
+    assert '"gpt-5-mini"' in content, "mini_model default should be gpt-5-mini"
+    assert '"gpt-5.2"' not in content, "stale gpt-5.2 default must be removed"
+
+
+def test_router_orchestrator_codex_model_default_updated():
+    """RoutingOrchestrator default codex_model must be gpt-5.4, not gpt-5.1-codex."""
+    content = ROUTER_INIT.read_text()
+    assert '"gpt-5.4"' in content, "codex_model default should be gpt-5.4"
+    assert '"gpt-5.1-codex"' not in content, (
+        "stale gpt-5.1-codex default must be removed"
+    )
+
+
+def test_router_orchestrator_no_stale_model_strings():
+    """router-orchestrator __init__.py must not contain any stale model strings."""
+    content = ROUTER_INIT.read_text()
+    for stale in ("gpt-5.2", "gpt-5.1-codex"):
+        assert stale not in content, (
+            f"Stale model string '{stale}' found in router-orchestrator"
+        )

@@ -25,8 +25,8 @@ class RoutingOrchestrator:
 
     def __init__(self, config: dict[str, Any] | None = None):
         cfg = config or {}
-        self.mini_model = cfg.get("mini_model", "gpt-5.2")
-        self.codex_model = cfg.get("codex_model", "gpt-5.1-codex")
+        self.mini_model = cfg.get("mini_model", "gpt-5-mini")
+        self.codex_model = cfg.get("codex_model", "gpt-5.4")
         self.prefer_mini_first = cfg.get("prefer_mini_first", True)
         self.raw_debug = cfg.get("raw_debug", False)
 
@@ -100,7 +100,9 @@ class RoutingOrchestrator:
 
         # Get messages using the public API (handles compaction internally)
         messages = await context.get_messages_for_request(provider=provider)
-        logger.info(f"[router-orchestrator] model={target_model} provider={getattr(provider, 'name', 'unknown')}")
+        logger.info(
+            f"[router-orchestrator] model={target_model} provider={getattr(provider, 'name', 'unknown')}"
+        )
 
         request = ChatRequest(messages=messages)
         start = time.perf_counter()
@@ -113,12 +115,20 @@ class RoutingOrchestrator:
         if (
             target_model == self.mini_model
             and self._is_code_prompt(prompt)
-            and ("```" not in reply_text and "def " not in reply_text and "class " not in reply_text)
+            and (
+                "```" not in reply_text
+                and "def " not in reply_text
+                and "class " not in reply_text
+            )
         ):
             if self.raw_debug:
-                logger.info("[router-orchestrator] escalating to codex due to missing code in mini response")
+                logger.info(
+                    "[router-orchestrator] escalating to codex due to missing code in mini response"
+                )
             else:
-                logger.debug("[router-orchestrator] escalating to codex due to missing code in mini response")
+                logger.debug(
+                    "[router-orchestrator] escalating to codex due to missing code in mini response"
+                )
             start = time.perf_counter()
             response = await provider.complete(request, model=self.codex_model)
             latency = time.perf_counter() - start
