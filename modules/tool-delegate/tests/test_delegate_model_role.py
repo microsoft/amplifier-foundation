@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -74,7 +74,10 @@ def _install_mock_resolver(mock_resolve_fn):
     mock_hooks_routing_mod = types.ModuleType("amplifier_module_hooks_routing")
 
     originals = {}
-    for mod_name in ("amplifier_module_hooks_routing", "amplifier_module_hooks_routing.resolver"):
+    for mod_name in (
+        "amplifier_module_hooks_routing",
+        "amplifier_module_hooks_routing.resolver",
+    ):
         if mod_name in sys.modules:
             originals[mod_name] = sys.modules[mod_name]
 
@@ -82,7 +85,10 @@ def _install_mock_resolver(mock_resolve_fn):
     sys.modules["amplifier_module_hooks_routing.resolver"] = mock_resolver_mod
 
     def cleanup():
-        for mod_name in ("amplifier_module_hooks_routing", "amplifier_module_hooks_routing.resolver"):
+        for mod_name in (
+            "amplifier_module_hooks_routing",
+            "amplifier_module_hooks_routing.resolver",
+        ):
             if mod_name in originals:
                 sys.modules[mod_name] = originals[mod_name]
             elif mod_name in sys.modules:
@@ -145,9 +151,9 @@ class TestDelegateModelRole:
             )
             # Wire up providers on coordinator.get("providers")
             tool.coordinator.get = MagicMock(
-                side_effect=lambda key: {"provider-anthropic": MagicMock()}
-                if key == "providers"
-                else None
+                side_effect=lambda key: (
+                    {"provider-anthropic": MagicMock()} if key == "providers" else None
+                )
             )
 
             await tool.execute(
@@ -162,7 +168,9 @@ class TestDelegateModelRole:
             spawn_fn.assert_called_once()
             _, kwargs = spawn_fn.call_args
             prefs = kwargs["provider_preferences"]
-            assert prefs is not None, "Expected resolved provider_preferences from model_role"
+            assert prefs is not None, (
+                "Expected resolved provider_preferences from model_role"
+            )
             assert len(prefs) >= 1
             assert prefs[0].provider == "anthropic"
             assert prefs[0].model == "claude-haiku-3.5"
@@ -202,7 +210,10 @@ class TestDelegateModelRole:
                         "roles": {
                             "fast": {
                                 "candidates": [
-                                    {"provider": "anthropic", "model": "claude-haiku-3.5"},
+                                    {
+                                        "provider": "anthropic",
+                                        "model": "claude-haiku-3.5",
+                                    },
                                 ]
                             }
                         }
@@ -231,6 +242,83 @@ class TestDelegateModelRole:
 
             # Resolver should NOT have been called
             mock_resolve.assert_not_called()
+        finally:
+            cleanup()
+
+    @pytest.mark.asyncio
+    async def test_model_role_resolution_includes_config(self):
+        """Config from resolved model_role is preserved in ProviderPreference."""
+        spawn_fn = AsyncMock(
+            return_value={
+                "output": "done",
+                "session_id": "child-001",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+        )
+
+        # Resolver returns a result with non-empty config
+        mock_resolve = AsyncMock(
+            return_value=[
+                {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                    "config": {"reasoning_effort": "high"},
+                }
+            ]
+        )
+        cleanup = _install_mock_resolver(mock_resolve)
+
+        try:
+            tool = _make_delegate_tool(
+                spawn_fn=spawn_fn,
+                agents={
+                    "coding-agent": {"description": "A coding agent"},
+                },
+                session_state={
+                    "routing_matrix": {
+                        "roles": {
+                            "coding": {
+                                "candidates": [
+                                    {
+                                        "provider": "anthropic",
+                                        "model": "claude-sonnet-4-6",
+                                        "config": {"reasoning_effort": "high"},
+                                    },
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
+            tool.coordinator.get = MagicMock(
+                side_effect=lambda key: (
+                    {"provider-anthropic": MagicMock()} if key == "providers" else None
+                )
+            )
+
+            await tool.execute(
+                {
+                    "agent": "coding-agent",
+                    "instruction": "Write a function",
+                    "context_depth": "none",
+                    "model_role": "coding",
+                }
+            )
+
+            spawn_fn.assert_called_once()
+            _, kwargs = spawn_fn.call_args
+            prefs = kwargs["provider_preferences"]
+            assert prefs is not None, (
+                "Expected resolved provider_preferences from model_role"
+            )
+            assert len(prefs) == 1
+            assert prefs[0].provider == "anthropic"
+            assert prefs[0].model == "claude-sonnet-4-6"
+            assert prefs[0].config == {"reasoning_effort": "high"}, (
+                f"Expected config={{'reasoning_effort': 'high'}}, got {prefs[0].config!r}"
+            )
         finally:
             cleanup()
 

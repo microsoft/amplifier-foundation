@@ -12,9 +12,45 @@ from __future__ import annotations
 import fnmatch
 import logging
 from dataclasses import dataclass
+from dataclasses import field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+PROTECTED_CONFIG_KEYS = frozenset(
+    {
+        # Credentials
+        "api_key",
+        "secret",
+        "password",
+        "token",
+        "access_token",
+        "bearer_token",
+        "client_id",
+        "client_secret",
+        "tenant_id",
+        # Endpoints / infrastructure
+        "base_url",
+        "host",
+        "azure_endpoint",
+        "api_version",
+        "deployment_name",
+        "organization",
+        "project",
+        # Azure auth control
+        "managed_identity_client_id",
+        "use_managed_identity",
+        "use_default_credential",
+        # Network control
+        "proxy",
+        "http_proxy",
+        "https_proxy",
+        "verify_ssl",
+        "ssl_verify",
+        "verify",
+        "ca_bundle",
+    }
+)
 
 
 @dataclass
@@ -33,6 +69,10 @@ class ProviderPreference:
             Supports flexible matching - "anthropic" matches "provider-anthropic".
         model: Model name or glob pattern (e.g., "claude-haiku-*", "gpt-5-mini").
             Patterns are resolved to concrete model names at runtime.
+        config: Optional routing/preference config to merge into the provider's
+            mount config (e.g., {"reasoning_effort": "high", "temperature": 0.3}).
+            Keys in PROTECTED_CONFIG_KEYS (credentials, infrastructure) are never
+            overridden. Omitted from to_dict() when empty for backward compatibility.
 
     Example:
         >>> prefs = [
@@ -43,17 +83,21 @@ class ProviderPreference:
 
     provider: str
     model: str
+    config: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary representation."""
-        return {"provider": self.provider, "model": self.model}
+        result: dict[str, Any] = {"provider": self.provider, "model": self.model}
+        if self.config:
+            result["config"] = self.config
+        return result
 
     @classmethod
-    def from_dict(cls, data: dict[str, str]) -> ProviderPreference:
+    def from_dict(cls, data: dict[str, Any]) -> ProviderPreference:
         """Create from dictionary representation.
 
         Args:
-            data: Dictionary with 'provider' and 'model' keys.
+            data: Dictionary with 'provider' and 'model' keys, and optional 'config'.
 
         Returns:
             ProviderPreference instance.
@@ -65,7 +109,11 @@ class ProviderPreference:
             raise ValueError("ProviderPreference requires 'provider' key")
         if "model" not in data:
             raise ValueError("ProviderPreference requires 'model' key")
-        return cls(provider=data["provider"], model=data["model"])
+        return cls(
+            provider=data["provider"],
+            model=data["model"],
+            config=data.get("config", {}),
+        )
 
 
 @dataclass
@@ -346,7 +394,9 @@ def apply_provider_preferences(
     for pref in preferences:
         if pref.provider in lookup:
             target_idx = lookup[pref.provider]
-            return _apply_single_override(mount_plan, providers, target_idx, pref.model)
+            return _apply_single_override(
+                mount_plan, providers, target_idx, pref.model, pref.config
+            )
 
     # No preferences matched
     logger.warning(
@@ -362,6 +412,7 @@ def _apply_single_override(
     providers: list[dict[str, Any]],
     target_idx: int,
     model: str,
+    pref_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Apply a single provider/model override to the mount plan.
 
@@ -370,6 +421,10 @@ def _apply_single_override(
         providers: Original providers list.
         target_idx: Index of provider to promote.
         model: Model to set for the provider.
+        pref_config: Optional routing/preference config to merge into the
+            provider config. Preference wins over base config for non-protected
+            keys. Keys in PROTECTED_CONFIG_KEYS (credentials, infrastructure)
+            are never overridden.
 
     Returns:
         New mount plan with override applied.
@@ -383,7 +438,12 @@ def _apply_single_override(
         p_copy["config"] = dict(p.get("config", {}))
 
         if i == target_idx:
-            # Promote to priority 0 (highest)
+            # Merge routing config first (lower precedence)
+            if pref_config:
+                for key, value in pref_config.items():
+                    if key not in PROTECTED_CONFIG_KEYS:
+                        p_copy["config"][key] = value
+            # Then enforce invariants — these always win
             p_copy["config"]["priority"] = 0
             p_copy["config"]["default_model"] = model
             logger.info(
@@ -451,7 +511,7 @@ async def apply_provider_preferences_with_resolution(
                 resolved_model = result.resolved_model
 
             return _apply_single_override(
-                mount_plan, providers, target_idx, resolved_model
+                mount_plan, providers, target_idx, resolved_model, pref.config
             )
 
     # No preferences matched
