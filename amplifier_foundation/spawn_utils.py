@@ -367,7 +367,9 @@ def apply_provider_preferences(
     for pref in preferences:
         if pref.provider in lookup:
             target_idx = lookup[pref.provider]
-            return _apply_single_override(mount_plan, providers, target_idx, pref.model)
+            return _apply_single_override(
+                mount_plan, providers, target_idx, pref.model, pref.config
+            )
 
     # No preferences matched
     logger.warning(
@@ -482,7 +484,7 @@ async def apply_provider_preferences_with_resolution(
                 resolved_model = result.resolved_model
 
             return _apply_single_override(
-                mount_plan, providers, target_idx, resolved_model
+                mount_plan, providers, target_idx, resolved_model, pref.config
             )
 
     # No preferences matched

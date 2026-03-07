@@ -529,3 +529,68 @@ class TestApplySingleOverrideConfig:
         )
         result_config = result["providers"][0]["config"]
         assert result_config["reasoning_effort"] == "high"
+
+
+class TestProviderPreferenceConfigWiring:
+    """Tests that pref.config is wired through apply_provider_preferences callers."""
+
+    def _make_mount_plan(self) -> dict:
+        """Build a minimal mount plan with one openai provider."""
+        return {
+            "providers": [
+                {
+                    "module": "provider-openai",
+                    "config": {"api_key": "sk-test", "priority": 10},
+                }
+            ],
+            "session": {"orchestrator": {"module": "loop-basic"}},
+        }
+
+    def test_apply_provider_preferences_passes_config(self) -> None:
+        """apply_provider_preferences passes pref.config to _apply_single_override."""
+        mount_plan = self._make_mount_plan()
+        pref = ProviderPreference(
+            provider="openai", model="gpt-5", config={"reasoning_effort": "high"}
+        )
+        result = apply_provider_preferences(mount_plan, [pref])
+
+        result_config = result["providers"][0]["config"]
+        assert result_config["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_apply_provider_preferences_with_resolution_passes_config(
+        self,
+    ) -> None:
+        """apply_provider_preferences_with_resolution passes pref.config."""
+        mount_plan = self._make_mount_plan()
+        pref = ProviderPreference(
+            provider="openai",
+            model="gpt-5",  # exact model, no glob — resolution is a no-op
+            config={"reasoning_effort": "high"},
+        )
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.get.return_value = {}
+
+        result = await apply_provider_preferences_with_resolution(
+            mount_plan, [pref], mock_coordinator
+        )
+
+        result_config = result["providers"][0]["config"]
+        assert result_config["reasoning_effort"] == "high"
+
+    def test_config_flows_end_to_end(self) -> None:
+        """Multiple config values flow end-to-end alongside existing provider keys."""
+        mount_plan = self._make_mount_plan()
+        pref = ProviderPreference(
+            provider="openai",
+            model="gpt-5",
+            config={"reasoning_effort": "high", "temperature": 0.3},
+        )
+        result = apply_provider_preferences(mount_plan, [pref])
+
+        result_config = result["providers"][0]["config"]
+        assert result_config["reasoning_effort"] == "high"
+        assert result_config["temperature"] == 0.3
+        # Existing protected key untouched
+        assert result_config["api_key"] == "sk-test"
