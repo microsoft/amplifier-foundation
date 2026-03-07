@@ -715,10 +715,14 @@ Agent usage notes:
         # provider_preferences wins when both are provided (explicit pin overrides matrix)
         raw_model_role = input.get("model_role", "").strip()
         if raw_model_role and provider_preferences is None:
-            routing_state = getattr(self.coordinator, "session_state", {}).get("routing_matrix")
+            routing_state = getattr(self.coordinator, "session_state", {}).get(
+                "routing_matrix"
+            )
             if routing_state:
                 try:
-                    from amplifier_module_hooks_routing.resolver import resolve_model_role
+                    from amplifier_module_hooks_routing.resolver import (
+                        resolve_model_role,
+                    )
 
                     roles = [raw_model_role]
                     matrix = routing_state.get("roles", {})
@@ -727,7 +731,9 @@ Agent usage notes:
                     if resolved:
                         provider_preferences = [
                             ProviderPreference(
-                                provider=r["provider"], model=r["model"]
+                                provider=r["provider"],
+                                model=r["model"],
+                                config=r.get("config", {}),
                             )
                             for r in resolved
                         ]
