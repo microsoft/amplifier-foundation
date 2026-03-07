@@ -1,8 +1,12 @@
 # validate-agents.yaml
-# Agent Definition Validator Recipe v1.2.3
+# Agent Definition Validator Recipe v1.2.5
 # Validates agent definitions in a bundle repository for quality, tool access, and structural requirements
 #
 # CHANGELOG:
+# v1.2.5 - Removed hardcoded provider/model from quick-approval step
+#        - "claude-haiku" is not a valid model ID and breaks execution
+#        - Quick-approval now uses session default model for portability
+#
 # v1.2.3 - Fixed multiline string interpolation bug
 #        - Remove frontmatter and meta fields from structural_results before JSON output
 #        - These fields contain multiline descriptions that break JSON parsing in downstream steps
@@ -64,7 +68,7 @@ description: |
   
   This recipe helps maintain agent quality across the Amplifier ecosystem by codifying
   the audit criteria discovered in manual reviews.
-version: "1.2.4"
+version: "1.2.5"
 author: "Amplifier Foundation Team"
 tags: ["agents", "validation", "quality", "audit", "tools", "descriptions"]
 
@@ -793,14 +797,13 @@ steps:
   # ============================================================================
   # PHASE 3: Quick Approval (When All Agents Pass)
   # Fast-track path for bundles that meet all quality thresholds
-  # Model: haiku - simple summary, no complex reasoning needed
+  # Simple summary task - uses session default model (no provider/model pinning
+  # for portability across provider configurations)
   # ============================================================================
 
   - id: "quick-approval"
     agent: "foundation:zen-architect"
     mode: "REVIEW"
-    provider: "anthropic"
-    model: "claude-haiku"
     condition: "{{quality_classification.requires_llm_analysis}} == false"
     depends_on: ["set-default-approval-summary"]
     prompt: |

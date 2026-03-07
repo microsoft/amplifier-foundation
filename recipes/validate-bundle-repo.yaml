@@ -2386,8 +2386,6 @@ steps:
   - id: "quick-approval"
     agent: "foundation:zen-architect"
     mode: "REVIEW"
-    provider: "anthropic"
-    model: "claude-haiku"
     condition: "{{quality_classification.requires_llm_analysis}} == false"
     depends_on: ["set-default-approval-summary"]
     prompt: |
