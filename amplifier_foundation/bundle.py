@@ -246,6 +246,7 @@ class Bundle:
         self,
         install_deps: bool = True,
         source_resolver: Callable[[str, str], str] | None = None,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> PreparedBundle:
         """Prepare bundle for execution by activating all modules.
 
@@ -262,6 +263,9 @@ class Bundle:
                 Allows app-layer source override policy to be applied before activation.
                 If provided, each module's source is passed through this resolver,
                 enabling settings-based overrides without foundation knowing about settings.
+            progress_callback: Optional callback(action, detail) for progress reporting.
+                Called at key phases during preparation to report what is happening.
+                Actions include "installing_package", "activating", "installing".
 
         Returns:
             PreparedBundle with mount_plan and create_session() helper.
@@ -298,12 +302,16 @@ class Bundle:
         if install_deps:
             # Install this bundle's package (if it has pyproject.toml)
             if self.base_path:
-                await activator.activate_bundle_package(self.base_path)
+                await activator.activate_bundle_package(
+                    self.base_path, progress_callback=progress_callback
+                )
 
             # Install packages from all included bundles (from source_base_paths)
             for namespace, bundle_path in self.source_base_paths.items():
                 if bundle_path and bundle_path != self.base_path:
-                    await activator.activate_bundle_package(bundle_path)
+                    await activator.activate_bundle_package(
+                        bundle_path, progress_callback=progress_callback
+                    )
 
         # Collect all modules that need activation
         modules_to_activate = []
@@ -363,7 +371,9 @@ class Bundle:
                             modules_to_activate.append(resolve_source(mod_spec))
 
         # Activate all modules and get their paths
-        module_paths = await activator.activate_all(modules_to_activate)
+        module_paths = await activator.activate_all(
+            modules_to_activate, progress_callback=progress_callback
+        )
 
         # Save install state to disk for fast subsequent startups
         activator.finalize()

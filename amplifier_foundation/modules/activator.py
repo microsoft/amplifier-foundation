@@ -17,6 +17,7 @@ import site
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 from amplifier_foundation.modules.install_state import InstallStateManager
 from amplifier_foundation.paths.resolution import get_amplifier_home
@@ -63,12 +64,20 @@ class ModuleActivator:
         # Track bundle package paths added to sys.path for inheritance by child sessions
         self._bundle_package_paths: list[str] = []
 
-    async def activate(self, module_name: str, source_uri: str) -> Path:
+    async def activate(
+        self,
+        module_name: str,
+        source_uri: str,
+        progress_callback: Callable[[str, str], None] | None = None,
+    ) -> Path:
         """Activate a module by downloading and making it importable.
 
         Args:
             module_name: Name of the module (e.g., "loop-streaming").
             source_uri: URI to download from (e.g., "git+https://...").
+            progress_callback: Optional callback(action, detail) for progress reporting.
+                Called with ("activating", module_name) at start, and
+                ("installing", module_name) if dependency installation is needed.
 
         Returns:
             Local path to the activated module.
@@ -82,13 +91,18 @@ class ModuleActivator:
             resolved = await self._resolver.resolve(source_uri)
             return resolved.active_path
 
+        if progress_callback:
+            progress_callback("activating", module_name)
+
         # Download module source
         resolved = await self._resolver.resolve(source_uri)
         module_path = resolved.active_path
 
         # Install dependencies if requested
         if self.install_deps:
-            await self._install_dependencies(module_path)
+            await self._install_dependencies(
+                module_path, module_name, progress_callback
+            )
 
         # Add to sys.path if not already there
         path_str = str(module_path)
@@ -107,11 +121,17 @@ class ModuleActivator:
         """
         return list(self._bundle_package_paths)
 
-    async def activate_all(self, modules: list[dict]) -> dict[str, Path]:
+    async def activate_all(
+        self,
+        modules: list[dict],
+        progress_callback: Callable[[str, str], None] | None = None,
+    ) -> dict[str, Path]:
         """Activate multiple modules with parallelization.
 
         Args:
             modules: List of module specs with 'module' and 'source' keys.
+            progress_callback: Optional callback(action, detail) for progress reporting.
+                Passed through to individual activate() calls.
 
         Returns:
             Dict mapping module names to their local paths.
@@ -127,7 +147,10 @@ class ModuleActivator:
 
         # Phase 2: Parallel activation
         if to_activate:
-            tasks = [self.activate(name, uri) for name, uri in to_activate]
+            tasks = [
+                self.activate(name, uri, progress_callback=progress_callback)
+                for name, uri in to_activate
+            ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             activated = {}
@@ -140,7 +163,11 @@ class ModuleActivator:
 
         return {}
 
-    async def activate_bundle_package(self, bundle_path: Path) -> None:
+    async def activate_bundle_package(
+        self,
+        bundle_path: Path,
+        progress_callback: Callable[[str, str], None] | None = None,
+    ) -> None:
         """Install a bundle's own Python package to enable internal imports.
 
         When a bundle contains both a Python package (pyproject.toml at root) and
@@ -201,6 +228,8 @@ class ModuleActivator:
                 )
                 return
 
+        if progress_callback:
+            progress_callback("installing_package", pkg_name or bundle_path.name)
         logger.debug(f"Installing bundle package from {bundle_path}")
         await self._install_dependencies(bundle_path)
 
@@ -274,7 +303,12 @@ class ModuleActivator:
                 pass  # Not installed — let uv resolve normally
         return overrides
 
-    async def _install_dependencies(self, module_path: Path) -> None:
+    async def _install_dependencies(
+        self,
+        module_path: Path,
+        module_name: str | None = None,
+        progress_callback: Callable[[str, str], None] | None = None,
+    ) -> None:
         """Install Python dependencies for a module.
 
         Uses uv to install into the current Python environment. The --python flag
@@ -285,6 +319,8 @@ class ModuleActivator:
 
         Args:
             module_path: Path to the module directory.
+            module_name: Optional human-readable module name for progress reporting.
+            progress_callback: Optional callback(action, detail) for progress reporting.
 
         Raises:
             subprocess.CalledProcessError: If installation fails.
@@ -293,6 +329,9 @@ class ModuleActivator:
         if self._install_state.is_installed(module_path):
             logger.debug(f"Skipping install for {module_path.name} (already installed)")
             return
+
+        if progress_callback and module_name:
+            progress_callback("installing", module_name)
 
         # Check for pyproject.toml or requirements.txt
         pyproject = module_path / "pyproject.toml"
