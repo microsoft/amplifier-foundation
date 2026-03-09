@@ -917,7 +917,7 @@ tools:
 
 # Control what tools spawned agents inherit
 spawn:
-  exclude_tools: [tool-task]        # Agents inherit all EXCEPT these
+  exclude_tools: [tool-delegate]        # Agents inherit all EXCEPT these
   # OR use explicit list:
   # tools: [tool-a, tool-b]         # Agents get ONLY these tools
 
@@ -1310,5 +1310,5 @@ amplifier-bundle-recipes/
 
 - **[amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes)** - Canonical example of thin bundle + behavior pattern
 - **[URI Formats](URI_FORMATS.md)** - Complete source URI documentation
-- **[Validation](VALIDATION.md)** - Bundle validation rules
+- **[Validation](API_REFERENCE.md)** - Bundle validation rules
 - **[API Reference](API_REFERENCE.md)** - Programmatic bundle loading
