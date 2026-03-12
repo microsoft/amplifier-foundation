@@ -1109,7 +1109,6 @@ class TestIncludeSourceResolver:
             registry.set_include_source_resolver(my_resolver)
 
             # When resolver is set, _resolve_include_source should invoke it
-            # NOTE: This test will FAIL until Task 2 wires up the hook
             registry._resolve_include_source("some-namespace:some/path")
             assert "some-namespace:some/path" in resolved_calls
 
