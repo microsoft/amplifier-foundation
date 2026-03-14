@@ -1,9 +1,17 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.2.0
+# Repository-Wide Bundle Validator Recipe v3.3.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.3.0 - Opt-in recipe validation integration
+#        - New context vars: validate_recipes, validate_all, recipes_dir, known_agents
+#        - Phase 0.1: validate-all-flags step expands validate_all convenience flag
+#        - Phase 2.6.0: validate-recipes sub-recipe step (opt-in, on_error: continue)
+#        - set-default-recipe-validation provides no-op default when skipped
+#        - quality-classification incorporates recipe quality_level into scoring
+#        - synthesize-report includes Recipe Validation section
+#
 # v3.2.0 - Graceful environment handling
 #        - Phase 0 now checks prerequisites without auto-install attempts
 #        - Detects hatchling, amplifier_foundation, pip wheel capability
@@ -116,7 +124,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.2.0"
+version: "3.3.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -2000,7 +2008,7 @@ steps:
     output: "recipe_validation"
     timeout: 600
     on_error: "continue"
-    depends_on: ["repo-discovery"]
+    depends_on: ["repo-discovery", "validate-all-flags"]
 
   - id: "set-default-recipe-validation"
     type: "bash"
