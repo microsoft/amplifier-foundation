@@ -121,6 +121,7 @@ steps:
     output: "env_check"
     parse_json: true
     timeout: 30
+    on_error: "fail"
 
   # ============================================================================
   # PHASE 1: Agent Discovery
@@ -216,6 +217,7 @@ steps:
     output: "discovery_results"
     parse_json: true
     timeout: 60
+    on_error: "fail"
     depends_on: ["environment-check"]
 
   # ============================================================================
@@ -736,6 +738,7 @@ steps:
     output: "quality_classification"
     parse_json: true
     timeout: 60
+    on_error: "fail"
     depends_on: ["structural-validation"]
 
   # ============================================================================
@@ -763,6 +766,7 @@ steps:
     output: "optional_defaults"
     parse_json: true
     timeout: 30
+    on_error: "fail"
     depends_on: ["quality-classification"]
 
   # Set individual default values (will be overwritten by conditional steps if they run)
@@ -772,6 +776,7 @@ steps:
       echo "_Quick approval not performed - detailed LLM analysis was run instead._"
     output: "approval_summary"
     timeout: 10
+    on_error: "fail"
     depends_on: ["initialize-optional-outputs"]
 
   - id: "set-default-quality-results"
@@ -780,6 +785,7 @@ steps:
       echo "_Description quality analysis not performed - all agents met quality thresholds via deterministic checks._"
     output: "quality_results"
     timeout: 10
+    on_error: "fail"
     depends_on: ["initialize-optional-outputs"]
 
   - id: "set-default-tool-analysis"
@@ -788,6 +794,7 @@ steps:
       echo "_Tool access analysis not performed - all agents have explicit tool declarations._"
     output: "tool_analysis"
     timeout: 10
+    on_error: "fail"
     depends_on: ["initialize-optional-outputs"]
 
   # ============================================================================
@@ -838,6 +845,7 @@ steps:
       - [0-2 minor suggestions, or "None - agents are exemplary"]
     output: "approval_summary"
     timeout: 120
+    on_error: "continue"
 
   # ============================================================================
   # PHASE 4: Description Quality Analysis (Agent-Based, Conditional)
@@ -958,6 +966,7 @@ steps:
       List agents with quality == "good" - acknowledge they meet standards, do NOT suggest changes.
     output: "quality_results"
     timeout: 600
+    on_error: "continue"
     depends_on: ["quality-classification"]
 
   # ============================================================================
@@ -1047,6 +1056,7 @@ steps:
       List agents with has_explicit_tools == true - acknowledge they're correct.
     output: "tool_analysis"
     timeout: 600
+    on_error: "continue"
     depends_on: ["description-quality-check"]
 
   # ============================================================================
@@ -1199,4 +1209,5 @@ steps:
       **IMPORTANT:** If verdict is PASS, emphasize that the agents are GOOD and any suggestions are truly optional polish, not required changes.
     output: "final_report"
     timeout: 300
+    on_error: "fail"
     depends_on: ["quality-classification", "quick-approval", "description-quality-check", "tool-access-analysis", "set-default-approval-summary", "set-default-quality-results", "set-default-tool-analysis"]

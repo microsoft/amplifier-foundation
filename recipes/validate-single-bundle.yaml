@@ -256,6 +256,7 @@ steps:
     output: "traced_deps"
     parse_json: true
     timeout: 60
+    on_error: "fail"
 
   # ============================================================================
   # STEP 2: Context analysis using ONLY traced dependencies
@@ -471,6 +472,7 @@ steps:
     output: "context_results"
     parse_json: true
     timeout: 60
+    on_error: "fail"
     depends_on: ["trace-dependencies"]
 
   # ============================================================================
@@ -527,4 +529,5 @@ steps:
       This helps identify where context bloat originates.
     output: "bundle_report"
     timeout: 180
+    on_error: "fail"
     depends_on: ["context-analysis"]

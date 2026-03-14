@@ -278,6 +278,7 @@ steps:
     output: "env_check"
     parse_json: true
     timeout: 30
+    on_error: "fail"
 
   # ============================================================================
   # PHASE 0.1: Validate-All Flags Expansion
@@ -413,6 +414,7 @@ steps:
     output: "packaging_check"
     parse_json: true
     timeout: 30
+    on_error: "continue"
     depends_on: ["environment-check"]
 
   # ============================================================================
@@ -581,6 +583,7 @@ steps:
     output: "build_check"
     parse_json: true
     timeout: 10
+    on_error: "fail"
     depends_on: ["packaging-check"]
 
   # ============================================================================
@@ -722,6 +725,7 @@ steps:
     output: "discovery_results"
     parse_json: true
     timeout: 60
+    on_error: "fail"
     depends_on: ["packaging-check", "build-check", "set-default-build-check"]
 
   # ============================================================================
@@ -1170,6 +1174,7 @@ steps:
     output: "behavior_hygiene_results"
     parse_json: true
     timeout: 120
+    on_error: "continue"
     depends_on: ["validate-all-bundles"]
 
   # ============================================================================
@@ -1385,6 +1390,7 @@ steps:
     output: "standalone_completeness_results"
     parse_json: true
     timeout: 180
+    on_error: "continue"
     depends_on: ["validate-all-bundles"]
 
   # ============================================================================
@@ -1523,6 +1529,7 @@ steps:
     output: "experiments_validation_results"
     parse_json: true
     timeout: 120
+    on_error: "continue"
     depends_on: ["validate-all-bundles"]
 
   # ============================================================================
@@ -1702,6 +1709,7 @@ steps:
     output: "context_sink_results"
     parse_json: true
     timeout: 120
+    on_error: "continue"
     depends_on: ["validate-all-bundles"]
 
   # ============================================================================
@@ -1990,6 +1998,7 @@ steps:
     output: "tool_placement_results"
     parse_json: true
     timeout: 120
+    on_error: "continue"
     depends_on: ["validate-all-bundles"]
 
   # ============================================================================
@@ -2029,6 +2038,7 @@ steps:
     output: "recipe_validation"
     parse_json: true
     timeout: 10
+    on_error: "fail"
     depends_on: ["validate-all-flags"]
 
   # ============================================================================
@@ -2437,6 +2447,7 @@ steps:
     output: "quality_classification"
     parse_json: true
     timeout: 60
+    on_error: "fail"
     depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation"]
 
   # ============================================================================
@@ -2460,6 +2471,7 @@ steps:
     output: "optional_defaults"
     parse_json: true
     timeout: 30
+    on_error: "fail"
     depends_on: ["quality-classification"]
 
   - id: "set-default-approval-summary"
@@ -2468,6 +2480,7 @@ steps:
       echo "_Quick approval not performed - detailed LLM analysis was run instead._"
     output: "approval_summary"
     timeout: 10
+    on_error: "fail"
     depends_on: ["initialize-optional-outputs"]
 
   - id: "set-default-composition-analysis"
@@ -2476,6 +2489,7 @@ steps:
       echo "_Composition analysis not performed - all bundles met quality thresholds via deterministic checks._"
     output: "composition_analysis"
     timeout: 10
+    on_error: "fail"
     depends_on: ["initialize-optional-outputs"]
 
   - id: "set-default-repo-conventions"
@@ -2484,6 +2498,7 @@ steps:
       echo "_Convention analysis not performed - all bundles met quality thresholds._"
     output: "repo_conventions"
     timeout: 10
+    on_error: "fail"
     depends_on: ["initialize-optional-outputs"]
 
   # ============================================================================
@@ -2548,6 +2563,7 @@ steps:
       - [0-2 minor suggestions, or "None - repository is exemplary"]
     output: "approval_summary"
     timeout: 120
+    on_error: "continue"
 
   # ============================================================================
   # PHASE 4: Repository Composition Analysis (Conditional)
@@ -2644,6 +2660,7 @@ steps:
       - **Fix**: How to resolve
     output: "composition_analysis"
     timeout: 300
+    on_error: "continue"
     depends_on: ["quality-classification"]
 
   # ============================================================================
@@ -2703,6 +2720,7 @@ steps:
       Only list FAIL items if they genuinely break functionality or violate hygiene rules.
     output: "repo_conventions"
     timeout: 300
+    on_error: "continue"
     depends_on: ["composition-analysis"]
 
   # ============================================================================
@@ -2926,4 +2944,5 @@ steps:
         - Python packaging must build successfully (if present)
     output: "final_report"
     timeout: 300
+    on_error: "fail"
     depends_on: ["quality-classification", "quick-approval", "composition-analysis", "repo-conventions", "set-default-approval-summary", "set-default-composition-analysis", "set-default-repo-conventions", "set-default-recipe-validation"]
