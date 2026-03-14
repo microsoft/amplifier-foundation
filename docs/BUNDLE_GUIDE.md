@@ -584,6 +584,122 @@ Create README.md documenting:
 
 ---
 
+## Creating Tool Modules
+
+When your behavior includes a `tools:` entry, you need a Python module that registers the tool at session startup. This section covers the full contract.
+
+> **Full skill available**: Load `creating-amplifier-modules` for complete examples, test patterns, and anti-rationalization guidance.
+
+### Module Directory Structure
+
+```
+modules/tool-{name}/
+├── pyproject.toml                        # Package config with entry point
+└── amplifier_module_tool_{name}/
+    └── __init__.py                       # Defines tool class + mount()
+```
+
+### The mount() Contract — Iron Law
+
+**`mount()` MUST call `coordinator.mount()`. A `mount()` that logs and returns `None` WILL fail with:**
+
+```
+protocol_compliance: No tool was mounted and mount() did not return a Tool instance
+```
+
+This error fires **every time any agent using the behavior is spawned** — not just in testing.
+
+### Minimal Complete Example
+
+```python
+"""Amplifier tool module for {name}."""
+import logging
+from typing import Any
+from amplifier_core import ToolResult
+
+logger = logging.getLogger(__name__)
+
+
+class MyTool:
+    @property
+    def name(self) -> str:
+        return "my_tool"
+
+    @property
+    def description(self) -> str:
+        return "What this tool does."
+
+    @property
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {"param": {"type": "string"}}, "required": ["param"]}
+
+    async def execute(self, input_data: dict[str, Any]) -> ToolResult:
+        return ToolResult(success=True, output=do_the_work(input_data["param"]))
+
+
+async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    tool = MyTool()
+    await coordinator.mount("tools", tool, name=tool.name)    # ← REQUIRED
+    return {"name": "tool-my-tool", "version": "0.1.0", "provides": ["my_tool"]}
+```
+
+### Phase 1 Placeholder Pattern
+
+When the tool logic isn't implemented yet, create a real tool class that returns "not yet implemented." **Do not skip the class or skip `coordinator.mount()`.** A placeholder IS a real tool — it just tells callers it's pending:
+
+```python
+class MyToolPlaceholder:
+    @property
+    def name(self) -> str: return "my_tool"
+
+    @property
+    def description(self) -> str: return "My tool — Phase 2 implementation pending."
+
+    @property
+    def input_schema(self) -> dict: return {"type": "object", "properties": {}}
+
+    async def execute(self, input_data: dict[str, Any]) -> ToolResult:
+        return ToolResult(success=False, output="Not yet implemented. Phase 2 pending.")
+
+
+async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    tool = MyToolPlaceholder()
+    await coordinator.mount("tools", tool, name=tool.name)    # ← still REQUIRED
+    return {"name": "tool-my-tool", "version": "0.1.0", "provides": ["my_tool"]}
+```
+
+### pyproject.toml Entry Point
+
+```toml
+[project]
+name = "amplifier-module-tool-{name}"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []   # amplifier-core is a peer dep — do NOT declare it here
+
+[project.entry-points."amplifier.modules"]
+tool-{name} = "amplifier_module_tool_{name}:mount"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["amplifier_module_tool_{name}"]
+```
+
+### Behavior YAML Reference
+
+```yaml
+tools:
+  - module: tool-{name}
+    source: ./modules/tool-{name}    # local path
+    # OR for published modules:
+    # source: git+https://github.com/org/repo@main#subdirectory=modules/tool-{name}
+```
+
+---
+
 ## Anti-Patterns to Avoid
 
 ### ❌ Duplicating Foundation
@@ -1285,6 +1401,12 @@ amplifier-bundle-recipes/
 - Verify `source:` path is correct relative to bundle location
 - Check module has `pyproject.toml` with entry point
 - Ensure `mount()` function exists in module
+
+### "protocol_compliance: No tool was mounted" error
+
+This fires when `mount()` returns `None` without calling `coordinator.mount()`. The validator requires that every module registers something.
+
+**Fix**: Your `mount()` must call `await coordinator.mount("tools", tool, name=tool.name)`. A placeholder tool class (that returns "not yet implemented" when called) is fine — but you MUST have a class and MUST call `coordinator.mount()`. See the **Creating Tool Modules** section above for the complete pattern, or load the `creating-amplifier-modules` skill.
 
 ### Agent not loading
 
