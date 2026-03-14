@@ -92,6 +92,7 @@ steps:
     output: "env_check"
     parse_json: true
     timeout: 180
+    on_error: "fail"
 
   # ============================================================================
   # PHASE 2: Bundle Discovery
@@ -176,6 +177,7 @@ steps:
     output: "discovery"
     parse_json: true
     timeout: 30
+    on_error: "fail"
     depends_on: ["environment-check"]
 
   # ============================================================================
@@ -196,6 +198,7 @@ steps:
       bundle_type: "{{bundle.bundle_type}}"
       repo_root: "{{bundle.repo_root}}"
     timeout: 600
+    on_error: "continue"
     depends_on: ["discover-bundles"]
 
   # ============================================================================
@@ -273,4 +276,5 @@ steps:
       - Dependency tracing: enabled
     output: "final_report"
     timeout: 300
+    on_error: "fail"
     depends_on: ["validate-bundles"]
