@@ -19,7 +19,8 @@
 7. [Session Persistence and Restoration](#7-session-persistence-and-restoration)
 8. [Common Anti-Patterns](#8-common-anti-patterns)
 9. [The Protocol Boundary Pattern (In Depth)](#9-the-protocol-boundary-pattern-in-depth)
-10. [Cross-References](#10-cross-references)
+10. [Integrating via amplifierd (HTTP/SSE)](#10-integrating-via-amplifierd-httpsse)
+11. [Cross-References](#11-cross-references)
 
 ---
 
@@ -879,7 +880,309 @@ async def test_websocket_handler():
 
 ---
 
-## 10. Cross-References
+## 10. Integrating via amplifierd (HTTP/SSE)
+
+Everything above assumes you're embedding Amplifier directly in a Python application — importing `amplifier_core`, calling `load_bundle()`, managing sessions in-process. That's the most powerful approach, but it requires Python.
+
+**amplifierd** is the alternative: a standalone HTTP daemon that wraps Amplifier behind a REST + SSE API. Run it as a service, talk to it from any language. TypeScript frontends, Go microservices, Swift iOS apps, shell scripts — anything that can make HTTP requests can drive Amplifier sessions.
+
+### When to Use amplifierd vs. Direct Embedding
+
+| Criterion | Direct Embedding (`amplifier_core`) | amplifierd (HTTP/SSE) |
+|-----------|-------------------------------------|----------------------|
+| Language | Python only | Any language |
+| Latency | In-process (lowest) | HTTP overhead (minimal on localhost) |
+| Control | Full — access coordinator, mount points, hooks directly | API-mediated — everything goes through REST endpoints |
+| Streaming | In-process hooks and callbacks | SSE event stream |
+| Plugin extensibility | N/A — you own the process | amplifierd plugin system |
+| Deployment | Embedded in your app process | Separate daemon process |
+| Multi-client | You manage concurrency | Built-in session management, EventBus fanout |
+
+**Rule of thumb**: If your application is Python and you want fine-grained control over the session lifecycle, embed directly — you get more control and less overhead. If you need polyglot access, multiple clients, or a service boundary, use amplifierd.
+
+### Running amplifierd
+
+```bash
+# Install
+uv tool install git+https://github.com/microsoft/amplifierd
+
+# Start with defaults (localhost:8410, "distro" bundle)
+amplifierd serve
+
+# Customize
+amplifierd serve --port 9000 --default-bundle foundation --log-level debug
+
+# Register additional bundles
+amplifierd serve --bundle my-app=./path/to/bundle.md --default-bundle my-app
+```
+
+amplifierd binds to `127.0.0.1:8410` by default. Configuration layers (highest priority wins): CLI flags → environment variables (`AMPLIFIERD_*`) → `~/.amplifierd/settings.json` → built-in defaults.
+
+On startup, amplifierd pre-warms the default bundle — loading, preparing, and exercising the module stack so the first `POST /sessions` is fast. Poll `GET /ready` to know when the daemon is ready to accept session requests.
+
+### The Core Workflow
+
+The session lifecycle from [Section 2](#2-the-universal-session-lifecycle) maps directly to HTTP calls:
+
+```
+load_bundle() + prepare()  →  POST /sessions (daemon handles both)
+create_session()           →  POST /sessions (returns session_id)
+session.execute()          →  POST /sessions/{id}/execute         (sync)
+                              POST /sessions/{id}/execute/stream  (async + SSE)
+session.close()            →  DELETE /sessions/{id}
+```
+
+#### Creating a Session
+
+```bash
+curl -X POST http://localhost:8410/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"working_dir": "/home/user/project"}'
+```
+
+Response:
+
+```json
+{
+  "session_id": "abc123",
+  "bundle": "distro",
+  "status": "idle",
+  "created_at": "2026-03-13T14:00:00Z"
+}
+```
+
+Specify a `bundle_name` (from the registry) or `bundle_uri` (any valid bundle source) to use a non-default bundle. Pass `config_overrides` for runtime adjustments.
+
+#### Synchronous Execution
+
+```bash
+curl -X POST http://localhost:8410/sessions/abc123/execute \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Explain the repository structure"}'
+```
+
+Blocks until complete. Returns `{"response": "..."}`. Good for simple request/response integrations, but you get no visibility into what's happening during execution.
+
+#### Streaming Execution (SSE)
+
+For real-time visibility, use the streaming path:
+
+```bash
+# 1. Start listening for events (in one terminal/connection)
+curl -N http://localhost:8410/events?session=abc123
+
+# 2. Fire off an execution (in another)
+curl -X POST http://localhost:8410/sessions/abc123/execute/stream \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Refactor the authentication module"}'
+```
+
+The `/execute/stream` endpoint returns immediately with a `correlation_id`. Events arrive on the SSE stream as the agent works:
+
+```
+event: content_block:delta
+data: {"text": "I'll start by examining...", "session_id": "abc123", "sequence": 1}
+
+event: tool:start
+data: {"tool": "read_file", "session_id": "abc123", "sequence": 2}
+
+event: tool:complete
+data: {"tool": "read_file", "session_id": "abc123", "sequence": 3}
+
+event: orchestrator:complete
+data: {"response": "...", "session_id": "abc123", "sequence": 15}
+```
+
+The `correlation_id` ties events to the execution that produced them. The `session` query parameter on `/events` automatically includes events from spawned child sessions (agent delegation), so you see the full execution tree through a single SSE connection.
+
+**Event filtering**: Use `filter=content_block:*,orchestrator:complete` to subscribe to only the event types you care about.
+
+#### Approvals
+
+When the agent requests human confirmation (e.g., before running a destructive command), the approval appears as a pending request:
+
+```bash
+# Poll for pending approvals
+curl http://localhost:8410/sessions/abc123/approvals
+
+# Respond
+curl -X POST http://localhost:8410/sessions/abc123/approvals/req_456 \
+  -H "Content-Type: application/json" \
+  -d '{"approved": true}'
+```
+
+Approval requests also arrive as SSE events, so a real-time UI can present them immediately without polling.
+
+### Example: TypeScript Client
+
+A minimal TypeScript integration showing the full create → stream → execute flow:
+
+```typescript
+const BASE = "http://localhost:8410";
+
+// Create session
+const session = await fetch(`${BASE}/sessions`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ working_dir: "/home/user/project" }),
+}).then(r => r.json());
+
+// Connect SSE for real-time events
+const events = new EventSource(
+  `${BASE}/events?session=${session.session_id}`
+);
+events.addEventListener("content_block:delta", (e) => {
+  const data = JSON.parse(e.data);
+  process.stdout.write(data.text);
+});
+events.addEventListener("orchestrator:complete", () => {
+  events.close();
+});
+
+// Fire async execution
+await fetch(`${BASE}/sessions/${session.session_id}/execute/stream`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ prompt: "What does this project do?" }),
+});
+```
+
+### Additional API Capabilities
+
+Beyond the core execute loop, amplifierd exposes the full Amplifier surface over HTTP:
+
+| Capability | Endpoint | Description |
+|------------|----------|-------------|
+| Session forking | `POST /sessions/{id}/fork` | Branch a conversation at a specific turn |
+| Context manipulation | `GET/POST/PUT/DELETE /sessions/{id}/context/messages` | Read, inject, replace, or clear conversation history |
+| Hot module mounting | `POST /sessions/{id}/modules/mount` | Add tools or hooks to a live session |
+| Agent spawning | `POST /sessions/{id}/spawn` | Explicitly spawn a child agent session |
+| Bundle management | `POST /bundles/register`, `POST /bundles/prepare` | Register, load, prepare, and compose bundles |
+| Mode management | `GET/POST /sessions/{id}/modes` | List and switch agent modes |
+| Validation | `POST /validate/bundle`, `POST /validate/module` | Validate bundles and modules before use |
+| Session transcript | `GET /sessions/{id}/transcript` | Retrieve the full conversation transcript |
+| Session lineage | `GET /sessions/{id}/lineage`, `/tree` | Navigate the parent/child session hierarchy |
+
+Full endpoint documentation is in `amplifierd/docs/api-usage.md`. The OpenAPI spec is available at `http://localhost:8410/openapi.json` when the daemon is running (Swagger UI at `/docs`).
+
+### Writing amplifierd Plugins
+
+Plugins extend amplifierd with custom HTTP endpoints. The contract is deliberately minimal: one function, no base class, no SDK.
+
+#### The Contract
+
+A plugin is a Python package that:
+
+1. Registers an entry point under the `amplifierd.plugins` group
+2. Exports a `create_router(state) → APIRouter` function
+
+That's it. The returned `APIRouter` is included directly in the FastAPI app — your routes become first-class amplifierd endpoints.
+
+#### Minimal Plugin
+
+**`pyproject.toml`**:
+
+```toml
+[project]
+name = "amplifierd-plugin-webhooks"
+version = "0.1.0"
+dependencies = ["fastapi"]
+
+[project.entry-points."amplifierd.plugins"]
+webhooks = "amplifierd_plugin_webhooks"
+```
+
+**`src/amplifierd_plugin_webhooks/__init__.py`**:
+
+```python
+from fastapi import APIRouter, Request
+
+
+def create_router(state) -> APIRouter:
+    router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+    @router.post("/github")
+    async def github_webhook(request: Request):
+        payload = await request.json()
+        event = request.headers.get("X-GitHub-Event")
+
+        if event == "pull_request" and payload.get("action") == "opened":
+            # Create a session for this review
+            session_handle = await state.session_manager.create(
+                bundle_name="code-reviewer",
+                working_dir=f"/repos/{payload['repository']['full_name']}",
+            )
+
+            # Execute a review
+            pr = payload["pull_request"]
+            result = await session_handle.execute(
+                f"Review PR #{pr['number']}: {pr['title']}\n\n{pr['body']}"
+            )
+
+            # Clean up
+            await state.session_manager.destroy(session_handle.session_id)
+
+            return {"review": result}
+
+        return {"status": "ignored"}
+
+    return router
+```
+
+#### Available State
+
+The `state` argument is FastAPI's `app.state`, giving plugins access to amplifierd's internals:
+
+| Attribute | Type | Use For |
+|-----------|------|---------|
+| `state.session_manager` | `SessionManager` | Creating, looking up, listing, and destroying sessions |
+| `state.event_bus` | `EventBus` | Publishing custom events and subscribing to SSE streams |
+| `state.bundle_registry` | `BundleRegistry` | Loading, preparing, and composing bundles |
+| `state.settings` | `DaemonSettings` | Reading daemon configuration |
+
+#### Installing Plugins
+
+```bash
+# Install amplifierd with your plugin
+uv tool install --with ./my-plugin git+https://github.com/microsoft/amplifierd
+
+# Or during development
+uv pip install -e ./my-plugin
+amplifierd serve
+```
+
+#### Disabling Plugins
+
+In `~/.amplifierd/settings.json`:
+
+```json
+{
+  "disabled_plugins": ["webhooks"]
+}
+```
+
+Or via environment variable: `AMPLIFIERD_DISABLED_PLUGINS='["webhooks"]'`.
+
+Plugin failures are isolated — if a plugin raises during loading, it's skipped and logged. Core endpoints and other plugins continue normally.
+
+#### What Plugins Are Good For
+
+Plugins are the right choice when you want to extend amplifierd's HTTP surface without forking the daemon. Common patterns:
+
+- **Webhook receivers** — GitHub, Slack, or custom webhooks that trigger Amplifier sessions
+- **Custom auth** — SSO integration, token validation, or tenant routing
+- **Domain-specific endpoints** — Batch processing APIs, scheduled job triggers, custom health checks
+- **Integration bridges** — Endpoints that translate between external service formats and Amplifier's session model
+
+Plugins are NOT the right choice for extending the agent's capabilities (use tools), modifying session behavior (use hooks), or changing the orchestrator loop (use a custom orchestrator module). The plugin system is strictly about the HTTP transport layer.
+
+#### Anti-Pattern: Plugin as Orchestrator
+
+A plugin that calls `provider.complete()` directly, manages its own tool dispatch loop, or bypasses `session.execute()` is reimplementing the orchestrator inside the transport layer. The same anti-pattern from [Section 8](#8-common-anti-patterns) applies here — use `session_manager.create()` + `session_handle.execute()` and let the orchestrator do its job.
+
+---
+
+## 11. Cross-References
 
 This guide connects to the broader Amplifier documentation:
 
