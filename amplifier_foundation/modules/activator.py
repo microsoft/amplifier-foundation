@@ -16,6 +16,7 @@ import logging
 import site
 import subprocess
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Callable
 
@@ -308,6 +309,7 @@ class ModuleActivator:
         module_path: Path,
         module_name: str | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
+        force: bool = False,
     ) -> None:
         """Install Python dependencies for a module.
 
@@ -315,18 +317,54 @@ class ModuleActivator:
         ensures installation targets the correct environment even when run via
         `uv tool install` where there's no active virtualenv.
 
-        Skips installation if the module is already installed with matching fingerprint.
+        Skips installation if the package is already importable in the current
+        environment (e.g. installed from PyPI as a prebuilt wheel), or if the module
+        is already installed with a matching fingerprint.
 
         Args:
             module_path: Path to the module directory.
             module_name: Optional human-readable module name for progress reporting.
             progress_callback: Optional callback(action, detail) for progress reporting.
+            force: If True, skip all early-exit checks and force a reinstall from source.
+                Use this only when you specifically need to rebuild (e.g. a --force flag
+                on update). When False (default), packages already importable from the
+                current environment are never editable-installed from source.
 
         Raises:
             subprocess.CalledProcessError: If installation fails.
         """
+        if not force:
+            # Skip packages that are already importable in the current environment.
+            # This prevents editable-installing packages (like amplifier-core) that were
+            # already installed from PyPI as prebuilt wheels. Without this check, a repo
+            # cloned into the cache for its YAML/context files would trigger a source
+            # build that may require native toolchains (Rust, protobuf, etc).
+            #
+            # This guard is the definitive check regardless of which caller invoked us
+            # (activate_bundle_package, update_bundle, or any future caller). The guard
+            # in activate_bundle_package() is kept as belt-and-suspenders but this one
+            # is authoritative.
+            pyproject = module_path / "pyproject.toml"
+            if pyproject.exists():
+                try:
+                    import tomllib
+
+                    with open(pyproject, "rb") as f:
+                        data = tomllib.load(f)
+                    pkg_name = data.get("project", {}).get("name", "")
+                    if pkg_name:
+                        normalized = pkg_name.replace("-", "_")
+                        if find_spec(normalized) is not None:
+                            logger.debug(
+                                f"Package '{pkg_name}' already installed from wheels, "
+                                f"skipping editable install from {module_path}"
+                            )
+                            return
+                except Exception:
+                    pass  # If we can't check, proceed with install
+
         # Check if already installed with matching fingerprint
-        if self._install_state.is_installed(module_path):
+        if not force and self._install_state.is_installed(module_path):
             logger.debug(f"Skipping install for {module_path.name} (already installed)")
             return
 
