@@ -6,6 +6,10 @@ Each level provides more confidence but requires more setup:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
+│ 5. Docker E2E Smoke Test  (confidence: █████)           │
+│    Built wheel in isolated container, real LLM calls    │
+│    Tests: Does the artifact actually work end-to-end?   │
+├─────────────────────────────────────────────────────────┤
 │ 4. Push & CI              (confidence: ████░)           │
 │    Full CI pipeline, all tests, real dependencies       │
 ├─────────────────────────────────────────────────────────┤
@@ -33,6 +37,8 @@ Each level provides more confidence but requires more setup:
 | Core contract change | 3. Shadow environment |
 | Multi-repo coordinated change | 3. Shadow environment |
 | Breaking change | 3. Shadow + careful push order |
+| **Core release / any tag** | **5. Docker E2E smoke test** |
+| Multi-repo coordinated change | 3. Shadow + 5. E2E |
 
 ## Level 1: Unit Tests
 
@@ -140,6 +146,59 @@ Full CI validation on GitHub:
 4. Cross-repo CI if configured
 
 **When required**: Before merging any PR.
+
+## Level 5: Docker E2E Smoke Test
+
+The highest-confidence validation — tests the actual built artifact in a clean, isolated environment with real LLM calls.
+
+```bash
+# In amplifier-core:
+./scripts/e2e-smoke-test.sh
+```
+
+### What It Does
+
+1. Builds a wheel from local source (`maturin build`)
+2. Creates a fresh Docker container (`python:3.12-slim`)
+3. Installs `amplifier` from git (CLI + foundation from GitHub)
+4. Overrides `amplifier-core` with the local wheel
+5. Runs a real session: `amplifier run "Ask recipe author to run one of its example recipes"`
+6. Detects crashes, tool failures, and timeouts
+7. Reports PASS/FAIL
+
+### When Required
+
+| Change Type | Minimum Level |
+|-------------|---------------|
+| Core internal change | 2. Local override |
+| Core contract change | 3. Shadow environment |
+| **Core release / any tag** | **5. Docker E2E smoke test** |
+| Multi-repo coordinated change | 3. Shadow + 5. E2E |
+
+### Why It Exists
+
+Added after the v1.2.3/v1.2.4 incidents where ALL unit tests (549) and integration tests passed, but the actual installed wheel crashed on startup. The bugs were in the Rust↔Python FFI boundary and only manifested through the full CLI startup → tool dispatch → agent delegation path.
+
+**Key insight:** Unit tests validate code correctness. E2E tests validate artifact correctness — that `maturin build` → wheel → `uv tool install` → `amplifier run` actually works.
+
+## Cross-Repo Validation Requirements
+
+### The Problem
+
+Bugs in one repo may only manifest through another repo's code paths. Example: amplifier-core v1.2.3 shipped a Rust FFI bug (`__dict__` support missing on RustCoordinator) that passed all core unit tests but broke ALL tool dispatch — only catchable by running a real session through foundation's tool-delegate module and CLI's CommandProcessor.
+
+### The Rule
+
+Changes to **kernel contracts** (amplifier-core) MUST be validated through at least one full E2E path exercising: session init → tool dispatch → agent delegation → sub-session spawning.
+
+### Cross-Repo Dependency Map
+
+| If you change... | You MUST test through... |
+|-----------------|--------------------------|
+| Core coordinator/session | Full `amplifier run` E2E (Level 5) |
+| Core tool dispatch | Foundation tool-delegate + real tool call |
+| Foundation bundle loading | CLI `amplifier run --bundle` with real bundle |
+| Module protocol changes | Shadow test with affected modules |
 
 ## Testing Specific Scenarios
 
