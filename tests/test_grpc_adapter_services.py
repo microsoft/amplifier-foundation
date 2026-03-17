@@ -413,3 +413,142 @@ class TestProviderServiceAdapter:
         ctx = MockContext()
         result = await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
         assert len(result.tool_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# MockModule — minimal module for LifecycleServiceAdapter tests
+# ---------------------------------------------------------------------------
+
+
+class MockModule:
+    """Module with async mount and cleanup functions for testing LifecycleServiceAdapter."""
+
+    name = "mock_module"
+    description = "A mock module for testing"
+
+    async def mount(self, config: dict) -> None:
+        self.mounted_config = config
+
+    async def cleanup(self) -> None:
+        self.cleaned_up = True
+
+
+class MockSyncModule:
+    """Module with synchronous mount function."""
+
+    name = "sync_module"
+    description = "A sync module"
+
+    def mount(self, config: dict) -> None:
+        self.mounted_config = config
+
+
+class MockModuleNoMount:
+    """Module without mount/cleanup functions (bare module)."""
+
+    name = "bare_module"
+    description = "A module with no lifecycle hooks"
+
+
+class MockFailingModule:
+    """Module whose mount raises an exception."""
+
+    name = "failing_module"
+    description = "A module that fails on mount"
+
+    async def mount(self, config: dict) -> None:
+        raise RuntimeError("mount failed")
+
+
+# ---------------------------------------------------------------------------
+# TestLifecycleServiceAdapter
+# ---------------------------------------------------------------------------
+
+
+class TestLifecycleServiceAdapter:
+    """Tests for LifecycleServiceAdapter gRPC service."""
+
+    def _make_adapter(self, module: Any = None) -> Any:
+        from amplifier_foundation.grpc_adapter.services import (  # type: ignore[import-not-found]  # noqa: PLC0415
+            LifecycleServiceAdapter,
+        )
+
+        if module is None:
+            module = MockModule()
+        return LifecycleServiceAdapter(module)
+
+    @pytest.mark.asyncio
+    async def test_mount_with_async_fn_returns_success(self) -> None:
+        """Mount with async mount_fn succeeds and sets _healthy=True."""
+        module = MockModule()
+        adapter = self._make_adapter(module)
+        request = pb2.MountRequest()  # type: ignore[union-attr]
+        request.config["key"] = "value"
+        ctx = MockContext()
+
+        response = await adapter.Mount(request, ctx)
+
+        assert response.success is True
+        assert response.status == pb2.HEALTH_STATUS_SERVING  # type: ignore[union-attr]
+        assert adapter._healthy is True
+
+    @pytest.mark.asyncio
+    async def test_mount_with_sync_fn_succeeds(self) -> None:
+        """Mount with synchronous mount_fn runs via executor and returns success."""
+        module = MockSyncModule()
+        adapter = self._make_adapter(module)
+        request = pb2.MountRequest()  # type: ignore[union-attr]
+        ctx = MockContext()
+
+        response = await adapter.Mount(request, ctx)
+
+        assert response.success is True
+        assert adapter._healthy is True
+
+    @pytest.mark.asyncio
+    async def test_mount_on_exception_sets_unhealthy(self) -> None:
+        """Mount that raises sets _healthy=False and returns failure response."""
+        module = MockFailingModule()
+        adapter = self._make_adapter(module)
+        request = pb2.MountRequest()  # type: ignore[union-attr]
+        ctx = MockContext()
+
+        response = await adapter.Mount(request, ctx)
+
+        assert response.success is False
+        assert "mount failed" in response.error
+        assert response.status == pb2.HEALTH_STATUS_NOT_SERVING  # type: ignore[union-attr]
+        assert adapter._healthy is False
+
+    @pytest.mark.asyncio
+    async def test_health_check_returns_serving_when_healthy(self) -> None:
+        """HealthCheck returns SERVING status when module is healthy."""
+        adapter = self._make_adapter()
+        ctx = MockContext()
+
+        response = await adapter.HealthCheck(pb2.Empty(), ctx)  # type: ignore[union-attr]
+
+        assert response.status == pb2.HEALTH_STATUS_SERVING  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_returns_empty(self) -> None:
+        """Cleanup calls cleanup_fn if present and returns Empty."""
+        module = MockModule()
+        adapter = self._make_adapter(module)
+        ctx = MockContext()
+
+        response = await adapter.Cleanup(pb2.Empty(), ctx)  # type: ignore[union-attr]
+
+        assert response == pb2.Empty()  # type: ignore[union-attr]
+        assert module.cleaned_up is True
+
+    @pytest.mark.asyncio
+    async def test_get_module_info_returns_name_and_description(self) -> None:
+        """GetModuleInfo returns ModuleInfo with name and description attributes."""
+        adapter = self._make_adapter()
+        ctx = MockContext()
+
+        response = await adapter.GetModuleInfo(pb2.Empty(), ctx)  # type: ignore[union-attr]
+
+        assert response.name == "mock_module"
+        assert response.description == "A mock module for testing"

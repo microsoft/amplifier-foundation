@@ -160,3 +160,64 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             tool_calls = parse_fn(request)
         tool_call_protos = self._to_tool_call_protos(tool_calls)
         return pb2.ParseToolCallsResponse(tool_calls=tool_call_protos)  # type: ignore[attr-defined]
+
+
+class LifecycleServiceAdapter(pb2_grpc.ModuleLifecycleServicer):
+    """gRPC servicer that adapts a Python module object to the ModuleLifecycle contract."""
+
+    def __init__(self, module: Any) -> None:
+        self._module = module
+        self._healthy = True
+
+    async def Mount(self, request: Any, context: Any) -> Any:
+        """Mount the module with the given config."""
+        try:
+            config = dict(request.config)
+            mount_fn = getattr(self._module, "mount", None)
+            if mount_fn is not None:
+                if inspect.iscoroutinefunction(mount_fn):
+                    await mount_fn(config)
+                else:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, mount_fn, config)
+            self._healthy = True
+            return pb2.MountResponse(  # type: ignore[attr-defined]
+                success=True,
+                status=pb2.HEALTH_STATUS_SERVING,  # type: ignore[attr-defined]
+            )
+        except Exception as e:
+            logger.exception("Mount failed")
+            self._healthy = False
+            return pb2.MountResponse(  # type: ignore[attr-defined]
+                success=False,
+                error=str(e),
+                status=pb2.HEALTH_STATUS_NOT_SERVING,  # type: ignore[attr-defined]
+            )
+
+    async def HealthCheck(self, request: Any, context: Any) -> Any:
+        """Return health status based on current _healthy flag."""
+        if self._healthy:
+            status = pb2.HEALTH_STATUS_SERVING  # type: ignore[attr-defined]
+        else:
+            status = pb2.HEALTH_STATUS_NOT_SERVING  # type: ignore[attr-defined]
+        return pb2.HealthCheckResponse(status=status)  # type: ignore[attr-defined]
+
+    async def Cleanup(self, request: Any, context: Any) -> Any:
+        """Call the module's cleanup function if present, then return Empty."""
+        try:
+            cleanup_fn = getattr(self._module, "cleanup", None)
+            if cleanup_fn is not None:
+                if inspect.iscoroutinefunction(cleanup_fn):
+                    await cleanup_fn()
+                else:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, cleanup_fn)
+        except Exception:
+            logger.exception("Cleanup failed")
+        return pb2.Empty()  # type: ignore[attr-defined]
+
+    async def GetModuleInfo(self, request: Any, context: Any) -> Any:
+        """Return module name and description with defaults."""
+        name = getattr(self._module, "name", "unknown")
+        description = getattr(self._module, "description", "")
+        return pb2.ModuleInfo(name=name, description=description)  # type: ignore[attr-defined]
