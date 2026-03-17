@@ -45,12 +45,16 @@ class ToolServiceAdapter(pb2_grpc.ToolServiceServicer):
     async def Execute(self, request: Any, context: Any) -> Any:
         """Execute the tool with JSON input and return the serialized result."""
         try:
+            # v1: input is always JSON-encoded bytes regardless of content_type
             input_data = json.loads(request.input.decode("utf-8"))
             result = await _invoke(self._tool.execute, input_data)
+            output_val = result.output if result.output is not None else ""
+            if isinstance(output_val, bytes):
+                output_val = output_val.decode("utf-8")
             return pb2.ToolExecuteResponse(  # type: ignore[attr-defined]
                 success=result.success,
-                output=str(result.output).encode("utf-8"),
-                content_type="text/plain",
+                output=json.dumps(output_val).encode("utf-8"),
+                content_type=request.content_type or "application/json",
                 error=result.error or "",
             )
         except Exception as e:
