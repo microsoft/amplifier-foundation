@@ -15,6 +15,7 @@ import importlib
 import inspect
 import json
 import logging
+import re
 import signal
 import sys
 from pathlib import Path
@@ -92,10 +93,15 @@ async def _load_module_object(module_path: Path, module_type: str) -> Any:
     # Ensure module_path is on sys.path
     path_str = str(module_path)
     if path_str not in sys.path:
-        sys.path.insert(0, path_str)
+        sys.path.append(path_str)
 
     # Derive package name: directory basename with hyphens → underscores
     package_name = module_path.name.replace("-", "_")
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", package_name):
+        raise ValueError(
+            f"Invalid package name '{package_name}' derived from module path "
+            f"'{module_path.name}'. Package names must be valid Python identifiers."
+        )
 
     # Import the package
     module_obj = importlib.import_module(package_name)
@@ -188,6 +194,10 @@ async def _create_server(
         ToolServiceAdapter,
     )
 
+    # v1 trust model: localhost port isolation is the sole access gate.
+    # No TLS or token-based auth is configured on the gRPC server itself.
+    # AMPLIFIER_AUTH_TOKEN is available in os.environ for loaded modules
+    # to use directly when making outbound calls to the kernel.
     server = grpc.aio.server()
 
     # Register type-specific servicer
@@ -293,16 +303,19 @@ async def _run() -> None:
             print(f"ERROR:{e}", flush=True)
             sys.exit(1)
 
+        # 8. Create gRPC server
+        try:
+            server, actual_port = await _create_server(
+                module_obj, module_type, args.port
+            )
+        except Exception as e:
+            sys.stdout = real_stdout
+            print(f"ERROR:Failed to create gRPC server: {e}", flush=True)
+            sys.exit(1)
+
     finally:
         # Always restore stdout
         sys.stdout = real_stdout
-
-    # 8. Create gRPC server
-    try:
-        server, actual_port = await _create_server(module_obj, module_type, args.port)
-    except Exception as e:
-        print(f"ERROR:Failed to create gRPC server: {e}", flush=True)
-        sys.exit(1)
 
     # 9. Signal readiness
     print(f"READY:{actual_port}", flush=True)
