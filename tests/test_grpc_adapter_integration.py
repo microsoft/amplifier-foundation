@@ -484,6 +484,112 @@ class TestAdapterHappyPath:
                 proc.wait(timeout=5)
                 raise
 
+    def test_provider_adapter_prints_ready(self) -> None:
+        """Provider adapter prints ``READY:<port>`` with port > 0 on successful startup."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = _write_provider_module(tmpdir)
+            manifest = _make_provider_manifest(module_path)
+            proc = _spawn_adapter(manifest)
+            try:
+                line = _read_first_line(proc)
+                assert line.startswith("READY:"), (
+                    f"Expected 'READY:<port>', got: {line!r}\n"
+                    f"stderr: {proc.stderr.read().decode() if proc.stderr else ''}"
+                )
+                port = int(line.split(":", 1)[1])
+                assert port > 0, f"Expected port > 0, got {port}"
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
+
+    def test_grpc_client_list_models(self) -> None:
+        """gRPC ``ListModels`` returns one model with id='test-model-1'."""
+        import grpc
+        from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
+        from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = _write_provider_module(tmpdir)
+            manifest = _make_provider_manifest(module_path)
+            proc = _spawn_adapter(manifest)
+            try:
+                line = _read_first_line(proc)
+                port = int(line.split(":", 1)[1])
+
+                channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+                try:
+                    stub = pb2_grpc.ProviderServiceStub(channel)
+                    response = stub.ListModels(pb2.Empty())  # type: ignore[attr-defined]
+                    assert len(response.models) == 1, (
+                        f"Expected 1 model, got {len(response.models)}"
+                    )
+                    assert response.models[0].id == "test-model-1", (
+                        f"Expected id='test-model-1', got {response.models[0].id!r}"
+                    )
+                finally:
+                    channel.close()
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
+
+    def test_grpc_client_complete(self) -> None:
+        """gRPC ``Complete`` returns content='Hello from test provider' and finish_reason='stop'."""
+        import grpc
+        from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
+        from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = _write_provider_module(tmpdir)
+            manifest = _make_provider_manifest(module_path)
+            proc = _spawn_adapter(manifest)
+            try:
+                line = _read_first_line(proc)
+                port = int(line.split(":", 1)[1])
+
+                channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+                try:
+                    stub = pb2_grpc.ProviderServiceStub(channel)
+                    response = stub.Complete(pb2.ChatRequest())  # type: ignore[attr-defined]
+                    assert response.content == "Hello from test provider", (
+                        f"Expected content='Hello from test provider', got {response.content!r}"
+                    )
+                    assert response.finish_reason == "stop", (
+                        f"Expected finish_reason='stop', got {response.finish_reason!r}"
+                    )
+                finally:
+                    channel.close()
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
+
+    def test_grpc_client_health_check_provider(self) -> None:
+        """gRPC ``HealthCheck`` on provider adapter returns ``HEALTH_STATUS_SERVING``."""
+        import grpc
+        from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
+        from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = _write_provider_module(tmpdir)
+            manifest = _make_provider_manifest(module_path)
+            proc = _spawn_adapter(manifest)
+            try:
+                line = _read_first_line(proc)
+                port = int(line.split(":", 1)[1])
+
+                channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+                try:
+                    lifecycle_stub = pb2_grpc.ModuleLifecycleStub(channel)
+                    response = lifecycle_stub.HealthCheck(pb2.Empty())  # type: ignore[attr-defined]
+                    assert response.status == pb2.HEALTH_STATUS_SERVING, (  # type: ignore[attr-defined]
+                        f"Expected HEALTH_STATUS_SERVING ({pb2.HEALTH_STATUS_SERVING}), "  # type: ignore[attr-defined]
+                        f"got {response.status}"
+                    )
+                finally:
+                    channel.close()
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
+
 
 # ---------------------------------------------------------------------------
 # Failure-path tests
