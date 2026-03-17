@@ -460,6 +460,20 @@ class MockFailingModule:
         raise RuntimeError("mount failed")
 
 
+class MockFailingCleanupModule:
+    """Module whose cleanup raises an exception."""
+
+    name = "failing_cleanup_module"
+    description = "A module that fails on cleanup"
+
+    async def cleanup(self) -> None:
+        raise RuntimeError("cleanup failed")
+
+
+class MockBareModule:
+    """Module with no name, description, mount, or cleanup attributes."""
+
+
 # ---------------------------------------------------------------------------
 # TestLifecycleServiceAdapter
 # ---------------------------------------------------------------------------
@@ -552,3 +566,42 @@ class TestLifecycleServiceAdapter:
 
         assert response.name == "mock_module"
         assert response.description == "A mock module for testing"
+
+    @pytest.mark.asyncio
+    async def test_health_check_returns_not_serving_after_failed_mount(self) -> None:
+        """HealthCheck returns NOT_SERVING after a mount failure sets _healthy=False."""
+        module = MockFailingModule()
+        adapter = self._make_adapter(module)
+        request = pb2.MountRequest()  # type: ignore[union-attr]
+        ctx = MockContext()
+
+        # Drive _healthy to False via a failed mount
+        await adapter.Mount(request, ctx)
+
+        response = await adapter.HealthCheck(pb2.Empty(), ctx)  # type: ignore[union-attr]
+
+        assert response.status == pb2.HEALTH_STATUS_NOT_SERVING  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_absorbs_exception_silently(self) -> None:
+        """Cleanup does not propagate exceptions from cleanup_fn and still returns Empty."""
+        module = MockFailingCleanupModule()
+        adapter = self._make_adapter(module)
+        ctx = MockContext()
+
+        # Must not raise even though cleanup_fn raises internally
+        response = await adapter.Cleanup(pb2.Empty(), ctx)  # type: ignore[union-attr]
+
+        assert response == pb2.Empty()  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_get_module_info_uses_defaults_when_attrs_missing(self) -> None:
+        """GetModuleInfo returns 'unknown' and '' when module lacks name/description."""
+        module = MockBareModule()
+        adapter = self._make_adapter(module)
+        ctx = MockContext()
+
+        response = await adapter.GetModuleInfo(pb2.Empty(), ctx)  # type: ignore[union-attr]
+
+        assert response.name == "unknown"
+        assert response.description == ""

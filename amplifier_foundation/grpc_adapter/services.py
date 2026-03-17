@@ -14,6 +14,14 @@ from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
 logger = logging.getLogger(__name__)
 
 
+async def _invoke(fn: Any, *args: Any) -> Any:
+    """Call *fn* with *args*, awaiting if it is a coroutine, else running in executor."""
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fn, *args)
+
+
 class ToolServiceAdapter(pb2_grpc.ToolServiceServicer):
     """gRPC servicer that adapts a Python tool object to the ToolService contract."""
 
@@ -32,13 +40,7 @@ class ToolServiceAdapter(pb2_grpc.ToolServiceServicer):
         """Execute the tool with JSON input and return the serialized result."""
         try:
             input_data = json.loads(request.input.decode("utf-8"))
-            if inspect.iscoroutinefunction(self._tool.execute):
-                result = await self._tool.execute(input_data)
-            else:
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, self._tool.execute, input_data
-                )
+            result = await _invoke(self._tool.execute, input_data)
             return pb2.ToolExecuteResponse(  # type: ignore[attr-defined]
                 success=result.success,
                 output=str(result.output).encode("utf-8"),
@@ -175,11 +177,7 @@ class LifecycleServiceAdapter(pb2_grpc.ModuleLifecycleServicer):
             config = dict(request.config)
             mount_fn = getattr(self._module, "mount", None)
             if mount_fn is not None:
-                if inspect.iscoroutinefunction(mount_fn):
-                    await mount_fn(config)
-                else:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, mount_fn, config)
+                await _invoke(mount_fn, config)
             self._healthy = True
             return pb2.MountResponse(  # type: ignore[attr-defined]
                 success=True,
@@ -207,11 +205,7 @@ class LifecycleServiceAdapter(pb2_grpc.ModuleLifecycleServicer):
         try:
             cleanup_fn = getattr(self._module, "cleanup", None)
             if cleanup_fn is not None:
-                if inspect.iscoroutinefunction(cleanup_fn):
-                    await cleanup_fn()
-                else:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, cleanup_fn)
+                await _invoke(cleanup_fn)
         except Exception:
             logger.exception("Cleanup failed")
         return pb2.Empty()  # type: ignore[attr-defined]
