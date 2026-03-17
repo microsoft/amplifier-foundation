@@ -200,6 +200,94 @@ class TestToolServiceAdapter:
 
         assert response.success is True
 
+    @pytest.mark.asyncio
+    async def test_execute_dict_output_returns_valid_json(self) -> None:
+        """Execute with dict output must return valid JSON bytes, not Python repr.
+
+        Expected to FAIL: the adapter serialises dict output as Python repr (str(output))
+        instead of json.dumps(output), so json.loads raises ValueError.
+        """
+        tool = MockTool()
+        tool.execute = AsyncMock(  # type: ignore[method-assign]
+            return_value=MagicMock(
+                success=True, output={"key": "value", "count": 42}, error=None
+            )
+        )
+        adapter = self._make_adapter(tool)
+        context = MockContext()
+        request = pb2.ToolExecuteRequest(  # type: ignore[union-attr]
+            input=json.dumps({"query": "test"}).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        response = await adapter.Execute(request, context)
+
+        assert response.success is True
+        decoded = response.output.decode("utf-8")
+        parsed = json.loads(decoded)  # must not raise — fails on Python repr
+        assert parsed == {"key": "value", "count": 42}
+
+    @pytest.mark.asyncio
+    async def test_execute_none_output_returns_valid_json(self) -> None:
+        """Execute with None output must return valid JSON (empty string), not b'None'.
+
+        Expected to FAIL: the adapter converts None to the string 'None' (Python repr)
+        which is not valid JSON.
+        """
+        tool = MockTool()
+        tool.execute = AsyncMock(  # type: ignore[method-assign]
+            return_value=MagicMock(success=True, output=None, error=None)
+        )
+        adapter = self._make_adapter(tool)
+        context = MockContext()
+        request = pb2.ToolExecuteRequest(  # type: ignore[union-attr]
+            input=json.dumps({"query": "test"}).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        response = await adapter.Execute(request, context)
+
+        assert response.success is True
+        decoded = response.output.decode("utf-8")
+        parsed = json.loads(decoded)  # must not raise — fails on b'None'
+        assert parsed == ""
+
+    @pytest.mark.asyncio
+    async def test_execute_mirrors_content_type(self) -> None:
+        """Execute must echo the request content_type in the response.
+
+        Expected to FAIL: the adapter hard-codes response.content_type as 'text/plain'
+        instead of mirroring the request content_type.
+        """
+        adapter = self._make_adapter(MockTool())
+        context = MockContext()
+        request = pb2.ToolExecuteRequest(  # type: ignore[union-attr]
+            input=json.dumps({"query": "test"}).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        response = await adapter.Execute(request, context)
+
+        assert response.content_type == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_execute_default_content_type_is_json(self) -> None:
+        """Execute with empty content_type must default to 'application/json'.
+
+        Expected to FAIL: the adapter hard-codes response.content_type as 'text/plain'
+        instead of defaulting to 'application/json' when the request field is empty.
+        """
+        adapter = self._make_adapter(MockTool())
+        context = MockContext()
+        request = pb2.ToolExecuteRequest(  # type: ignore[union-attr]
+            input=json.dumps({"query": "test"}).encode("utf-8"),
+            content_type="",
+        )
+
+        response = await adapter.Execute(request, context)
+
+        assert response.content_type == "application/json"
+
 
 # ---------------------------------------------------------------------------
 # MockProvider — minimal Provider for ProviderServiceAdapter tests
