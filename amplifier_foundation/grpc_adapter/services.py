@@ -71,7 +71,7 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
     async def GetInfo(self, request: Any, context: Any) -> Any:
         """Return provider metadata as ProviderInfo proto."""
         try:
-            info = self._provider.get_info()
+            info = await _invoke(self._provider.get_info)
             # Handle defaults: JSON-serialize if dict, otherwise use as-is or empty string
             defaults = getattr(info, "defaults", None)
             if isinstance(defaults, dict):
@@ -92,25 +92,30 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
 
     async def ListModels(self, request: Any, context: Any) -> Any:
         """List available models and return as ListModelsResponse proto."""
-        models = await self._provider.list_models()
-        model_protos = []
-        for model in models:
-            defaults = getattr(model, "defaults", None)
-            if isinstance(defaults, dict):
-                defaults_json = json.dumps(defaults)
-            else:
-                defaults_json = getattr(model, "defaults_json", "") or ""
-            model_protos.append(
-                pb2.ModelInfo(  # type: ignore[attr-defined]
-                    id=model.id,
-                    display_name=model.display_name,
-                    context_window=model.context_window,
-                    max_output_tokens=model.max_output_tokens,
-                    capabilities=list(model.capabilities),
-                    defaults_json=defaults_json,
+        try:
+            models = await _invoke(self._provider.list_models)
+            model_protos = []
+            for model in models:
+                defaults = getattr(model, "defaults", None)
+                if isinstance(defaults, dict):
+                    defaults_json = json.dumps(defaults)
+                else:
+                    defaults_json = getattr(model, "defaults_json", "") or ""
+                model_protos.append(
+                    pb2.ModelInfo(  # type: ignore[attr-defined]
+                        id=model.id,
+                        display_name=model.display_name,
+                        context_window=model.context_window,
+                        max_output_tokens=model.max_output_tokens,
+                        capabilities=list(model.capabilities),
+                        defaults_json=defaults_json,
+                    )
                 )
-            )
-        return pb2.ListModelsResponse(models=model_protos)  # type: ignore[attr-defined]
+            return pb2.ListModelsResponse(models=model_protos)  # type: ignore[attr-defined]
+        except Exception as e:
+            logger.exception("ListModels failed")
+            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+            return pb2.ListModelsResponse()  # type: ignore[attr-defined]
 
     def _to_tool_call_protos(self, tool_calls: Any) -> list[Any]:
         """Map a list of tool call objects to ToolCallMessage protos."""
@@ -132,42 +137,48 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
 
     async def Complete(self, request: Any, context: Any) -> Any:
         """Execute a completion request and return ChatResponse proto."""
-        response = await self._provider.complete(request)
-        # Serialize tool_calls
-        tool_call_protos = self._to_tool_call_protos(response.tool_calls)
-        # Serialize usage
-        usage_obj = response.usage
-        usage = pb2.Usage(  # type: ignore[attr-defined]
-            prompt_tokens=getattr(usage_obj, "prompt_tokens", 0),
-            completion_tokens=getattr(usage_obj, "completion_tokens", 0),
-            total_tokens=getattr(usage_obj, "total_tokens", 0),
-            reasoning_tokens=getattr(usage_obj, "reasoning_tokens", 0),
-            cache_read_tokens=getattr(usage_obj, "cache_read_tokens", 0),
-            cache_creation_tokens=getattr(usage_obj, "cache_creation_tokens", 0),
-        )
-        # Serialize metadata
-        metadata = getattr(response, "metadata", None)
-        if isinstance(metadata, dict):
-            metadata_json = json.dumps(metadata)
-        else:
-            metadata_json = metadata or ""
-        return pb2.ChatResponse(  # type: ignore[attr-defined]
-            content=response.content or "",
-            tool_calls=tool_call_protos,
-            usage=usage,
-            finish_reason=response.finish_reason or "",
-            metadata_json=metadata_json,
-        )
+        try:
+            response = await _invoke(self._provider.complete, request)
+            # Serialize tool_calls
+            tool_call_protos = self._to_tool_call_protos(response.tool_calls)
+            # Serialize usage
+            usage_obj = response.usage
+            usage = pb2.Usage(  # type: ignore[attr-defined]
+                prompt_tokens=getattr(usage_obj, "prompt_tokens", 0),
+                completion_tokens=getattr(usage_obj, "completion_tokens", 0),
+                total_tokens=getattr(usage_obj, "total_tokens", 0),
+                reasoning_tokens=getattr(usage_obj, "reasoning_tokens", 0),
+                cache_read_tokens=getattr(usage_obj, "cache_read_tokens", 0),
+                cache_creation_tokens=getattr(usage_obj, "cache_creation_tokens", 0),
+            )
+            # Serialize metadata
+            metadata = getattr(response, "metadata", None)
+            if isinstance(metadata, dict):
+                metadata_json = json.dumps(metadata)
+            else:
+                metadata_json = metadata or ""
+            return pb2.ChatResponse(  # type: ignore[attr-defined]
+                content=response.content or "",
+                tool_calls=tool_call_protos,
+                usage=usage,
+                finish_reason=response.finish_reason or "",
+                metadata_json=metadata_json,
+            )
+        except Exception as e:
+            logger.exception("Complete failed")
+            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+            return pb2.ChatResponse()  # type: ignore[attr-defined]
 
     async def ParseToolCalls(self, request: Any, context: Any) -> Any:
         """Parse tool calls from a ChatResponse and return ParseToolCallsResponse proto."""
-        parse_fn = self._provider.parse_tool_calls
-        if inspect.iscoroutinefunction(parse_fn):
-            tool_calls = await parse_fn(request)
-        else:
-            tool_calls = parse_fn(request)
-        tool_call_protos = self._to_tool_call_protos(tool_calls)
-        return pb2.ParseToolCallsResponse(tool_calls=tool_call_protos)  # type: ignore[attr-defined]
+        try:
+            tool_calls = await _invoke(self._provider.parse_tool_calls, request)
+            tool_call_protos = self._to_tool_call_protos(tool_calls)
+            return pb2.ParseToolCallsResponse(tool_calls=tool_call_protos)  # type: ignore[attr-defined]
+        except Exception as e:
+            logger.exception("ParseToolCalls failed")
+            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+            return pb2.ParseToolCallsResponse()  # type: ignore[attr-defined]
 
 
 class LifecycleServiceAdapter(pb2_grpc.ModuleLifecycleServicer):
