@@ -57,7 +57,9 @@ allow-direct-references = true
 
 [dependency-groups]
 dev = [
+    "grpcio>=1.60.0",
     "notebook>=7.5.0",
+    "protobuf>=4.0.0",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.3.0",
     "pytest-timeout>=2.3.0",
