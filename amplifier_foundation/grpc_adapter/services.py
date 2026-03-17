@@ -6,7 +6,13 @@ import json
 import logging
 from typing import Any
 
-import grpc
+try:
+    import grpc
+except ImportError:
+    raise ImportError(
+        "grpcio is required for the gRPC adapter. "
+        "Install it with: pip install amplifier-foundation[grpc-adapter]"
+    )
 
 from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2  # type: ignore[attr-defined]
 from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc

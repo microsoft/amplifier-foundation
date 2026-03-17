@@ -33,9 +33,13 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "amplifier-core" },
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+grpc-adapter = [
     { name = "grpcio" },
     { name = "protobuf" },
-    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -49,10 +53,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "amplifier-core" },
-    { name = "grpcio", specifier = ">=1.60.0" },
-    { name = "protobuf", specifier = ">=4.0.0" },
+    { name = "grpcio", marker = "extra == 'grpc-adapter'", specifier = ">=1.60.0" },
+    { name = "protobuf", marker = "extra == 'grpc-adapter'", specifier = ">=4.0.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
 ]
+provides-extras = ["grpc-adapter"]
 
 [package.metadata.requires-dev]
 dev = [

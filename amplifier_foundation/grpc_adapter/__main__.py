@@ -171,8 +171,14 @@ async def _create_server(
     Returns:
         Tuple of (server, actual_port).
     """
-    import grpc
-    import grpc.aio
+    try:
+        import grpc
+        import grpc.aio
+    except ImportError:
+        raise ImportError(
+            "grpcio is required for the gRPC adapter. "
+            "Install it with: pip install amplifier-foundation[grpc-adapter]"
+        )
 
     from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
 
