@@ -327,3 +327,82 @@ class TestGetRunningLoopUsage:
             "_run() calls asyncio.get_event_loop() which is deprecated in Python 3.10+ "
             "when called from within a running event loop; use asyncio.get_running_loop() instead"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: _load_module_object security (sys.path and package name validation)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadModuleObjectSecurity:
+    """Tests for security properties of _load_module_object().
+
+    These tests expose two security bugs:
+    1. sys.path.insert(0, ...) allows attacker-controlled dirs to shadow stdlib modules.
+    2. No validation of package names allows shell-injection-style names.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sys_path_append_not_insert(self) -> None:
+        """_load_module_object() must use sys.path.append() not sys.path.insert(0, ...).
+
+        sys.path.insert(0, path) places the module directory at the front of
+        sys.path, which can shadow stdlib modules (e.g., a module named 'os'
+        would shadow the real os module). sys.path.append() is safer because
+        it adds the directory at the end, after stdlib paths.
+        """
+        import inspect
+
+        from amplifier_foundation.grpc_adapter.__main__ import _load_module_object  # type: ignore[import-not-found]
+
+        source = inspect.getsource(_load_module_object)
+        assert "sys.path.append(" in source, (
+            "_load_module_object() should use sys.path.append() to avoid shadowing stdlib modules"
+        )
+        assert "sys.path.insert(0," not in source, (
+            "_load_module_object() uses sys.path.insert(0, ...) which allows attacker-controlled "
+            "directories to shadow stdlib modules — use sys.path.append() instead"
+        )
+
+    @pytest.mark.asyncio
+    async def test_malicious_package_name_raises_value_error(self) -> None:
+        """_load_module_object() must reject package names containing shell metacharacters."""
+        from pathlib import Path
+
+        from amplifier_foundation.grpc_adapter.__main__ import _load_module_object  # type: ignore[import-not-found]
+
+        malicious_path = Path("/tmp/my-module; rm -rf /")
+        with pytest.raises(ValueError, match="Invalid package name"):
+            await _load_module_object(malicious_path, "tool")
+
+    @pytest.mark.asyncio
+    async def test_valid_package_name_accepted(self) -> None:
+        """_load_module_object() accepts valid package names and returns the module."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from amplifier_foundation.grpc_adapter.__main__ import _load_module_object  # type: ignore[import-not-found]
+
+        mock_module = MagicMock()
+        mock_module.mount = None
+
+        with patch("importlib.import_module", return_value=mock_module):
+            result = await _load_module_object(Path("/tmp/my-valid-module"), "tool")
+
+        assert result is mock_module
+
+    @pytest.mark.asyncio
+    async def test_dotted_package_name_rejected(self) -> None:
+        """_load_module_object() must reject package names containing dots.
+
+        A path like '/tmp/os.system' would derive package name 'os.system' after
+        hyphen-to-underscore conversion, which could be used to import submodules
+        of stdlib packages. Dotted names must be rejected.
+        """
+        from pathlib import Path
+
+        from amplifier_foundation.grpc_adapter.__main__ import _load_module_object  # type: ignore[import-not-found]
+
+        dotted_path = Path("/tmp/os.system")
+        with pytest.raises(ValueError, match="Invalid package name"):
+            await _load_module_object(dotted_path, "tool")
