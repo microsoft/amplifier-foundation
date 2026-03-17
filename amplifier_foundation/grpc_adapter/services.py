@@ -104,24 +104,29 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             )
         return pb2.ListModelsResponse(models=model_protos)  # type: ignore[attr-defined]
 
-    async def Complete(self, request: Any, context: Any) -> Any:
-        """Execute a completion request and return ChatResponse proto."""
-        response = await self._provider.complete(request)
-        # Serialize tool_calls
-        tool_call_protos = []
-        for tc in response.tool_calls or []:
+    def _to_tool_call_protos(self, tool_calls: Any) -> list[Any]:
+        """Map a list of tool call objects to ToolCallMessage protos."""
+        protos = []
+        for tc in tool_calls or []:
             arguments = getattr(tc, "arguments", None)
             if isinstance(arguments, dict):
                 arguments_json = json.dumps(arguments)
             else:
                 arguments_json = getattr(tc, "arguments_json", "{}") or "{}"
-            tool_call_protos.append(
+            protos.append(
                 pb2.ToolCallMessage(  # type: ignore[attr-defined]
                     id=tc.id,
                     name=tc.name,
                     arguments_json=arguments_json,
                 )
             )
+        return protos
+
+    async def Complete(self, request: Any, context: Any) -> Any:
+        """Execute a completion request and return ChatResponse proto."""
+        response = await self._provider.complete(request)
+        # Serialize tool_calls
+        tool_call_protos = self._to_tool_call_protos(response.tool_calls)
         # Serialize usage
         usage_obj = response.usage
         usage = pb2.Usage(  # type: ignore[attr-defined]
@@ -153,18 +158,5 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             tool_calls = await parse_fn(request)
         else:
             tool_calls = parse_fn(request)
-        tool_call_protos = []
-        for tc in tool_calls or []:
-            arguments = getattr(tc, "arguments", None)
-            if isinstance(arguments, dict):
-                arguments_json = json.dumps(arguments)
-            else:
-                arguments_json = getattr(tc, "arguments_json", "{}") or "{}"
-            tool_call_protos.append(
-                pb2.ToolCallMessage(  # type: ignore[attr-defined]
-                    id=tc.id,
-                    name=tc.name,
-                    arguments_json=arguments_json,
-                )
-            )
+        tool_call_protos = self._to_tool_call_protos(tool_calls)
         return pb2.ParseToolCallsResponse(tool_calls=tool_call_protos)  # type: ignore[attr-defined]
