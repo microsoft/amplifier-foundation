@@ -262,3 +262,68 @@ class TestMainEntryPoint:
         from amplifier_foundation.grpc_adapter.__main__ import main  # type: ignore[import-not-found]
 
         assert callable(main)
+
+
+# ---------------------------------------------------------------------------
+# Tests: async mount() handling (regression — was silently dropped)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadModuleObjectAsyncMount:
+    """Tests that _load_module_object() properly awaits async mount()."""
+
+    def test_load_module_object_is_async(self) -> None:
+        """_load_module_object() must be an async function to properly await async mount()."""
+        import inspect
+
+        from amplifier_foundation.grpc_adapter.__main__ import _load_module_object  # type: ignore[import-not-found]
+
+        assert inspect.iscoroutinefunction(_load_module_object), (
+            "_load_module_object must be async — calling await on a sync function's "
+            "return value silently drops coroutines from async mount() implementations"
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_mount_is_awaited(self) -> None:
+        """_load_module_object() awaits async mount() rather than silently dropping it."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from amplifier_foundation.grpc_adapter.__main__ import _load_module_object  # type: ignore[import-not-found]
+
+        mount_awaited = False
+
+        async def async_mount() -> None:
+            nonlocal mount_awaited
+            mount_awaited = True
+
+        mock_module = MagicMock()
+        mock_module.mount = async_mount
+
+        with patch("importlib.import_module", return_value=mock_module):
+            await _load_module_object(Path("/fake/my-module"), "tool")
+
+        assert mount_awaited, (
+            "async mount() was silently dropped — coroutine was never awaited"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: asyncio.get_running_loop() used in async context (not deprecated get_event_loop)
+# ---------------------------------------------------------------------------
+
+
+class TestGetRunningLoopUsage:
+    """Tests that _run() uses asyncio.get_running_loop() (not deprecated get_event_loop)."""
+
+    def test_run_does_not_call_get_event_loop(self) -> None:
+        """_run() source must use get_running_loop(), not deprecated get_event_loop()."""
+        import inspect
+
+        from amplifier_foundation.grpc_adapter import __main__ as m  # type: ignore[import-not-found]
+
+        source = inspect.getsource(m._run)  # type: ignore[attr-defined]
+        assert "get_event_loop" not in source, (
+            "_run() calls asyncio.get_event_loop() which is deprecated in Python 3.10+ "
+            "when called from within a running event loop; use asyncio.get_running_loop() instead"
+        )

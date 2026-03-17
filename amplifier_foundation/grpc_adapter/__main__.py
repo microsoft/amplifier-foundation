@@ -75,12 +75,12 @@ def _read_manifest() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _load_module_object(module_path: Path, module_type: str) -> Any:
+async def _load_module_object(module_path: Path, module_type: str) -> Any:
     """Load a Python module object from the given path.
 
     Adds module_path to sys.path, derives the package name from the directory
     name (replacing hyphens with underscores), imports the package, and
-    optionally calls mount() if available.
+    optionally calls mount() if available (handles both sync and async mount).
 
     Args:
         module_path: Local path to the module directory.
@@ -106,14 +106,7 @@ def _load_module_object(module_path: Path, module_type: str) -> Any:
         try:
             result = mount_fn()
             if inspect.isawaitable(result):
-                # Run the coroutine synchronously from this sync context
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # Already inside an event loop; schedule as a task
-                    # but this shouldn't happen in the load path
-                    pass
-                else:
-                    loop.run_until_complete(result)
+                await result
         except TypeError:
             # mount() requires arguments — skip initial mount; handled by gRPC lifecycle
             pass
@@ -280,7 +273,7 @@ async def _run() -> None:
 
         # 6. Load module object
         try:
-            module_obj = _load_module_object(module_path, module_type)
+            module_obj = await _load_module_object(module_path, module_type)
         except Exception as e:
             sys.stdout = real_stdout
             print(f"ERROR:Failed to load module: {e}", flush=True)
@@ -310,7 +303,7 @@ async def _run() -> None:
 
     # 10. Install signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _set_shutdown() -> None:
         shutdown_event.set()
