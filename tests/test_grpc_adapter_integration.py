@@ -66,6 +66,94 @@ def mount() -> None:
     pass
 '''
 
+# ---------------------------------------------------------------------------
+# Mock provider module source (inline)
+# Written verbatim to tmpdir/test-provider/test_provider/__init__.py
+# ---------------------------------------------------------------------------
+
+MOCK_PROVIDER_MODULE = '''\
+"""Minimal mock provider module for integration testing."""
+from __future__ import annotations
+
+from typing import Any
+
+
+class _ProviderInfo:
+    id = 'test-provider'
+    display_name = 'Test Provider'
+    credential_env_vars: list = []
+    capabilities = ['chat']
+    defaults: dict = {}
+
+
+class _ModelInfo:
+    id = 'test-model-1'
+    display_name = 'Test Model 1'
+    context_window = 4096
+    max_output_tokens = 1024
+    capabilities = ['chat']
+    defaults: dict = {}
+
+
+class _Usage:
+    prompt_tokens = 10
+    completion_tokens = 5
+    total_tokens = 15
+    reasoning_tokens = 0
+    cache_read_tokens = 0
+    cache_creation_tokens = 0
+
+
+class _ChatResponse:
+    content = 'Hello from test provider'
+    tool_calls: list = []
+    finish_reason = 'stop'
+    metadata: dict = {}
+
+    def __init__(self) -> None:
+        self.usage = _Usage()
+
+
+class _ToolCall:
+    def __init__(self, id: str, name: str, arguments: Any) -> None:
+        self.id = id
+        self.name = name
+        self.arguments = arguments
+
+
+class TestProvider:
+    """Test provider that returns canned responses."""
+
+    name = 'test-provider'
+
+    def get_info(self) -> _ProviderInfo:
+        return _ProviderInfo()
+
+    async def list_models(self) -> list:
+        return [_ModelInfo()]
+
+    async def complete(self, request: Any, **kwargs: Any) -> _ChatResponse:
+        return _ChatResponse()
+
+    def parse_tool_calls(self, response: Any) -> list:
+        return []
+
+
+_instance = TestProvider()
+
+# Module-level attributes so the module itself satisfies the Provider protocol
+name = _instance.name
+get_info = _instance.get_info
+list_models = _instance.list_models
+complete = _instance.complete
+parse_tool_calls = _instance.parse_tool_calls
+
+
+def mount() -> None:
+    """No-op mount; called by _load_module_object during startup."""
+    pass
+'''
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -94,6 +182,49 @@ def _write_test_module(tmpdir: str) -> Path:
     pkg_dir.mkdir(exist_ok=True)
     (pkg_dir / "__init__.py").write_text(MOCK_TOOL_MODULE)
     return module_dir
+
+
+def _write_provider_module(tmpdir: str) -> Path:
+    """Create the mock provider module directory structure under *tmpdir*.
+
+    Creates::
+
+        {tmpdir}/test-provider/
+            test_provider/
+                __init__.py   ← MOCK_PROVIDER_MODULE
+
+    The ``test-provider`` directory is the **module_path** consumed by
+    ``_load_module_object``:  it is added to ``sys.path`` and the package
+    ``test_provider`` (hyphen → underscore) is imported from inside it.
+
+    Returns:
+        ``Path(tmpdir) / "test-provider"`` — the value to pass to
+        ``_make_provider_manifest``.
+    """
+    module_dir = Path(tmpdir) / "test-provider"
+    module_dir.mkdir(exist_ok=True)
+    pkg_dir = module_dir / "test_provider"
+    pkg_dir.mkdir(exist_ok=True)
+    (pkg_dir / "__init__.py").write_text(MOCK_PROVIDER_MODULE)
+    return module_dir
+
+
+def _make_provider_manifest(module_path: Path) -> str:
+    """Return a JSON manifest string for the test-provider at *module_path*.
+
+    Args:
+        module_path: Path to the module directory (e.g. ``tmpdir/test-provider``).
+
+    Returns:
+        JSON string with ``module``, ``type``, and ``path`` fields.
+    """
+    return json.dumps(
+        {
+            "module": "test-provider",
+            "type": "provider",
+            "path": str(module_path),
+        }
+    )
 
 
 def _make_manifest(module_path: Path) -> str:
@@ -436,3 +567,71 @@ class TestAdapterFailurePaths:
         assert result.returncode != 0, (
             f"Expected non-zero exit code, got {result.returncode}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Provider module scaffolding tests
+# ---------------------------------------------------------------------------
+
+
+class TestProviderModuleScaffolding:
+    """Tests that validate the mock provider module infrastructure."""
+
+    def test_mock_provider_module_constant_exists(self) -> None:
+        """MOCK_PROVIDER_MODULE string constant is defined."""
+        assert isinstance(MOCK_PROVIDER_MODULE, str)
+        assert len(MOCK_PROVIDER_MODULE) > 0
+
+    def test_mock_provider_module_contains_test_provider_class(self) -> None:
+        """MOCK_PROVIDER_MODULE contains TestProvider class definition."""
+        assert "TestProvider" in MOCK_PROVIDER_MODULE
+
+    def test_mock_provider_module_contains_required_classes(self) -> None:
+        """MOCK_PROVIDER_MODULE contains all required class definitions."""
+        for class_name in [
+            "_ProviderInfo",
+            "_ModelInfo",
+            "_Usage",
+            "_ChatResponse",
+            "_ToolCall",
+            "TestProvider",
+        ]:
+            assert class_name in MOCK_PROVIDER_MODULE, (
+                f"Expected {class_name!r} in MOCK_PROVIDER_MODULE"
+            )
+
+    def test_mock_provider_module_contains_mount_function(self) -> None:
+        """MOCK_PROVIDER_MODULE contains a mount() no-op function."""
+        assert "def mount()" in MOCK_PROVIDER_MODULE
+
+    def test_write_provider_module_creates_directory_structure(
+        self, tmp_path: Path
+    ) -> None:
+        """_write_provider_module creates {tmpdir}/test-provider/test_provider/__init__.py."""
+        module_dir = _write_provider_module(str(tmp_path))
+        assert module_dir.name == "test-provider"
+        init_py = module_dir / "test_provider" / "__init__.py"
+        assert init_py.exists(), f"Expected {init_py} to exist"
+
+    def test_write_provider_module_writes_mock_content(self, tmp_path: Path) -> None:
+        """_write_provider_module writes MOCK_PROVIDER_MODULE content to __init__.py."""
+        module_dir = _write_provider_module(str(tmp_path))
+        init_py = module_dir / "test_provider" / "__init__.py"
+        content = init_py.read_text()
+        assert "TestProvider" in content
+
+    def test_write_provider_module_returns_test_provider_path(
+        self, tmp_path: Path
+    ) -> None:
+        """_write_provider_module returns Path pointing to test-provider directory."""
+        module_dir = _write_provider_module(str(tmp_path))
+        assert isinstance(module_dir, Path)
+        assert module_dir == tmp_path / "test-provider"
+
+    def test_make_provider_manifest_returns_valid_json(self, tmp_path: Path) -> None:
+        """_make_provider_manifest returns a valid JSON string."""
+        manifest_str = _make_provider_manifest(tmp_path)
+        parsed = json.loads(manifest_str)
+        assert parsed["module"] == "test-provider"
+        assert parsed["type"] == "provider"
+        assert parsed["path"] == str(tmp_path)
