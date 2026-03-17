@@ -243,6 +243,56 @@ class MockProvider:
         return []
 
 
+class MockSyncProvider:
+    """Provider with all-synchronous (non-async) methods.
+
+    Used to expose bugs where the adapter calls 'await provider.method()'
+    directly instead of routing through _invoke().
+    """
+
+    @property
+    def name(self) -> str:
+        return "sync_provider"
+
+    def get_info(self) -> Any:
+        return MagicMock(
+            id="sync_provider",
+            display_name="Sync Provider",
+            credential_env_vars=[],
+            capabilities=["chat"],
+            defaults={},
+            config_fields=[],
+        )
+
+    def list_models(self) -> list[Any]:
+        return [
+            MagicMock(
+                id="sync-model-1",
+                display_name="Sync Model 1",
+                context_window=4096,
+                max_output_tokens=1024,
+                capabilities=["chat"],
+                defaults={},
+            )
+        ]
+
+    def complete(self, request: Any) -> Any:
+        return MagicMock(
+            content="sync response",
+            tool_calls=[],
+            usage=MagicMock(
+                prompt_tokens=5,
+                completion_tokens=3,
+                total_tokens=8,
+            ),
+            finish_reason="stop",
+            metadata={},
+        )
+
+    def parse_tool_calls(self, response: Any) -> list[Any]:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # TestProviderServiceAdapter
 # ---------------------------------------------------------------------------
@@ -413,6 +463,102 @@ class TestProviderServiceAdapter:
         ctx = MockContext()
         result = await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
         assert len(result.tool_calls) == 0
+
+    # ------------------------------------------------------------------
+    # 8. GetInfo with sync provider (exposes _invoke() routing)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_info_with_sync_provider(self) -> None:
+        """GetInfo with a sync provider succeeds (get_info is always called synchronously)."""
+        adapter = self._make_adapter(MockSyncProvider())
+        ctx = MockContext()
+        result = await adapter.GetInfo(pb2.Empty(), ctx)  # type: ignore[union-attr]
+        assert result.id == "sync_provider"
+        assert result.display_name == "Sync Provider"
+
+    # ------------------------------------------------------------------
+    # 9. ListModels with sync provider (exposes _invoke() bug)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_list_models_with_sync_provider(self) -> None:
+        """ListModels with a sync provider succeeds via _invoke() executor routing."""
+        adapter = self._make_adapter(MockSyncProvider())
+        ctx = MockContext()
+        result = await adapter.ListModels(pb2.Empty(), ctx)  # type: ignore[union-attr]
+        assert len(result.models) == 1
+        assert result.models[0].id == "sync-model-1"
+
+    # ------------------------------------------------------------------
+    # 10. Complete with sync provider (exposes _invoke() bug)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_with_sync_provider(self) -> None:
+        """Complete with a sync provider succeeds via _invoke() executor routing."""
+        adapter = self._make_adapter(MockSyncProvider())
+        ctx = MockContext()
+        result = await adapter.Complete(pb2.ChatRequest(), ctx)  # type: ignore[union-attr]
+        assert result.content == "sync response"
+        assert result.finish_reason == "stop"
+
+    # ------------------------------------------------------------------
+    # 11. ParseToolCalls with sync provider (exposes _invoke() routing)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_parse_tool_calls_with_sync_provider(self) -> None:
+        """ParseToolCalls with a sync provider succeeds via _invoke() executor routing."""
+        adapter = self._make_adapter(MockSyncProvider())
+        ctx = MockContext()
+        result = await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
+        assert len(result.tool_calls) == 0
+
+    # ------------------------------------------------------------------
+    # 12. ListModels error returns gRPC error (exposes missing error handling)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_list_models_error_returns_grpc_error(self) -> None:
+        """ListModels that raises RuntimeError aborts with gRPC error instead of propagating."""
+        provider = MockProvider()
+        provider.list_models = AsyncMock(side_effect=RuntimeError("list models failed"))
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        await adapter.ListModels(pb2.Empty(), ctx)  # type: ignore[union-attr]
+        assert ctx._aborted is True
+        assert "list models failed" in ctx.details
+
+    # ------------------------------------------------------------------
+    # 13. Complete error returns gRPC error (exposes missing error handling)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_error_returns_grpc_error(self) -> None:
+        """Complete that raises RuntimeError aborts with gRPC error instead of propagating."""
+        provider = MockProvider()
+        provider.complete = AsyncMock(side_effect=RuntimeError("complete failed"))
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        await adapter.Complete(pb2.ChatRequest(), ctx)  # type: ignore[union-attr]
+        assert ctx._aborted is True
+        assert "complete failed" in ctx.details
+
+    # ------------------------------------------------------------------
+    # 14. ParseToolCalls error returns gRPC error (exposes missing error handling)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_parse_tool_calls_error_returns_grpc_error(self) -> None:
+        """ParseToolCalls that raises RuntimeError aborts with gRPC error instead of propagating."""
+        provider = MockProvider()
+        provider.parse_tool_calls = MagicMock(side_effect=RuntimeError("parse failed"))
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
+        assert ctx._aborted is True
+        assert "parse failed" in ctx.details
 
 
 # ---------------------------------------------------------------------------
