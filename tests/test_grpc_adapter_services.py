@@ -509,7 +509,7 @@ class TestProviderServiceAdapter:
 
     @pytest.mark.asyncio
     async def test_parse_tool_calls_with_sync_provider(self) -> None:
-        """ParseToolCalls with a sync provider succeeds via _invoke() executor routing."""
+        """ParseToolCalls with a sync provider succeeds (parse_tool_calls is called synchronously in the adapter)."""
         adapter = self._make_adapter(MockSyncProvider())
         ctx = MockContext()
         result = await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
