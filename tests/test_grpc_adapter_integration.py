@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("grpc", reason="grpcio not installed")
+
 # ---------------------------------------------------------------------------
 # Mock tool module source (inline)
 # Written verbatim to tmpdir/test_tool/__init__.py

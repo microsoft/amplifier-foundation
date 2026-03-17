@@ -17,6 +17,8 @@ try:
 except ImportError:  # grpcio / protobuf not installed in this env
     pb2 = None  # type: ignore[assignment]
 
+pytestmark = pytest.mark.skipif(pb2 is None, reason="grpcio/protobuf not installed")
+
 
 # ---------------------------------------------------------------------------
 # Mock fixtures for ToolServiceAdapter tests
