@@ -282,7 +282,7 @@ class TestAdapterHappyPath:
                 try:
                     stub = pb2_grpc.ToolServiceStub(channel)
                     response = stub.Execute(
-                        pb2.ToolExecuteRequest(
+                        pb2.ToolExecuteRequest(  # type: ignore[attr-defined]
                             input=json.dumps("hello").encode("utf-8"),
                             content_type="text/plain",
                         )
@@ -316,9 +316,9 @@ class TestAdapterHappyPath:
                 channel = grpc.insecure_channel(f"127.0.0.1:{port}")
                 try:
                     lifecycle_stub = pb2_grpc.ModuleLifecycleStub(channel)
-                    response = lifecycle_stub.HealthCheck(pb2.Empty())
-                    assert response.status == pb2.HEALTH_STATUS_SERVING, (
-                        f"Expected HEALTH_STATUS_SERVING ({pb2.HEALTH_STATUS_SERVING}), "
+                    response = lifecycle_stub.HealthCheck(pb2.Empty())  # type: ignore[attr-defined]
+                    assert response.status == pb2.HEALTH_STATUS_SERVING, (  # type: ignore[attr-defined]
+                        f"Expected HEALTH_STATUS_SERVING ({pb2.HEALTH_STATUS_SERVING}), "  # type: ignore[attr-defined]
                         f"got {response.status}"
                     )
                 finally:
