@@ -1,6 +1,6 @@
 """Tests for amplifier_foundation.grpc_adapter.services module.
 
-Verifies the ToolServiceAdapter gRPC service implementation.
+Verifies the ToolServiceAdapter and ProviderServiceAdapter gRPC service implementations.
 
 These tests will fail with ModuleNotFoundError/ImportError until
 amplifier_foundation.grpc_adapter.services is implemented.
@@ -8,7 +8,7 @@ amplifier_foundation.grpc_adapter.services is implemented.
 
 import json
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -199,3 +199,217 @@ class TestToolServiceAdapter:
         response = await adapter.Execute(request, context)
 
         assert response.success is True
+
+
+# ---------------------------------------------------------------------------
+# MockProvider — minimal Provider for ProviderServiceAdapter tests
+# ---------------------------------------------------------------------------
+
+
+class MockProvider:
+    """Minimal Provider satisfying amplifier_core.interfaces.Provider protocol."""
+
+    def __init__(self) -> None:
+        self.list_models: Any = AsyncMock(return_value=[])
+        self.complete: Any = AsyncMock(
+            return_value=MagicMock(
+                content="mock response",
+                tool_calls=[],
+                usage=MagicMock(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                ),
+                finish_reason="stop",
+                metadata={},
+            )
+        )
+
+    @property
+    def name(self) -> str:
+        return "mock_provider"
+
+    def get_info(self) -> Any:
+        return MagicMock(
+            id="mock_provider",
+            display_name="Mock Provider",
+            credential_env_vars=[],
+            capabilities=["chat"],
+            defaults={},
+            config_fields=[],
+        )
+
+    def parse_tool_calls(self, response: Any) -> list[Any]:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# TestProviderServiceAdapter
+# ---------------------------------------------------------------------------
+
+
+class TestProviderServiceAdapter:
+    """Tests for ProviderServiceAdapter — adapts a Python Provider as gRPC ProviderService."""
+
+    def _make_adapter(self, provider: Any = None) -> Any:
+        """Create a ProviderServiceAdapter wrapping *provider*.
+
+        Imports ProviderServiceAdapter from amplifier_foundation.grpc_adapter.services.
+        Raises ImportError until the implementation is written.
+        """
+        from amplifier_foundation.grpc_adapter.services import (  # type: ignore[import-not-found]  # noqa: PLC0415
+            ProviderServiceAdapter,
+        )
+
+        if provider is None:
+            provider = MockProvider()
+        return ProviderServiceAdapter(provider)
+
+    # ------------------------------------------------------------------
+    # 1. GetInfo
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_info_returns_valid_response(self) -> None:
+        """GetInfo returns ProviderInfo proto with id, display_name, and credential_env_vars."""
+        provider = MockProvider()
+        provider.get_info = MagicMock(
+            return_value=MagicMock(
+                id="mock-provider",
+                display_name="Mock Provider",
+                credential_env_vars=["MOCK_API_KEY"],
+                capabilities=["chat"],
+                defaults={},
+                config_fields=[],
+            )
+        )
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        result = await adapter.GetInfo(pb2.Empty(), ctx)  # type: ignore[union-attr]
+        assert result.id == "mock-provider"
+        assert result.display_name == "Mock Provider"
+        assert "MOCK_API_KEY" in result.credential_env_vars
+
+    # ------------------------------------------------------------------
+    # 2. ListModels — empty list
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_list_models_empty_returns_valid_response(self) -> None:
+        """ListModels with no models from provider returns response with len(result.models)==0."""
+        provider = MockProvider()
+        provider.list_models = AsyncMock(return_value=[])
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        result = await adapter.ListModels(pb2.Empty(), ctx)  # type: ignore[union-attr]
+        assert len(result.models) == 0
+
+    # ------------------------------------------------------------------
+    # 3. ListModels — with models
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_list_models_returns_models(self) -> None:
+        """ListModels returns proto ModelInfo entries matching the provider's model list."""
+        provider = MockProvider()
+        mock_model = MagicMock(
+            id="gpt-4",
+            display_name="GPT-4",
+            context_window=128000,
+            max_output_tokens=4096,
+            capabilities=["chat", "tools"],
+            defaults={},
+        )
+        provider.list_models = AsyncMock(return_value=[mock_model])
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        result = await adapter.ListModels(pb2.Empty(), ctx)  # type: ignore[union-attr]
+        assert len(result.models) == 1
+        assert result.models[0].id == "gpt-4"
+
+    # ------------------------------------------------------------------
+    # 4. Complete — basic response
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_returns_chat_response(self) -> None:
+        """Complete returns ChatResponse with expected content and finish_reason."""
+        provider = MockProvider()
+        provider.complete = AsyncMock(
+            return_value=MagicMock(
+                content="Hello from mock",
+                tool_calls=[],
+                usage=MagicMock(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                ),
+                finish_reason="stop",
+                metadata={},
+            )
+        )
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        result = await adapter.Complete(pb2.ChatRequest(), ctx)  # type: ignore[union-attr]
+        assert result.content == "Hello from mock"
+        assert result.finish_reason == "stop"
+
+    # ------------------------------------------------------------------
+    # 5. Complete — thinking block signature preserved
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_preserves_thinking_block_signature(self) -> None:
+        """Complete preserves thinking_signature from response metadata in metadata_json."""
+        provider = MockProvider()
+        provider.complete = AsyncMock(
+            return_value=MagicMock(
+                content="",
+                tool_calls=[],
+                usage=MagicMock(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                ),
+                finish_reason="stop",
+                metadata={"thinking_signature": "sig_abc123"},
+            )
+        )
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        result = await adapter.Complete(pb2.ChatRequest(), ctx)  # type: ignore[union-attr]
+        assert "thinking_signature" in result.metadata_json
+        assert "sig_abc123" in result.metadata_json
+
+    # ------------------------------------------------------------------
+    # 6. ParseToolCalls — multiple tool calls
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_parse_tool_calls_multiple(self) -> None:
+        """ParseToolCalls returns both tool calls when the provider returns two."""
+        provider = MockProvider()
+        # Use direct attribute assignment — MagicMock(name=...) sets repr, not .name attr
+        tool_call_1 = MagicMock(id="tc1", arguments={})
+        tool_call_1.name = "tool_one"
+        tool_call_2 = MagicMock(id="tc2", arguments={})
+        tool_call_2.name = "tool_two"
+        provider.parse_tool_calls = MagicMock(return_value=[tool_call_1, tool_call_2])
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+        result = await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
+        assert len(result.tool_calls) == 2
+        assert result.tool_calls[0].name == "tool_one"
+        assert result.tool_calls[1].name == "tool_two"
+
+    # ------------------------------------------------------------------
+    # 7. ParseToolCalls — empty (default MockProvider)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_parse_tool_calls_empty(self) -> None:
+        """ParseToolCalls with default MockProvider (returns []) yields 0 tool_calls."""
+        adapter = self._make_adapter()
+        ctx = MockContext()
+        result = await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
+        assert len(result.tool_calls) == 0
