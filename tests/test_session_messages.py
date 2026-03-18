@@ -31,12 +31,20 @@ class TestIsRealUserMessage:
 
     def test_tool_call_id_present_returns_false(self):
         """A user-role message with tool_call_id is not real."""
-        entry = {"role": "user", "tool_call_id": "call_abc123", "content": "result data"}
+        entry = {
+            "role": "user",
+            "tool_call_id": "call_abc123",
+            "content": "result data",
+        }
         assert is_real_user_message(entry) is False
 
     def test_role_tool_returns_false(self):
         """A message with role='tool' is not a real user message."""
-        entry = {"role": "tool", "tool_call_id": "call_abc123", "content": "result data"}
+        entry = {
+            "role": "tool",
+            "tool_call_id": "call_abc123",
+            "content": "result data",
+        }
         assert is_real_user_message(entry) is False
 
     def test_string_content_starting_with_system_reminder_returns_false(self):
@@ -117,7 +125,9 @@ class TestParameterizedSyntheticContent:
         """When synthetic_content is given, it is used as the tool result content."""
         messages = self._make_messages_with_orphan("tc_b")
         custom = '{"error": "custom error message"}'
-        result = add_synthetic_tool_results(messages, ["tc_b"], synthetic_content=custom)
+        result = add_synthetic_tool_results(
+            messages, ["tc_b"], synthetic_content=custom
+        )
         tool_results = [m for m in result if m.get("role") == "tool"]
         assert len(tool_results) == 1
         assert tool_results[0]["content"] == custom
@@ -217,3 +227,69 @@ class TestExistingFunctionsAvailable:
         summary = get_turn_summary(messages, 1)
         assert isinstance(summary, dict)
         assert summary["turn"] == 1
+
+
+# =============================================================================
+# TestSliceToTurnUnknownHandle
+# =============================================================================
+
+
+class TestSliceToTurnUnknownHandle:
+    """Tests that unknown handle_orphaned_tools values raise ValueError."""
+
+    def test_unknown_handle_value_raises_value_error(self):
+        """An unrecognized handle_orphaned_tools value raises ValueError."""
+        messages = [
+            {"role": "user", "content": "Do something"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc_a",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "{}"},
+                    }
+                ],
+            },
+        ]
+        import pytest
+
+        with pytest.raises(ValueError, match="Unknown handle_orphaned_tools"):
+            slice_to_turn(messages, 1, handle_orphaned_tools="ignore")
+
+
+# =============================================================================
+# TestGetTurnSummaryEllipsis
+# =============================================================================
+
+
+class TestGetTurnSummaryEllipsis:
+    """Tests for consistent ellipsis truncation in get_turn_summary."""
+
+    def test_list_content_appends_ellipsis_when_truncated(self):
+        """get_turn_summary appends '...' when list content text exceeds max_length."""
+        long_text = "x" * 200
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": long_text}],
+            },
+            {"role": "assistant", "content": "response"},
+        ]
+        summary = get_turn_summary(messages, 1, max_length=50)
+        assert summary["user_content"].endswith("...")
+
+    def test_list_content_no_ellipsis_when_not_truncated(self):
+        """get_turn_summary does NOT append '...' when list content fits in max_length."""
+        short_text = "short"
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": short_text}],
+            },
+            {"role": "assistant", "content": "response"},
+        ]
+        summary = get_turn_summary(messages, 1, max_length=50)
+        assert summary["user_content"] == short_text
+        assert not summary["user_content"].endswith("...")

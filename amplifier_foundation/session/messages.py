@@ -177,8 +177,13 @@ def slice_to_turn(
             )
         elif handle_orphaned_tools == "remove":
             sliced = _remove_orphaned_tool_calls(sliced, orphaned)
-        else:  # "complete" is default
+        elif handle_orphaned_tools == "complete":
             sliced = add_synthetic_tool_results(sliced, orphaned)
+        else:
+            raise ValueError(
+                f"Unknown handle_orphaned_tools value: {handle_orphaned_tools!r}. "
+                "Expected 'complete', 'remove', or 'error'."
+            )
 
     return sliced
 
@@ -430,7 +435,10 @@ def get_turn_summary(
                 # Extract text from content blocks
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        user_content = block.get("text", "")[:max_length]
+                        text = block.get("text", "")
+                        user_content = text[:max_length]
+                        if len(text) > max_length:
+                            user_content += "..."
                         break
 
         elif role == "assistant":
@@ -443,7 +451,10 @@ def get_turn_summary(
                 for block in content:
                     if isinstance(block, dict):
                         if block.get("type") == "text" and not assistant_content:
-                            assistant_content = block.get("text", "")[:max_length]
+                            text = block.get("text", "")
+                            assistant_content = text[:max_length]
+                            if len(text) > max_length:
+                                assistant_content += "..."
                         elif block.get("type") == "tool_use":
                             tool_count += 1
 
