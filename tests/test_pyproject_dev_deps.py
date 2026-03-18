@@ -75,3 +75,57 @@ def test_grpcio_in_dev_dependency_group() -> None:
         f"grpcio not found in dev dependency group. "
         f"Dev group must include grpcio for tests to run. Found: {dev_group}"
     )
+
+
+def test_grpcio_optional_version_floor_is_1_78_0() -> None:
+    """grpcio in [project.optional-dependencies] grpc-adapter must specify >=1.78.0.
+
+    The generated stubs in amplifier_core/_grpc_gen/amplifier_module_pb2_grpc.py
+    enforce GRPC_GENERATED_VERSION = '1.78.0' with a RuntimeError on mismatch.
+    Specifying >=1.60.0 allows installations that fail at runtime with:
+        RuntimeError: The grpc package installed is at version ..., but the
+        generated code in amplifier_module_pb2_grpc.py depends on grpclib>=1.78.0
+    """
+    import re
+
+    pyproject = _get_pyproject()
+    extras = pyproject["project"]["optional-dependencies"]
+    grpc_adapter = extras.get("grpc-adapter", [])
+    grpcio_deps = [dep for dep in grpc_adapter if "grpcio" in dep]
+    assert grpcio_deps, "grpcio not found in grpc-adapter optional-dependencies"
+
+    grpcio_dep = grpcio_deps[0]
+    match = re.search(r">=(\d+\.\d+\.\d+)", grpcio_dep)
+    assert match, f"grpcio optional dependency lacks a version floor: {grpcio_dep}"
+
+    floor = tuple(int(x) for x in match.group(1).split("."))
+    assert floor >= (1, 78, 0), (
+        f"grpcio version floor must be >=1.78.0 to match generated stub requirement "
+        f"(GRPC_GENERATED_VERSION = '1.78.0' in amplifier_module_pb2_grpc.py). "
+        f"Current: {grpcio_dep}"
+    )
+
+
+def test_grpcio_dev_group_version_floor_is_1_78_0() -> None:
+    """grpcio in [dependency-groups] dev must also specify >=1.78.0.
+
+    The dev group is used for running tests. If the floor is too low,
+    a developer could have grpcio 1.60-1.77 installed which satisfies the
+    dev dependency but causes a RuntimeError when gRPC stubs are imported.
+    """
+    import re
+
+    pyproject = _get_pyproject()
+    dev_group = pyproject.get("dependency-groups", {}).get("dev", [])
+    grpcio_deps = [dep for dep in dev_group if "grpcio" in dep]
+    assert grpcio_deps, "grpcio not found in dev dependency group"
+
+    grpcio_dep = grpcio_deps[0]
+    match = re.search(r">=(\d+\.\d+\.\d+)", grpcio_dep)
+    assert match, f"grpcio dev dependency lacks a version floor: {grpcio_dep}"
+
+    floor = tuple(int(x) for x in match.group(1).split("."))
+    assert floor >= (1, 78, 0), (
+        f"grpcio dev version floor must be >=1.78.0 to match generated stub requirement. "
+        f"Current: {grpcio_dep}"
+    )

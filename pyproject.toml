@@ -26,7 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 grpc-adapter = [
-    "grpcio>=1.60.0",
+    "grpcio>=1.78.0",
     "protobuf>=4.0.0",
 ]
 
@@ -57,7 +57,7 @@ allow-direct-references = true
 
 [dependency-groups]
 dev = [
-    "grpcio>=1.60.0",
+    "grpcio>=1.78.0",
     "notebook>=7.5.0",
     "protobuf>=4.0.0",
     "pytest>=8.4.2",

@@ -147,13 +147,21 @@ class TestVerifyModuleType:
         # Should not raise
         _verify_module_type(provider, "provider")
 
-    def test_unsupported_type_raises_type_error(self) -> None:
-        """_verify_module_type() raises TypeError for unsupported module types."""
+    def test_missing_mount_raises_type_error_regardless_of_declared_type(self) -> None:
+        """_verify_module_type() raises TypeError when mount is missing, for any declared_type.
+
+        The check is purely structural: does the module have a callable mount()?
+        Type-specific validation is deferred to the Mount() RPC call.
+        """
+        import types
+
         from amplifier_foundation.grpc_adapter.__main__ import _verify_module_type  # type: ignore[import-not-found]
 
-        obj = MagicMock()
-        with pytest.raises(TypeError):
-            _verify_module_type(obj, "hook")  # unsupported in v1
+        module_obj = types.SimpleNamespace()  # no mount attribute
+        with pytest.raises(TypeError, match="callable 'mount' entry point"):
+            _verify_module_type(
+                module_obj, "hook"
+            )  # fails on missing mount, not on type
 
     def test_protocol_violation_raises_type_error(self) -> None:
         """_verify_module_type() raises TypeError when object doesn't match declared type."""
@@ -163,6 +171,105 @@ class TestVerifyModuleType:
         bad_obj = object()
         with pytest.raises(TypeError):
             _verify_module_type(bad_obj, "tool")
+
+    # ------------------------------------------------------------------
+    # New structural-conformance tests (mount callable check, not isinstance)
+    # ------------------------------------------------------------------
+
+    def test_module_with_mount_passes_for_tool(self) -> None:
+        """_verify_module_type() passes when module has callable mount for tool type.
+
+        A Python Amplifier module is a module OBJECT, not a Tool instance.
+        The correct check is structural: does the module expose a callable mount()?
+        """
+        import types
+
+        from amplifier_foundation.grpc_adapter.__main__ import _verify_module_type  # type: ignore[import-not-found]
+
+        module_obj = types.SimpleNamespace()
+        module_obj.mount = lambda coordinator, config: None  # type: ignore[attr-defined]
+        # Should not raise — has callable mount
+        _verify_module_type(module_obj, "tool")
+
+    def test_module_with_mount_passes_for_provider(self) -> None:
+        """_verify_module_type() passes when module has callable mount for provider type."""
+        import types
+
+        from amplifier_foundation.grpc_adapter.__main__ import _verify_module_type  # type: ignore[import-not-found]
+
+        module_obj = types.SimpleNamespace()
+        module_obj.mount = lambda coordinator, config: None  # type: ignore[attr-defined]
+        # Should not raise — has callable mount
+        _verify_module_type(module_obj, "provider")
+
+    def test_module_without_mount_raises_type_error_with_mount_message(self) -> None:
+        """_verify_module_type() raises TypeError with 'mount entry point' message when no mount.
+
+        The error message must guide the developer to the real problem:
+        the module lacks the required mount(coordinator, config) entry point.
+        """
+        import types
+
+        from amplifier_foundation.grpc_adapter.__main__ import _verify_module_type  # type: ignore[import-not-found]
+
+        module_obj = types.SimpleNamespace()  # no mount attribute
+        with pytest.raises(TypeError, match="callable 'mount' entry point"):
+            _verify_module_type(module_obj, "tool")
+
+    def test_module_with_noncallable_mount_raises_type_error(self) -> None:
+        """_verify_module_type() raises TypeError when mount attribute is not callable."""
+        import types
+
+        from amplifier_foundation.grpc_adapter.__main__ import _verify_module_type  # type: ignore[import-not-found]
+
+        module_obj = types.SimpleNamespace()
+        module_obj.mount = "not_a_function"  # type: ignore[attr-defined]  # exists but not callable
+        with pytest.raises(TypeError, match="callable 'mount' entry point"):
+            _verify_module_type(module_obj, "provider")
+
+    def test_non_isinstance_object_with_mount_passes(self) -> None:
+        """Old isinstance check is NOT used — non-Provider/Tool object with mount still passes.
+
+        The key bug: importlib.import_module() returns a MODULE object, never a
+        Provider or Tool instance. isinstance(module_obj, Provider) always fails.
+        The fix: check structural conformance (callable mount) instead.
+        """
+        import types
+
+        from amplifier_core.interfaces import Provider, Tool
+        from amplifier_foundation.grpc_adapter.__main__ import _verify_module_type  # type: ignore[import-not-found]
+
+        module_obj = types.SimpleNamespace()
+        module_obj.mount = lambda coordinator, config: None  # type: ignore[attr-defined]
+
+        # Explicitly verify this object is NOT a Tool or Provider instance
+        assert not isinstance(module_obj, Tool), (
+            "Test setup: SimpleNamespace must not satisfy Tool protocol"
+        )
+        assert not isinstance(module_obj, Provider), (
+            "Test setup: SimpleNamespace must not satisfy Provider protocol"
+        )
+
+        # Should NOT raise — structural conformance (callable mount) is the v1 check
+        _verify_module_type(module_obj, "tool")
+        _verify_module_type(module_obj, "provider")
+
+    def test_declared_type_validation_deferred_to_mount_rpc(self) -> None:
+        """_verify_module_type() defers type validation to Mount() RPC — only checks mount callable.
+
+        v1 trust model: declared_type is trusted from the manifest.
+        Instance type verification happens when Mount() RPC is called, not at adapter startup.
+        A module with callable mount must NOT be rejected here regardless of declared_type.
+        """
+        import types
+
+        from amplifier_foundation.grpc_adapter.__main__ import _verify_module_type  # type: ignore[import-not-found]
+
+        module_obj = types.SimpleNamespace()
+        module_obj.mount = lambda coordinator, config: None  # type: ignore[attr-defined]
+        # Even with an unrecognized declared_type, should not raise if mount exists
+        # (type validation is deferred to the Mount() RPC call)
+        _verify_module_type(module_obj, "hook")  # no TypeError — deferred check
 
 
 # ---------------------------------------------------------------------------

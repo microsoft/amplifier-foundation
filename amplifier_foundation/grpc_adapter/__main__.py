@@ -128,35 +128,28 @@ async def _load_module_object(module_path: Path, module_type: str) -> Any:
 
 
 def _verify_module_type(module_obj: Any, declared_type: str) -> None:
-    """Verify that module_obj satisfies the declared module type protocol.
+    """Verify the module has the expected entry point for the declared type.
+
+    For v1: checks structural conformance (mount callable exists).
+    Instance type verification happens after Mount() RPC is called.
 
     Args:
         module_obj: The loaded module object to verify.
-        declared_type: The declared type from the manifest ('tool' or 'provider').
+        declared_type: The declared type from the manifest ('tool' or 'provider') —
+                       informational only at this stage; instance verification is
+                       deferred to the Mount() RPC call.
 
     Raises:
-        TypeError: If declared_type is unsupported or module_obj doesn't
-                   satisfy the corresponding protocol.
+        TypeError: If module_obj does not expose a callable 'mount' entry point.
     """
-    from amplifier_core.interfaces import Provider, Tool
-
-    if declared_type == "tool":
-        if not isinstance(module_obj, Tool):
-            raise TypeError(
-                f"Module does not implement the Tool protocol. "
-                f"Got: {type(module_obj).__name__}"
-            )
-    elif declared_type == "provider":
-        if not isinstance(module_obj, Provider):
-            raise TypeError(
-                f"Module does not implement the Provider protocol. "
-                f"Got: {type(module_obj).__name__}"
-            )
-    else:
+    mount_fn = getattr(module_obj, "mount", None)
+    if mount_fn is None or not callable(mount_fn):
         raise TypeError(
-            f"Unsupported module type: '{declared_type}'. "
-            f"Supported types in v1: 'tool', 'provider'."
+            f"Module does not have a callable 'mount' entry point. "
+            f"Amplifier modules must expose a top-level mount(coordinator, config) function. "
+            f"Declared type: {declared_type}"
         )
+    # v1: we trust the manifest's declared_type; instance verification deferred to Mount() RPC
 
 
 # ---------------------------------------------------------------------------
