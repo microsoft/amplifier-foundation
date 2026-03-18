@@ -19,6 +19,7 @@ from amplifier_foundation.session import (
     get_session_lineage,
     get_turn_boundaries,
     get_turn_summary,
+    is_real_user_message,
     list_session_forks,
     slice_events_for_fork,
     slice_events_to_timestamp,
