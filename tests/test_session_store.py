@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from amplifier_foundation.session.store import (
     EVENTS_FILENAME,
     METADATA_FILENAME,
@@ -204,8 +206,6 @@ class TestLoadTranscriptWithLines:
             '{"role": "user", "content": "hello"}\nNOT JSON\n{"role": "assistant", "content": "hi"}\n',
             encoding="utf-8",
         )
-        import pytest
-
         with pytest.raises(ValueError, match="line 2"):
             load_transcript_with_lines(session_dir)
 
@@ -228,7 +228,11 @@ class TestLoadMetadata:
             encoding="utf-8",
         )
         result = load_metadata(session_dir)
-        assert result == {"session_id": "abc123", "bundle": "my-bundle", "model": "gpt-4"}
+        assert result == {
+            "session_id": "abc123",
+            "bundle": "my-bundle",
+            "model": "gpt-4",
+        }
 
 
 # =============================================================================
@@ -243,7 +247,10 @@ class TestWriteTranscript:
         """Entries written by write_transcript can be loaded back by load_transcript."""
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        entries = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+        entries = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
         write_transcript(session_dir, entries)
         result = load_transcript(session_dir)
         assert result == entries
@@ -261,7 +268,11 @@ class TestWriteMetadata:
         """Metadata written by write_metadata can be loaded back by load_metadata."""
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        metadata = {"session_id": "xyz789", "bundle": "test-bundle", "model": "claude-3"}
+        metadata = {
+            "session_id": "xyz789",
+            "bundle": "test-bundle",
+            "model": "claude-3",
+        }
         write_metadata(session_dir, metadata)
         result = load_metadata(session_dir)
         assert result == metadata
@@ -291,7 +302,10 @@ class TestBackup:
         result = backup(original, "pre-repair")
         assert result is not None
         assert "bak-pre-repair-" in result.name
-        assert result.read_text(encoding="utf-8") == '{"role": "user", "content": "hello"}\n'
+        assert (
+            result.read_text(encoding="utf-8")
+            == '{"role": "user", "content": "hello"}\n'
+        )
 
     def test_returns_none_for_missing_file(self, tmp_path: Path):
         """backup() returns None when the target file does not exist."""
