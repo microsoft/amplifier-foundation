@@ -13,7 +13,6 @@ The forked session is independently resumable and addressable.
 
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,12 +20,21 @@ from pathlib import Path
 from typing import Any
 
 from .events import slice_events_for_fork
-from .slice import (
+from .messages import (
     add_synthetic_tool_results,
     count_turns,
     find_orphaned_tool_calls,
     get_turn_boundaries,
     slice_to_turn,
+)
+from .store import (
+    EVENTS_FILENAME,
+    METADATA_FILENAME,
+    TRANSCRIPT_FILENAME,
+    load_metadata,
+    load_transcript,
+    write_jsonl,
+    write_metadata,
 )
 
 
@@ -98,9 +106,9 @@ def fork_session(
     parent_session_dir = Path(parent_session_dir).resolve()
 
     # Validate parent exists
-    transcript_path = parent_session_dir / "transcript.jsonl"
-    metadata_path = parent_session_dir / "metadata.json"
-    events_path = parent_session_dir / "events.jsonl"
+    transcript_path = parent_session_dir / TRANSCRIPT_FILENAME
+    metadata_path = parent_session_dir / METADATA_FILENAME
+    events_path = parent_session_dir / EVENTS_FILENAME
 
     if not transcript_path.exists():
         raise FileNotFoundError(
@@ -109,8 +117,8 @@ def fork_session(
         )
 
     # Load parent data
-    messages = _load_transcript(transcript_path)
-    parent_metadata = _load_metadata(metadata_path) if metadata_path.exists() else {}
+    messages = load_transcript(parent_session_dir)
+    parent_metadata = load_metadata(parent_session_dir) if metadata_path.exists() else {}
     parent_id = parent_metadata.get("session_id", parent_session_dir.name)
 
     # Determine turn
@@ -145,7 +153,7 @@ def fork_session(
     new_session_dir.mkdir(parents=True, exist_ok=True)
 
     # Write forked transcript
-    _write_transcript(new_session_dir / "transcript.jsonl", sliced)
+    write_jsonl(new_session_dir / TRANSCRIPT_FILENAME, sliced)
 
     # Write metadata with lineage
     now = datetime.now(timezone.utc).isoformat()
@@ -160,7 +168,7 @@ def fork_session(
         "bundle": parent_metadata.get("bundle"),
         "model": parent_metadata.get("model"),
     }
-    _write_metadata(new_session_dir / "metadata.json", new_metadata)
+    write_metadata(new_session_dir, new_metadata)
 
     # Handle events.jsonl
     events_count = 0
@@ -170,17 +178,17 @@ def fork_session(
                 events_path,
                 transcript_path,
                 turn,
-                new_session_dir / "events.jsonl",
+                new_session_dir / EVENTS_FILENAME,
                 new_session_id=session_id,
                 parent_session_id=parent_id,
             )
         except Exception:
             # Events slicing is best-effort - don't fail the fork
             # Just create empty events file
-            (new_session_dir / "events.jsonl").write_text("")
+            (new_session_dir / EVENTS_FILENAME).write_text("")
     elif include_events:
         # Create empty events file for consistency
-        (new_session_dir / "events.jsonl").write_text("")
+        (new_session_dir / EVENTS_FILENAME).write_text("")
 
     return ForkResult(
         session_id=session_id,
@@ -281,14 +289,14 @@ def get_fork_preview(
         ValueError: If turn is out of range.
     """
     parent_session_dir = Path(parent_session_dir).resolve()
-    transcript_path = parent_session_dir / "transcript.jsonl"
-    metadata_path = parent_session_dir / "metadata.json"
+    transcript_path = parent_session_dir / TRANSCRIPT_FILENAME
+    metadata_path = parent_session_dir / METADATA_FILENAME
 
     if not transcript_path.exists():
         raise FileNotFoundError(f"No transcript.jsonl in {parent_session_dir}")
 
-    messages = _load_transcript(transcript_path)
-    parent_metadata = _load_metadata(metadata_path) if metadata_path.exists() else {}
+    messages = load_transcript(parent_session_dir)
+    parent_metadata = load_metadata(parent_session_dir) if metadata_path.exists() else {}
     parent_id = parent_metadata.get("session_id", parent_session_dir.name)
 
     max_turns = count_turns(messages)
@@ -357,9 +365,9 @@ def list_session_forks(
         sessions_root = session_dir.parent
 
     # Get parent session ID
-    metadata_path = session_dir / "metadata.json"
+    metadata_path = session_dir / METADATA_FILENAME
     if metadata_path.exists():
-        parent_metadata = _load_metadata(metadata_path)
+        parent_metadata = load_metadata(session_dir)
         parent_id = parent_metadata.get("session_id", session_dir.name)
     else:
         parent_id = session_dir.name
@@ -371,12 +379,12 @@ def list_session_forks(
         if not child_dir.is_dir():
             continue
 
-        child_metadata_path = child_dir / "metadata.json"
+        child_metadata_path = child_dir / METADATA_FILENAME
         if not child_metadata_path.exists():
             continue
 
         try:
-            child_metadata = _load_metadata(child_metadata_path)
+            child_metadata = load_metadata(child_dir)
             if child_metadata.get("parent_id") == parent_id:
                 forks.append({
                     "session_id": child_metadata.get("session_id", child_dir.name),
@@ -422,9 +430,9 @@ def get_session_lineage(
         sessions_root = session_dir.parent
 
     # Load this session's metadata
-    metadata_path = session_dir / "metadata.json"
+    metadata_path = session_dir / METADATA_FILENAME
     if metadata_path.exists():
-        metadata = _load_metadata(metadata_path)
+        metadata = load_metadata(session_dir)
     else:
         metadata = {"session_id": session_dir.name}
 
@@ -440,9 +448,9 @@ def get_session_lineage(
         # Try to find parent session
         parent_dir = sessions_root / current_parent_id
         if parent_dir.exists():
-            parent_meta_path = parent_dir / "metadata.json"
+            parent_meta_path = parent_dir / METADATA_FILENAME
             if parent_meta_path.exists():
-                parent_meta = _load_metadata(parent_meta_path)
+                parent_meta = load_metadata(parent_dir)
                 current_parent_id = parent_meta.get("parent_id")
             else:
                 break
@@ -463,40 +471,6 @@ def get_session_lineage(
 
 
 # --- Private helpers ---
-
-
-def _load_transcript(path: Path) -> list[dict[str, Any]]:
-    """Load JSONL transcript file."""
-    messages = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    messages.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    return messages
-
-
-def _write_transcript(path: Path, messages: list[dict[str, Any]]) -> None:
-    """Write JSONL transcript file."""
-    with open(path, "w", encoding="utf-8") as f:
-        for msg in messages:
-            f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-
-
-def _load_metadata(path: Path) -> dict[str, Any]:
-    """Load JSON metadata file."""
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _write_metadata(path: Path, metadata: dict[str, Any]) -> None:
-    """Write JSON metadata file."""
-    path.write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
 
 
 def _extract_text_content(content: Any) -> str:
