@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 # Load session-repair.py as a module (it's a script, not a package)
 _script_path = Path(__file__).resolve().parent.parent / "scripts" / "session-repair.py"
+_project_root = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("session_repair", _script_path)
 if _spec is None or _spec.loader is None:
     raise ImportError(f"Could not load {_script_path}")
@@ -675,12 +677,22 @@ class TestRewindTranscript:
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
-    """Run session-repair.py as a subprocess with the given arguments."""
+    """Run session-repair.py as a subprocess with the given arguments.
+
+    Sets PYTHONPATH to ensure the subprocess finds the local amplifier_foundation
+    package rather than any other installed version.
+    """
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{_project_root}:{existing}" if existing else str(_project_root)
+    )
     return subprocess.run(
         [sys.executable, str(_script_path), *args],
         capture_output=True,
         text=True,
         timeout=10,
+        env=env,
     )
 
 
