@@ -21,7 +21,6 @@ from typing import Any
 
 from .events import slice_events_for_fork
 from .messages import (
-    add_synthetic_tool_results,
     count_turns,
     find_orphaned_tool_calls,
     get_turn_boundaries,
@@ -118,7 +117,9 @@ def fork_session(
 
     # Load parent data
     messages = load_transcript(parent_session_dir)
-    parent_metadata = load_metadata(parent_session_dir) if metadata_path.exists() else {}
+    parent_metadata = (
+        load_metadata(parent_session_dir) if metadata_path.exists() else {}
+    )
     parent_id = parent_metadata.get("session_id", parent_session_dir.name)
 
     # Determine turn
@@ -130,9 +131,7 @@ def fork_session(
         turn = max_turns
 
     if turn < 1 or turn > max_turns:
-        raise ValueError(
-            f"Turn {turn} out of range. Valid range: 1-{max_turns}"
-        )
+        raise ValueError(f"Turn {turn} out of range. Valid range: 1-{max_turns}")
 
     # Slice messages to turn
     sliced = slice_to_turn(messages, turn, handle_orphaned_tools=handle_orphaned_tools)
@@ -296,7 +295,9 @@ def get_fork_preview(
         raise FileNotFoundError(f"No transcript.jsonl in {parent_session_dir}")
 
     messages = load_transcript(parent_session_dir)
-    parent_metadata = load_metadata(parent_session_dir) if metadata_path.exists() else {}
+    parent_metadata = (
+        load_metadata(parent_session_dir) if metadata_path.exists() else {}
+    )
     parent_id = parent_metadata.get("session_id", parent_session_dir.name)
 
     max_turns = count_turns(messages)
@@ -386,13 +387,15 @@ def list_session_forks(
         try:
             child_metadata = load_metadata(child_dir)
             if child_metadata.get("parent_id") == parent_id:
-                forks.append({
-                    "session_id": child_metadata.get("session_id", child_dir.name),
-                    "session_dir": child_dir,
-                    "forked_from_turn": child_metadata.get("forked_from_turn"),
-                    "forked_at": child_metadata.get("forked_at"),
-                    "turn_count": child_metadata.get("turn_count", 0),
-                })
+                forks.append(
+                    {
+                        "session_id": child_metadata.get("session_id", child_dir.name),
+                        "session_dir": child_dir,
+                        "forked_from_turn": child_metadata.get("forked_from_turn"),
+                        "forked_at": child_metadata.get("forked_at"),
+                        "turn_count": child_metadata.get("turn_count", 0),
+                    }
+                )
         except Exception:
             # Skip sessions we can't read
             continue
