@@ -1,9 +1,6 @@
 """Tests for amplifier_foundation.grpc_adapter.services module.
 
 Verifies the ToolServiceAdapter and ProviderServiceAdapter gRPC service implementations.
-
-These tests will fail with ModuleNotFoundError/ImportError until
-amplifier_foundation.grpc_adapter.services is implemented.
 """
 
 import json
@@ -126,17 +123,12 @@ class MockContext:
 
 
 class TestToolServiceAdapter:
-    """Tests for ToolServiceAdapter gRPC service.
-
-    All tests fail with ModuleNotFoundError until
-    amplifier_foundation.grpc_adapter.services is implemented.
-    """
+    """Tests for ToolServiceAdapter gRPC service."""
 
     def _make_adapter(self, tool: Any = None) -> Any:
         """Create a ToolServiceAdapter wrapping *tool*.
 
         Imports ToolServiceAdapter from amplifier_foundation.grpc_adapter.services.
-        Raises ModuleNotFoundError / ImportError until the module is implemented.
         """
         from amplifier_foundation.grpc_adapter.services import (  # type: ignore[import-not-found]  # noqa: PLC0415
             ToolServiceAdapter,
@@ -395,7 +387,6 @@ class TestProviderServiceAdapter:
         """Create a ProviderServiceAdapter wrapping *provider*.
 
         Imports ProviderServiceAdapter from amplifier_foundation.grpc_adapter.services.
-        Raises ImportError until the implementation is written.
         """
         from amplifier_foundation.grpc_adapter.services import (  # type: ignore[import-not-found]  # noqa: PLC0415
             ProviderServiceAdapter,
