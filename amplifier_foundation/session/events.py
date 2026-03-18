@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
+
+from .store import read_jsonl
 
 
 def slice_events_to_timestamp(
@@ -73,7 +75,9 @@ def slice_events_to_timestamp(
                                     event["parent_session_id"] = (
                                         parent_session_id or original_session_id
                                     )
-                                outfile.write(json.dumps(event, ensure_ascii=False) + "\n")
+                                outfile.write(
+                                    json.dumps(event, ensure_ascii=False) + "\n"
+                                )
                             else:
                                 outfile.write(line + "\n")
                             count += 1
@@ -122,7 +126,7 @@ def get_last_timestamp_for_turn(
     if not transcript_path.exists():
         raise FileNotFoundError(f"Transcript not found: {transcript_path}")
 
-    messages = list(_read_jsonl(transcript_path))
+    messages = list(read_jsonl(transcript_path))
 
     # Find turn boundaries
     boundaries = [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
@@ -211,7 +215,7 @@ def count_events(events_path: Path) -> int:
         return 0
 
     count = 0
-    for _ in _read_jsonl(events_path):
+    for _ in read_jsonl(events_path):
         count += 1
     return count
 
@@ -242,7 +246,7 @@ def get_event_summary(events_path: Path) -> dict[str, Any]:
     last_ts: str | None = None
     total = 0
 
-    for event in _read_jsonl(events_path):
+    for event in read_jsonl(events_path):
         total += 1
 
         # Count event types
@@ -264,25 +268,6 @@ def get_event_summary(events_path: Path) -> dict[str, Any]:
     }
 
 
-def _read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
-    """Read a JSONL file yielding parsed objects.
-
-    Args:
-        path: Path to JSONL file.
-
-    Yields:
-        Parsed JSON objects from each line.
-    """
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-
 def _parse_timestamp(ts: str) -> datetime:
     """Parse an ISO format timestamp string.
 
@@ -298,11 +283,11 @@ def _parse_timestamp(ts: str) -> datetime:
     # Try common formats
     formats = [
         "%Y-%m-%dT%H:%M:%S.%f%z",  # Full with microseconds and tz
-        "%Y-%m-%dT%H:%M:%S%z",      # Without microseconds, with tz
-        "%Y-%m-%dT%H:%M:%S.%fZ",    # With Z suffix
-        "%Y-%m-%dT%H:%M:%SZ",       # Without microseconds, Z suffix
-        "%Y-%m-%dT%H:%M:%S.%f",     # Without timezone
-        "%Y-%m-%dT%H:%M:%S",        # Basic ISO
+        "%Y-%m-%dT%H:%M:%S%z",  # Without microseconds, with tz
+        "%Y-%m-%dT%H:%M:%S.%fZ",  # With Z suffix
+        "%Y-%m-%dT%H:%M:%SZ",  # Without microseconds, Z suffix
+        "%Y-%m-%dT%H:%M:%S.%f",  # Without timezone
+        "%Y-%m-%dT%H:%M:%S",  # Basic ISO
     ]
 
     # Normalize Z to +00:00
