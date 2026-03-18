@@ -456,6 +456,7 @@ def get_session_lineage(
                 parent_meta = load_metadata(parent_dir)
                 current_parent_id = parent_meta.get("parent_id")
             else:
+                # Parent dir exists but lacks metadata — stop tracing ancestors
                 break
         else:
             break
