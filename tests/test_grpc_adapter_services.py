@@ -653,7 +653,8 @@ class MockModule:
     name = "mock_module"
     description = "A mock module for testing"
 
-    async def mount(self, config: dict) -> None:
+    async def mount(self, coordinator: Any, config: dict) -> None:
+        self.mounted_coordinator = coordinator
         self.mounted_config = config
 
     async def cleanup(self) -> None:
@@ -666,7 +667,8 @@ class MockSyncModule:
     name = "sync_module"
     description = "A sync module"
 
-    def mount(self, config: dict) -> None:
+    def mount(self, coordinator: Any, config: dict) -> None:
+        self.mounted_coordinator = coordinator
         self.mounted_config = config
 
 
@@ -683,7 +685,7 @@ class MockFailingModule:
     name = "failing_module"
     description = "A module that fails on mount"
 
-    async def mount(self, config: dict) -> None:
+    async def mount(self, coordinator: Any, config: dict) -> None:
         raise RuntimeError("mount failed")
 
 
@@ -832,3 +834,41 @@ class TestLifecycleServiceAdapter:
 
         assert response.name == "unknown"
         assert response.description == ""
+
+    @pytest.mark.asyncio
+    async def test_mount_passes_none_coordinator_and_config(self) -> None:
+        """Mount() calls mount_fn(None, config) — coordinator is None in v1 (adapter has no kernel access).
+
+        This is a regression test for the arity bug where Mount() was calling
+        mount_fn(config) with one argument instead of mount_fn(None, config)
+        with two arguments (coordinator, config).
+        """
+        call_args: list[Any] = []
+
+        class _RecordingModule:
+            name = "recording_module"
+            description = "Records mount call args"
+
+            def mount(self, coordinator: Any, config: dict) -> None:  # noqa: ANN101
+                call_args.append((coordinator, config))
+
+        module = _RecordingModule()
+        adapter = self._make_adapter(module)
+        request = pb2.MountRequest()  # type: ignore[union-attr]
+        request.config["key"] = "value"
+        ctx = MockContext()
+
+        response = await adapter.Mount(request, ctx)
+
+        # Must succeed — wrong arity causes TypeError → success=False
+        assert response.success is True, (
+            f"Mount() returned success=False (arity bug?): {response.error!r}"
+        )
+        assert len(call_args) == 1, f"Expected mount called once, got {len(call_args)}"
+        coordinator_arg, config_arg = call_args[0]
+        assert coordinator_arg is None, (
+            f"Expected coordinator=None (v1 limitation), got {coordinator_arg!r}"
+        )
+        assert config_arg == {"key": "value"}, (
+            f"Expected config={{'key': 'value'}}, got {config_arg!r}"
+        )

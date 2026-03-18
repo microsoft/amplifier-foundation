@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
-import inspect
 import json
 import logging
 import re
@@ -80,8 +79,8 @@ async def _load_module_object(module_path: Path, module_type: str) -> Any:
     """Load a Python module object from the given path.
 
     Adds module_path to sys.path, derives the package name from the directory
-    name (replacing hyphens with underscores), imports the package, and
-    optionally calls mount() if available (handles both sync and async mount).
+    name (replacing hyphens with underscores), and imports the package.
+    mount() is NOT called here — real initialization happens via the Mount() RPC.
 
     Args:
         module_path: Local path to the module directory.
@@ -103,23 +102,9 @@ async def _load_module_object(module_path: Path, module_type: str) -> Any:
             f"'{module_path.name}'. Package names must be valid Python identifiers."
         )
 
-    # Import the package
-    module_obj = importlib.import_module(package_name)
-
-    # Call mount() if available (handles both sync and async variants)
-    mount_fn = getattr(module_obj, "mount", None)
-    if mount_fn is not None and callable(mount_fn):
-        try:
-            result = mount_fn()
-            if inspect.isawaitable(result):
-                await result
-        except TypeError:
-            # mount() requires arguments — skip initial mount; handled by gRPC lifecycle
-            pass
-        except Exception as e:
-            logger.warning("mount() call during load failed: %s", e)
-
-    return module_obj
+    # Import the package — mount() is intentionally not called here.
+    # The real initialization comes from the Mount() RPC with coordinator=None and config.
+    return importlib.import_module(package_name)
 
 
 # ---------------------------------------------------------------------------

@@ -36,11 +36,18 @@ class ToolServiceAdapter(pb2_grpc.ToolServiceServicer):
 
     async def GetSpec(self, request: Any, context: Any) -> Any:
         """Return the tool's name, description, and JSON Schema parameters."""
-        return pb2.ToolSpec(  # type: ignore[attr-defined]
-            name=self._tool.name,
-            description=self._tool.description,
-            parameters_json=getattr(self._tool, "parameters_json", "{}"),
-        )
+        try:
+            return pb2.ToolSpec(  # type: ignore[attr-defined]
+                name=self._tool.name,
+                description=self._tool.description,
+                parameters_json=getattr(self._tool, "parameters_json", "{}"),
+            )
+        except Exception as e:
+            logger.exception("GetSpec failed")
+            await context.abort(
+                grpc.StatusCode.INTERNAL, str(e)
+            )  # v1: caller is trusted host (localhost-only)
+            return pb2.ToolSpec()  # type: ignore[attr-defined]
 
     async def Execute(self, request: Any, context: Any) -> Any:
         """Execute the tool with JSON input and return the serialized result."""
@@ -62,7 +69,7 @@ class ToolServiceAdapter(pb2_grpc.ToolServiceServicer):
             return pb2.ToolExecuteResponse(  # type: ignore[attr-defined]
                 success=False,
                 output=b"",
-                error=str(e),
+                error=str(e),  # v1: caller is trusted host (localhost-only)
             )
 
 
@@ -91,7 +98,9 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             )
         except Exception as e:
             logger.exception("GetInfo failed")
-            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+            await context.abort(
+                grpc.StatusCode.INTERNAL, str(e)
+            )  # v1: caller is trusted host (localhost-only)
             return pb2.ProviderInfo()  # type: ignore[attr-defined]
 
     async def ListModels(self, request: Any, context: Any) -> Any:
@@ -118,7 +127,9 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             return pb2.ListModelsResponse(models=model_protos)  # type: ignore[attr-defined]
         except Exception as e:
             logger.exception("ListModels failed")
-            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+            await context.abort(
+                grpc.StatusCode.INTERNAL, str(e)
+            )  # v1: caller is trusted host (localhost-only)
             return pb2.ListModelsResponse()  # type: ignore[attr-defined]
 
     def _to_tool_call_protos(self, tool_calls: Any) -> list[Any]:
@@ -170,7 +181,9 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             )
         except Exception as e:
             logger.exception("Complete failed")
-            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+            await context.abort(
+                grpc.StatusCode.INTERNAL, str(e)
+            )  # v1: caller is trusted host (localhost-only)
             return pb2.ChatResponse()  # type: ignore[attr-defined]
 
     async def ParseToolCalls(self, request: Any, context: Any) -> Any:
@@ -181,7 +194,9 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             return pb2.ParseToolCallsResponse(tool_calls=tool_call_protos)  # type: ignore[attr-defined]
         except Exception as e:
             logger.exception("ParseToolCalls failed")
-            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+            await context.abort(
+                grpc.StatusCode.INTERNAL, str(e)
+            )  # v1: caller is trusted host (localhost-only)
             return pb2.ParseToolCallsResponse()  # type: ignore[attr-defined]
 
 
@@ -198,7 +213,9 @@ class LifecycleServiceAdapter(pb2_grpc.ModuleLifecycleServicer):
             config = dict(request.config)
             mount_fn = getattr(self._module, "mount", None)
             if mount_fn is not None:
-                await _invoke(mount_fn, config)
+                # v1: coordinator is None — adapter doesn't have kernel coordinator access.
+                # Modules that require coordinator for initialization will need v2 changes.
+                await _invoke(mount_fn, None, config)
             self._healthy = True
             return pb2.MountResponse(  # type: ignore[attr-defined]
                 success=True,
@@ -209,7 +226,7 @@ class LifecycleServiceAdapter(pb2_grpc.ModuleLifecycleServicer):
             self._healthy = False
             return pb2.MountResponse(  # type: ignore[attr-defined]
                 success=False,
-                error=str(e),
+                error=str(e),  # v1: caller is trusted host (localhost-only)
                 status=pb2.HEALTH_STATUS_NOT_SERVING,  # type: ignore[attr-defined]
             )
 

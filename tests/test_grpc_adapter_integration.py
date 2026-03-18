@@ -61,8 +61,8 @@ description = _instance.description
 execute = _instance.execute
 
 
-def mount() -> None:
-    """No-op mount; called by _load_module_object during startup."""
+def mount(coordinator: Any, config: dict) -> None:
+    """No-op mount; real initialization via Mount() RPC (coordinator is None in v1)."""
     pass
 '''
 
@@ -149,8 +149,8 @@ complete = _instance.complete
 parse_tool_calls = _instance.parse_tool_calls
 
 
-def mount() -> None:
-    """No-op mount; called by _load_module_object during startup."""
+def mount(coordinator: Any, config: dict) -> None:
+    """No-op mount; real initialization via Mount() RPC (coordinator is None in v1)."""
     pass
 '''
 
@@ -707,8 +707,8 @@ class TestProviderModuleScaffolding:
             )
 
     def test_mock_provider_module_contains_mount_function(self) -> None:
-        """MOCK_PROVIDER_MODULE contains a mount() no-op function."""
-        assert "def mount()" in MOCK_PROVIDER_MODULE
+        """MOCK_PROVIDER_MODULE contains a mount(coordinator, config) function."""
+        assert "def mount(coordinator" in MOCK_PROVIDER_MODULE
 
     def test_write_provider_module_creates_directory_structure(
         self, tmp_path: Path

@@ -377,41 +377,50 @@ class TestMainEntryPoint:
 
 
 class TestLoadModuleObjectAsyncMount:
-    """Tests that _load_module_object() properly awaits async mount()."""
+    """Tests for _load_module_object() mount() handling.
+
+    mount() is NOT called during module load — real initialization happens
+    via the Mount() RPC with coordinator=None and config dict.
+    """
 
     def test_load_module_object_is_async(self) -> None:
-        """_load_module_object() must be an async function to properly await async mount()."""
+        """_load_module_object() is an async function (required for async-safe import)."""
         import inspect
 
         from amplifier_foundation.grpc_adapter.__main__ import _load_module_object  # type: ignore[import-not-found]
 
         assert inspect.iscoroutinefunction(_load_module_object), (
-            "_load_module_object must be async — calling await on a sync function's "
-            "return value silently drops coroutines from async mount() implementations"
+            "_load_module_object must be async for safe use in the async _run() flow"
         )
 
     @pytest.mark.asyncio
-    async def test_async_mount_is_awaited(self) -> None:
-        """_load_module_object() awaits async mount() rather than silently dropping it."""
+    async def test_mount_not_called_during_load(self) -> None:
+        """_load_module_object() does NOT call mount() — initialization deferred to Mount() RPC.
+
+        This replaces the old early-mount pattern that tried mount() with zero args and
+        swallowed TypeError. The real mount happens via the Mount() RPC with
+        coordinator=None and config dict (v1 limitation).
+        """
         from pathlib import Path
         from unittest.mock import MagicMock, patch
 
         from amplifier_foundation.grpc_adapter.__main__ import _load_module_object  # type: ignore[import-not-found]
 
-        mount_awaited = False
+        mount_called = False
 
-        async def async_mount() -> None:
-            nonlocal mount_awaited
-            mount_awaited = True
+        def recording_mount(coordinator: object, config: dict) -> None:
+            nonlocal mount_called
+            mount_called = True
 
         mock_module = MagicMock()
-        mock_module.mount = async_mount
+        mock_module.mount = recording_mount
 
         with patch("importlib.import_module", return_value=mock_module):
             await _load_module_object(Path("/fake/my-module"), "tool")
 
-        assert mount_awaited, (
-            "async mount() was silently dropped — coroutine was never awaited"
+        assert not mount_called, (
+            "_load_module_object() must NOT call mount() during load — "
+            "initialization is deferred to the Mount() RPC"
         )
 
 
