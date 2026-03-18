@@ -700,3 +700,49 @@ class TestGetEventSummary:
         assert "prompt:submit" in summary["event_types"]
         assert summary["first_timestamp"] is not None
         assert summary["last_timestamp"] is not None
+
+
+class TestIsRealUserMessage:
+    def test_user_message_is_real(self):
+        assert is_real_user_message({"role": "user", "content": "Hello"}) is True
+
+    def test_assistant_message_is_not_real(self):
+        assert is_real_user_message({"role": "assistant", "content": "Hi"}) is False
+
+    def test_tool_role_is_not_real(self):
+        assert is_real_user_message({"role": "tool", "content": "result"}) is False
+
+    def test_tool_call_id_is_not_real(self):
+        assert (
+            is_real_user_message(
+                {"role": "user", "content": "result", "tool_call_id": "abc123"}
+            )
+            is False
+        )
+
+    def test_system_reminder_string_is_not_real(self):
+        assert (
+            is_real_user_message(
+                {
+                    "role": "user",
+                    "content": "<system-reminder>some context</system-reminder>",
+                }
+            )
+            is False
+        )
+
+    def test_system_reminder_in_list_content_is_not_real(self):
+        assert (
+            is_real_user_message(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<system-reminder>ctx</system-reminder>",
+                        }
+                    ],
+                }
+            )
+            is False
+        )
