@@ -23,7 +23,7 @@ def _get_pyproject() -> dict:
 
 def test_grpcio_in_optional_grpc_adapter() -> None:
     """grpcio must be in [project.optional-dependencies] grpc-adapter extra.
-    
+
     This ensures grpcio is available only when the user explicitly requests it,
     not forced on all users of amplifier-foundation.
     """
@@ -37,7 +37,7 @@ def test_grpcio_in_optional_grpc_adapter() -> None:
 
 def test_protobuf_in_optional_grpc_adapter() -> None:
     """protobuf must be in [project.optional-dependencies] grpc-adapter extra.
-    
+
     This ensures protobuf is available only when the user explicitly requests it.
     """
     pyproject = _get_pyproject()
@@ -50,7 +50,7 @@ def test_protobuf_in_optional_grpc_adapter() -> None:
 
 def test_grpcio_not_in_main_dependencies() -> None:
     """grpcio must NOT be in main [project.dependencies] array.
-    
+
     Moving grpcio to main dependencies breaks all foundation users by forcing
     gRPC/protobuf installation on everyone. A production incident occurred when
     this was violated.
@@ -65,7 +65,7 @@ def test_grpcio_not_in_main_dependencies() -> None:
 
 def test_grpcio_in_dev_dependency_group() -> None:
     """grpcio must be in the [dependency-groups] dev group.
-    
+
     This ensures grpcio is available during testing and development
     via `uv sync --group dev`.
     """
