@@ -77,11 +77,11 @@ class TestReadJsonl:
         assert result == []
 
     def test_returns_iterator(self, tmp_path: Path):
-        """read_jsonl returns an iterator (has __next__)."""
+        """read_jsonl returns an iterator (has both __iter__ and __next__)."""
         p = tmp_path / "iter.jsonl"
         p.write_text('{"z": 0}\n', encoding="utf-8")
         it = read_jsonl(p)
-        assert hasattr(it, "__next__")
+        assert hasattr(it, "__iter__") and hasattr(it, "__next__")
 
 
 # =============================================================================
