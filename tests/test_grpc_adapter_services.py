@@ -204,10 +204,10 @@ class TestToolServiceAdapter:
 
     @pytest.mark.asyncio
     async def test_execute_dict_output_returns_valid_json(self) -> None:
-        """Execute with dict output must return valid JSON bytes, not Python repr.
+        """Execute with dict output returns valid JSON bytes (not Python repr).
 
-        Expected to FAIL: the adapter serialises dict output as Python repr (str(output))
-        instead of json.dumps(output), so json.loads raises ValueError.
+        Verifies json.dumps() is used instead of str() so that json.loads()
+        on the response.output succeeds and returns the original dict.
         """
         tool = MockTool()
         tool.execute = AsyncMock(  # type: ignore[method-assign]
@@ -231,10 +231,10 @@ class TestToolServiceAdapter:
 
     @pytest.mark.asyncio
     async def test_execute_none_output_returns_valid_json(self) -> None:
-        """Execute with None output must return valid JSON (empty string), not b'None'.
+        """Execute with None output returns valid JSON (empty string), not b'None'.
 
-        Expected to FAIL: the adapter converts None to the string 'None' (Python repr)
-        which is not valid JSON.
+        Verifies None is serialised as json.dumps("") rather than str(None),
+        so that json.loads() on the response.output succeeds.
         """
         tool = MockTool()
         tool.execute = AsyncMock(  # type: ignore[method-assign]
@@ -256,10 +256,10 @@ class TestToolServiceAdapter:
 
     @pytest.mark.asyncio
     async def test_execute_mirrors_content_type(self) -> None:
-        """Execute must echo the request content_type in the response.
+        """Execute echoes the request content_type in the response.
 
-        Expected to FAIL: the adapter hard-codes response.content_type as 'text/plain'
-        instead of mirroring the request content_type.
+        Verifies the adapter mirrors the request content_type rather than
+        hard-coding 'text/plain'.
         """
         adapter = self._make_adapter(MockTool())
         context = MockContext()
@@ -274,10 +274,10 @@ class TestToolServiceAdapter:
 
     @pytest.mark.asyncio
     async def test_execute_default_content_type_is_json(self) -> None:
-        """Execute with empty content_type must default to 'application/json'.
+        """Execute with empty content_type defaults to 'application/json'.
 
-        Expected to FAIL: the adapter hard-codes response.content_type as 'text/plain'
-        instead of defaulting to 'application/json' when the request field is empty.
+        Verifies the adapter uses 'application/json' as the default rather than
+        hard-coding 'text/plain' when the request content_type field is empty.
         """
         adapter = self._make_adapter(MockTool())
         context = MockContext()
