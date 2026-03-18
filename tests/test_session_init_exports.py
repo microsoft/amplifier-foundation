@@ -17,6 +17,7 @@ class TestExistingExports:
     """Verify pre-existing symbols still export correctly."""
 
     def test_fork_exports(self):
+        """These symbols come from the .fork module (session branching/lineage)."""
         from amplifier_foundation.session import (  # noqa: F401
             ForkResult,
             fork_session,
@@ -27,6 +28,7 @@ class TestExistingExports:
         )
 
     def test_events_exports(self):
+        """These symbols come from the .events module (event log utilities)."""
         from amplifier_foundation.session import (  # noqa: F401
             count_events,
             get_event_summary,
@@ -47,6 +49,7 @@ class TestExistingExports:
         )
 
     def test_capabilities_exports(self):
+        """These symbols come from the .capabilities module (working directory helpers)."""
         from amplifier_foundation.session import (  # noqa: F401
             WORKING_DIR_CAPABILITY,
             get_working_dir,
