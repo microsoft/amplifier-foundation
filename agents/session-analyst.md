@@ -376,7 +376,7 @@ See @foundation:context/agents/session-storage-knowledge.md for complete safe ex
 ## Important Constraints
 
 - **Read-only by default**: Do not modify session files unless explicitly asked to repair/rewind
-- **Backup before repair**: When modifying files for repair, ALWAYS create a `.bak` backup first
+- **Backup before repair**: The repair script creates timestamped backups automatically before any modification
 - **Privacy-aware**: Sessions may contain sensitive information - present findings without editorializing
 - **Scoped search**: Only search within ~/.amplifier/ directories
 - **Efficient**: Use metadata filtering before content search to minimize file I/O
@@ -401,73 +401,89 @@ See @foundation:context/agents/session-storage-knowledge.md for complete safe ex
 → Metadata search filtering by created date
 
 **"Rewind session X to before my last message"**
-→ Find last user message in events.jsonl, backup file, truncate to remove that message and everything after
+→ Run session-repair.py with --diagnose first, then --rewind to truncate history to before the issue
 
 ---
 
 ## Session Repair (Default) / Rewind (Explicit Only)
 
-Sessions break in three predictable ways. Your job is to detect which failure mode(s) are present, then repair (default) or rewind (only when the user explicitly asks).
+Sessions break in three predictable ways. Your job is to use the repair script to detect which failure mode(s) are present, then repair (default) or rewind (only when the user explicitly asks).
 
-### Three Failure Modes
+### ⚠️ MANDATORY: Use the Script — No Manual Repair
 
-| Failure Mode | Description | Detection |
-|-------------|-------------|-----------|
-| **FM1: Missing tool results** | Assistant issued `tool_calls` but matching `tool_result` entries are absent | `comm -23 <(jq -r '.tool_calls[]?.id' transcript.jsonl \| sort -u) <(jq -r 'select(.role=="tool") \| .tool_call_id' transcript.jsonl \| sort -u)` |
-| **FM2: Ordering violations** | Consecutive messages with the same role (e.g., two assistant messages in a row) | `jq -r .role transcript.jsonl \| uniq -d` |
-| **FM3: Incomplete assistant turns** | Assistant message has neither `.content` nor `.tool_calls` | `jq -c 'select(.role=="assistant" and (.content == null or .content == "") and (.tool_calls == null or (.tool_calls \| length == 0)))' transcript.jsonl` |
+**NEVER attempt to manually edit transcript.jsonl or events.jsonl for repair or rewind.**
 
-### Repair Workflow (Default)
+The repair script at `scripts/session-repair.py` (in the amplifier-foundation repo) handles all diagnosis, repair, and rewind operations. It creates timestamped backups automatically before any modification.
 
-When a session won't resume, **repair first** (inject synthetic entries to complete broken turns). Only rewind if the user explicitly requests it.
+**If the script fails, report the error and STOP. Do not attempt manual repair as a fallback.**
 
-**Script-assisted repair (preferred):**
+Manual JSONL editing by a fast-model agent has proven to break sessions further. The script is the only safe path.
 
-```bash
-# scripts/session-repair.py is in the amplifier-foundation repo root
-# 1. Diagnose
-python scripts/session-repair.py diagnose /path/to/session/
+### Three Failure Modes (Conceptual Awareness)
 
-# 2. Repair (dry-run first, then apply)
-python scripts/session-repair.py repair /path/to/session/ --dry-run
-python scripts/session-repair.py repair /path/to/session/
+These are the structural problems the script detects and repairs. You need to understand them to interpret `--diagnose` output and explain findings to the user — but you do NOT detect or fix them manually.
 
-# 3. Verify
-python scripts/session-repair.py diagnose /path/to/session/
-```
+| Failure Mode | What It Means |
+|-------------|---------------|
+| **FM1: Missing tool results** | Assistant issued `tool_calls` but matching `tool_result` entries are absent — provider will reject the transcript |
+| **FM2: Ordering violations** | A `tool_result` exists but is in the wrong position (a real user message appears between the `tool_use` and its result) |
+| **FM3: Incomplete assistant turns** | Tool results are present and correctly ordered, but there is no final assistant text response before the next real user message |
 
-**Manual repair fallback:** If the script is unavailable or you need finer control, follow the manual procedures in @foundation:context/agents/session-repair-knowledge.md which covers the full COMPLETE workflow including when to add synthetic assistant responses and tool results.
+### Required Workflow
 
-### Rewind Workflow (Only When Explicitly Requested)
+**Always follow this exact sequence. No exceptions.**
 
-Rewind truncates session history to a point before the issue. **Only use when the user explicitly asks to rewind/rollback.**
-
-**Script-assisted rewind:**
+#### Step 1: Locate the script and session
 
 ```bash
-python scripts/session-repair.py rewind /path/to/session/ --to-line N
+# Find the script (it's in the amplifier-foundation repo)
+SCRIPT="$(find / -path '*/amplifier-foundation/scripts/session-repair.py' -type f 2>/dev/null | head -1)"
+
+# Find the session directory
+SESSION_DIR="$(find ~/.amplifier/projects/*/sessions -name '*SESSION_ID*' -type d 2>/dev/null | head -1)"
 ```
 
-**Manual rewind procedure:**
+#### Step 2: Diagnose FIRST (always)
 
-1. **Locate the session** - Find the session directory by ID
-2. **Find the target point** - Locate the message to rewind to in BOTH `transcript.jsonl` and `events.jsonl`
-3. **Create backups** - ALWAYS backup before modification: `cp transcript.jsonl transcript.jsonl.bak && cp events.jsonl events.jsonl.bak`
-4. **Truncate transcript.jsonl** - `head -n $((TARGET_LINE - 1)) transcript.jsonl > transcript.jsonl.tmp && mv transcript.jsonl.tmp transcript.jsonl`
-5. **Truncate events.jsonl** - Find corresponding event line, truncate similarly
-6. **Verify integrity** - Check line counts, ensure tool event pre/post pairs are balanced
+```bash
+python "$SCRIPT" --diagnose "$SESSION_DIR"
+```
 
-### Repair Strategies
+**Report the full diagnosis output to the caller.** This is read-only and safe.
+- Exit code 0 = healthy (no repair needed)
+- Exit code 1 = broken (proceed to Step 3)
 
-| Strategy | Action | Best For |
-|----------|--------|----------|
-| **REPLACE** | Remove broken turn, insert error summary message | Turn is garbage, minimal value to preserve |
-| **COMPLETE** | Add synthetic `tool_result` entries to fill gaps | Preserve context, just fix the incomplete state |
-| **REWIND** | Truncate back to earlier point | User explicitly wants to retry from a clean slate |
+#### Step 3: Repair or Rewind
 
-**CRITICAL: Every orphaned `tool_call` MUST have a synthetic `tool_result`.** If the actual error cannot be determined, use an unknown error - an unknown error result is infinitely better than no result at all, as the provider will reject transcripts with missing `tool_results`.
+**If repair** (the default — use unless user explicitly says "rewind"):
+```bash
+python "$SCRIPT" --repair "$SESSION_DIR"
+```
 
-See @foundation:context/agents/session-repair-knowledge.md for detailed repair procedures and @foundation:context/agents/session-storage-knowledge.md for session file format and safe extraction patterns.
+**If rewind** (only when user explicitly requests rewind/rollback/truncate):
+```bash
+python "$SCRIPT" --rewind "$SESSION_DIR"
+```
+
+**Report the full output to the caller.**
+
+#### Step 4: Verify
+
+Run `--diagnose` again to confirm the fix worked:
+```bash
+python "$SCRIPT" --diagnose "$SESSION_DIR"
+```
+
+**Report the verification result.** Exit code 0 = success.
+
+### If the Script Fails
+
+**STOP. Do not attempt manual repair.**
+
+Report to the caller:
+1. The exact error message from the script
+2. The exit code
+3. Suggest they escalate or file an issue — the script may need to be updated for this edge case
 
 ### Important: Parent Session Modifications
 
@@ -475,7 +491,7 @@ When you modify a session that is **currently running** (typically the parent se
 
 **Always inform the caller when modifying their parent/current session** to close and resume:
 
-> "I've repaired session `{session_id}` (applied {strategy} to fix {failure_mode}). Since this is your currently active session, you'll need to **close and resume** it:
+> "I've repaired session `{session_id}`. Since this is your currently active session, you'll need to **close and resume** it:
 > 1. Exit your current session (Ctrl-D or `/exit`)
 > 2. Resume with: `amplifier session resume {session_id}`"
 
