@@ -11,8 +11,10 @@ import pytest
 
 try:
     from amplifier_core.message_models import ChatRequest as PydanticChatRequest
+    from amplifier_core.message_models import ChatResponse as PydanticChatResponse
 except ImportError:
     PydanticChatRequest = None  # type: ignore[assignment,misc]
+    PydanticChatResponse = None  # type: ignore[assignment,misc]
 
 try:
     from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
@@ -420,14 +422,16 @@ class MockSyncProvider:
 
 
 class CapturingProvider:
-    """Provider that captures the argument passed to complete().
+    """Provider that captures the argument passed to complete() and parse_tool_calls().
 
     Used to verify that Complete() passes a PydanticChatRequest (not raw proto)
+    and that ParseToolCalls() passes a PydanticChatResponse (not raw proto)
     after the PyO3 bridge refactor.
     """
 
     def __init__(self) -> None:
         self.received_request: Any = None
+        self.received_response: Any = None
 
     def get_info(self) -> Any:
         return MagicMock(
@@ -453,6 +457,7 @@ class CapturingProvider:
         )
 
     def parse_tool_calls(self, response: Any) -> list[Any]:
+        self.received_response = response
         return []
 
 
@@ -774,6 +779,40 @@ class TestProviderServiceAdapter:
         )
         # The gRPC response must carry finish_reason='stop'
         assert result.finish_reason == "stop"
+
+    # ------------------------------------------------------------------
+    # 16. ParseToolCalls uses PyO3 bridge — provider receives PydanticChatResponse
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        PydanticChatResponse is None,
+        reason="amplifier_core.message_models not available",
+    )
+    async def test_parse_tool_calls_uses_pyo3_bridge(self) -> None:
+        """ParseToolCalls passes a PydanticChatResponse (not raw proto) to provider.parse_tool_calls.
+
+        Verifies the PyO3 bridge refactor: the proto ChatResponse is converted
+        to JSON via google.protobuf.json_format.MessageToJson, transformed as
+        needed, and validated into a PydanticChatResponse before being passed
+        to provider.parse_tool_calls.
+        """
+        provider = CapturingProvider()
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+
+        await adapter.ParseToolCalls(
+            pb2.ChatResponse(content="tool call response", finish_reason="tool_calls"),  # type: ignore[union-attr]
+            ctx,
+        )
+
+        # The provider must have received a non-None response object
+        assert provider.received_response is not None, (
+            "provider.parse_tool_calls was never called with a non-None argument"
+        )
+        assert isinstance(provider.received_response, PydanticChatResponse), (  # type: ignore[arg-type]
+            f"Expected PydanticChatResponse, got {type(provider.received_response)}"
+        )
 
 
 # ---------------------------------------------------------------------------

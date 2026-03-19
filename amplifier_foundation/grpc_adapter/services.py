@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from google.protobuf import json_format as _proto_json_format
 from pydantic import BaseModel as _PydanticBaseModel
 
 try:
@@ -20,6 +21,7 @@ from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2  # type: ignore
 from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
 
 from amplifier_core.message_models import ChatRequest as PydanticChatRequest
+from amplifier_core.message_models import ChatResponse as PydanticChatResponse
 
 try:
     from amplifier_core._engine import (  # type: ignore[attr-defined]
@@ -260,7 +262,27 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
     async def ParseToolCalls(self, request: Any, context: Any) -> Any:
         """Parse tool calls from a ChatResponse and return ParseToolCallsResponse proto."""
         try:
-            tool_calls = await _invoke(self._provider.parse_tool_calls, request)
+            # 1. Serialize proto to JSON via google.protobuf.json_format
+            json_str = _proto_json_format.MessageToJson(
+                request, preserving_proto_field_name=True
+            )
+            # 2. Parse JSON and transform content field if needed
+            #    Proto ChatResponse has content as a string (or missing when empty),
+            #    but PydanticChatResponse expects content as a list of content blocks.
+            data = json.loads(json_str) if json_str else {}
+            content_val = data.get("content")
+            if isinstance(content_val, str):
+                data["content"] = (
+                    [{"type": "text", "text": content_val}] if content_val else []
+                )
+            elif content_val is None:
+                data["content"] = []
+            # 3. Validate into PydanticChatResponse
+            pydantic_response = PydanticChatResponse.model_validate(data)
+            # 4. Call provider with the Pydantic response object
+            tool_calls = await _invoke(
+                self._provider.parse_tool_calls, pydantic_response
+            )
             tool_call_protos = self._to_tool_call_protos(tool_calls)
             return pb2.ParseToolCallsResponse(tool_calls=tool_call_protos)  # type: ignore[attr-defined]
         except Exception as e:
