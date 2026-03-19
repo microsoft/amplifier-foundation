@@ -1,8 +1,10 @@
 """Session utilities for Amplifier.
 
-This module provides utilities for session fork, slice, and lineage operations.
+This module provides utilities for session management, including fork, slice,
+lineage, diagnosis, and repair operations.
 
 Key concepts:
+
 - **Fork**: Create a new session from an existing session at a specific turn.
   The forked session preserves conversation history up to that turn and is
   independently resumable.
@@ -13,7 +15,24 @@ Key concepts:
 - **Lineage**: Parent-child relationships between sessions, tracked via
   `parent_id` in session metadata. Enables tracing session history.
 
-Example usage:
+- **Diagnosis**: Structured analysis of a transcript to detect failure modes
+  such as missing tool results, ordering violations, and incomplete assistant
+  turns. Produces a ``DiagnosisResult`` with recommended repair action.
+
+Module layers:
+
+- **Level 1 — Message Algebra** (``messages``, ``diagnosis``): Pure functions
+  operating on ``list[dict]`` with zero I/O.  All inputs and outputs are plain
+  Python data structures.
+
+- **Level 2 — JSONL Store** (``store``): Knows file formats and session file
+  naming conventions; performs file I/O but has no knowledge of where sessions
+  live on disk.
+
+- **Level 3 — Session Operations** (``fork``, ``events``): Combines Levels 1
+  and 2 to provide end-to-end session fork, slice, and event operations.
+
+Example usage::
 
     from amplifier_foundation.session import fork_session, ForkResult
 
@@ -30,6 +49,18 @@ Example usage:
     messages = await context.get_messages()
     result = fork_session_in_memory(messages, turn=2)
     await new_context.set_messages(result.messages)
+
+    # Diagnose and repair a broken transcript
+    from amplifier_foundation.session import (
+        load_transcript_with_lines,
+        diagnose_transcript,
+        repair_transcript,
+    )
+
+    entries = load_transcript_with_lines(session_dir)
+    diagnosis = diagnose_transcript(entries)
+    if diagnosis["status"] == "broken":
+        repaired = repair_transcript(entries, diagnosis)
 
 The kernel (amplifier-core) already provides the mechanism for session forking
 via the `parent_id` parameter in AmplifierSession and the `session:fork` event.
@@ -57,14 +88,47 @@ from .events import (
     slice_events_to_timestamp,
 )
 
-# Slice utilities (for advanced use cases)
-from .slice import (
+# Message algebra utilities (Level 1, zero I/O)
+from .messages import (
     add_synthetic_tool_results,
     count_turns,
     find_orphaned_tool_calls,
     get_turn_boundaries,
     get_turn_summary,
+    is_real_user_message,
     slice_to_turn,
+)
+
+# Diagnosis and repair utilities (Level 1, zero I/O)
+from .diagnosis import (
+    DiagnosisResult,
+    IncompleteTurn,
+    build_tool_index,
+    diagnose_transcript,
+    repair_transcript,
+    rewind_transcript,
+)
+
+# JSONL store utilities (Level 2, file I/O)
+from .store import (
+    EVENTS_FILENAME,
+    METADATA_FILENAME,
+    TRANSCRIPT_FILENAME,
+    backup,
+    load_metadata,
+    load_transcript,
+    load_transcript_with_lines,
+    read_jsonl,
+    write_jsonl,
+    write_metadata,
+    write_transcript,
+)
+
+# Finder operations (Level 3 — directory conventions)
+from .finder import (
+    find_sessions,
+    resolve_session,
+    session_info,
 )
 
 # Capability helpers (for modules to access session context)
@@ -83,18 +147,42 @@ __all__ = [
     "get_session_lineage",
     "list_session_forks",
     # Events utilities
-    "slice_events_to_timestamp",
-    "slice_events_for_fork",
-    "get_last_timestamp_for_turn",
     "count_events",
     "get_event_summary",
-    # Slice utilities
-    "get_turn_boundaries",
-    "count_turns",
-    "slice_to_turn",
-    "find_orphaned_tool_calls",
+    "get_last_timestamp_for_turn",
+    "slice_events_for_fork",
+    "slice_events_to_timestamp",
+    # Message algebra utilities
     "add_synthetic_tool_results",
+    "count_turns",
+    "find_orphaned_tool_calls",
+    "get_turn_boundaries",
     "get_turn_summary",
+    "is_real_user_message",
+    "slice_to_turn",
+    # Diagnosis and repair utilities
+    "DiagnosisResult",
+    "IncompleteTurn",
+    "build_tool_index",
+    "diagnose_transcript",
+    "repair_transcript",
+    "rewind_transcript",
+    # JSONL store utilities
+    "EVENTS_FILENAME",
+    "METADATA_FILENAME",
+    "TRANSCRIPT_FILENAME",
+    "backup",
+    "load_metadata",
+    "load_transcript",
+    "load_transcript_with_lines",
+    "read_jsonl",
+    "write_jsonl",
+    "write_metadata",
+    "write_transcript",
+    # Finder operations
+    "resolve_session",
+    "find_sessions",
+    "session_info",
     # Capability helpers
     "WORKING_DIR_CAPABILITY",
     "get_working_dir",

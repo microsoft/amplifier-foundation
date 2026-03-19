@@ -4,7 +4,7 @@ Reference documentation for the session repair script and the failure modes it h
 
 **Repair-first default:** ALWAYS attempt REPAIR before REWIND. Repair preserves maximum context. Rewind only when the user explicitly requests it.
 
-**Script-only rule:** ALL diagnosis, repair, and rewind operations MUST use `scripts/session-repair.py`. Never attempt manual JSONL editing.
+**Script-only rule:** ALL diagnosis, repair, and rewind operations MUST use `scripts/amplifier-session.py`. Never attempt manual JSONL editing.
 
 ---
 
@@ -51,30 +51,38 @@ Tool results are present and correctly ordered, but there is no final assistant 
 
 ## Programmatic Repair Script
 
-**Location:** `scripts/session-repair.py` (in the amplifier-foundation repo, stdlib-only Python, no dependencies)
+**Location:** `scripts/amplifier-session.py` (in the amplifier-foundation repo; `scripts/session-repair.py` is deprecated)
 
 ### Usage
 
 ```bash
 # Diagnose only (read-only, safe)
-python scripts/session-repair.py --diagnose /path/to/session/
+python scripts/amplifier-session.py diagnose <session>
 
-# Repair with COMPLETE strategy (creates timestamped backup first)
-python scripts/session-repair.py --repair /path/to/session/
+# Repair (creates timestamped backup first)
+python scripts/amplifier-session.py repair <session>
 
 # Rewind (truncate — creates timestamped backups of both transcript and events)
-python scripts/session-repair.py --rewind /path/to/session/
+python scripts/amplifier-session.py rewind <session>
+
+# Show session info
+python scripts/amplifier-session.py info <session>
+
+# Find sessions
+python scripts/amplifier-session.py find --project myproj --keyword "auth"
 ```
+
+The `<session>` argument accepts full paths, session IDs, or partial IDs.
 
 ### Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success (healthy on `--diagnose`, repaired on `--repair`, rewound on `--rewind`) |
-| 1 | Repair needed (`--diagnose`) or repair failed (`--repair`) |
+| 0 | Success (healthy on `diagnose`, repaired on `repair`, rewound on `rewind`) |
+| 1 | Repair needed (`diagnose`) or repair failed (`repair`) |
 | 2 | Invalid arguments or missing transcript file |
 
-### `--diagnose` JSON Output Format
+### `diagnose` JSON Output Format
 
 ```json
 {
@@ -97,10 +105,10 @@ Fields:
 
 ### Verification
 
-After any repair or rewind, run `--diagnose` again to confirm success:
+After any repair or rewind, run `diagnose` again to confirm success:
 
 ```bash
-python scripts/session-repair.py --diagnose /path/to/session/
+python scripts/amplifier-session.py diagnose <session>
 # Exit code 0 + {"status": "healthy"} = all checks pass
 # Exit code 1 + {"status": "broken"} = issues remain
 ```

@@ -165,16 +165,11 @@ If no search criteria provided, ask for at least one constraint.
 
 Amplifier stores sessions at: `~/.amplifier/projects/PROJECT_NAME/sessions/SESSION_ID/`
 
-- `metadata.json`: Contains session_id, created (ISO timestamp), bundle, model, turn_count
-- `transcript.jsonl`: JSONL format with message roles:
-  - `user`: Prompts (human in root sessions, caller agent in sub-sessions)
-  - `assistant`: LLM responses (may include `tool_calls` array)
-  - `tool`: Tool execution results (linked by `tool_call_id`)
-  
-  **Attribution rule**: Check `parent_id` in events.jsonl. If present, this is a 
-  sub-session and "user" = the parent session's assistant. To find the human, 
-  trace up the parent chain until you reach a session with no parent_id.
-- `events.jsonl`: Full event log - **DANGER: lines can be 100k+ tokens**
+- `metadata.json` — session_id, created (ISO timestamp), bundle, model, turn_count
+- `transcript.jsonl` — JSONL conversation messages (user / assistant / tool roles)
+- `events.jsonl` — Full event log — **⚠️ DANGER: lines can be 100k+ tokens**
+
+**Attribution rule**: Check `parent_id` in events.jsonl. If present, this is a sub-session and "user" = the parent session's assistant. To find the human, trace up the parent chain until you reach a session with no parent_id.
 
 ## Operating Principles
 
@@ -189,156 +184,63 @@ Amplifier stores sessions at: `~/.amplifier/projects/PROJECT_NAME/sessions/SESSI
 
 ## Search Workflow
 
-### 1. Clarify Search Scope
+### 1. Locate the Script
 
-Restate the user's search criteria and create a search plan using the todo tool:
-
-```
-Search Plan:
-- Scope: [Project folders or all projects]
-- Time range: [If specified]
-- Search terms: [Keywords or topics]
-- Approach: [Metadata only vs. content search vs. event analysis]
+```bash
+SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
 ```
 
-### 2. Locate Candidate Sessions
+### 2. Find Sessions
 
-**If session ID provided:**
+```bash
+# By session ID (partial OK)
+python "$SCRIPT" find --id c3843177
 
-- Search for exact or partial match: `find ~/.amplifier/projects/*/sessions -name "*SESSION_ID*" -type d`
+# By project
+python "$SCRIPT" find --project azure
 
-**If project/folder specified:**
+# By date
+python "$SCRIPT" find --date 2025-11-25
 
-- List sessions in that project: `~/.amplifier/projects/*/sessions/` filtered by project name in path
+# By keyword in transcripts
+python "$SCRIPT" find --keyword authentication
 
-**If date range specified:**
-
-- Search metadata.json files for created timestamps in range
-
-**If no constraints:**
-
-- List all sessions with basic metadata
-
-### 3. Filter and Search Content
-
-**For metadata filtering:**
-
-- Read metadata.json files to check: created date, bundle, model, turn_count
-
-**For content search:**
-
-- Grep through transcript.jsonl for keywords
-- Use context flags (-B 2 -A 2) to show surrounding conversation
-- Parse JSONL to extract meaningful exchanges
-
-### 4. Synthesize Results
-
-Don't just list sessions - analyze and synthesize conversation content. Produce a structured report:
-
-**Analysis goals:**
-
-- Identify conversation themes and main topics discussed
-- Extract key decisions, conclusions, or insights
-- Note technical details, implementations, or solutions created
-- Summarize outcomes and action items
-- Connect related sessions if multiple found
-
-**Format:**
-
-```
-## Synthesis: [Brief description of what was found]
-
-### Overview
-[2-3 sentences synthesizing the main themes across found sessions]
-
-### Session: [session_id]
-- **Location**: [full path]
-- **Created**: [readable date/time]
-- **Project**: [project name from path]
-- **Bundle**: [bundle name] | **Model**: [model] | **Turns**: [count]
-
-**Conversation Summary:**
-[Paragraph describing what this conversation was about]
-
-**Key Points:**
-- [Important decision/insight 1]
-- [Technical detail/implementation 2]
-- [Outcome/action item 3]
-
-**Notable Exchanges:**
+# Combined filters
+python "$SCRIPT" find --project azure --date-after 2025-11-20 --keyword caching
 ```
 
-User: [relevant question/request]
-Assistant: [key response excerpt]
+### 3. Synthesize Results
 
-```
-
----
-
-### Session: [next_session_id]
-[...]
-
-### Cross-Session Insights
-[If multiple sessions found, note patterns, evolution of thinking, related topics]
-```
+Don't just list sessions — analyze and synthesize. Begin with a brief **Overview** across all results. For each session: metadata (location, created, bundle, model, turns), a conversation summary, and key points. Note **Cross-Session Insights** if multiple sessions found (patterns, evolution of thinking, related topics).
 
 ## Final Response Contract
 
-Your final message must stand on its own for the caller—nothing else from this run is visible. Always include:
-
-1. **Synthesis Summary**: 2-3 sentences capturing the essence of what was discussed across sessions, key insights gained, or problems solved
-2. **Session Analysis**: For each session, provide:
-   - Metadata and location
-   - Conversation summary (not just excerpts)
-   - Key points, decisions, or technical details
-   - Notable exchanges that illustrate the discussion
-3. **Coverage & Context**: Note what was searched, time periods covered, and any patterns across sessions
-4. **Suggested Next Actions**: Concrete follow-ups such as:
-   - "Review full transcript: `cat <path>/transcript.jsonl`"
-   - "Continue this work with zen-architect for [specific next step]"
-   - "Compare with session [ID] which discussed related topic"
-5. **Not Found**: If no matches, explain what was searched and suggest broadening criteria or alternative search strategies
+Your final message must stand on its own. Include: synthesis summary, session analysis (metadata + conversation summary + key points), coverage notes, suggested next actions, and "not found" guidance if no results.
 
 ## Search Strategies
 
 ### By Session ID
 
 ```bash
-# Find session directory
-find ~/.amplifier/projects/*/sessions -name "*SESSION_ID*" -type d
-
-# Read metadata
-cat PATH/metadata.json | jq .
-
-# Read transcript
-cat PATH/transcript.jsonl
+python "$SCRIPT" find --id SESSION_ID
 ```
 
 ### By Project
 
 ```bash
-# List all sessions in project (replace PROJECT with actual project name)
-ls -lt ~/.amplifier/projects/*/sessions/ | grep PROJECT
-
-# Get metadata for recent sessions in specific project
-find ~/.amplifier/projects/*PROJECT*/sessions -name "metadata.json" -exec cat {} \;
+python "$SCRIPT" find --project PROJECT_NAME
 ```
 
 ### By Date Range
 
 ```bash
-# Find sessions created after date
-find ~/.amplifier/projects/*/sessions -name "metadata.json" -exec grep -l "2025-11-25" {} \;
+python "$SCRIPT" find --date-after 2025-11-01 --date-before 2025-11-30
 ```
 
 ### By Content/Keywords
 
 ```bash
-# Search transcript content (transcript.jsonl is usually safe)
-grep -r "authentication" ~/.amplifier/projects/*/sessions/*/transcript.jsonl
-
-# CAUTION: For events.jsonl, get line numbers only - lines can be 100k+ tokens
-grep -n "authentication" ~/.amplifier/projects/*/sessions/*/events.jsonl | cut -d: -f1 | head -10
+python "$SCRIPT" find --keyword SEARCH_TERM
 ```
 
 ### Deep Event Analysis (events.jsonl)
@@ -386,42 +288,60 @@ See @foundation:context/agents/session-storage-knowledge.md for complete safe ex
 ## Example Queries
 
 **"Why won't session X resume?"**
-→ Analyze events.jsonl for errors, check for orphaned tool calls, examine API responses
+
+```bash
+SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
+SESSION_DIR="$(find ~/.amplifier/projects/*/sessions -name '*SESSION_ID*' -type d 2>/dev/null | head -1)"
+python "$SCRIPT" diagnose "$SESSION_DIR"
+```
 
 **"Find session c3843177"**
-→ Search for directory matching that ID, show metadata and excerpt
 
-**"Sessions from last week in the azure project"**
-→ Filter by project path + created timestamp
+```bash
+python "$SCRIPT" find --id c3843177
+```
+
+**"Sessions from last week"**
+
+```bash
+python "$SCRIPT" find --date-after "$(date -d '7 days ago' +%Y-%m-%d)"
+```
 
 **"Conversation about authentication"**
-→ Content search across transcripts for "authentication" keyword
+
+```bash
+python "$SCRIPT" find --keyword authentication
+```
 
 **"All sessions from November 25"**
-→ Metadata search filtering by created date
 
-**"Rewind session X to before my last message"**
-→ Run session-repair.py with --diagnose first, then --rewind to truncate history to before the issue
+```bash
+python "$SCRIPT" find --date 2025-11-25
+```
+
+**"Rewind session X"**
+
+```bash
+python "$SCRIPT" rewind "$SESSION_DIR"
+```
 
 ---
 
 ## Session Repair (Default) / Rewind (Explicit Only)
 
-Sessions break in three predictable ways. Your job is to use the repair script to detect which failure mode(s) are present, then repair (default) or rewind (only when the user explicitly asks).
+Sessions break in three predictable ways. Use the unified script to detect and fix them.
 
-### ⚠️ MANDATORY: Use the Script — No Manual Repair
+### ⚠️ MANDATORY: Script Only — No Manual Repair
 
 **NEVER attempt to manually edit transcript.jsonl or events.jsonl for repair or rewind.**
 
-The repair script at `scripts/session-repair.py` (in the amplifier-foundation repo) handles all diagnosis, repair, and rewind operations. It creates timestamped backups automatically before any modification.
+The unified script `scripts/amplifier-session.py` handles all diagnosis, repair, and rewind operations. It creates timestamped backups automatically before any modification.
 
 **If the script fails, report the error and STOP. Do not attempt manual repair as a fallback.**
 
-Manual JSONL editing by a fast-model agent has proven to break sessions further. The script is the only safe path.
-
 ### Three Failure Modes (Conceptual Awareness)
 
-These are the structural problems the script detects and repairs. You need to understand them to interpret `--diagnose` output and explain findings to the user — but you do NOT detect or fix them manually.
+These are the structural problems the script detects and repairs. You need to understand them to interpret `diagnose` output and explain findings to the user — but you do NOT detect or fix them manually.
 
 | Failure Mode | What It Means |
 |-------------|---------------|
@@ -431,50 +351,22 @@ These are the structural problems the script detects and repairs. You need to un
 
 ### Required Workflow
 
-**Always follow this exact sequence. No exceptions.**
-
-#### Step 1: Locate the script and session
+**Always follow this exact sequence:**
 
 ```bash
-# Find the script (it's in the amplifier-foundation repo)
-SCRIPT="$(find / -path '*/amplifier-foundation/scripts/session-repair.py' -type f 2>/dev/null | head -1)"
-
-# Find the session directory
+SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
 SESSION_DIR="$(find ~/.amplifier/projects/*/sessions -name '*SESSION_ID*' -type d 2>/dev/null | head -1)"
+
+# Step 1: Diagnose (exit 0 = healthy, exit 1 = broken — report output to caller)
+python "$SCRIPT" diagnose "$SESSION_DIR"
+
+# Step 2: Repair (default) or Rewind (only if user explicitly requests)
+python "$SCRIPT" repair "$SESSION_DIR"    # default
+python "$SCRIPT" rewind "$SESSION_DIR"    # only when user asks for rewind/rollback
+
+# Step 3: Verify (exit 0 = success — report output to caller)
+python "$SCRIPT" diagnose "$SESSION_DIR"
 ```
-
-#### Step 2: Diagnose FIRST (always)
-
-```bash
-python "$SCRIPT" --diagnose "$SESSION_DIR"
-```
-
-**Report the full diagnosis output to the caller.** This is read-only and safe.
-- Exit code 0 = healthy (no repair needed)
-- Exit code 1 = broken (proceed to Step 3)
-
-#### Step 3: Repair or Rewind
-
-**If repair** (the default — use unless user explicitly says "rewind"):
-```bash
-python "$SCRIPT" --repair "$SESSION_DIR"
-```
-
-**If rewind** (only when user explicitly requests rewind/rollback/truncate):
-```bash
-python "$SCRIPT" --rewind "$SESSION_DIR"
-```
-
-**Report the full output to the caller.**
-
-#### Step 4: Verify
-
-Run `--diagnose` again to confirm the fix worked:
-```bash
-python "$SCRIPT" --diagnose "$SESSION_DIR"
-```
-
-**Report the verification result.** Exit code 0 = success.
 
 ### If the Script Fails
 

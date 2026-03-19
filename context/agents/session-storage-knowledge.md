@@ -195,17 +195,16 @@ If the first count is higher than the second, there are orphaned tool_use blocks
 
 ### Recovery
 
-Insert a synthetic `tool_result` message after the orphaned `tool_use` in transcript.jsonl:
+**Use the session repair script — do not manually edit transcript.jsonl.**
 
-```json
-{"role":"tool","tool_call_id":"THE_ORPHANED_TOOL_ID","content":"{\"error\": \"Tool execution was interrupted by user\", \"interrupted\": true}","timestamp":"ISO_TIMESTAMP"}
+```bash
+SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
+python "$SCRIPT" diagnose <session>
+python "$SCRIPT" repair <session>
+python "$SCRIPT" diagnose <session>   # verify
 ```
 
-**Steps:**
-1. Find the line with orphaned tool_use: `grep -n "THE_TOOL_ID" transcript.jsonl | cut -d: -f1`
-2. Back up the file: `cp transcript.jsonl transcript.jsonl.backup`
-3. Insert synthetic result after that line using `head`/`tail` or `sed`
-4. Verify the session loads correctly
+The script automatically detects orphaned tool calls, injects synthetic results, and creates timestamped backups.
 
 ## Key Principle
 
