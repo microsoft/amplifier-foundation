@@ -741,3 +741,54 @@ class TestProviderModuleScaffolding:
         assert parsed["module"] == "test-provider"
         assert parsed["type"] == "provider"
         assert parsed["path"] == str(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Streaming integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestProviderStreamingIntegration:
+    """Integration test for CompleteStreaming RPC on ProviderService."""
+
+    def test_complete_streaming_returns_response(self) -> None:
+        """gRPC ``CompleteStreaming`` returns at least one response with a non-empty finish_reason."""
+        import grpc
+        from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
+        from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = _write_provider_module(tmpdir)
+            manifest = _make_provider_manifest(module_path)
+            proc = _spawn_adapter(manifest)
+            try:
+                line = _read_first_line(proc)
+                port = int(line.split(":", 1)[1])
+
+                channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+                try:
+                    stub = pb2_grpc.ProviderServiceStub(channel)
+                    responses = list(
+                        stub.CompleteStreaming(
+                            pb2.ChatRequest(  # type: ignore[attr-defined]
+                                messages=[
+                                    pb2.Message(  # type: ignore[attr-defined]
+                                        role=pb2.ROLE_USER,  # type: ignore[attr-defined]
+                                        text_content="Hello!",
+                                    )
+                                ]
+                            )
+                        )
+                    )
+                    assert len(responses) >= 1, (
+                        f"Expected at least 1 response, got {len(responses)}"
+                    )
+                    assert responses[0].finish_reason != "", (
+                        f"Expected non-empty finish_reason, "
+                        f"got {responses[0].finish_reason!r}"
+                    )
+                finally:
+                    channel.close()
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)

@@ -79,12 +79,27 @@ def _legacy_response_to_dict(response: Any) -> dict[str, Any]:
             }
         )
 
-    # Usage tokens
+    # Usage tokens — map legacy field names to the current amplifier-core schema.
+    # amplifier-core ≥ 1.3.0 uses input_tokens / output_tokens; older providers
+    # (and the mock provider in tests) expose prompt_tokens / completion_tokens.
+    # Both aliases are checked; isinstance guard prevents MagicMock leak.
     usage_obj = getattr(response, "usage", None)
+    _raw_input = getattr(usage_obj, "input_tokens", None)
+    input_tokens = (
+        _raw_input
+        if isinstance(_raw_input, (int, float))
+        else (getattr(usage_obj, "prompt_tokens", 0) or 0)
+    )
+    _raw_output = getattr(usage_obj, "output_tokens", None)
+    output_tokens = (
+        _raw_output
+        if isinstance(_raw_output, (int, float))
+        else (getattr(usage_obj, "completion_tokens", 0) or 0)
+    )
     usage = {
-        "prompt_tokens": getattr(usage_obj, "prompt_tokens", 0),
-        "completion_tokens": getattr(usage_obj, "completion_tokens", 0),
-        "total_tokens": getattr(usage_obj, "total_tokens", 0),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": getattr(usage_obj, "total_tokens", 0) or 0,
     }
 
     # Metadata (pass through as-is for downstream serialization)
