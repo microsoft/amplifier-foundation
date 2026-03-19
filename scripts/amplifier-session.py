@@ -35,18 +35,18 @@ _root = _here.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from amplifier_foundation.session import (  # noqa: E402  # type: ignore[attr-defined]
-    EVENTS_FILENAME,
-    TRANSCRIPT_FILENAME,
-    backup,
-    diagnose_transcript,
-    find_sessions,
-    load_transcript_with_lines,
-    repair_transcript,
-    resolve_session,
-    rewind_transcript,
-    session_info,
-    write_transcript,
+from amplifier_foundation.session import (  # noqa: E402
+    EVENTS_FILENAME,  # pyright: ignore[reportAttributeAccessIssue]
+    TRANSCRIPT_FILENAME,  # pyright: ignore[reportAttributeAccessIssue]
+    backup,  # pyright: ignore[reportAttributeAccessIssue]
+    diagnose_transcript,  # pyright: ignore[reportAttributeAccessIssue]
+    find_sessions,  # pyright: ignore[reportAttributeAccessIssue]
+    load_transcript_with_lines,  # pyright: ignore[reportAttributeAccessIssue]
+    repair_transcript,  # pyright: ignore[reportAttributeAccessIssue]
+    resolve_session,  # pyright: ignore[reportAttributeAccessIssue]
+    rewind_transcript,  # pyright: ignore[reportAttributeAccessIssue]
+    session_info,  # pyright: ignore[reportAttributeAccessIssue]
+    write_transcript,  # pyright: ignore[reportAttributeAccessIssue]
 )
 
 

@@ -36,19 +36,19 @@ _root = _here.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from amplifier_foundation.session import (  # noqa: E402  # type: ignore[attr-defined]
-    backup,
-    build_tool_index,
-    diagnose_transcript,
-    is_real_user_message,
-    load_transcript_with_lines,
-    repair_transcript,
-    rewind_transcript,
-    write_transcript,
+from amplifier_foundation.session import (  # noqa: E402
+    backup,  # pyright: ignore[reportAttributeAccessIssue]
+    build_tool_index,  # pyright: ignore[reportAttributeAccessIssue]
+    diagnose_transcript,  # pyright: ignore[reportAttributeAccessIssue]
+    is_real_user_message,  # pyright: ignore[reportAttributeAccessIssue]
+    load_transcript_with_lines,  # pyright: ignore[reportAttributeAccessIssue]
+    repair_transcript,  # pyright: ignore[reportAttributeAccessIssue]
+    rewind_transcript,  # pyright: ignore[reportAttributeAccessIssue]
+    write_transcript,  # pyright: ignore[reportAttributeAccessIssue]
 )
 
 if TYPE_CHECKING:
-    from amplifier_foundation.session import DiagnosisResult
+    from amplifier_foundation.session import DiagnosisResult  # pyright: ignore[reportAttributeAccessIssue]
 
 # Re-export for backward compatibility (tests import these from this module)
 __all__ = [
