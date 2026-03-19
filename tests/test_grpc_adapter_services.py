@@ -1045,3 +1045,74 @@ class TestLifecycleServiceAdapter:
         assert config_arg == {"key": "value"}, (
             f"Expected config={{'key': 'value'}}, got {config_arg!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestLegacyResponseToDict
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyResponseToDict:
+    """Unit tests for the _legacy_response_to_dict helper function."""
+
+    def _fn(self) -> Any:
+        from amplifier_foundation.grpc_adapter.services import (  # type: ignore[import-not-found]  # noqa: PLC0415
+            _legacy_response_to_dict,
+        )
+
+        return _legacy_response_to_dict
+
+    def test_string_content_wraps_as_text_block(self) -> None:
+        """String content 'Hello!' is wrapped as [{type: text, text: Hello!}] and finish_reason is 'stop'."""
+        _legacy_response_to_dict = self._fn()
+
+        response = MagicMock()
+        response.content = "Hello!"
+        response.tool_calls = []
+        response.usage = MagicMock()
+        response.finish_reason = "stop"
+        response.metadata = {}
+
+        result = _legacy_response_to_dict(response)
+
+        assert result["content"] == [{"type": "text", "text": "Hello!"}]
+        assert result["finish_reason"] == "stop"
+
+    def test_list_content_passes_through(self) -> None:
+        """List content [{type: text, text: Hi}] passes through unchanged."""
+        _legacy_response_to_dict = self._fn()
+
+        content_list = [{"type": "text", "text": "Hi"}]
+
+        response = MagicMock()
+        response.content = content_list
+        response.tool_calls = []
+        response.usage = MagicMock()
+        response.finish_reason = "stop"
+        response.metadata = {}
+
+        result = _legacy_response_to_dict(response)
+
+        assert result["content"] == [{"type": "text", "text": "Hi"}]
+
+    def test_tool_calls_serialized(self) -> None:
+        """Tool call with id='tc1', name='search', arguments={'query': 'rust'} is serialized to dict with those fields."""
+        _legacy_response_to_dict = self._fn()
+
+        tc = MagicMock(id="tc1", arguments={"query": "rust"})
+        tc.name = "search"
+
+        response = MagicMock()
+        response.content = []
+        response.tool_calls = [tc]
+        response.usage = MagicMock()
+        response.finish_reason = "stop"
+        response.metadata = {}
+
+        result = _legacy_response_to_dict(response)
+
+        assert len(result["tool_calls"]) == 1
+        serialized_tc = result["tool_calls"][0]
+        assert serialized_tc["id"] == "tc1"
+        assert serialized_tc["name"] == "search"
+        assert json.loads(serialized_tc["arguments"]) == {"query": "rust"}
