@@ -347,8 +347,9 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
 class LifecycleServiceAdapter(pb2_grpc.ModuleLifecycleServicer):
     """gRPC servicer that adapts a Python module object to the ModuleLifecycle contract."""
 
-    def __init__(self, module: Any) -> None:
+    def __init__(self, module: Any, coordinator_shim: Any = None) -> None:
         self._module = module
+        self._coordinator_shim = coordinator_shim
         self._healthy = True
 
     async def Mount(self, request: Any, context: Any) -> Any:
@@ -357,9 +358,10 @@ class LifecycleServiceAdapter(pb2_grpc.ModuleLifecycleServicer):
             config = dict(request.config)
             mount_fn = getattr(self._module, "mount", None)
             if mount_fn is not None:
-                # v1: coordinator is None — adapter doesn't have kernel coordinator access.
-                # Modules that require coordinator for initialization will need v2 changes.
-                await _invoke(mount_fn, None, config)
+                # v2: pass coordinator shim if available (provides hooks.emit, get_capability,
+                # session_id). Falls back to None for v1 compat.
+                coordinator = self._coordinator_shim
+                await _invoke(mount_fn, coordinator, config)
             self._healthy = True
             return pb2.MountResponse(  # type: ignore[attr-defined]
                 success=True,

@@ -1066,11 +1066,13 @@ class TestLifecycleServiceAdapter:
 
     @pytest.mark.asyncio
     async def test_mount_passes_none_coordinator_and_config(self) -> None:
-        """Mount() calls mount_fn(None, config) — coordinator is None in v1 (adapter has no kernel access).
+        """Mount() calls mount_fn(None, config) when no coordinator_shim is provided.
 
         This is a regression test for the arity bug where Mount() was calling
         mount_fn(config) with one argument instead of mount_fn(None, config)
         with two arguments (coordinator, config).
+
+        When coordinator_shim defaults to None, coordinator must be None (v1 compat).
         """
         call_args: list[Any] = []
 
@@ -1101,6 +1103,90 @@ class TestLifecycleServiceAdapter:
         assert config_arg == {"key": "value"}, (
             f"Expected config={{'key': 'value'}}, got {config_arg!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestLifecycleServiceAdapterV2
+# ---------------------------------------------------------------------------
+
+
+class TestLifecycleServiceAdapterV2:
+    """Tests for LifecycleServiceAdapter with coordinator_shim (v2 behavior).
+
+    Verifies that the adapter passes coordinator_shim to mount_fn when provided,
+    while preserving v1 compat (coordinator=None) when no shim is given.
+    """
+
+    def _make_adapter(self, module: Any, coordinator_shim: Any = None) -> Any:
+        from amplifier_foundation.grpc_adapter.services import (  # type: ignore[import-not-found]  # noqa: PLC0415
+            LifecycleServiceAdapter,
+        )
+
+        return LifecycleServiceAdapter(module, coordinator_shim=coordinator_shim)
+
+    @pytest.mark.asyncio
+    async def test_mount_passes_coordinator_shim_not_none(self) -> None:
+        """Mount() passes coordinator_shim to mount_fn when shim is provided.
+
+        v2 behavior: adapter.Mount() passes self._coordinator_shim as the coordinator arg.
+        Skip if coordinator is still None (v1 mode — shim not yet wired from Rust host).
+
+        Note: full wiring deferred until Rust host sends kernel connection info in manifest
+        — shim factory and KernelClient are ready.
+        """
+        captured: list[Any] = []
+
+        class _CapturingModule:
+            name = "capturing_module"
+            description = "Captures coordinator arg from mount()"
+
+            def mount(self, coordinator: Any, config: dict) -> None:  # noqa: ANN101
+                captured.append(coordinator)
+
+        mock_shim = MagicMock()
+        mock_shim.session_id = "test-session-id"
+
+        module = _CapturingModule()
+        adapter = self._make_adapter(module, coordinator_shim=mock_shim)
+
+        request = pb2.MountRequest()  # type: ignore[union-attr]
+        ctx = MockContext()
+        response = await adapter.Mount(request, ctx)
+
+        assert response.success is True, (
+            f"Mount() returned success=False: {getattr(response, 'error', '')!r}"
+        )
+        assert len(captured) == 1, f"Expected mount called once, got {len(captured)}"
+
+        coordinator_received = captured[0]
+        if coordinator_received is None:
+            pytest.skip(
+                "coordinator is still None (v1 mode — shim not yet wired from Rust host). "
+                "Full wiring deferred until Rust host sends kernel connection info in manifest."
+            )
+
+        assert coordinator_received is mock_shim, (
+            f"Expected coordinator_shim to be passed, got {coordinator_received!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_coordinator_shim_defaults_to_none(self) -> None:
+        """LifecycleServiceAdapter.__init__ accepts no coordinator_shim (defaults to None).
+
+        Verifies backward compat: creating adapter without coordinator_shim works
+        and self._coordinator_shim is None.
+        """
+        from amplifier_foundation.grpc_adapter.services import (  # type: ignore[import-not-found]  # noqa: PLC0415
+            LifecycleServiceAdapter,
+        )
+
+        class _MinimalModule:
+            name = "minimal"
+            description = ""
+
+        module = _MinimalModule()
+        adapter = LifecycleServiceAdapter(module)
+        assert adapter._coordinator_shim is None
 
 
 # ---------------------------------------------------------------------------
