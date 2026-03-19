@@ -78,11 +78,11 @@ The `<session>` argument accepts full paths, session IDs, or partial IDs.
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success (healthy on `--diagnose`, repaired on `--repair`, rewound on `--rewind`) |
-| 1 | Repair needed (`--diagnose`) or repair failed (`--repair`) |
+| 0 | Success (healthy on `diagnose`, repaired on `repair`, rewound on `rewind`) |
+| 1 | Repair needed (`diagnose`) or repair failed (`repair`) |
 | 2 | Invalid arguments or missing transcript file |
 
-### `--diagnose` JSON Output Format
+### `diagnose` JSON Output Format
 
 ```json
 {
