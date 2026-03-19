@@ -113,18 +113,16 @@ class TestScriptInvocations:
         )
 
     def test_repair_command_uses_script(self, content: str) -> None:
-        """Repair step must use python \"$SCRIPT\" not raw python session-repair.py."""
-        assert (
-            'python "$SCRIPT" --repair' in content
-            or 'python "$SCRIPT" repair' in content
-        ), "Repair command via $SCRIPT not found"
+        """Repair step must use python \"$SCRIPT\" subcommand syntax."""
+        assert 'python "$SCRIPT" repair' in content, (
+            "Repair command via $SCRIPT not found (must use subcommand syntax: repair, not --repair)"
+        )
 
     def test_diagnose_command_uses_script(self, content: str) -> None:
-        """Diagnose step must use python \"$SCRIPT\" not raw python session-repair.py."""
-        assert (
-            'python "$SCRIPT" --diagnose' in content
-            or 'python "$SCRIPT" diagnose' in content
-        ), "Diagnose command via $SCRIPT not found"
+        """Diagnose step must use python \"$SCRIPT\" subcommand syntax."""
+        assert 'python "$SCRIPT" diagnose' in content, (
+            "Diagnose command via $SCRIPT not found (must use subcommand syntax: diagnose, not --diagnose)"
+        )
 
 
 # ── Test 4: File is shorter than original ────────────────────────────────────

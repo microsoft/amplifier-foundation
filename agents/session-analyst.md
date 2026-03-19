@@ -292,7 +292,7 @@ See @foundation:context/agents/session-storage-knowledge.md for complete safe ex
 ```bash
 SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
 SESSION_DIR="$(find ~/.amplifier/projects/*/sessions -name '*SESSION_ID*' -type d 2>/dev/null | head -1)"
-python "$SCRIPT" --diagnose "$SESSION_DIR"
+python "$SCRIPT" diagnose "$SESSION_DIR"
 ```
 
 **"Find session c3843177"**
@@ -322,7 +322,7 @@ python "$SCRIPT" find --date 2025-11-25
 **"Rewind session X"**
 
 ```bash
-python "$SCRIPT" --rewind "$SESSION_DIR"
+python "$SCRIPT" rewind "$SESSION_DIR"
 ```
 
 ---
@@ -341,7 +341,7 @@ The unified script `scripts/amplifier-session.py` handles all diagnosis, repair,
 
 ### Three Failure Modes (Conceptual Awareness)
 
-These are the structural problems the script detects and repairs. You need to understand them to interpret `--diagnose` output and explain findings to the user — but you do NOT detect or fix them manually.
+These are the structural problems the script detects and repairs. You need to understand them to interpret `diagnose` output and explain findings to the user — but you do NOT detect or fix them manually.
 
 | Failure Mode | What It Means |
 |-------------|---------------|
@@ -358,14 +358,14 @@ SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -ty
 SESSION_DIR="$(find ~/.amplifier/projects/*/sessions -name '*SESSION_ID*' -type d 2>/dev/null | head -1)"
 
 # Step 1: Diagnose (exit 0 = healthy, exit 1 = broken — report output to caller)
-python "$SCRIPT" --diagnose "$SESSION_DIR"
+python "$SCRIPT" diagnose "$SESSION_DIR"
 
 # Step 2: Repair (default) or Rewind (only if user explicitly requests)
-python "$SCRIPT" --repair "$SESSION_DIR"    # default
-python "$SCRIPT" --rewind "$SESSION_DIR"    # only when user asks for rewind/rollback
+python "$SCRIPT" repair "$SESSION_DIR"    # default
+python "$SCRIPT" rewind "$SESSION_DIR"    # only when user asks for rewind/rollback
 
 # Step 3: Verify (exit 0 = success — report output to caller)
-python "$SCRIPT" --diagnose "$SESSION_DIR"
+python "$SCRIPT" diagnose "$SESSION_DIR"
 ```
 
 ### If the Script Fails
