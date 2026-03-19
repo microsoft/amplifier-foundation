@@ -20,7 +20,75 @@ import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from amplifier_core._grpc_gen import amplifier_module_pb2  # type: ignore[attr-defined]
+except ImportError:
+    amplifier_module_pb2 = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# KernelClient
+# ---------------------------------------------------------------------------
+
+
+class KernelClient:
+    """Thin wrapper for KernelService gRPC callbacks.
+
+    Provides a clean Python API for out-of-process modules to call back into
+    the kernel via its KernelService gRPC interface. This is NOT a coordinator
+    proxy — KernelService is the cross-process API.
+    """
+
+    def __init__(
+        self,
+        stub: Any,
+        metadata: list[tuple[str, str]],
+        session_id: str,
+        parent_id: str | None = None,
+    ) -> None:
+        """Initialise the KernelClient.
+
+        Args:
+            stub: A KernelService gRPC stub.
+            metadata: Auth metadata tuples, e.g. [("authorization", "Bearer <token>")].
+            session_id: The current session ID.
+            parent_id: Optional parent session ID.
+        """
+        self._stub = stub
+        self.metadata = metadata
+        self.session_id = session_id
+        self.parent_id = parent_id
+
+    def emit_hook(self, event: str, data: dict[str, Any] | None = None) -> Any:
+        """Emit a hook event to the kernel.
+
+        Args:
+            event: The event name to emit.
+            data: Optional dict payload; serialised to JSON before sending.
+
+        Returns:
+            The HookResult response from the kernel.
+        """
+        data_json = json.dumps(data) if data is not None else ""
+        request = amplifier_module_pb2.EmitHookRequest(event=event, data_json=data_json)  # type: ignore[union-attr]
+        return self._stub.EmitHook(request, metadata=self.metadata)
+
+    def get_capability(self, name: str) -> Any | None:
+        """Retrieve a named capability from the kernel.
+
+        Args:
+            name: The capability name to look up.
+
+        Returns:
+            The parsed JSON value if found, otherwise None.
+        """
+        request = amplifier_module_pb2.GetCapabilityRequest(name=name)  # type: ignore[union-attr]
+        resp = self._stub.GetCapability(request, metadata=self.metadata)
+        if resp.found and resp.value_json:
+            return json.loads(resp.value_json)
+        return None
 
 
 # ---------------------------------------------------------------------------
