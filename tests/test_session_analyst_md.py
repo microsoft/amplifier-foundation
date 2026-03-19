@@ -27,7 +27,7 @@ SCRIPT_DISCOVERY_LINE = (
 OLD_SCRIPT_REFERENCE = "session-repair.py"
 
 # Maximum line count after rewrite (target ~400, must be < 507)
-MAX_LINE_COUNT = 490
+MAX_LINE_COUNT = 420
 
 
 @pytest.fixture

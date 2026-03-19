@@ -211,71 +211,11 @@ python "$SCRIPT" find --project azure --date-after 2025-11-20 --keyword caching
 
 ### 3. Synthesize Results
 
-Don't just list sessions — analyze and synthesize conversation content. Produce a structured report:
-
-**Analysis goals:**
-
-- Identify conversation themes and main topics discussed
-- Extract key decisions, conclusions, or insights
-- Note technical details, implementations, or solutions created
-- Summarize outcomes and action items
-- Connect related sessions if multiple found
-
-**Format:**
-
-```
-## Synthesis: [Brief description of what was found]
-
-### Overview
-[2-3 sentences synthesizing the main themes across found sessions]
-
-### Session: [session_id]
-- **Location**: [full path]
-- **Created**: [readable date/time]
-- **Project**: [project name from path]
-- **Bundle**: [bundle name] | **Model**: [model] | **Turns**: [count]
-
-**Conversation Summary:**
-[Paragraph describing what this conversation was about]
-
-**Key Points:**
-- [Important decision/insight 1]
-- [Technical detail/implementation 2]
-- [Outcome/action item 3]
-
-**Notable Exchanges:**
-```
-
-User: [relevant question/request]
-Assistant: [key response excerpt]
-
-```
-
----
-
-### Session: [next_session_id]
-[...]
-
-### Cross-Session Insights
-[If multiple sessions found, note patterns, evolution of thinking, related topics]
-```
+Don't just list sessions — analyze and synthesize. Begin with a brief **Overview** across all results. For each session: metadata (location, created, bundle, model, turns), a conversation summary, and key points. Note **Cross-Session Insights** if multiple sessions found (patterns, evolution of thinking, related topics).
 
 ## Final Response Contract
 
-Your final message must stand on its own for the caller—nothing else from this run is visible. Always include:
-
-1. **Synthesis Summary**: 2-3 sentences capturing the essence of what was discussed across sessions, key insights gained, or problems solved
-2. **Session Analysis**: For each session, provide:
-   - Metadata and location
-   - Conversation summary (not just excerpts)
-   - Key points, decisions, or technical details
-   - Notable exchanges that illustrate the discussion
-3. **Coverage & Context**: Note what was searched, time periods covered, and any patterns across sessions
-4. **Suggested Next Actions**: Concrete follow-ups such as:
-   - "Review full transcript: `cat <path>/transcript.jsonl`"
-   - "Continue this work with zen-architect for [specific next step]"
-   - "Compare with session [ID] which discussed related topic"
-5. **Not Found**: If no matches, explain what was searched and suggest broadening criteria or alternative search strategies
+Your final message must stand on its own. Include: synthesis summary, session analysis (metadata + conversation summary + key points), coverage notes, suggested next actions, and "not found" guidance if no results.
 
 ## Search Strategies
 
@@ -411,46 +351,22 @@ These are the structural problems the script detects and repairs. You need to un
 
 ### Required Workflow
 
-**Always follow this exact sequence. No exceptions.**
-
-First, locate the script and session:
+**Always follow this exact sequence:**
 
 ```bash
 SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
 SESSION_DIR="$(find ~/.amplifier/projects/*/sessions -name '*SESSION_ID*' -type d 2>/dev/null | head -1)"
-```
 
-#### Step 1: Diagnose
+# Step 1: Diagnose (exit 0 = healthy, exit 1 = broken — report output to caller)
+python "$SCRIPT" --diagnose "$SESSION_DIR"
 
-```bash
+# Step 2: Repair (default) or Rewind (only if user explicitly requests)
+python "$SCRIPT" --repair "$SESSION_DIR"    # default
+python "$SCRIPT" --rewind "$SESSION_DIR"    # only when user asks for rewind/rollback
+
+# Step 3: Verify (exit 0 = success — report output to caller)
 python "$SCRIPT" --diagnose "$SESSION_DIR"
 ```
-
-**Report the full diagnosis output to the caller.** This is read-only and safe.
-- Exit code 0 = healthy (no repair needed)
-- Exit code 1 = broken (proceed to Step 2)
-
-#### Step 2: Repair or Rewind
-
-**If repair** (the default — use unless user explicitly says "rewind"):
-```bash
-python "$SCRIPT" --repair "$SESSION_DIR"
-```
-
-**If rewind** (only when user explicitly requests rewind/rollback/truncate):
-```bash
-python "$SCRIPT" --rewind "$SESSION_DIR"
-```
-
-**Report the full output to the caller.**
-
-#### Step 3: Verify
-
-```bash
-python "$SCRIPT" --diagnose "$SESSION_DIR"
-```
-
-**Report the verification result.** Exit code 0 = success.
 
 ### If the Script Fails
 
