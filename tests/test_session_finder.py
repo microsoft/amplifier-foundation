@@ -151,6 +151,24 @@ class TestFindSessions:
         assert len(results) == 1
         assert results[0]["session_id"] == "new-sess"
 
+    def test_filter_by_before_date(self, tmp_path: Path):
+        """before filter excludes sessions created after the given date."""
+        _make_session(
+            tmp_path,
+            "proj-a",
+            "old-sess",
+            metadata={"created": "2023-01-01T00:00:00+00:00"},
+        )
+        _make_session(
+            tmp_path,
+            "proj-a",
+            "new-sess",
+            metadata={"created": "2025-01-01T00:00:00+00:00"},
+        )
+        results = find_sessions(sessions_root=tmp_path, before="2024-01-01")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "old-sess"
+
     def test_filter_by_keyword(self, tmp_path: Path):
         """keyword filter only returns sessions with keyword in transcript."""
         _make_session(

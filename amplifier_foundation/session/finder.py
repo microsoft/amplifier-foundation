@@ -247,7 +247,10 @@ def find_sessions(
 
             try:
                 meta = load_metadata(session_dir)
-            except Exception:
+            except Exception:  # noqa: BLE001
+                # Skip sessions with corrupt/unreadable metadata rather than
+                # failing the whole list — a bad session should not prevent
+                # discovery of all other sessions.
                 continue
 
             created_str = meta.get("created")
@@ -320,6 +323,9 @@ def session_info(session_dir: Path) -> dict[str, Any]:
 
     # Derive project from path: sessions_root/<project>/sessions/<session_id>
     # parent = sessions/, parent.parent = <project>/
+    # NOTE: This assumes the standard two-level layout. If session_dir is an
+    # absolute path from a non-standard root, the project name will be whatever
+    # directory happens to be two levels up.
     project = session_dir.parent.parent.name
 
     return {

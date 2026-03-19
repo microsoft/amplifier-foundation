@@ -35,7 +35,7 @@ _root = _here.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from amplifier_foundation.session import (  # noqa: E402
+from amplifier_foundation.session import (  # noqa: E402  # type: ignore[attr-defined]
     EVENTS_FILENAME,
     TRANSCRIPT_FILENAME,
     backup,
