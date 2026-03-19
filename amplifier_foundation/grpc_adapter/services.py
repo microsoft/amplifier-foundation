@@ -259,6 +259,42 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             )  # v1: caller is trusted host (localhost-only)
             return pb2.ChatResponse()  # type: ignore[attr-defined]
 
+    async def CompleteStreaming(self, request: Any, context: Any) -> Any:
+        """Execute a completion request and yield ChatResponse as a single-element stream.
+
+        Simulated streaming: calls provider.complete() (non-streaming) then yields
+        the full ChatResponse as a single stream element.  When real token-by-token
+        streaming is added (requires Provider.stream()), this method upgrades to
+        yield multiple elements — the wire contract (stream of ChatResponse) doesn't
+        change.
+        """
+        try:
+            # 1. Serialize proto request to bytes
+            proto_bytes = request.SerializeToString()
+            # 2. Convert proto bytes to JSON via PyO3 bridge
+            json_str = proto_chat_request_to_json(proto_bytes)
+            # 3. Validate JSON into PydanticChatRequest
+            pydantic_request = PydanticChatRequest.model_validate_json(json_str)
+            # 4. Call provider with the Pydantic request object
+            response = await _invoke(self._provider.complete, pydantic_request)
+            # 5. Serialize response to JSON
+            if isinstance(response, _PydanticBaseModel):
+                # Pydantic ChatResponse — use native serialization
+                response_json = response.model_dump_json()
+            else:
+                # Legacy response object — convert via helper
+                response_dict = _legacy_response_to_dict(response)
+                response_json = json.dumps(response_dict)
+            # 6. Convert response JSON to proto bytes via PyO3 bridge
+            response_proto_bytes = json_to_proto_chat_response(response_json)
+            # 7. Deserialize proto bytes to ChatResponse and yield as single element
+            yield pb2.ChatResponse.FromString(response_proto_bytes)  # type: ignore[attr-defined]
+        except Exception as e:
+            logger.exception("CompleteStreaming failed")
+            await context.abort(
+                grpc.StatusCode.INTERNAL, str(e)
+            )  # v1: caller is trusted host (localhost-only)
+
     async def ParseToolCalls(self, request: Any, context: Any) -> Any:
         """Parse tool calls from a ChatResponse and return ParseToolCallsResponse proto."""
         try:

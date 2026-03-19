@@ -781,7 +781,63 @@ class TestProviderServiceAdapter:
         assert result.finish_reason == "stop"
 
     # ------------------------------------------------------------------
-    # 16. ParseToolCalls uses PyO3 bridge — provider receives PydanticChatResponse
+    # 16. CompleteStreaming — returns exactly one element with finish_reason='stop'
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_streaming_returns_single_element(self) -> None:
+        """CompleteStreaming yields exactly 1 ChatResponse element with finish_reason='stop'.
+
+        Simulated streaming: calls provider.complete() once and yields the full
+        response as a single stream element.
+        """
+        provider = MockProvider()
+        provider.complete = AsyncMock(
+            return_value=MagicMock(
+                content="streamed response",
+                tool_calls=[],
+                usage=MagicMock(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                ),
+                finish_reason="stop",
+                metadata={},
+            )
+        )
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+
+        results = []
+        async for item in adapter.CompleteStreaming(pb2.ChatRequest(), ctx):  # type: ignore[union-attr]
+            results.append(item)
+
+        assert len(results) == 1, f"Expected exactly 1 element, got {len(results)}"
+        assert results[0].finish_reason == "stop"
+
+    # ------------------------------------------------------------------
+    # 17. CompleteStreaming — does not abort, yields at least one element
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_streaming_not_unimplemented(self) -> None:
+        """CompleteStreaming does not abort with UNIMPLEMENTED and yields >=1 element.
+
+        Verifies CompleteStreaming is implemented (not the base class stub)
+        and produces at least one ChatResponse.
+        """
+        adapter = self._make_adapter()
+        ctx = MockContext()
+
+        results = []
+        async for item in adapter.CompleteStreaming(pb2.ChatRequest(), ctx):  # type: ignore[union-attr]
+            results.append(item)
+
+        assert ctx._aborted is False, "CompleteStreaming should not abort on success"
+        assert len(results) >= 1, f"Expected >=1 element, got {len(results)}"
+
+    # ------------------------------------------------------------------
+    # 18. ParseToolCalls uses PyO3 bridge — provider receives PydanticChatResponse
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
