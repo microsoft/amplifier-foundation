@@ -97,15 +97,28 @@ class TestNewExports:
         )
 
 
-class TestDunderAll:
-    """Verify __all__ contains all 38 expected names."""
+class TestFinderExports:
+    """Verify finder symbols are exported from the session package."""
 
-    def test_all_contains_38_names(self):
+    def test_find_sessions_export(self):
+        from amplifier_foundation.session import find_sessions  # noqa: F401
+
+    def test_resolve_session_export(self):
+        from amplifier_foundation.session import resolve_session  # noqa: F401
+
+    def test_session_info_export(self):
+        from amplifier_foundation.session import session_info  # noqa: F401
+
+
+class TestDunderAll:
+    """Verify __all__ contains all 41 expected names."""
+
+    def test_all_contains_41_names(self):
         import amplifier_foundation.session as session
 
         assert hasattr(session, "__all__"), "__all__ must be defined"
-        assert len(session.__all__) == 38, (
-            f"Expected 38 names in __all__, got {len(session.__all__)}: "
+        assert len(session.__all__) == 41, (
+            f"Expected 41 names in __all__, got {len(session.__all__)}: "
             f"{sorted(session.__all__)}"
         )
 
@@ -131,6 +144,10 @@ class TestDunderAll:
             "build_tool_index",
             "DiagnosisResult",
             "IncompleteTurn",
+            # Finder operations
+            "find_sessions",
+            "resolve_session",
+            "session_info",
         }
         for name in expected_new:
             assert name in session.__all__, f"{name!r} missing from __all__"

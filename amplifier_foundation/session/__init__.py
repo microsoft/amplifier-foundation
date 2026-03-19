@@ -124,6 +124,13 @@ from .store import (
     write_transcript,
 )
 
+# Finder operations (Level 3 — directory conventions)
+from .finder import (
+    find_sessions,
+    resolve_session,
+    session_info,
+)
+
 # Capability helpers (for modules to access session context)
 from .capabilities import (
     WORKING_DIR_CAPABILITY,
@@ -172,6 +179,10 @@ __all__ = [
     "write_jsonl",
     "write_metadata",
     "write_transcript",
+    # Finder operations
+    "resolve_session",
+    "find_sessions",
+    "session_info",
     # Capability helpers
     "WORKING_DIR_CAPABILITY",
     "get_working_dir",
