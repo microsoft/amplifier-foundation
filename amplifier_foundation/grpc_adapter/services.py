@@ -6,6 +6,8 @@ import json
 import logging
 from typing import Any
 
+from pydantic import BaseModel as _PydanticBaseModel
+
 try:
     import grpc
 except ImportError:
@@ -17,7 +19,82 @@ except ImportError:
 from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2  # type: ignore[attr-defined]
 from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
 
+from amplifier_core.message_models import ChatRequest as PydanticChatRequest
+
+try:
+    from amplifier_core._engine import (  # type: ignore[attr-defined]
+        json_to_proto_chat_response,
+        proto_chat_request_to_json,
+    )
+except ImportError:
+
+    def proto_chat_request_to_json(proto_bytes: bytes) -> str:  # type: ignore[misc]
+        raise NotImplementedError(
+            "proto_chat_request_to_json is not available in this build of amplifier_core._engine"
+        )
+
+    def json_to_proto_chat_response(json_str: str) -> bytes:  # type: ignore[misc]
+        raise NotImplementedError(
+            "json_to_proto_chat_response is not available in this build of amplifier_core._engine"
+        )
+
+
 logger = logging.getLogger(__name__)
+
+
+def _legacy_response_to_dict(response: Any) -> dict[str, Any]:
+    """Convert a non-Pydantic provider response to a dict for JSON serialization.
+
+    Backward-compatible helper for provider implementations that return plain
+    objects (or MagicMocks in tests) instead of a Pydantic ChatResponse.
+
+    - String content is wrapped as [{"type": "text", "text": content}].
+    - Tool calls are serialized with id, name, and arguments.
+    - Usage tokens are extracted from the usage sub-object.
+    """
+    # Content: wrap bare string as a typed text block
+    content = getattr(response, "content", None)
+    if isinstance(content, str):
+        content_blocks: list[dict[str, Any]] = [{"type": "text", "text": content}]
+    elif isinstance(content, list):
+        content_blocks = content
+    else:
+        content_blocks = []
+
+    # Tool calls
+    tool_calls = []
+    for tc in getattr(response, "tool_calls", None) or []:
+        arguments = getattr(tc, "arguments", None)
+        if isinstance(arguments, dict):
+            arguments_str = json.dumps(arguments)
+        else:
+            arguments_str = getattr(tc, "arguments_json", "{}") or "{}"
+        tool_calls.append(
+            {
+                "id": getattr(tc, "id", ""),
+                "name": getattr(tc, "name", ""),
+                "arguments": arguments_str,
+            }
+        )
+
+    # Usage tokens
+    usage_obj = getattr(response, "usage", None)
+    usage = {
+        "prompt_tokens": getattr(usage_obj, "prompt_tokens", 0),
+        "completion_tokens": getattr(usage_obj, "completion_tokens", 0),
+        "total_tokens": getattr(usage_obj, "total_tokens", 0),
+    }
+
+    # Metadata (pass through as-is for downstream serialization)
+    metadata = getattr(response, "metadata", None)
+
+    return {
+        "content": content_blocks,
+        "tool_calls": tool_calls,
+        "usage": usage,
+        "finish_reason": getattr(response, "finish_reason", "") or "",
+        "metadata": metadata,
+    }
 
 
 async def _invoke(fn: Any, *args: Any) -> Any:
@@ -153,32 +230,26 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
     async def Complete(self, request: Any, context: Any) -> Any:
         """Execute a completion request and return ChatResponse proto."""
         try:
-            response = await _invoke(self._provider.complete, request)
-            # Serialize tool_calls
-            tool_call_protos = self._to_tool_call_protos(response.tool_calls)
-            # Serialize usage
-            usage_obj = response.usage
-            usage = pb2.Usage(  # type: ignore[attr-defined]
-                prompt_tokens=getattr(usage_obj, "prompt_tokens", 0),
-                completion_tokens=getattr(usage_obj, "completion_tokens", 0),
-                total_tokens=getattr(usage_obj, "total_tokens", 0),
-                reasoning_tokens=getattr(usage_obj, "reasoning_tokens", 0),
-                cache_read_tokens=getattr(usage_obj, "cache_read_tokens", 0),
-                cache_creation_tokens=getattr(usage_obj, "cache_creation_tokens", 0),
-            )
-            # Serialize metadata
-            metadata = getattr(response, "metadata", None)
-            if isinstance(metadata, dict):
-                metadata_json = json.dumps(metadata)
+            # 1. Serialize proto request to bytes
+            proto_bytes = request.SerializeToString()
+            # 2. Convert proto bytes to JSON via PyO3 bridge
+            json_str = proto_chat_request_to_json(proto_bytes)
+            # 3. Validate JSON into PydanticChatRequest
+            pydantic_request = PydanticChatRequest.model_validate_json(json_str)
+            # 4. Call provider with the Pydantic request object
+            response = await _invoke(self._provider.complete, pydantic_request)
+            # 5. Serialize response to JSON
+            if isinstance(response, _PydanticBaseModel):
+                # Pydantic ChatResponse — use native serialization
+                response_json = response.model_dump_json()
             else:
-                metadata_json = metadata or ""
-            return pb2.ChatResponse(  # type: ignore[attr-defined]
-                content=response.content or "",
-                tool_calls=tool_call_protos,
-                usage=usage,
-                finish_reason=response.finish_reason or "",
-                metadata_json=metadata_json,
-            )
+                # Legacy response object — convert via helper
+                response_dict = _legacy_response_to_dict(response)
+                response_json = json.dumps(response_dict)
+            # 6. Convert response JSON to proto bytes via PyO3 bridge
+            response_proto_bytes = json_to_proto_chat_response(response_json)
+            # 7. Deserialize proto bytes to ChatResponse
+            return pb2.ChatResponse.FromString(response_proto_bytes)  # type: ignore[attr-defined]
         except Exception as e:
             logger.exception("Complete failed")
             await context.abort(

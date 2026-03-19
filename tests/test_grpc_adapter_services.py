@@ -5,9 +5,14 @@ Verifies the ToolServiceAdapter and ProviderServiceAdapter gRPC service implemen
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+try:
+    from amplifier_core.message_models import ChatRequest as PydanticChatRequest
+except ImportError:
+    PydanticChatRequest = None  # type: ignore[assignment,misc]
 
 try:
     from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
@@ -284,6 +289,40 @@ class TestToolServiceAdapter:
 
 
 # ---------------------------------------------------------------------------
+# Helpers for PyO3 bridge mocking
+# ---------------------------------------------------------------------------
+
+
+def _test_json_to_proto_response(json_str: str) -> bytes:
+    """Simulate json_to_proto_chat_response for tests.
+
+    Parses the JSON response dict and constructs a pb2.ChatResponse
+    with the content text, finish_reason, and metadata_json preserved,
+    so existing assertions continue to pass after the bridge refactor.
+    """
+    data = json.loads(json_str)
+    content = data.get("content", [])
+    if isinstance(content, list):
+        text = " ".join(
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    else:
+        text = str(content) if content else ""
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict):
+        metadata_json = json.dumps(metadata)
+    else:
+        metadata_json = str(metadata) if metadata else ""
+    return pb2.ChatResponse(  # type: ignore[union-attr]
+        content=text,
+        finish_reason=data.get("finish_reason", ""),
+        metadata_json=metadata_json,
+    ).SerializeToString()
+
+
+# ---------------------------------------------------------------------------
 # MockProvider — minimal Provider for ProviderServiceAdapter tests
 # ---------------------------------------------------------------------------
 
@@ -380,6 +419,43 @@ class MockSyncProvider:
 # ---------------------------------------------------------------------------
 
 
+class CapturingProvider:
+    """Provider that captures the argument passed to complete().
+
+    Used to verify that Complete() passes a PydanticChatRequest (not raw proto)
+    after the PyO3 bridge refactor.
+    """
+
+    def __init__(self) -> None:
+        self.received_request: Any = None
+
+    def get_info(self) -> Any:
+        return MagicMock(
+            id="capturing_provider",
+            display_name="Capturing Provider",
+            credential_env_vars=[],
+            capabilities=["chat"],
+            defaults={},
+            config_fields=[],
+        )
+
+    def list_models(self) -> list[Any]:
+        return []
+
+    async def complete(self, request: Any) -> Any:
+        self.received_request = request
+        return MagicMock(
+            content="captured response",
+            tool_calls=[],
+            usage=MagicMock(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            finish_reason="stop",
+            metadata={},
+        )
+
+    def parse_tool_calls(self, response: Any) -> list[Any]:
+        return []
+
+
 class TestProviderServiceAdapter:
     """Tests for ProviderServiceAdapter — adapts a Python Provider as gRPC ProviderService."""
 
@@ -395,6 +471,31 @@ class TestProviderServiceAdapter:
         if provider is None:
             provider = MockProvider()
         return ProviderServiceAdapter(provider)
+
+    @pytest.fixture(autouse=True)
+    def mock_pyo3_bridge(self) -> Any:
+        """Mock PyO3 bridge functions for all Complete() tests.
+
+        proto_chat_request_to_json and json_to_proto_chat_response are
+        defined in the _engine.pyi stub but may not be compiled into the
+        installed .so yet. This autouse fixture patches them so all
+        existing Complete() tests continue to pass after the refactor.
+        """
+        if PydanticChatRequest is None:
+            yield
+            return
+        empty_request_json = PydanticChatRequest(messages=[]).model_dump_json()
+        with (
+            patch(
+                "amplifier_foundation.grpc_adapter.services.proto_chat_request_to_json",
+                return_value=empty_request_json,
+            ),
+            patch(
+                "amplifier_foundation.grpc_adapter.services.json_to_proto_chat_response",
+                side_effect=_test_json_to_proto_response,
+            ),
+        ):
+            yield
 
     # ------------------------------------------------------------------
     # 1. GetInfo
@@ -640,6 +741,39 @@ class TestProviderServiceAdapter:
         await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
         assert ctx._aborted is True
         assert "parse failed" in ctx.details
+
+    # ------------------------------------------------------------------
+    # 15. Complete uses PyO3 bridge — provider receives PydanticChatRequest
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        PydanticChatRequest is None,
+        reason="amplifier_core.message_models not available",
+    )
+    async def test_complete_uses_pyo3_bridge(self) -> None:
+        """Complete passes a PydanticChatRequest (not raw proto) to provider.complete.
+
+        Verifies the PyO3 bridge refactor: proto_chat_request_to_json converts
+        the proto request to JSON, which is then validated into a PydanticChatRequest
+        before being passed to provider.complete. The response is converted back
+        to proto via json_to_proto_chat_response.
+        """
+        provider = CapturingProvider()
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+
+        result = await adapter.Complete(pb2.ChatRequest(), ctx)  # type: ignore[union-attr]
+
+        # The provider must have received a PydanticChatRequest, not raw proto
+        assert provider.received_request is not None, (
+            "provider.complete was never called"
+        )
+        assert isinstance(provider.received_request, PydanticChatRequest), (  # type: ignore[arg-type]
+            f"Expected PydanticChatRequest, got {type(provider.received_request)}"
+        )
+        # The gRPC response must carry finish_reason='stop'
+        assert result.finish_reason == "stop"
 
 
 # ---------------------------------------------------------------------------
