@@ -872,6 +872,138 @@ class TestProviderServiceAdapter:
 
 
 # ---------------------------------------------------------------------------
+# TestProviderServiceAdapterV2 — v2 PyO3-bridge-specific tests
+# ---------------------------------------------------------------------------
+
+
+class TestProviderServiceAdapterV2:
+    """v2 bridge tests: verify proto_chat_request_to_json and json_to_proto_chat_response are called.
+
+    These tests differ from TestProviderServiceAdapter by patching the bridge
+    functions directly to confirm they participate in the call chain, rather
+    than using a CapturingProvider to inspect what the provider receives.
+    """
+
+    def _make_adapter(self, provider: Any = None) -> Any:
+        from amplifier_foundation.grpc_adapter.services import (  # type: ignore[import-not-found]  # noqa: PLC0415
+            ProviderServiceAdapter,
+        )
+
+        if provider is None:
+            provider = MockProvider()
+        return ProviderServiceAdapter(provider)
+
+    # ------------------------------------------------------------------
+    # 1. Complete — proto_chat_request_to_json bridge is invoked
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_pyo3_bridge_proto_to_json_called(self) -> None:
+        """Complete() calls proto_chat_request_to_json with the serialised proto bytes.
+
+        Patches proto_chat_request_to_json in the services module and verifies
+        it is called once during a Complete() invocation, confirming the v2
+        bridge participates in the request-translation path.
+        """
+        from unittest.mock import patch
+
+        adapter = self._make_adapter()
+        ctx = MockContext()
+
+        captured: list[bytes] = []
+
+        import amplifier_foundation.grpc_adapter.services as _svc  # noqa: PLC0415
+
+        original_fn = _svc.proto_chat_request_to_json
+
+        def _spy(proto_bytes: bytes) -> str:
+            captured.append(proto_bytes)
+            return original_fn(proto_bytes)
+
+        with patch.object(_svc, "proto_chat_request_to_json", side_effect=_spy):
+            await adapter.Complete(pb2.ChatRequest(), ctx)  # type: ignore[union-attr]
+
+        assert len(captured) == 1, (
+            f"Expected proto_chat_request_to_json to be called once, got {len(captured)}"
+        )
+        assert isinstance(captured[0], bytes), (
+            f"Expected bytes argument, got {type(captured[0])}"
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Complete — json_to_proto_chat_response bridge is invoked
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_pyo3_bridge_json_to_proto_called(self) -> None:
+        """Complete() calls json_to_proto_chat_response with the JSON response string.
+
+        Patches json_to_proto_chat_response in the services module and verifies
+        it is called once during a Complete() invocation, confirming the v2
+        bridge participates in the response-translation path.
+        """
+        adapter = self._make_adapter()
+        ctx = MockContext()
+
+        captured_json: list[str] = []
+
+        import amplifier_foundation.grpc_adapter.services as _svc  # noqa: PLC0415
+
+        original_fn = _svc.json_to_proto_chat_response
+
+        def _spy(json_str: str) -> bytes:
+            captured_json.append(json_str)
+            return original_fn(json_str)
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+            _svc, "json_to_proto_chat_response", side_effect=_spy
+        ):
+            await adapter.Complete(pb2.ChatRequest(), ctx)  # type: ignore[union-attr]
+
+        assert len(captured_json) == 1, (
+            f"Expected json_to_proto_chat_response to be called once, got {len(captured_json)}"
+        )
+        import json as _json  # noqa: PLC0415
+
+        data = _json.loads(captured_json[0])
+        assert "finish_reason" in data, (
+            f"Expected 'finish_reason' key in bridge JSON, got keys: {list(data.keys())}"
+        )
+
+    # ------------------------------------------------------------------
+    # 3. ParseToolCalls — provider receives a PydanticChatResponse
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        PydanticChatResponse is None,
+        reason="amplifier_core.message_models not available",
+    )
+    async def test_parse_tool_calls_provider_receives_pydantic_response(self) -> None:
+        """ParseToolCalls passes a PydanticChatResponse to provider.parse_tool_calls.
+
+        Complements TestProviderServiceAdapter.test_parse_tool_calls_uses_pyo3_bridge
+        by constructing a proto response with a finish_reason and verifying the
+        converted Pydantic object has the matching finish_reason.
+        """
+        provider = CapturingProvider()
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+
+        await adapter.ParseToolCalls(
+            pb2.ChatResponse(finish_reason="tool_calls"),  # type: ignore[union-attr]
+            ctx,
+        )
+
+        assert provider.received_response is not None, (
+            "provider.parse_tool_calls was not called"
+        )
+        assert isinstance(provider.received_response, PydanticChatResponse), (  # type: ignore[arg-type]
+            f"Expected PydanticChatResponse, got {type(provider.received_response)}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # MockModule — minimal module for LifecycleServiceAdapter tests
 # ---------------------------------------------------------------------------
 

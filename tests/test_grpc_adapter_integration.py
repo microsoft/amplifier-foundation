@@ -533,7 +533,12 @@ class TestAdapterHappyPath:
                 proc.wait(timeout=5)
 
     def test_grpc_client_complete(self) -> None:
-        """gRPC ``Complete`` returns content='Hello from test provider' and finish_reason='stop'."""
+        """gRPC ``Complete`` returns content containing 'Hello from test provider' and finish_reason='stop'.
+
+        In v2, the ``content`` field holds the legacy JSON representation of content blocks
+        (e.g. ``[{"type":"text","text":"Hello from test provider"}]``).  We verify that the
+        expected text is present in the content field and that finish_reason is 'stop'.
+        """
         import grpc
         from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
         from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
@@ -550,8 +555,21 @@ class TestAdapterHappyPath:
                 try:
                     stub = pb2_grpc.ProviderServiceStub(channel)
                     response = stub.Complete(pb2.ChatRequest())  # type: ignore[attr-defined]
-                    assert response.content == "Hello from test provider", (
-                        f"Expected content='Hello from test provider', got {response.content!r}"
+                    # v2: content field holds JSON-serialized content blocks; extract text for assertion
+                    import json as _json
+
+                    try:
+                        blocks = _json.loads(response.content)
+                        text_content = " ".join(
+                            b.get("text", "")
+                            for b in blocks
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    except (_json.JSONDecodeError, TypeError):
+                        text_content = response.content
+                    assert text_content == "Hello from test provider", (
+                        f"Expected text content 'Hello from test provider', "
+                        f"got content={response.content!r} (extracted={text_content!r})"
                     )
                     assert response.finish_reason == "stop", (
                         f"Expected finish_reason='stop', got {response.finish_reason!r}"
