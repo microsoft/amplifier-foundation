@@ -11,13 +11,23 @@ Exit codes:
 
 from __future__ import annotations
 
-import argparse
-import json
-import sys
-from pathlib import Path
-from typing import TYPE_CHECKING
+import warnings
 
-from amplifier_foundation.session import (
+warnings.warn(
+    "scripts/session-repair.py is deprecated. "
+    "Use scripts/amplifier-session.py instead. "
+    "Example: python scripts/amplifier-session.py diagnose <session>",
+    DeprecationWarning,
+    stacklevel=1,
+)
+
+import argparse  # noqa: E402
+import json  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import TYPE_CHECKING  # noqa: E402
+
+from amplifier_foundation.session import (  # noqa: E402
     backup,
     build_tool_index,
     diagnose_transcript,

@@ -805,6 +805,27 @@ class TestCLI:
         result = _run_cli(str(tmp_path))
         assert result.returncode == 2
 
+    def test_deprecation_warning_emitted(self):
+        """Running with -W all emits DeprecationWarning directing to new script."""
+        env = os.environ.copy()
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            f"{_project_root}:{existing}" if existing else str(_project_root)
+        )
+        result = subprocess.run(
+            [sys.executable, "-W", "all", str(_script_path), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+        assert "DeprecationWarning" in result.stderr, (
+            f"Expected DeprecationWarning in stderr, got: {result.stderr!r}"
+        )
+        assert "amplifier-session.py" in result.stderr, (
+            f"Expected 'amplifier-session.py' in stderr, got: {result.stderr!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestIntegrationRealisticFailures
