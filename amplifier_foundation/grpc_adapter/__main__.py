@@ -18,6 +18,7 @@ import re
 import signal
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 try:
@@ -89,6 +90,42 @@ class KernelClient:
         if resp.found and resp.value_json:
             return json.loads(resp.value_json)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Coordinator shim
+# ---------------------------------------------------------------------------
+
+
+def make_coordinator_shim(kernel_client: KernelClient) -> SimpleNamespace:
+    """Create a SimpleNamespace coordinator shim for out-of-process mount() calls.
+
+    Out-of-process modules call coordinator methods during their mount()
+    lifecycle.  This shim provides working implementations for runtime
+    callbacks (emit_hook, get_capability) and silent no-ops for mount-time
+    self-registration methods that the kernel handles automatically.
+
+    Args:
+        kernel_client: A KernelClient connected to the kernel's KernelService.
+
+    Returns:
+        A SimpleNamespace with the coordinator interface expected by modules.
+    """
+    return SimpleNamespace(
+        hooks=SimpleNamespace(emit=kernel_client.emit_hook),
+        get_capability=kernel_client.get_capability,
+        session_id=kernel_client.session_id,
+        parent_id=kernel_client.parent_id,
+        mount=lambda *args, **kwargs: logger.debug(
+            "mount() is a no-op in out-of-process adapter; kernel registers bridge automatically"
+        ),
+        register_contributor=lambda *args, **kwargs: logger.debug(
+            "register_contributor() not available over gRPC"
+        ),
+        register_cleanup=lambda *args, **kwargs: logger.debug(
+            "register_cleanup() is a no-op in out-of-process adapter"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

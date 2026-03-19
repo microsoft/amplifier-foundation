@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 
@@ -161,3 +162,132 @@ class TestKernelClient:
             result = client.get_capability(name="missing-cap")
 
         assert result is None
+
+
+class TestCoordinatorShim:
+    """Tests for the make_coordinator_shim function."""
+
+    def _make_client(self, session_id: str, parent_id: str | None = None) -> Any:
+        """Helper to build a KernelClient backed by a MagicMock stub."""
+        from amplifier_foundation.grpc_adapter.__main__ import KernelClient  # type: ignore[import-not-found]
+
+        stub = MagicMock()
+        metadata: list[tuple[str, str]] = []
+        return KernelClient(
+            stub=stub,
+            metadata=metadata,
+            session_id=session_id,
+            parent_id=parent_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Identity attributes
+    # ------------------------------------------------------------------
+
+    def test_shim_has_session_id(self) -> None:
+        """Shim exposes session_id from the KernelClient."""
+        from amplifier_foundation.grpc_adapter.__main__ import make_coordinator_shim  # type: ignore[import-not-found]
+
+        client = self._make_client(session_id="shim-test-session")
+        shim = make_coordinator_shim(client)
+        assert shim.session_id == "shim-test-session"
+
+    def test_shim_has_parent_id(self) -> None:
+        """Shim exposes parent_id from the KernelClient."""
+        from amplifier_foundation.grpc_adapter.__main__ import make_coordinator_shim  # type: ignore[import-not-found]
+
+        client = self._make_client(session_id="shim-child", parent_id="shim-parent")
+        shim = make_coordinator_shim(client)
+        assert shim.parent_id == "shim-parent"
+
+    # ------------------------------------------------------------------
+    # No-op lifecycle callbacks
+    # ------------------------------------------------------------------
+
+    def test_shim_mount_is_noop(self) -> None:
+        """shim.mount() can be called with any args and does not raise."""
+        from amplifier_foundation.grpc_adapter.__main__ import make_coordinator_shim  # type: ignore[import-not-found]
+
+        client = self._make_client(session_id="shim-mount")
+        shim = make_coordinator_shim(client)
+        # Must not raise
+        shim.mount("arg1", kwarg="kwarg1")
+
+    def test_shim_register_contributor_is_noop(self) -> None:
+        """shim.register_contributor() can be called with any args and does not raise."""
+        from amplifier_foundation.grpc_adapter.__main__ import make_coordinator_shim  # type: ignore[import-not-found]
+
+        client = self._make_client(session_id="shim-contrib")
+        shim = make_coordinator_shim(client)
+        shim.register_contributor("something", key="value")
+
+    def test_shim_register_cleanup_is_noop(self) -> None:
+        """shim.register_cleanup() can be called with any args and does not raise."""
+        from amplifier_foundation.grpc_adapter.__main__ import make_coordinator_shim  # type: ignore[import-not-found]
+
+        client = self._make_client(session_id="shim-cleanup")
+        shim = make_coordinator_shim(client)
+        shim.register_cleanup(lambda: None)
+
+    # ------------------------------------------------------------------
+    # Runtime callbacks routed to KernelClient
+    # ------------------------------------------------------------------
+
+    def test_shim_hooks_emit_routes_to_kernel(self) -> None:
+        """shim.hooks.emit routes to KernelClient.emit_hook → stub.EmitHook called once."""
+        from amplifier_foundation.grpc_adapter.__main__ import (  # type: ignore[import-not-found]
+            KernelClient,
+            make_coordinator_shim,
+        )
+
+        stub = MagicMock()
+        metadata: list[tuple[str, str]] = []
+        mock_pb2 = MagicMock()
+        mock_request = MagicMock()
+        mock_pb2.EmitHookRequest.return_value = mock_request
+
+        with patch(
+            "amplifier_foundation.grpc_adapter.__main__.amplifier_module_pb2",
+            mock_pb2,
+        ):
+            client = KernelClient(
+                stub=stub,
+                metadata=metadata,
+                session_id="shim-emit",
+            )
+            shim = make_coordinator_shim(client)
+            shim.hooks.emit("test.event", {"key": "val"})
+
+        stub.EmitHook.assert_called_once()
+
+    def test_shim_get_capability_routes_to_kernel(self) -> None:
+        """shim.get_capability routes to KernelClient.get_capability, returns 'gpt-4'."""
+        from amplifier_foundation.grpc_adapter.__main__ import (  # type: ignore[import-not-found]
+            KernelClient,
+            make_coordinator_shim,
+        )
+
+        stub = MagicMock()
+        metadata: list[tuple[str, str]] = []
+        mock_pb2 = MagicMock()
+        mock_request = MagicMock()
+        mock_pb2.GetCapabilityRequest.return_value = mock_request
+
+        mock_resp = MagicMock()
+        mock_resp.found = True
+        mock_resp.value_json = json.dumps("gpt-4")
+        stub.GetCapability.return_value = mock_resp
+
+        with patch(
+            "amplifier_foundation.grpc_adapter.__main__.amplifier_module_pb2",
+            mock_pb2,
+        ):
+            client = KernelClient(
+                stub=stub,
+                metadata=metadata,
+                session_id="shim-get-cap",
+            )
+            shim = make_coordinator_shim(client)
+            result = shim.get_capability("model")
+
+        assert result == "gpt-4"
