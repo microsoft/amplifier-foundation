@@ -27,6 +27,15 @@ import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import TYPE_CHECKING  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# sys.path manipulation to ensure amplifier_foundation is importable
+# ---------------------------------------------------------------------------
+
+_here = Path(__file__).resolve().parent
+_root = _here.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
 from amplifier_foundation.session import (  # noqa: E402
     backup,
     build_tool_index,
