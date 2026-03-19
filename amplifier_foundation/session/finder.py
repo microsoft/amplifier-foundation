@@ -13,6 +13,7 @@ Directory structure:
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -23,7 +24,9 @@ from .store import (
     METADATA_FILENAME,
     TRANSCRIPT_FILENAME,
     load_metadata,
+    load_transcript,
     load_transcript_with_lines,
+    read_jsonl,
 )
 
 # ---------------------------------------------------------------------------
@@ -88,10 +91,9 @@ def _transcript_contains_keyword(session_dir: Path, keyword: str) -> bool:
     if not transcript_path.exists():
         return False
     keyword_lower = keyword.lower()
-    with transcript_path.open(encoding="utf-8") as fh:
-        for line in fh:
-            if keyword_lower in line.lower():
-                return True
+    for entry in read_jsonl(transcript_path):
+        if keyword_lower in json.dumps(entry, ensure_ascii=False).lower():
+            return True
     return False
 
 
@@ -308,10 +310,13 @@ def session_info(session_dir: Path) -> dict[str, Any]:
 
     meta = load_metadata(session_dir)
 
+    # Load plain transcript for turn counting (line numbers not needed)
+    messages = load_transcript(session_dir)
+    turn_count = count_turns(messages)
+
     # Load transcript with line numbers for diagnosis
     entries = load_transcript_with_lines(session_dir)
     diagnosis = diagnose_transcript(entries)
-    turn_count = count_turns(entries)
 
     # Derive project from path: sessions_root/<project>/sessions/<session_id>
     # parent = sessions/, parent.parent = <project>/
