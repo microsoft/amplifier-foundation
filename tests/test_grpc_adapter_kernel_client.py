@@ -3,6 +3,9 @@
 Covers:
 - Constructor stores all attributes
 - parent_id defaults to None
+- emit_hook is a coroutine function (async)
+- get_capability is a coroutine function (async)
+- metadata is private (no public .metadata attribute)
 - emit_hook calls stub.EmitHook once
 - get_capability returns parsed JSON when found
 - get_capability returns None when not found
@@ -10,9 +13,12 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestKernelClient:
@@ -63,14 +69,67 @@ class TestKernelClient:
         assert client.parent_id is None
 
     # ------------------------------------------------------------------
+    # Fix 1: emit_hook and get_capability must be coroutine functions
+    # ------------------------------------------------------------------
+
+    def test_emit_hook_is_coroutine_function(self) -> None:
+        """emit_hook must be an async def so modules can `await coordinator.hooks.emit(...)`.
+
+        Calling `await` on a sync return value raises TypeError at runtime.
+        """
+        from amplifier_foundation.grpc_adapter.__main__ import KernelClient  # type: ignore[import-not-found]
+
+        stub = MagicMock()
+        client = KernelClient(stub=stub, metadata=[], session_id="s1")
+        assert asyncio.iscoroutinefunction(client.emit_hook), (
+            "emit_hook must be async def — modules do `await coordinator.hooks.emit(...)`"
+        )
+
+    def test_get_capability_is_coroutine_function(self) -> None:
+        """get_capability must be an async def so modules can `await coordinator.get_capability(...)`.
+
+        Calling `await` on a sync return value raises TypeError at runtime.
+        """
+        from amplifier_foundation.grpc_adapter.__main__ import KernelClient  # type: ignore[import-not-found]
+
+        stub = MagicMock()
+        client = KernelClient(stub=stub, metadata=[], session_id="s1")
+        assert asyncio.iscoroutinefunction(client.get_capability), (
+            "get_capability must be async def — modules do `await coordinator.get_capability(...)`"
+        )
+
+    # ------------------------------------------------------------------
+    # Fix 2: metadata must be private (no public .metadata attribute)
+    # ------------------------------------------------------------------
+
+    def test_metadata_is_private(self) -> None:
+        """KernelClient must not expose .metadata publicly.
+
+        Bound-method introspection allows token extraction:
+            shim.hooks.emit.__self__.metadata
+        exposes the auth token. The attribute must be renamed _metadata.
+        """
+        from amplifier_foundation.grpc_adapter.__main__ import KernelClient  # type: ignore[import-not-found]
+
+        stub = MagicMock()
+        metadata = [("authorization", "Bearer secret-token")]
+        client = KernelClient(stub=stub, metadata=metadata, session_id="s1")
+        assert not hasattr(client, "metadata"), (
+            "metadata must be private (_metadata) to prevent token extraction via "
+            "bound-method introspection: shim.hooks.emit.__self__.metadata"
+        )
+
+    # ------------------------------------------------------------------
     # emit_hook
     # ------------------------------------------------------------------
 
-    def test_emit_hook_calls_stub(self) -> None:
+    @pytest.mark.asyncio
+    async def test_emit_hook_calls_stub(self) -> None:
         """emit_hook calls stub.EmitHook exactly once with correct args and metadata."""
         from amplifier_foundation.grpc_adapter.__main__ import KernelClient  # type: ignore[import-not-found]
 
         stub = MagicMock()
+        stub.EmitHook = AsyncMock(return_value=MagicMock())
         metadata: list[tuple[str, str]] = [("authorization", "Bearer secret")]
 
         # Mock pb2 to avoid requiring real grpcio/protobuf in test environment
@@ -88,7 +147,7 @@ class TestKernelClient:
                 session_id="session-emit",
             )
             event_data = {"key": "value"}
-            client.emit_hook(event="test.event", data=event_data)
+            await client.emit_hook(event="test.event", data=event_data)
 
         stub.EmitHook.assert_called_once_with(mock_request, metadata=metadata)
         mock_pb2.EmitHookRequest.assert_called_once_with(
@@ -100,7 +159,8 @@ class TestKernelClient:
     # get_capability
     # ------------------------------------------------------------------
 
-    def test_get_capability_returns_value(self) -> None:
+    @pytest.mark.asyncio
+    async def test_get_capability_returns_value(self) -> None:
         """get_capability returns parsed JSON value when capability is found."""
         from amplifier_foundation.grpc_adapter.__main__ import KernelClient  # type: ignore[import-not-found]
 
@@ -116,7 +176,7 @@ class TestKernelClient:
         mock_resp = MagicMock()
         mock_resp.found = True
         mock_resp.value_json = json.dumps({"feature": "enabled"})
-        stub.GetCapability.return_value = mock_resp
+        stub.GetCapability = AsyncMock(return_value=mock_resp)
 
         with patch(
             "amplifier_foundation.grpc_adapter.__main__.amplifier_module_pb2",
@@ -127,13 +187,14 @@ class TestKernelClient:
                 metadata=metadata,
                 session_id="session-get-cap",
             )
-            result = client.get_capability(name="my-feature")
+            result = await client.get_capability(name="my-feature")
 
         assert result == {"feature": "enabled"}
         stub.GetCapability.assert_called_once_with(mock_request, metadata=metadata)
         mock_pb2.GetCapabilityRequest.assert_called_once_with(name="my-feature")
 
-    def test_get_capability_returns_none_when_not_found(self) -> None:
+    @pytest.mark.asyncio
+    async def test_get_capability_returns_none_when_not_found(self) -> None:
         """get_capability returns None when capability is not found."""
         from amplifier_foundation.grpc_adapter.__main__ import KernelClient  # type: ignore[import-not-found]
 
@@ -148,7 +209,7 @@ class TestKernelClient:
         mock_resp = MagicMock()
         mock_resp.found = False
         mock_resp.value_json = ""
-        stub.GetCapability.return_value = mock_resp
+        stub.GetCapability = AsyncMock(return_value=mock_resp)
 
         with patch(
             "amplifier_foundation.grpc_adapter.__main__.amplifier_module_pb2",
@@ -159,7 +220,7 @@ class TestKernelClient:
                 metadata=metadata,
                 session_id="session-not-found",
             )
-            result = client.get_capability(name="missing-cap")
+            result = await client.get_capability(name="missing-cap")
 
         assert result is None
 
@@ -233,7 +294,8 @@ class TestCoordinatorShim:
     # Runtime callbacks routed to KernelClient
     # ------------------------------------------------------------------
 
-    def test_shim_hooks_emit_routes_to_kernel(self) -> None:
+    @pytest.mark.asyncio
+    async def test_shim_hooks_emit_routes_to_kernel(self) -> None:
         """shim.hooks.emit routes to KernelClient.emit_hook → stub.EmitHook called once."""
         from amplifier_foundation.grpc_adapter.__main__ import (  # type: ignore[import-not-found]
             KernelClient,
@@ -241,6 +303,7 @@ class TestCoordinatorShim:
         )
 
         stub = MagicMock()
+        stub.EmitHook = AsyncMock(return_value=MagicMock())
         metadata: list[tuple[str, str]] = []
         mock_pb2 = MagicMock()
         mock_request = MagicMock()
@@ -256,11 +319,12 @@ class TestCoordinatorShim:
                 session_id="shim-emit",
             )
             shim = make_coordinator_shim(client)
-            shim.hooks.emit("test.event", {"key": "val"})
+            await shim.hooks.emit("test.event", {"key": "val"})
 
         stub.EmitHook.assert_called_once()
 
-    def test_shim_get_capability_routes_to_kernel(self) -> None:
+    @pytest.mark.asyncio
+    async def test_shim_get_capability_routes_to_kernel(self) -> None:
         """shim.get_capability routes to KernelClient.get_capability, returns 'gpt-4'."""
         from amplifier_foundation.grpc_adapter.__main__ import (  # type: ignore[import-not-found]
             KernelClient,
@@ -276,7 +340,7 @@ class TestCoordinatorShim:
         mock_resp = MagicMock()
         mock_resp.found = True
         mock_resp.value_json = json.dumps("gpt-4")
-        stub.GetCapability.return_value = mock_resp
+        stub.GetCapability = AsyncMock(return_value=mock_resp)
 
         with patch(
             "amplifier_foundation.grpc_adapter.__main__.amplifier_module_pb2",
@@ -288,6 +352,6 @@ class TestCoordinatorShim:
                 session_id="shim-get-cap",
             )
             shim = make_coordinator_shim(client)
-            result = shim.get_capability("model")
+            result = await shim.get_capability("model")
 
         assert result == "gpt-4"

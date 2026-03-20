@@ -840,6 +840,62 @@ class TestProviderServiceAdapter:
     # 18. ParseToolCalls uses PyO3 bridge — provider receives PydanticChatResponse
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Fix 4: ParseToolCalls must not silently drop content_blocks (field 7)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        PydanticChatResponse is None,
+        reason="amplifier_core.message_models not available",
+    )
+    async def test_parse_tool_calls_preserves_content_blocks(self) -> None:
+        """ParseToolCalls must use content_blocks when present (proto field 7).
+
+        When the proto ChatResponse carries typed content blocks, MessageToJson
+        produces a JSON dict with a "content_blocks" key.  The current code only
+        handles the "content" (string) field and silently ignores "content_blocks",
+        yielding an empty PydanticChatResponse.content list.
+
+        After the fix, content_blocks must be mapped to PydanticChatResponse.content.
+        """
+        import json as _json
+        from unittest.mock import patch as _patch
+
+        provider = CapturingProvider()
+        adapter = self._make_adapter(provider)
+        ctx = MockContext()
+
+        # Simulate proto JSON with content_blocks (snake_case, preserving_proto_field_name=True)
+        mock_json = _json.dumps(
+            {
+                "content_blocks": [
+                    {"type": "text", "text": "hello from content block"}
+                ],
+                "finish_reason": "stop",
+                "tool_calls": [],
+            }
+        )
+
+        import amplifier_foundation.grpc_adapter.services as _svc  # noqa: PLC0415
+
+        with _patch.object(
+            _svc._proto_json_format,
+            "MessageToJson",
+            return_value=mock_json,
+        ):
+            await adapter.ParseToolCalls(pb2.ChatResponse(), ctx)  # type: ignore[union-attr]
+
+        assert provider.received_response is not None, (
+            "provider.parse_tool_calls was never called"
+        )
+        assert len(provider.received_response.content) == 1, (
+            f"Expected 1 content block from content_blocks, got "
+            f"{len(provider.received_response.content)}: {provider.received_response.content!r}"
+        )
+        assert provider.received_response.content[0].type == "text"
+        assert provider.received_response.content[0].text == "hello from content block"
+
     @pytest.mark.asyncio
     @pytest.mark.skipif(
         PydanticChatResponse is None,

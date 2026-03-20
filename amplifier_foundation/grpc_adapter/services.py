@@ -244,28 +244,46 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             )
         return protos
 
+    async def _resolve_chat_response(self, request: Any) -> bytes:
+        """Translate a proto ChatRequest to proto ChatResponse bytes via provider.
+
+        Shared implementation for Complete() and CompleteStreaming():
+        1. Serialize proto request to bytes
+        2. Convert proto bytes to JSON via PyO3 bridge
+        3. Validate JSON into PydanticChatRequest
+        4. Call provider with the Pydantic request object
+        5. Serialize response to JSON
+        6. Convert response JSON to proto bytes via PyO3 bridge
+
+        Returns:
+            Serialised ChatResponse proto bytes.
+
+        Raises:
+            Any exception from the provider or bridge functions.
+        """
+        # 1. Serialize proto request to bytes
+        proto_bytes = request.SerializeToString()
+        # 2. Convert proto bytes to JSON via PyO3 bridge
+        json_str = proto_chat_request_to_json(proto_bytes)
+        # 3. Validate JSON into PydanticChatRequest
+        pydantic_request = PydanticChatRequest.model_validate_json(json_str)
+        # 4. Call provider with the Pydantic request object
+        response = await _invoke(self._provider.complete, pydantic_request)
+        # 5. Serialize response to JSON
+        if isinstance(response, _PydanticBaseModel):
+            # Pydantic ChatResponse — use native serialization
+            response_json = response.model_dump_json()
+        else:
+            # Legacy response object — convert via helper
+            response_dict = _legacy_response_to_dict(response)
+            response_json = json.dumps(response_dict)
+        # 6. Convert response JSON to proto bytes via PyO3 bridge
+        return json_to_proto_chat_response(response_json)
+
     async def Complete(self, request: Any, context: Any) -> Any:
         """Execute a completion request and return ChatResponse proto."""
         try:
-            # 1. Serialize proto request to bytes
-            proto_bytes = request.SerializeToString()
-            # 2. Convert proto bytes to JSON via PyO3 bridge
-            json_str = proto_chat_request_to_json(proto_bytes)
-            # 3. Validate JSON into PydanticChatRequest
-            pydantic_request = PydanticChatRequest.model_validate_json(json_str)
-            # 4. Call provider with the Pydantic request object
-            response = await _invoke(self._provider.complete, pydantic_request)
-            # 5. Serialize response to JSON
-            if isinstance(response, _PydanticBaseModel):
-                # Pydantic ChatResponse — use native serialization
-                response_json = response.model_dump_json()
-            else:
-                # Legacy response object — convert via helper
-                response_dict = _legacy_response_to_dict(response)
-                response_json = json.dumps(response_dict)
-            # 6. Convert response JSON to proto bytes via PyO3 bridge
-            response_proto_bytes = json_to_proto_chat_response(response_json)
-            # 7. Deserialize proto bytes to ChatResponse
+            response_proto_bytes = await self._resolve_chat_response(request)
             return pb2.ChatResponse.FromString(response_proto_bytes)  # type: ignore[attr-defined]
         except Exception as e:
             logger.exception("Complete failed")
@@ -283,32 +301,20 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
         yield multiple elements — the wire contract (stream of ChatResponse) doesn't
         change.
         """
+        # Assemble the full response before yielding so that context.abort()
+        # is never called after data has already been committed to the stream
+        # (which is undefined behaviour in gRPC).
         try:
-            # 1. Serialize proto request to bytes
-            proto_bytes = request.SerializeToString()
-            # 2. Convert proto bytes to JSON via PyO3 bridge
-            json_str = proto_chat_request_to_json(proto_bytes)
-            # 3. Validate JSON into PydanticChatRequest
-            pydantic_request = PydanticChatRequest.model_validate_json(json_str)
-            # 4. Call provider with the Pydantic request object
-            response = await _invoke(self._provider.complete, pydantic_request)
-            # 5. Serialize response to JSON
-            if isinstance(response, _PydanticBaseModel):
-                # Pydantic ChatResponse — use native serialization
-                response_json = response.model_dump_json()
-            else:
-                # Legacy response object — convert via helper
-                response_dict = _legacy_response_to_dict(response)
-                response_json = json.dumps(response_dict)
-            # 6. Convert response JSON to proto bytes via PyO3 bridge
-            response_proto_bytes = json_to_proto_chat_response(response_json)
-            # 7. Deserialize proto bytes to ChatResponse and yield as single element
-            yield pb2.ChatResponse.FromString(response_proto_bytes)  # type: ignore[attr-defined]
+            response_proto_bytes = await self._resolve_chat_response(request)
+            chat_response = pb2.ChatResponse.FromString(response_proto_bytes)  # type: ignore[attr-defined]
         except Exception as e:
             logger.exception("CompleteStreaming failed")
             await context.abort(
                 grpc.StatusCode.INTERNAL, str(e)
             )  # v1: caller is trusted host (localhost-only)
+            return
+        # Only reached on success — no abort after a yield
+        yield chat_response
 
     async def ParseToolCalls(self, request: Any, context: Any) -> Any:
         """Parse tool calls from a ChatResponse and return ParseToolCallsResponse proto."""
@@ -317,17 +323,24 @@ class ProviderServiceAdapter(pb2_grpc.ProviderServiceServicer):
             json_str = _proto_json_format.MessageToJson(
                 request, preserving_proto_field_name=True
             )
-            # 2. Parse JSON and transform content field if needed
-            #    Proto ChatResponse has content as a string (or missing when empty),
-            #    but PydanticChatResponse expects content as a list of content blocks.
+            # 2. Parse JSON and normalise the content field.
+            #    MessageToJson with preserving_proto_field_name=True uses snake_case,
+            #    so typed content blocks appear as "content_blocks" (proto field 7).
+            #    PydanticChatResponse.content expects a list of typed content blocks.
             data = json.loads(json_str) if json_str else {}
-            content_val = data.get("content")
-            if isinstance(content_val, str):
-                data["content"] = (
-                    [{"type": "text", "text": content_val}] if content_val else []
-                )
-            elif content_val is None:
-                data["content"] = []
+            content_blocks_val = data.get("content_blocks")
+            if content_blocks_val and isinstance(content_blocks_val, list):
+                # Proto field 7 present — use typed blocks directly as content
+                data["content"] = content_blocks_val
+            else:
+                # No content_blocks: fall back to the legacy string "content" field
+                content_val = data.get("content")
+                if isinstance(content_val, str):
+                    data["content"] = (
+                        [{"type": "text", "text": content_val}] if content_val else []
+                    )
+                elif content_val is None:
+                    data["content"] = []
             # 3. Validate into PydanticChatResponse
             pydantic_response = PydanticChatResponse.model_validate(data)
             # 4. Call provider with the Pydantic response object

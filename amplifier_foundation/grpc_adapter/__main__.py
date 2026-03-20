@@ -58,11 +58,11 @@ class KernelClient:
             parent_id: Optional parent session ID.
         """
         self._stub = stub
-        self.metadata = metadata
+        self._metadata = metadata
         self.session_id = session_id
         self.parent_id = parent_id
 
-    def emit_hook(self, event: str, data: dict[str, Any] | None = None) -> Any:
+    async def emit_hook(self, event: str, data: dict[str, Any] | None = None) -> Any:
         """Emit a hook event to the kernel.
 
         Args:
@@ -74,9 +74,9 @@ class KernelClient:
         """
         data_json = json.dumps(data) if data is not None else ""
         request = amplifier_module_pb2.EmitHookRequest(event=event, data_json=data_json)  # type: ignore[union-attr]
-        return self._stub.EmitHook(request, metadata=self.metadata)
+        return await self._stub.EmitHook(request, metadata=self._metadata)
 
-    def get_capability(self, name: str) -> Any | None:
+    async def get_capability(self, name: str) -> Any | None:
         """Retrieve a named capability from the kernel.
 
         Args:
@@ -86,7 +86,7 @@ class KernelClient:
             The parsed JSON value if found, otherwise None.
         """
         request = amplifier_module_pb2.GetCapabilityRequest(name=name)  # type: ignore[union-attr]
-        resp = self._stub.GetCapability(request, metadata=self.metadata)
+        resp = await self._stub.GetCapability(request, metadata=self._metadata)
         if resp.found and resp.value_json:
             return json.loads(resp.value_json)
         return None
@@ -294,6 +294,10 @@ async def _create_server(
         )
 
     # Always register lifecycle servicer
+    # TODO(v2): Pass coordinator_shim here once the Rust host provides
+    # kernel connection info (endpoint, token, session_id) via the manifest.
+    # See KernelClient / make_coordinator_shim() above for the ready-to-wire
+    # infrastructure. Until then, modules receive coordinator=None during Mount().
     pb2_grpc.add_ModuleLifecycleServicer_to_server(
         LifecycleServiceAdapter(module_obj), server
     )
