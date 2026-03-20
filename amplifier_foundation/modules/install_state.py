@@ -192,7 +192,7 @@ class InstallStateManager:
         # Ensure parent directory exists
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Atomic write: write to temp file, then rename
+        # Atomic write: write to temp file, then replace (cross-platform safe)
         try:
             fd, temp_path = tempfile.mkstemp(
                 dir=self._state_file.parent,
@@ -202,7 +202,7 @@ class InstallStateManager:
             try:
                 with open(fd, "w") as f:
                     json.dump(self._state, f, indent=2)
-                Path(temp_path).rename(self._state_file)
+                Path(temp_path).replace(self._state_file)
                 self._dirty = False
             except Exception:
                 # Clean up temp file on failure

@@ -217,6 +217,36 @@ class TestInstallStateManager:
             manager2 = InstallStateManager(cache_dir)
             assert manager2.is_installed(module_dir)
 
+    def test_save_overwrites_existing_state_file(self) -> None:
+        """save() works when install-state.json already exists (Windows regression).
+
+        On Windows, Path.rename() raises FileExistsError when the destination
+        exists. Path.replace() works cross-platform. This test verifies the
+        overwrite path that was broken before the .rename() -> .replace() fix.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            state_file = cache_dir / "install-state.json"
+
+            # First save — creates the file
+            manager1 = InstallStateManager(cache_dir)
+            manager1.save()
+            assert state_file.exists()
+            first_content = json.loads(state_file.read_text())
+            assert first_content["modules"] == {}
+
+            # Mark a module installed and save again — overwrites the file
+            module_dir = Path(tmpdir) / "test-module"
+            module_dir.mkdir()
+            (module_dir / "pyproject.toml").write_text('[project]\nname = "test"\n')
+            manager1.mark_installed(module_dir)
+            manager1.save()
+
+            # Verify the overwrite succeeded
+            second_content = json.loads(state_file.read_text())
+            assert second_content["modules"] != {}
+            assert str(module_dir.resolve()) in second_content["modules"]
+
     def test_invalidate_specific_module(self) -> None:
         """Can invalidate a specific module."""
         with tempfile.TemporaryDirectory() as tmpdir:
