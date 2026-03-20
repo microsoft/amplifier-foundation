@@ -533,7 +533,12 @@ class TestAdapterHappyPath:
                 proc.wait(timeout=5)
 
     def test_grpc_client_complete(self) -> None:
-        """gRPC ``Complete`` returns content='Hello from test provider' and finish_reason='stop'."""
+        """gRPC ``Complete`` returns content containing 'Hello from test provider' and finish_reason='stop'.
+
+        In v2, the ``content`` field holds the legacy JSON representation of content blocks
+        (e.g. ``[{"type":"text","text":"Hello from test provider"}]``).  We verify that the
+        expected text is present in the content field and that finish_reason is 'stop'.
+        """
         import grpc
         from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
         from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
@@ -550,8 +555,21 @@ class TestAdapterHappyPath:
                 try:
                     stub = pb2_grpc.ProviderServiceStub(channel)
                     response = stub.Complete(pb2.ChatRequest())  # type: ignore[attr-defined]
-                    assert response.content == "Hello from test provider", (
-                        f"Expected content='Hello from test provider', got {response.content!r}"
+                    # v2: content field holds JSON-serialized content blocks; extract text for assertion
+                    import json as _json
+
+                    try:
+                        blocks = _json.loads(response.content)
+                        text_content = " ".join(
+                            b.get("text", "")
+                            for b in blocks
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    except (_json.JSONDecodeError, TypeError):
+                        text_content = response.content
+                    assert text_content == "Hello from test provider", (
+                        f"Expected text content 'Hello from test provider', "
+                        f"got content={response.content!r} (extracted={text_content!r})"
                     )
                     assert response.finish_reason == "stop", (
                         f"Expected finish_reason='stop', got {response.finish_reason!r}"
@@ -741,3 +759,54 @@ class TestProviderModuleScaffolding:
         assert parsed["module"] == "test-provider"
         assert parsed["type"] == "provider"
         assert parsed["path"] == str(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Streaming integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestProviderStreamingIntegration:
+    """Integration test for CompleteStreaming RPC on ProviderService."""
+
+    def test_complete_streaming_returns_response(self) -> None:
+        """gRPC ``CompleteStreaming`` returns at least one response with a non-empty finish_reason."""
+        import grpc
+        from amplifier_core._grpc_gen import amplifier_module_pb2 as pb2
+        from amplifier_core._grpc_gen import amplifier_module_pb2_grpc as pb2_grpc
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = _write_provider_module(tmpdir)
+            manifest = _make_provider_manifest(module_path)
+            proc = _spawn_adapter(manifest)
+            try:
+                line = _read_first_line(proc)
+                port = int(line.split(":", 1)[1])
+
+                channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+                try:
+                    stub = pb2_grpc.ProviderServiceStub(channel)
+                    responses = list(
+                        stub.CompleteStreaming(
+                            pb2.ChatRequest(  # type: ignore[attr-defined]
+                                messages=[
+                                    pb2.Message(  # type: ignore[attr-defined]
+                                        role=pb2.ROLE_USER,  # type: ignore[attr-defined]
+                                        text_content="Hello!",
+                                    )
+                                ]
+                            )
+                        )
+                    )
+                    assert len(responses) >= 1, (
+                        f"Expected at least 1 response, got {len(responses)}"
+                    )
+                    assert responses[0].finish_reason != "", (
+                        f"Expected non-empty finish_reason, "
+                        f"got {responses[0].finish_reason!r}"
+                    )
+                finally:
+                    channel.close()
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)

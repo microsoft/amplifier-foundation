@@ -18,9 +18,114 @@ import re
 import signal
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+try:
+    from amplifier_core._grpc_gen import amplifier_module_pb2  # type: ignore[attr-defined]
+except ImportError:
+    amplifier_module_pb2 = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# KernelClient
+# ---------------------------------------------------------------------------
+
+
+class KernelClient:
+    """Thin wrapper for KernelService gRPC callbacks.
+
+    Provides a clean Python API for out-of-process modules to call back into
+    the kernel via its KernelService gRPC interface. This is NOT a coordinator
+    proxy — KernelService is the cross-process API.
+    """
+
+    def __init__(
+        self,
+        stub: Any,
+        metadata: list[tuple[str, str]],
+        session_id: str,
+        parent_id: str | None = None,
+    ) -> None:
+        """Initialise the KernelClient.
+
+        Args:
+            stub: A KernelService gRPC stub.
+            metadata: Auth metadata tuples, e.g. [("authorization", "Bearer <token>")].
+            session_id: The current session ID.
+            parent_id: Optional parent session ID.
+        """
+        self._stub = stub
+        self._metadata = metadata
+        self.session_id = session_id
+        self.parent_id = parent_id
+
+    async def emit_hook(self, event: str, data: dict[str, Any] | None = None) -> Any:
+        """Emit a hook event to the kernel.
+
+        Args:
+            event: The event name to emit.
+            data: Optional dict payload; serialised to JSON before sending.
+
+        Returns:
+            The HookResult response from the kernel.
+        """
+        data_json = json.dumps(data) if data is not None else ""
+        request = amplifier_module_pb2.EmitHookRequest(event=event, data_json=data_json)  # type: ignore[union-attr]
+        return await self._stub.EmitHook(request, metadata=self._metadata)
+
+    async def get_capability(self, name: str) -> Any | None:
+        """Retrieve a named capability from the kernel.
+
+        Args:
+            name: The capability name to look up.
+
+        Returns:
+            The parsed JSON value if found, otherwise None.
+        """
+        request = amplifier_module_pb2.GetCapabilityRequest(name=name)  # type: ignore[union-attr]
+        resp = await self._stub.GetCapability(request, metadata=self._metadata)
+        if resp.found and resp.value_json:
+            return json.loads(resp.value_json)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Coordinator shim
+# ---------------------------------------------------------------------------
+
+
+def make_coordinator_shim(kernel_client: KernelClient) -> SimpleNamespace:
+    """Create a SimpleNamespace coordinator shim for out-of-process mount() calls.
+
+    Out-of-process modules call coordinator methods during their mount()
+    lifecycle.  This shim provides working implementations for runtime
+    callbacks (emit_hook, get_capability) and silent no-ops for mount-time
+    self-registration methods that the kernel handles automatically.
+
+    Args:
+        kernel_client: A KernelClient connected to the kernel's KernelService.
+
+    Returns:
+        A SimpleNamespace with the coordinator interface expected by modules.
+    """
+    return SimpleNamespace(
+        hooks=SimpleNamespace(emit=kernel_client.emit_hook),
+        get_capability=kernel_client.get_capability,
+        session_id=kernel_client.session_id,
+        parent_id=kernel_client.parent_id,
+        mount=lambda *args, **kwargs: logger.debug(
+            "mount() is a no-op in out-of-process adapter; kernel registers bridge automatically"
+        ),
+        register_contributor=lambda *args, **kwargs: logger.debug(
+            "register_contributor() not available over gRPC"
+        ),
+        register_cleanup=lambda *args, **kwargs: logger.debug(
+            "register_cleanup() is a no-op in out-of-process adapter"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +294,10 @@ async def _create_server(
         )
 
     # Always register lifecycle servicer
+    # TODO(v2): Pass coordinator_shim here once the Rust host provides
+    # kernel connection info (endpoint, token, session_id) via the manifest.
+    # See KernelClient / make_coordinator_shim() above for the ready-to-wire
+    # infrastructure. Until then, modules receive coordinator=None during Mount().
     pb2_grpc.add_ModuleLifecycleServicer_to_server(
         LifecycleServiceAdapter(module_obj), server
     )
