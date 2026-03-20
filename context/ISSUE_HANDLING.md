@@ -510,9 +510,9 @@ For PR review guidance, see `docs/PR_REVIEW_GUIDE.md`.
 - `metadata` is THE property bag name across the ecosystem. Don't rename it,
   don't introduce alternatives. It's the standard extensibility slot for
   experimentation and convention.
-- Add empty extensibility slots (`metadata: None`) to event payloads proactively.
-  Overhead is negligible next to LLM calls; the slot enables future use without
-  changing the event shape.
+- Add empty extensibility slots (`metadata: None`) to event payloads when the
+  event is part of a stable interface. Overhead is negligible next to LLM calls;
+  the slot enables future use without changing the event shape.
 - Don't decompose at the emitter. Raw data (e.g., qualified agent names) flows
   through events intact; consumers parse at their site. Emitters shouldn't bake
   in assumptions about what decomposition consumers need.
