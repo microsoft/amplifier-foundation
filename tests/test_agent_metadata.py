@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-from amplifier_foundation.bundle import _load_agent_file_metadata
+from amplifier_foundation.bundle._dataclass import _load_agent_file_metadata
 
 
 class TestLoadAgentFileMetadata:
