@@ -506,6 +506,19 @@ For PR review guidance, see `docs/PR_REVIEW_GUIDE.md`.
 - If algorithm rejects X, trace what depends on X loading successfully.
 - Simple and complete beats elegant and incomplete.
 
+### Ecosystem Conventions & Event Design
+- `metadata` is THE property bag name across the ecosystem. Don't rename it,
+  don't introduce alternatives. It's the standard extensibility slot for
+  experimentation and convention.
+- Add empty extensibility slots (`metadata: None`) to event payloads proactively.
+  Overhead is negligible next to LLM calls; the slot enables future use without
+  changing the event shape.
+- Don't decompose at the emitter. Raw data (e.g., qualified agent names) flows
+  through events intact; consumers parse at their site. Emitters shouldn't bake
+  in assumptions about what decomposition consumers need.
+- Don't promote helpers to foundation until 2+ independent consumers exist.
+  Patterns stay in the consuming code (e.g., a specific hook) until then.
+
 ### PR Review
 - Each fix round changes the attack surface. Review adversarially every time.
 - Tests must guard contracts, not implementations. If "X is overridable" is
@@ -513,6 +526,12 @@ For PR review guidance, see `docs/PR_REVIEW_GUIDE.md`.
 - Kernel fields with ambiguous semantics need `Field(description=...)` not
   inline comments -- invisible in IDE hover, help(), JSON schema.
 - Even owner PRs need independent expert review.
+- Zero consumers means zero backward-compat burden. Don't add aliases for
+  events nobody is listening to. Clean over compatible-with-nothing.
+- Don't ship fragile approaches with caveats. If it breaks for edge cases,
+  find a reliable approach or leave it out entirely.
+- Contract docs are copy-paste targets. Examples must show the exemplar case
+  (populated, useful), not the degenerate case (null, empty).
 
 ### Multiple Perspectives
 - Parallel agent dispatch surfaces ground truth through convergence.
