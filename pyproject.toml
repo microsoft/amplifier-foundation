@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "pyyaml>=6.0.3",
-    "amplifier-core",
+    "amplifier-core>=1.0.10",
 ]
 
 [project.optional-dependencies]
@@ -29,8 +29,6 @@ grpc-adapter = [
     "grpcio>=1.78.0",
     "protobuf>=4.0.0",
 ]
-
-[tool.uv.sources]
 
 [project.urls]
 Homepage = "https://github.com/microsoft/amplifier-foundation"
