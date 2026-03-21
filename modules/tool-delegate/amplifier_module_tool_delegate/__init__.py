@@ -838,6 +838,58 @@ Agent usage notes:
                     ProviderPreference.from_dict(p) for p in agent_default_prefs
                 ]
 
+        return await self._spawn_new_session(
+            agent_name=agent_name,
+            instruction=instruction,
+            context_depth=context_depth,
+            context_scope=context_scope,
+            context_turns=context_turns,
+            provider_preferences=provider_preferences,
+            hooks=hooks,
+            agent_configs=agents,
+            tool_call_id=tool_call_id,
+            parallel_group_id=parallel_group_id,
+        )
+
+    async def _spawn_new_session(
+        self,
+        agent_name: str,
+        instruction: str,
+        context_depth: str,
+        context_scope: str,
+        context_turns: int,
+        provider_preferences: Any,
+        hooks: Any,
+        *,
+        agent_configs: dict[str, Any] | None = None,
+        tool_call_id: str = "",
+        parallel_group_id: str | None = None,
+    ) -> ToolResult:
+        """Spawn a new agent sub-session.
+
+        Args:
+            agent_name: Agent to delegate to
+            instruction: Task instruction for the agent
+            context_depth: HOW MUCH context - "none", "recent", or "all"
+            context_scope: WHICH content - "conversation", "agents", or "full"
+            context_turns: Number of turns for "recent" mode
+            provider_preferences: Optional provider/model preferences
+            hooks: Hook coordinator for event emission (or None)
+            agent_configs: Agent registry dict (defaults to coordinator.config["agents"])
+            tool_call_id: Orchestrator tool call ID (enriches event payloads)
+            parallel_group_id: Parallel group ID (enriches event payloads)
+
+        Returns:
+            ToolResult with success status and output or error
+        """
+        # Resolve agent configs — accept passed-in dict or fetch from coordinator.
+        # Use isinstance guard to handle MagicMock coordinators in tests gracefully.
+        if agent_configs is None:
+            raw_agents = self.coordinator.config.get("agents", {})
+            agents: dict[str, Any] = raw_agents if isinstance(raw_agents, dict) else {}
+        else:
+            agents = agent_configs
+
         # Get parent session ID
         parent_session_id = self.coordinator.session_id
 
@@ -904,14 +956,17 @@ Agent usage notes:
                 )
                 effective_instruction = f"{context_text}\n\n[YOUR TASK]\n{instruction}"
 
-            # Extract orchestrator config from parent session for inheritance
+            # Extract orchestrator config from parent session for inheritance.
+            # The orchestrator field may be a string (name only) or a dict
+            # (with optional "config" sub-key).  Handle both gracefully.
             orchestrator_config = None
             parent_config = parent_session.config or {}
             session_config = parent_config.get("session", {})
             orch_section = session_config.get("orchestrator", {})
-            if orch_config := orch_section.get("config"):
-                orchestrator_config = orch_config
-                logger.debug(f"Inheriting orchestrator config: {orchestrator_config}")
+            if isinstance(orch_section, dict):
+                if orch_config := orch_section.get("config"):
+                    orchestrator_config = orch_config
+                    logger.debug(f"Inheriting orchestrator config: {orchestrator_config}")
 
             # Calculate self-delegation depth for child session
             # Named agents reset to 0, self-delegation increments
