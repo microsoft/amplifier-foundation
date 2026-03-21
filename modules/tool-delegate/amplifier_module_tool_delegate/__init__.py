@@ -726,9 +726,7 @@ Agent usage notes:
         # provider_preferences wins when both are provided (explicit pin overrides matrix)
         raw_model_role = input.get("model_role", "").strip()
         if raw_model_role and provider_preferences is None:
-            routing_state = getattr(self.coordinator, "session_state", {}).get(
-                "routing_matrix"
-            )
+            routing_state = self.coordinator.get_capability("session.routing_matrix")
             if routing_state:
                 try:
                     from amplifier_module_hooks_routing.resolver import (
