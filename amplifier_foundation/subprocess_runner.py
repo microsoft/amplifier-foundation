@@ -46,6 +46,32 @@ RESULT_START_MARKER = "<<<AMPLIFIER_RESULT_START>>>"
 RESULT_END_MARKER = "<<<AMPLIFIER_RESULT_END>>>"
 _subprocess_semaphore: asyncio.Semaphore | None = None
 _semaphore_limit: int = DEFAULT_MAX_SUBPROCESS
+_semaphore_configured: bool = False
+
+
+def configure_subprocess_limit(max_concurrent: int) -> None:
+    """Configure the maximum number of concurrent subprocess sessions (set-once).
+
+    Must be called before the first subprocess is launched.  Subsequent calls
+    with the *same* value are a no-op; calls with a *different* value raise
+    ``RuntimeError``.
+
+    Args:
+        max_concurrent: Maximum number of concurrent subprocess sessions.
+
+    Raises:
+        RuntimeError: If called again after already configured with a different value.
+    """
+    global _semaphore_limit, _semaphore_configured
+
+    if _semaphore_configured:
+        if max_concurrent != _semaphore_limit:
+            raise RuntimeError("already configured")
+        # Same value — no-op
+        return
+
+    _semaphore_limit = max_concurrent
+    _semaphore_configured = True
 
 
 def _extract_framed_result(stdout: str) -> str:
@@ -73,26 +99,19 @@ def _extract_framed_result(stdout: str) -> str:
     return stdout[content_start:end_idx].strip()
 
 
-def _get_semaphore(max_concurrent: int | None = None) -> asyncio.Semaphore:
-    """Return the module-level semaphore, creating or recreating it as needed.
+def _get_semaphore() -> asyncio.Semaphore:
+    """Return the module-level semaphore, creating it lazily on first call.
 
-    Lazily creates the semaphore on first call. If ``max_concurrent`` differs
-    from the current limit, the semaphore is recreated with the new limit.
-
-    Args:
-        max_concurrent: Maximum number of concurrent subprocess sessions.
-            If ``None``, uses the current ``_semaphore_limit``.
+    Uses ``_semaphore_limit`` (set via ``configure_subprocess_limit()`` or
+    defaulting to ``DEFAULT_MAX_SUBPROCESS``) to size the semaphore.
 
     Returns:
         The asyncio.Semaphore for gating concurrent subprocesses.
     """
-    global _subprocess_semaphore, _semaphore_limit
+    global _subprocess_semaphore
 
-    limit = max_concurrent if max_concurrent is not None else _semaphore_limit
-
-    if _subprocess_semaphore is None or limit != _semaphore_limit:
-        _semaphore_limit = limit
-        _subprocess_semaphore = asyncio.Semaphore(limit)
+    if _subprocess_semaphore is None:
+        _subprocess_semaphore = asyncio.Semaphore(_semaphore_limit)
 
     return _subprocess_semaphore
 
@@ -187,13 +206,18 @@ async def run_session_in_subprocess(
     project_path: str,
     session_id: str | None = None,
     timeout: int = 1800,
-    max_concurrent: int | None = None,
+    module_paths: dict[str, str] | None = None,
+    bundle_package_paths: list[str] | None = None,
+    sys_paths: list[str] | None = None,
 ) -> str:
     """Run an Amplifier session in an isolated subprocess.
 
     Serializes the session config to a temp file, spawns a child process
     running the subprocess_runner module, waits for it to complete, and
     returns the result from stdout.
+
+    The concurrency limit is controlled globally via ``configure_subprocess_limit()``
+    (default: ``DEFAULT_MAX_SUBPROCESS``).
 
     Args:
         config: Session configuration dict (providers, tools, hooks, etc.).
@@ -205,9 +229,11 @@ async def run_session_in_subprocess(
         session_id: Optional pre-assigned session ID for the child session.
             If ``None``, the child will generate its own ID.
         timeout: Seconds to wait for the subprocess to complete (default: 1800).
-        max_concurrent: Maximum number of concurrent subprocess sessions allowed.
-            If ``None``, uses the current module-level semaphore limit
-            (default: ``DEFAULT_MAX_SUBPROCESS``).
+        module_paths: Optional mapping of module names to their source paths
+            for bundle context propagation.
+        bundle_package_paths: Optional list of bundle package root paths.
+        sys_paths: Optional list of additional sys.path entries to inject in
+            the child process.
 
     Returns:
         The output string from the child session (stdout, stripped).
@@ -222,6 +248,9 @@ async def run_session_in_subprocess(
         parent_id=parent_id,
         project_path=project_path,
         session_id=session_id,
+        module_paths=module_paths,
+        bundle_package_paths=bundle_package_paths,
+        sys_paths=sys_paths,
     )
 
     with tempfile.NamedTemporaryFile(
@@ -230,7 +259,7 @@ async def run_session_in_subprocess(
         tmp_path = f.name
         f.write(serialized)
 
-    semaphore = _get_semaphore(max_concurrent)
+    semaphore = _get_semaphore()
 
     try:
         async with semaphore:

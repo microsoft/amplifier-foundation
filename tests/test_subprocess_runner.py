@@ -19,6 +19,7 @@ from amplifier_foundation.subprocess_runner import RESULT_END_MARKER
 from amplifier_foundation.subprocess_runner import RESULT_START_MARKER
 from amplifier_foundation.subprocess_runner import _extract_framed_result
 from amplifier_foundation.subprocess_runner import _run_child_session
+from amplifier_foundation.subprocess_runner import configure_subprocess_limit
 from amplifier_foundation.subprocess_runner import deserialize_subprocess_config
 from amplifier_foundation.subprocess_runner import run_session_in_subprocess
 from amplifier_foundation.subprocess_runner import serialize_subprocess_config
@@ -725,22 +726,58 @@ class TestSemaphoreConstants:
         assert DEFAULT_MAX_SUBPROCESS == 4
 
 
+class TestSemaphoreSetOnce:
+    """Tests for the set-once configure_subprocess_limit() pattern."""
+
+    def setup_method(self) -> None:
+        """Reset module state before each test."""
+        import amplifier_foundation.subprocess_runner as runner_module
+
+        runner_module._subprocess_semaphore = None
+        runner_module._semaphore_limit = runner_module.DEFAULT_MAX_SUBPROCESS
+        runner_module._semaphore_configured = False
+
+    def test_configure_subprocess_limit_sets_limit(self) -> None:
+        """Test that configure_subprocess_limit() sets the semaphore limit."""
+        import amplifier_foundation.subprocess_runner as runner_module
+
+        configure_subprocess_limit(6)
+        assert runner_module._semaphore_limit == 6
+
+    def test_configure_subprocess_limit_rejects_second_call(self) -> None:
+        """Test that a second call with a different value raises RuntimeError matching 'already configured'."""
+        configure_subprocess_limit(3)
+        with pytest.raises(RuntimeError, match="already configured"):
+            configure_subprocess_limit(5)
+
+    def test_configure_subprocess_limit_same_value_is_noop(self) -> None:
+        """Test that calling with the same value a second time is a no-op (no exception)."""
+        import amplifier_foundation.subprocess_runner as runner_module
+
+        configure_subprocess_limit(3)
+        configure_subprocess_limit(3)  # Same value — should not raise
+        assert runner_module._semaphore_limit == 3
+
+
 class TestConcurrencyLimiting:
     """Tests that semaphore limits concurrent subprocess sessions."""
 
     @pytest.mark.asyncio
-    async def test_max_concurrent_limits_parallelism(self, tmp_path: Any) -> None:
-        """Test that max_concurrent=2 allows at most 2 concurrent subprocesses.
+    async def test_configured_limit_restricts_parallelism(self, tmp_path: Any) -> None:
+        """Test that configure_subprocess_limit(2) allows at most 2 concurrent subprocesses.
 
-        Launches 6 concurrent calls with max_concurrent=2. Uses a slow_communicate
-        that sleeps briefly to simulate subprocess work and tracks the peak concurrency.
-        Asserts max_observed <= 2.
+        Resets module state, configures limit to 2, then launches 6 concurrent calls.
+        Uses a slow_communicate that sleeps briefly to simulate subprocess work and
+        tracks the peak concurrency. Asserts max_observed <= 2.
         """
         import amplifier_foundation.subprocess_runner as runner_module
 
         # Reset semaphore state between tests
         runner_module._subprocess_semaphore = None
         runner_module._semaphore_limit = runner_module.DEFAULT_MAX_SUBPROCESS
+        runner_module._semaphore_configured = False
+
+        configure_subprocess_limit(2)
 
         active_count = 0
         max_observed = 0
@@ -774,7 +811,6 @@ class TestConcurrencyLimiting:
                     prompt="Hello",
                     parent_id="parent-123",
                     project_path=project_path,
-                    max_concurrent=2,
                 )
                 for _ in range(6)
             ]
