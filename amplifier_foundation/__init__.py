@@ -81,6 +81,9 @@ from amplifier_foundation.spawn_utils import apply_provider_preferences
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 from amplifier_foundation.spawn_utils import is_glob_pattern
 from amplifier_foundation.spawn_utils import resolve_model_pattern
+
+# Subprocess runner
+from amplifier_foundation.subprocess_runner import run_session_in_subprocess
 from amplifier_foundation.sources.protocol import SourceHandlerProtocol
 from amplifier_foundation.sources.protocol import SourceHandlerWithStatusProtocol
 from amplifier_foundation.sources.protocol import SourceResolverProtocol
@@ -179,4 +182,6 @@ __all__ = [
     "apply_provider_preferences_with_resolution",
     "is_glob_pattern",
     "resolve_model_pattern",
+    # Subprocess runner
+    "run_session_in_subprocess",
 ]
