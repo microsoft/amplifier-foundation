@@ -15,6 +15,9 @@ from unittest.mock import patch
 import pytest
 
 from amplifier_foundation.subprocess_runner import DEFAULT_MAX_SUBPROCESS
+from amplifier_foundation.subprocess_runner import RESULT_END_MARKER
+from amplifier_foundation.subprocess_runner import RESULT_START_MARKER
+from amplifier_foundation.subprocess_runner import _extract_framed_result
 from amplifier_foundation.subprocess_runner import _run_child_session
 from amplifier_foundation.subprocess_runner import deserialize_subprocess_config
 from amplifier_foundation.subprocess_runner import run_session_in_subprocess
@@ -498,8 +501,11 @@ class TestRunSessionInSubprocess:
         parent_id = "parent-123"
         project_path = str(tmp_path)
 
+        framed_stdout = (
+            f"{RESULT_START_MARKER}\nresult output\n{RESULT_END_MARKER}\n"
+        ).encode()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"result output\n", b""))
+        mock_process.communicate = AsyncMock(return_value=(framed_stdout, b""))
         mock_process.returncode = 0
 
         with patch(
@@ -575,8 +581,11 @@ class TestRunSessionInSubprocess:
         parent_id = "parent-123"
         project_path = str(tmp_path)
 
+        framed_stdout = (
+            f"{RESULT_START_MARKER}\nresult\n{RESULT_END_MARKER}\n"
+        ).encode()
         mock_process = MagicMock()
-        mock_process.communicate = AsyncMock(return_value=(b"result", b""))
+        mock_process.communicate = AsyncMock(return_value=(framed_stdout, b""))
         mock_process.returncode = 0
 
         with patch(
@@ -635,6 +644,11 @@ class TestRunSessionInSubprocess:
         mock_process.returncode = 0
 
         file_content: dict[str, Any] = {}
+
+        framed_stdout = (
+            f"{RESULT_START_MARKER}\nresult\n{RESULT_END_MARKER}\n"
+        ).encode()
+        mock_process.communicate = AsyncMock(return_value=(framed_stdout, b""))
 
         async def capture_subprocess(*args: Any, **kwargs: Any) -> MagicMock:
             # args[3] is the temp config file path passed to the child
@@ -731,6 +745,10 @@ class TestConcurrencyLimiting:
         active_count = 0
         max_observed = 0
 
+        framed_result = (
+            f"{RESULT_START_MARKER}\nresult\n{RESULT_END_MARKER}\n"
+        ).encode()
+
         async def slow_communicate() -> tuple[bytes, bytes]:
             nonlocal active_count, max_observed
             active_count += 1
@@ -738,7 +756,7 @@ class TestConcurrencyLimiting:
                 max_observed = active_count
             await asyncio.sleep(0.05)
             active_count -= 1
-            return (b"result", b"")
+            return (framed_result, b"")
 
         mock_process = MagicMock()
         mock_process.communicate = slow_communicate
@@ -763,3 +781,25 @@ class TestConcurrencyLimiting:
             await asyncio.gather(*tasks)
 
         assert max_observed <= 2
+
+
+class TestStdoutFraming:
+    """Tests for stdout framing protocol with envelope delimiters."""
+
+    def test_framed_output_extracted_correctly(self) -> None:
+        """Test that stray prints before/after envelope are ignored, only framed content extracted."""
+        stdout = (
+            f"stray print before\n"
+            f"{RESULT_START_MARKER}\n"
+            f"actual result content\n"
+            f"{RESULT_END_MARKER}\n"
+            f"stray print after\n"
+        )
+        result = _extract_framed_result(stdout)
+        assert result == "actual result content"
+
+    def test_unframed_output_raises_runtime_error(self) -> None:
+        """Test that stdout without markers raises RuntimeError matching 'missing result envelope'."""
+        stdout = "no markers here at all"
+        with pytest.raises(RuntimeError, match="missing result envelope"):
+            _extract_framed_result(stdout)

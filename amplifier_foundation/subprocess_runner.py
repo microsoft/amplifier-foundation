@@ -39,8 +39,38 @@ logger = logging.getLogger(__name__)
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
 
 DEFAULT_MAX_SUBPROCESS: int = 4
+
+# Framing markers for subprocess stdout protocol — prevents stray print() calls
+# from corrupting the result payload.
+RESULT_START_MARKER = "<<<AMPLIFIER_RESULT_START>>>"
+RESULT_END_MARKER = "<<<AMPLIFIER_RESULT_END>>>"
 _subprocess_semaphore: asyncio.Semaphore | None = None
 _semaphore_limit: int = DEFAULT_MAX_SUBPROCESS
+
+
+def _extract_framed_result(stdout: str) -> str:
+    """Extract the result payload from framed subprocess stdout.
+
+    Locates the content between ``RESULT_START_MARKER`` and ``RESULT_END_MARKER``
+    in the subprocess stdout string.  Any output printed outside the envelope
+    (e.g. by third-party code or debug ``print()`` calls) is ignored.
+
+    Args:
+        stdout: The full stdout string from the child process.
+
+    Returns:
+        The stripped content between the start and end markers.
+
+    Raises:
+        RuntimeError: If either marker is absent from ``stdout``.
+    """
+    start_idx = stdout.find(RESULT_START_MARKER)
+    end_idx = stdout.find(RESULT_END_MARKER)
+    if start_idx == -1 or end_idx == -1:
+        logger.debug("Unframed subprocess output (no result envelope): %r", stdout)
+        raise RuntimeError("missing result envelope")
+    content_start = start_idx + len(RESULT_START_MARKER)
+    return stdout[content_start:end_idx].strip()
 
 
 def _get_semaphore(max_concurrent: int | None = None) -> asyncio.Semaphore:
@@ -229,7 +259,8 @@ async def run_session_in_subprocess(
                     f"Subprocess session failed (exit code {process.returncode}): {stderr_text}"
                 )
 
-            return stdout.decode("utf-8").strip()
+            raw_stdout = stdout.decode("utf-8")
+            return _extract_framed_result(raw_stdout)
     finally:
         try:
             os.unlink(tmp_path)
@@ -313,7 +344,10 @@ if __name__ == "__main__":
     config_path = sys.argv[1]
     try:
         output = asyncio.run(_run_child_session(config_path))
+        print(RESULT_START_MARKER)
         print(output, end="")
+        print()
+        print(RESULT_END_MARKER)
     except Exception as e:
         print(f"Subprocess session error: {e}", file=sys.stderr)
         sys.exit(1)
