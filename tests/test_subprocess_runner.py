@@ -481,6 +481,54 @@ class TestRunSessionInSubprocess:
         assert file_content["data"]["session_id"] == session_id
 
 
+class TestBundleContextSerialization:
+    """Tests for bundle context fields in IPC payload (module_paths, bundle_package_paths, sys_paths)."""
+
+    def test_roundtrip_with_bundle_context(self) -> None:
+        """Test that module_paths, bundle_package_paths, and sys_paths round-trip correctly."""
+        config = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-abc"
+        project_path = "/tmp/project"
+        module_paths = {"my_module": "/path/to/my_module", "other": "/path/to/other"}
+        bundle_package_paths = ["/path/to/bundle1", "/path/to/bundle2"]
+        sys_paths = ["/extra/path1", "/extra/path2"]
+
+        serialized = serialize_subprocess_config(
+            config=config,
+            prompt=prompt,
+            parent_id=parent_id,
+            project_path=project_path,
+            module_paths=module_paths,
+            bundle_package_paths=bundle_package_paths,
+            sys_paths=sys_paths,
+        )
+        deserialized = deserialize_subprocess_config(serialized)
+
+        assert deserialized["module_paths"] == module_paths
+        assert deserialized["bundle_package_paths"] == bundle_package_paths
+        assert deserialized["sys_paths"] == sys_paths
+
+    def test_roundtrip_without_bundle_context(self) -> None:
+        """Test that module_paths, bundle_package_paths, sys_paths default to empty when not provided."""
+        config = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-abc"
+        project_path = "/tmp/project"
+
+        serialized = serialize_subprocess_config(
+            config=config,
+            prompt=prompt,
+            parent_id=parent_id,
+            project_path=project_path,
+        )
+        deserialized = deserialize_subprocess_config(serialized)
+
+        assert deserialized["module_paths"] == {}
+        assert deserialized["bundle_package_paths"] == []
+        assert deserialized["sys_paths"] == []
+
+
 class TestSemaphoreConstants:
     """Tests for module-level semaphore constants."""
 

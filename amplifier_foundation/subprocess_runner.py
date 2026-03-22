@@ -71,6 +71,9 @@ def serialize_subprocess_config(
     parent_id: str,
     project_path: str,
     session_id: str | None = None,
+    module_paths: dict[str, str] | None = None,
+    bundle_package_paths: list[str] | None = None,
+    sys_paths: list[str] | None = None,
 ) -> str:
     """Serialize subprocess configuration to a JSON string.
 
@@ -88,6 +91,12 @@ def serialize_subprocess_config(
             operate in.
         session_id: Optional pre-assigned session ID for the child session.
             If ``None``, the child will generate its own ID.
+        module_paths: Optional mapping of module names to their source paths
+            for bundle context propagation. Defaults to empty dict when None.
+        bundle_package_paths: Optional list of bundle package root paths.
+            Defaults to empty list when None.
+        sys_paths: Optional list of additional sys.path entries to inject in
+            the child process. Defaults to empty list when None.
 
     Returns:
         JSON string containing all fields.
@@ -98,6 +107,11 @@ def serialize_subprocess_config(
         "parent_id": parent_id,
         "project_path": project_path,
         "session_id": session_id,
+        "module_paths": module_paths if module_paths is not None else {},
+        "bundle_package_paths": bundle_package_paths
+        if bundle_package_paths is not None
+        else [],
+        "sys_paths": sys_paths if sys_paths is not None else [],
     }
     return json.dumps(payload)
 
@@ -125,6 +139,11 @@ def deserialize_subprocess_config(data: str) -> dict[str, Any]:
     missing = [key for key in REQUIRED_KEYS if key not in payload]
     if missing:
         raise ValueError(f"Subprocess config is missing required keys: {missing}")
+
+    # Set defaults for bundle context fields — backward compatible with old payloads
+    payload.setdefault("module_paths", {})
+    payload.setdefault("bundle_package_paths", [])
+    payload.setdefault("sys_paths", [])
 
     return payload
 
