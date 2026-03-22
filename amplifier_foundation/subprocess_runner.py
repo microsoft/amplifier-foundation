@@ -40,6 +40,74 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
 
+# Environment variable allowlist — controls what the parent process passes to
+# child subprocesses.  Only variables matching an allowed prefix or exact name
+# are forwarded; everything else (database passwords, internal tokens, etc.)
+# is silently dropped.
+_ENV_ALLOWED_PREFIXES: tuple[str, ...] = (
+    "AMPLIFIER_",
+    "ANTHROPIC_",
+    "OPENAI_",
+    "AZURE_OPENAI_",
+    "AZURE_",
+    "GOOGLE_",
+    "AWS_",
+    "GITHUB_",
+    "GH_",
+)
+
+_ENV_ALLOWED_EXACT: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "SHELL",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
+        "CONDA_DEFAULT_ENV",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
+)
+
+
+def _build_child_env() -> dict[str, str]:
+    """Build a filtered environment dict for child subprocesses.
+
+    Iterates ``os.environ`` and includes only variables that are in the
+    ``_ENV_ALLOWED_EXACT`` set or whose name starts with one of the
+    ``_ENV_ALLOWED_PREFIXES``.  All other variables are excluded to prevent
+    unrelated secrets (database passwords, internal tokens, etc.) from leaking
+    into child processes.
+
+    Returns:
+        A new dict containing only the allowed environment variables.
+    """
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key in _ENV_ALLOWED_EXACT
+        or any(key.startswith(prefix) for prefix in _ENV_ALLOWED_PREFIXES)
+    }
+
+
 # Credential patterns — used by _sanitize_error() to redact sensitive values
 # from exception messages before they propagate to callers.
 _CREDENTIAL_PATTERNS = [
@@ -327,6 +395,7 @@ async def run_session_in_subprocess(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=project_path,
+                env=_build_child_env(),
             )
 
             try:

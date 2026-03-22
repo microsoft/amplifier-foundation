@@ -17,6 +17,7 @@ import pytest
 from amplifier_foundation.subprocess_runner import DEFAULT_MAX_SUBPROCESS
 from amplifier_foundation.subprocess_runner import RESULT_END_MARKER
 from amplifier_foundation.subprocess_runner import RESULT_START_MARKER
+from amplifier_foundation.subprocess_runner import _build_child_env
 from amplifier_foundation.subprocess_runner import _extract_framed_result
 from amplifier_foundation.subprocess_runner import _run_child_session
 from amplifier_foundation.subprocess_runner import _sanitize_error
@@ -926,3 +927,53 @@ class TestCleanupHardening:
                 parent_id="parent-123",
                 project_path="/nonexistent/path/that/does/not/exist/at/all",
             )
+
+
+class TestEnvVarAllowlist:
+    """Tests for environment variable allowlist in _build_child_env()."""
+
+    def test_build_child_env_includes_required_vars(self) -> None:
+        """Test that PATH, HOME, and LLM provider prefixes are included; unrelated secrets excluded."""
+        test_env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/user",
+            "AMPLIFIER_CONFIG": "some-config",
+            "ANTHROPIC_API_KEY": "sk-ant-test",
+            "OPENAI_API_KEY": "sk-openai-test",
+            "AZURE_OPENAI_API_KEY": "azure-key",
+            "UNRELATED_SECRET": "should-not-appear",
+            "DATABASE_PASSWORD": "super-secret-db-pass",
+        }
+        with patch.dict("os.environ", test_env, clear=True):
+            result = _build_child_env()
+
+        assert result["PATH"] == "/usr/bin:/bin"
+        assert result["HOME"] == "/home/user"
+        assert result["AMPLIFIER_CONFIG"] == "some-config"
+        assert result["ANTHROPIC_API_KEY"] == "sk-ant-test"
+        assert result["OPENAI_API_KEY"] == "sk-openai-test"
+        assert result["AZURE_OPENAI_API_KEY"] == "azure-key"
+        assert "UNRELATED_SECRET" not in result
+        assert "DATABASE_PASSWORD" not in result
+
+    def test_build_child_env_includes_common_provider_keys(self) -> None:
+        """Test that GOOGLE_ and AWS_ prefixed vars are included in the filtered env."""
+        test_env = {
+            "GOOGLE_API_KEY": "google-key-123",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/creds.json",
+            "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+            "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG",
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "MY_INTERNAL_SECRET": "hidden",
+            "CORP_DATABASE_URL": "postgres://secret",
+        }
+        with patch.dict("os.environ", test_env, clear=True):
+            result = _build_child_env()
+
+        assert result["GOOGLE_API_KEY"] == "google-key-123"
+        assert result["GOOGLE_APPLICATION_CREDENTIALS"] == "/path/to/creds.json"
+        assert result["AWS_ACCESS_KEY_ID"] == "AKIAIOSFODNN7EXAMPLE"
+        assert result["AWS_SECRET_ACCESS_KEY"] == "wJalrXUtnFEMI/K7MDENG"
+        assert result["AWS_DEFAULT_REGION"] == "us-east-1"
+        assert "MY_INTERNAL_SECRET" not in result
+        assert "CORP_DATABASE_URL" not in result
