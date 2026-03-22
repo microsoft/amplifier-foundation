@@ -7,6 +7,7 @@ and resource exhaustion during tool execution.
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -105,6 +106,52 @@ class ProcessGuardHooks:
                 f"- Check for runaway processes with: ps aux | sort -rk 3,3 | head -10\n"
                 f"- Terminate unnecessary processes with: kill <pid>\n"
                 f"- If you see test processes accumulating, ensure tests are cleaning up properly\n"
+                f"</system-reminder>"
+            )
+            return HookResult(
+                action="inject_context",
+                context_injection=warning,
+                context_injection_role="user",
+                ephemeral=True,
+                append_to_last_tool_result=True,
+            )
+
+        # Repeated command detection
+        session_id = data.get("session_id", "")
+        command = data.get("tool_input", {}).get("command", "")
+        now = time.time()
+        window_start = now - self.config.repeat_detection_window_seconds
+
+        # Initialize history for this session if not present
+        if session_id not in self._command_history:
+            self._command_history[session_id] = []
+
+        # Prune entries outside the time window
+        self._command_history[session_id] = [
+            (ts, cmd)
+            for ts, cmd in self._command_history[session_id]
+            if ts >= window_start
+        ]
+
+        # Count occurrences of this exact command in the window (before recording)
+        count = sum(1 for _, cmd in self._command_history[session_id] if cmd == command)
+
+        # Record the new invocation
+        self._command_history[session_id].append((now, command))
+
+        # Warn if the command has been repeated too many times
+        if count >= self.config.repeat_detection_max_count:
+            truncated_cmd = command[:80]
+            warning = (
+                f'<system-reminder source="hooks-process-guard">\n'
+                f"\u26a0\ufe0f **Repeated Command Detected**\n\n"
+                f"Command: `{truncated_cmd}`\n"
+                f"Repeated count: {count}\n\n"
+                f"**Remediation steps:**\n"
+                f"- Read the error output from previous executions\n"
+                f"- Analyze the root cause of the failure\n"
+                f"- Fix the root cause\n"
+                f"- Fix the code before re-running\n"
                 f"</system-reminder>"
             )
             return HookResult(

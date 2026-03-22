@@ -208,3 +208,120 @@ class TestProcessCountMonitoring:
 
         assert result.action == "continue"
         mock_count.assert_not_called()
+
+
+# — Repeated Command Detection Tests —
+
+
+class TestRepeatedCommandDetection:
+    """Tests for repeated command detection in ProcessGuardHooks."""
+
+    def _make_hooks(self, **config_overrides):
+        """Helper to create ProcessGuardHooks with given config."""
+        config = ProcessGuardConfig(**config_overrides)
+        return ProcessGuardHooks(config)
+
+    def _make_bash_event(self, command="ls -la", session_id="session-1"):
+        """Create a bash event data dict with command and session_id."""
+        return {
+            "tool_name": "bash",
+            "session_id": session_id,
+            "tool_input": {"command": command},
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_warning_on_first_call(self):
+        """No warning is returned on the first call to a command."""
+        hooks = self._make_hooks(repeat_detection_max_count=3)
+
+        with patch.object(hooks, "_get_process_count", return_value=10):
+            with patch("time.time", return_value=1000.0):
+                result = await hooks.handle_tool_pre(
+                    "tool:pre", self._make_bash_event()
+                )
+
+        assert result.action == "continue"
+
+    @pytest.mark.asyncio
+    async def test_warning_after_max_repeats(self):
+        """Warning is returned when command has been repeated >= max_count times."""
+        hooks = self._make_hooks(repeat_detection_max_count=3)
+
+        with patch.object(hooks, "_get_process_count", return_value=10):
+            with patch("time.time", return_value=1000.0):
+                # First 3 calls - no warning (count before each is 0, 1, 2)
+                for _ in range(3):
+                    result = await hooks.handle_tool_pre(
+                        "tool:pre", self._make_bash_event()
+                    )
+                    assert result.action == "continue"
+
+                # 4th call - count before recording is 3 >= max_count=3 → warning
+                result = await hooks.handle_tool_pre(
+                    "tool:pre", self._make_bash_event()
+                )
+
+        assert result.action == "inject_context"
+        assert result.context_injection is not None
+        assert "ls -la" in result.context_injection
+
+    @pytest.mark.asyncio
+    async def test_different_commands_do_not_trigger(self):
+        """Different commands do not accumulate towards the repeat detection threshold."""
+        hooks = self._make_hooks(repeat_detection_max_count=3)
+
+        with patch.object(hooks, "_get_process_count", return_value=10):
+            with patch("time.time", return_value=1000.0):
+                for i in range(10):
+                    result = await hooks.handle_tool_pre(
+                        "tool:pre",
+                        self._make_bash_event(command=f"command_{i}"),
+                    )
+                    assert result.action == "continue"
+
+    @pytest.mark.asyncio
+    async def test_different_sessions_tracked_independently(self):
+        """Different sessions track command history independently."""
+        hooks = self._make_hooks(repeat_detection_max_count=3)
+
+        with patch.object(hooks, "_get_process_count", return_value=10):
+            with patch("time.time", return_value=1000.0):
+                # Run same command 3 times in session-1 (no warning yet)
+                for _ in range(3):
+                    result = await hooks.handle_tool_pre(
+                        "tool:pre", self._make_bash_event(session_id="session-1")
+                    )
+                    assert result.action == "continue"
+
+                # First call in session-2 should NOT trigger warning
+                result = await hooks.handle_tool_pre(
+                    "tool:pre", self._make_bash_event(session_id="session-2")
+                )
+                assert result.action == "continue"
+
+                # 4th call in session-1 SHOULD trigger warning
+                result = await hooks.handle_tool_pre(
+                    "tool:pre", self._make_bash_event(session_id="session-1")
+                )
+                assert result.action == "inject_context"
+
+    @pytest.mark.asyncio
+    async def test_old_entries_expire_from_window(self):
+        """Old entries outside the time window do not count towards repeat detection."""
+        hooks = self._make_hooks(
+            repeat_detection_max_count=3, repeat_detection_window_seconds=60
+        )
+
+        with patch.object(hooks, "_get_process_count", return_value=10):
+            # Run command 3 times at t=0
+            with patch("time.time", return_value=0.0):
+                for _ in range(3):
+                    await hooks.handle_tool_pre("tool:pre", self._make_bash_event())
+
+            # At t=120 (outside 60s window), same command should not trigger warning
+            with patch("time.time", return_value=120.0):
+                result = await hooks.handle_tool_pre(
+                    "tool:pre", self._make_bash_event()
+                )
+
+        assert result.action == "continue"
