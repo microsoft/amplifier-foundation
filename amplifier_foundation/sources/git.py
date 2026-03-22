@@ -85,7 +85,11 @@ class GitSourceHandler:
             if result.stdout.strip():
                 return result.stdout.split()[0]
             return None
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            FileNotFoundError,
+        ):
             return None
 
     def _get_cache_metadata(self, cache_path: Path) -> dict:
@@ -128,15 +132,21 @@ class GitSourceHandler:
 
         # For Python modules, check for pyproject.toml, setup.py, or setup.cfg
         # Also check for bundle.md/bundle.yaml for amplifier bundles
+        # Non-Python modules (Rust, WASM, gRPC) use amplifier.toml as their marker
         has_python_module = (
             (cache_path / "pyproject.toml").exists()
             or (cache_path / "setup.py").exists()
             or (cache_path / "setup.cfg").exists()
         )
-        has_bundle = (cache_path / "bundle.md").exists() or (cache_path / "bundle.yaml").exists()
+        has_bundle = (cache_path / "bundle.md").exists() or (
+            cache_path / "bundle.yaml"
+        ).exists()
+        has_amplifier_module = (cache_path / "amplifier.toml").exists()
 
-        if not has_python_module and not has_bundle:
-            logger.warning(f"Clone missing expected files (pyproject.toml/setup.py/bundle.md): {cache_path}")
+        if not has_python_module and not has_bundle and not has_amplifier_module:
+            logger.warning(
+                f"Clone missing expected files (pyproject.toml/setup.py/bundle.md/amplifier.toml): {cache_path}"
+            )
             return False
 
         return True
@@ -169,7 +179,9 @@ class GitSourceHandler:
                 if parsed.subpath:
                     result_path = cache_path / parsed.subpath
                 if result_path.exists():
-                    return ResolvedSource(active_path=result_path, source_root=cache_path)
+                    return ResolvedSource(
+                        active_path=result_path, source_root=cache_path
+                    )
 
         # Clone repository
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +228,9 @@ class GitSourceHandler:
                 },
             )
         except subprocess.CalledProcessError as e:
-            raise BundleNotFoundError(f"Failed to clone {git_url}@{ref}: {e.stderr}") from e
+            raise BundleNotFoundError(
+                f"Failed to clone {git_url}@{ref}: {e.stderr}"
+            ) from e
 
         # Return path with subpath if specified
         result_path = cache_path
@@ -224,7 +238,9 @@ class GitSourceHandler:
             result_path = cache_path / parsed.subpath
 
         if not result_path.exists():
-            raise BundleNotFoundError(f"Subpath not found after clone: {parsed.subpath}")
+            raise BundleNotFoundError(
+                f"Subpath not found after clone: {parsed.subpath}"
+            )
 
         return ResolvedSource(active_path=result_path, source_root=cache_path)
 
@@ -264,7 +280,9 @@ class GitSourceHandler:
             if metadata.get("cached_at"):
                 with contextlib.suppress(ValueError):
                     status.cached_at = datetime.fromisoformat(metadata["cached_at"])
-            status.cached_commit = metadata.get("commit") or self._get_local_commit(cache_path)
+            status.cached_commit = metadata.get("commit") or self._get_local_commit(
+                cache_path
+            )
         else:
             status.cached_commit = None
 
@@ -287,11 +305,15 @@ class GitSourceHandler:
                 status.summary = f"Not cached (remote: {status.remote_commit[:8]})"
             elif status.cached_commit == status.remote_commit:
                 status.has_update = False
-                cached_short = status.cached_commit[:8] if status.cached_commit else "unknown"
+                cached_short = (
+                    status.cached_commit[:8] if status.cached_commit else "unknown"
+                )
                 status.summary = f"Up to date ({cached_short})"
             else:
                 status.has_update = True
-                cached_short = status.cached_commit[:8] if status.cached_commit else "unknown"
+                cached_short = (
+                    status.cached_commit[:8] if status.cached_commit else "unknown"
+                )
                 remote_short = status.remote_commit[:8]
                 status.summary = f"Update available ({cached_short} → {remote_short})"
         except Exception as e:
