@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import pytest
 
 from amplifier_foundation.subprocess_runner import _run_child_session
 from amplifier_foundation.subprocess_runner import deserialize_subprocess_config
+from amplifier_foundation.subprocess_runner import run_session_in_subprocess
 from amplifier_foundation.subprocess_runner import serialize_subprocess_config
 
 
@@ -308,3 +310,171 @@ class TestMainEntryPoint:
 
         assert result.returncode == 1
         assert "Usage:" in result.stderr
+
+
+class TestRunSessionInSubprocess:
+    """Tests for the parent-side run_session_in_subprocess() function."""
+
+    @pytest.mark.asyncio
+    async def test_success(self, tmp_path: Any) -> None:
+        """Test success path: process exits zero, stdout is returned stripped."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(return_value=(b"result output\n", b""))
+        mock_process.returncode = 0
+
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            result = await run_session_in_subprocess(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+            )
+
+        assert result == "result output"
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_raises_runtime_error(self, tmp_path: Any) -> None:
+        """Test that non-zero exit code raises RuntimeError containing stderr text."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(
+            return_value=(b"", b"something went wrong")
+        )
+        mock_process.returncode = 1
+
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            with pytest.raises(RuntimeError, match="something went wrong"):
+                await run_session_in_subprocess(
+                    config=config,
+                    prompt=prompt,
+                    parent_id=parent_id,
+                    project_path=project_path,
+                )
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_process(self, tmp_path: Any) -> None:
+        """Test that timeout kills process and raises TimeoutError."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.kill = MagicMock()
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+                with pytest.raises(TimeoutError, match="timed out after 30s"):
+                    await run_session_in_subprocess(
+                        config=config,
+                        prompt=prompt,
+                        parent_id=parent_id,
+                        project_path=project_path,
+                        timeout=30,
+                    )
+
+        mock_process.kill.assert_called_once()
+        mock_process.wait.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_temp_file_cleanup_on_success(self, tmp_path: Any) -> None:
+        """Test that temp file is cleaned up after successful subprocess execution."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(return_value=(b"result", b""))
+        mock_process.returncode = 0
+
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            with patch("os.unlink") as mock_unlink:
+                await run_session_in_subprocess(
+                    config=config,
+                    prompt=prompt,
+                    parent_id=parent_id,
+                    project_path=project_path,
+                )
+
+        mock_unlink.assert_called_once()
+        unlinked_path = mock_unlink.call_args[0][0]
+        assert "amp_subprocess_" in unlinked_path
+        assert unlinked_path.endswith(".json")
+
+    @pytest.mark.asyncio
+    async def test_temp_file_cleanup_on_error(self, tmp_path: Any) -> None:
+        """Test that temp file is cleaned up even when subprocess fails."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(return_value=(b"", b"error occurred"))
+        mock_process.returncode = 1
+
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            with patch("os.unlink") as mock_unlink:
+                with pytest.raises(RuntimeError):
+                    await run_session_in_subprocess(
+                        config=config,
+                        prompt=prompt,
+                        parent_id=parent_id,
+                        project_path=project_path,
+                    )
+
+        mock_unlink.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_passes_session_id_in_config(self, tmp_path: Any) -> None:
+        """Test that session_id is included in the serialized config file passed to child."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+        session_id = "child-session-789"
+
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(return_value=(b"result", b""))
+        mock_process.returncode = 0
+
+        file_content: dict[str, Any] = {}
+
+        async def capture_subprocess(*args: Any, **kwargs: Any) -> MagicMock:
+            # args[3] is the temp config file path passed to the child
+            config_path = args[3]
+            with open(config_path) as fh:
+                file_content["data"] = json.loads(fh.read())
+            return mock_process
+
+        with patch("asyncio.create_subprocess_exec", side_effect=capture_subprocess):
+            await run_session_in_subprocess(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+                session_id=session_id,
+            )
+
+        assert file_content["data"]["session_id"] == session_id

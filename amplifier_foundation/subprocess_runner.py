@@ -24,11 +24,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
+import tempfile
 from typing import Any
 
 from amplifier_core import AmplifierSession
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
 
@@ -95,6 +99,88 @@ def deserialize_subprocess_config(data: str) -> dict[str, Any]:
         raise ValueError(f"Subprocess config is missing required keys: {missing}")
 
     return payload
+
+
+async def run_session_in_subprocess(
+    config: dict[str, Any],
+    prompt: str,
+    parent_id: str,
+    project_path: str,
+    session_id: str | None = None,
+    timeout: int = 1800,
+    max_concurrent: int | None = None,
+) -> str:
+    """Run an Amplifier session in an isolated subprocess.
+
+    Serializes the session config to a temp file, spawns a child process
+    running the subprocess_runner module, waits for it to complete, and
+    returns the result from stdout.
+
+    Args:
+        config: Session configuration dict (providers, tools, hooks, etc.).
+            Must be JSON-serializable.
+        prompt: The prompt the child session will run.
+        parent_id: Session ID of the parent process (for delegation tracing).
+        project_path: Absolute path to the project directory the child should
+            operate in.
+        session_id: Optional pre-assigned session ID for the child session.
+            If ``None``, the child will generate its own ID.
+        timeout: Seconds to wait for the subprocess to complete (default: 1800).
+        max_concurrent: Not yet enforced.
+
+    Returns:
+        The output string from the child session (stdout, stripped).
+
+    Raises:
+        TimeoutError: If the subprocess does not complete within ``timeout`` seconds.
+        RuntimeError: If the subprocess exits with a non-zero return code.
+    """
+    serialized = serialize_subprocess_config(
+        config=config,
+        prompt=prompt,
+        parent_id=parent_id,
+        project_path=project_path,
+        session_id=session_id,
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", prefix="amp_subprocess_", delete=False
+    ) as f:
+        tmp_path = f.name
+        f.write(serialized)
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "amplifier_foundation.subprocess_runner",
+            tmp_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=project_path,
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise TimeoutError(f"Subprocess session timed out after {timeout}s")
+
+        if process.returncode != 0:
+            stderr_text = stderr.decode("utf-8")
+            raise RuntimeError(
+                f"Subprocess session failed (exit code {process.returncode}): {stderr_text}"
+            )
+
+        return stdout.decode("utf-8").strip()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            logger.warning("Failed to clean up temp file: %s", tmp_path)
 
 
 async def _run_child_session(config_path: str) -> str:
