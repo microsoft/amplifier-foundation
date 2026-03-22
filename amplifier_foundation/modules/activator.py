@@ -304,6 +304,40 @@ class ModuleActivator:
                 pass  # Not installed — let uv resolve normally
         return overrides
 
+    @staticmethod
+    def _needs_python_install(module_path: Path) -> bool:
+        """Check if this module needs Python (pip/uv) installation.
+
+        Reads the module's amplifier.toml to determine its transport type.
+        Non-Python transports (rust, wasm, grpc) ship pre-built binaries and
+        don't need a Python build step.
+
+        Args:
+            module_path: Path to the module directory.
+
+        Returns:
+            True if Python installation is needed, False if it should be skipped.
+        """
+        amplifier_toml = module_path / "amplifier.toml"
+        if not amplifier_toml.exists():
+            # Legacy Python module — no amplifier.toml means assume Python install
+            return True
+        try:
+            import tomllib
+
+            with open(amplifier_toml, "rb") as f:
+                data = tomllib.load(f)
+            transport = data.get("module", {}).get("transport", "python")
+            if transport in ("rust", "wasm", "grpc"):
+                logger.debug(
+                    f"Module {module_path.name} uses {transport!r} transport, "
+                    "skipping Python install"
+                )
+                return False
+        except Exception:
+            pass  # If we can't read amplifier.toml, assume Python install needed
+        return True
+
     async def _install_dependencies(
         self,
         module_path: Path,
@@ -333,6 +367,11 @@ class ModuleActivator:
         Raises:
             subprocess.CalledProcessError: If installation fails.
         """
+        # Non-Python modules (rust/wasm/grpc) ship pre-built binaries and
+        # don't need pip/uv installation.
+        if not self._needs_python_install(module_path):
+            return
+
         if not force:
             # Skip packages that are already importable in the current environment.
             # This prevents editable-installing packages (like amplifier-core) that were
