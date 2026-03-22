@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -285,3 +288,23 @@ class TestRunChildSession:
         MockSession.assert_called_once_with(
             config=config, parent_id=parent_id, session_id=None
         )
+
+
+class TestMainEntryPoint:
+    """Tests for the __main__ entry point."""
+
+    def test_missing_argv_exits_nonzero(self) -> None:
+        """Test that running with no arguments exits with code 1 and prints usage to stderr."""
+        # Run from the project root so the package is importable regardless of current CWD
+        # (other tests call os.chdir which can move the CWD away from the project root)
+        project_root = Path(__file__).parent.parent
+
+        result = subprocess.run(
+            [sys.executable, "-m", "amplifier_foundation.subprocess_runner"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+        )
+
+        assert result.returncode == 1
+        assert "Usage:" in result.stderr

@@ -22,9 +22,10 @@ module is responsible for *how* to serialize and validate it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import sys  # noqa: F401  # available for subprocess entry-point use
+import sys
 from typing import Any
 
 from amplifier_core import AmplifierSession
@@ -133,3 +134,19 @@ async def _run_child_session(config_path: str) -> str:
         return result
     finally:
         await session.cleanup()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(
+            "Usage: python -m amplifier_foundation.subprocess_runner <config_path>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    config_path = sys.argv[1]
+    try:
+        output = asyncio.run(_run_child_session(config_path))
+        print(output, end="")
+    except Exception as e:
+        print(f"Subprocess session error: {e}", file=sys.stderr)
+        sys.exit(1)
