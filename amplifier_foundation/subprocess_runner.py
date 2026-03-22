@@ -28,9 +28,11 @@ import logging
 import os
 import sys
 import tempfile
+from pathlib import Path
 from typing import Any
 
 from amplifier_core import AmplifierSession
+from amplifier_foundation.bundle import BundleModuleResolver
 
 logger = logging.getLogger(__name__)
 
@@ -238,9 +240,11 @@ async def run_session_in_subprocess(
 async def _run_child_session(config_path: str) -> str:
     """Run a child Amplifier session from a serialized config file.
 
-    Reads the config file, changes the working directory to the project path,
-    creates an ``AmplifierSession``, executes the prompt, and returns the result.
-    Cleanup is guaranteed to run via ``try/finally`` even when ``execute()`` raises.
+    Reads the config file, injects sys.path entries, changes the working
+    directory to the project path, creates an ``AmplifierSession``, mounts
+    the module resolver if module paths are provided, calls ``initialize()``,
+    executes the prompt, and returns the result.  Cleanup is guaranteed to run
+    via ``try/finally`` even when ``execute()`` raises.
 
     Args:
         config_path: Path to the JSON config file produced by
@@ -261,12 +265,42 @@ async def _run_child_session(config_path: str) -> str:
     parent_id: str = payload["parent_id"]
     project_path: str = payload["project_path"]
     session_id: str | None = payload.get("session_id")
+    module_paths: dict[str, str] = payload.get("module_paths", {})
+    bundle_package_paths: list[str] = payload.get("bundle_package_paths", [])
+    sys_paths: list[str] = payload.get("sys_paths", [])
 
+    # (1) Add sys.path entries BEFORE session creation
+    for path_entry in sys_paths:
+        if path_entry not in sys.path:
+            logger.debug("Adding sys.path entry: %s", path_entry)
+            sys.path.insert(0, path_entry)
+
+    # (2) Also add any bundle_package_paths not already on sys.path
+    for path_entry in bundle_package_paths:
+        if path_entry not in sys.path:
+            logger.debug("Adding bundle package path to sys.path: %s", path_entry)
+            sys.path.insert(0, path_entry)
+
+    # (3) Validate and chdir to project_path
     os.chdir(project_path)
 
+    # (4) Create AmplifierSession
     session = AmplifierSession(
         config=config, parent_id=parent_id, session_id=session_id
     )
+
+    # (5) If module_paths non-empty, construct BundleModuleResolver and mount
+    #     on coordinator as 'module-source-resolver' BEFORE initialize()
+    if module_paths:
+        resolver = BundleModuleResolver(
+            {name: Path(path) for name, path in module_paths.items()}
+        )
+        await session.coordinator.mount("module-source-resolver", resolver)
+
+    # (6) Call session.initialize() BEFORE session.execute()
+    await session.initialize()
+
+    # (7) Wrap execute/cleanup in try/finally
     try:
         result: str = await session.execute(prompt)
         return result

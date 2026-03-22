@@ -213,6 +213,9 @@ class TestRunChildSession:
             mock_instance = MagicMock()
             mock_instance.execute = AsyncMock(return_value="result string")
             mock_instance.cleanup = AsyncMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
             MockSession.return_value = mock_instance
 
             result = await _run_child_session(str(config_file))
@@ -252,6 +255,9 @@ class TestRunChildSession:
                 side_effect=RuntimeError("something went wrong")
             )
             mock_instance.cleanup = AsyncMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
             MockSession.return_value = mock_instance
 
             with pytest.raises(RuntimeError, match="something went wrong"):
@@ -284,12 +290,168 @@ class TestRunChildSession:
             mock_instance = MagicMock()
             mock_instance.execute = AsyncMock(return_value="ok")
             mock_instance.cleanup = AsyncMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
             MockSession.return_value = mock_instance
 
             await _run_child_session(str(config_file))
 
         MockSession.assert_called_once_with(
             config=config, parent_id=parent_id, session_id=None
+        )
+
+
+class TestChildBootstrapBundleContext:
+    """Tests for child session bootstrap with bundle context (initialize, sys.path, module resolver)."""
+
+    @pytest.mark.asyncio
+    async def test_initialize_called_before_execute(self, tmp_path: Any) -> None:
+        """Test that session.initialize() is called before session.execute()."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+            )
+        )
+
+        call_order: list[str] = []
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+
+            async def track_initialize() -> None:
+                call_order.append("initialize")
+
+            async def track_execute(p: str) -> str:
+                call_order.append("execute")
+                return "result"
+
+            async def track_cleanup() -> None:
+                call_order.append("cleanup")
+
+            mock_instance.initialize = track_initialize
+            mock_instance.execute = track_execute
+            mock_instance.cleanup = track_cleanup
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(str(config_file))
+
+        assert "initialize" in call_order, "initialize was never called"
+        assert "execute" in call_order, "execute was never called"
+        init_idx = call_order.index("initialize")
+        exec_idx = call_order.index("execute")
+        assert init_idx < exec_idx, (
+            f"initialize (pos {init_idx}) must come before execute (pos {exec_idx})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sys_paths_added_before_session_creation(self, tmp_path: Any) -> None:
+        """Test that sys_paths entries are added to sys.path before session creation."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+        fake_path = "/fake/path/for/test"
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+                sys_paths=[fake_path],
+            )
+        )
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            MockSession.return_value = mock_instance
+
+            with patch("amplifier_foundation.subprocess_runner.sys") as mock_sys:
+                mock_sys.path = []
+                await _run_child_session(str(config_file))
+
+        assert fake_path in mock_sys.path, (
+            f"Expected '{fake_path}' in sys.path but got: {mock_sys.path}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_module_resolver_mounted_when_module_paths_provided(
+        self, tmp_path: Any
+    ) -> None:
+        """Test that BundleModuleResolver is constructed with Path objects and mounted on coordinator."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+        module_paths = {"my_module": "/path/to/module"}
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+                module_paths=module_paths,
+            )
+        )
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            MockSession.return_value = mock_instance
+
+            with patch(
+                "amplifier_foundation.subprocess_runner.BundleModuleResolver"
+            ) as MockResolver:
+                mock_resolver_instance = MagicMock()
+                MockResolver.return_value = mock_resolver_instance
+
+                await _run_child_session(str(config_file))
+
+        # Verify BundleModuleResolver was constructed with Path objects
+        MockResolver.assert_called_once()
+        call_kwargs = MockResolver.call_args[0][
+            0
+        ]  # First positional arg: module_paths dict
+        assert "my_module" in call_kwargs, (
+            "module key missing from resolver constructor"
+        )
+        assert call_kwargs["my_module"] == Path("/path/to/module"), (
+            f"Expected Path('/path/to/module'), got {call_kwargs['my_module']!r}"
+        )
+
+        # Verify mount was called with the resolver instance as 'module-source-resolver'
+        mock_instance.coordinator.mount.assert_called_once_with(
+            "module-source-resolver", mock_resolver_instance
         )
 
 
