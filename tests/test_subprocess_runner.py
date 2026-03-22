@@ -929,6 +929,160 @@ class TestCleanupHardening:
             )
 
 
+class TestMainJsonEnvelope:
+    """Tests that the __main__ block emits a JSON envelope between framing markers."""
+
+    def _exec_main_block(self, tmp_path: Any, capsys: Any, mock_return: str) -> str:
+        """Helper: exec only the __main__ body in the patched module namespace.
+
+        Uses AST to extract the body of the ``if __name__ == "__main__":`` block
+        so that function definitions are not re-executed and our mock survives.
+        Returns the captured stdout.
+        """
+        import ast
+        import importlib.util
+
+        import amplifier_foundation.subprocess_runner as runner_mod
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config={},
+                prompt="test",
+                parent_id="p-1",
+                project_path=str(tmp_path),
+            )
+        )
+
+        # Load the module source
+        spec = importlib.util.find_spec("amplifier_foundation.subprocess_runner")
+        assert spec and spec.origin, "Cannot locate subprocess_runner source"
+        source = open(spec.origin).read()
+
+        # Extract just the body of the if __name__ == "__main__": block via AST
+        tree = ast.parse(source)
+        main_body = None
+        for node in tree.body:
+            if (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "__name__"
+                and len(node.test.comparators) == 1
+                and isinstance(node.test.comparators[0], ast.Constant)
+                and node.test.comparators[0].value == "__main__"
+            ):
+                main_body = ast.Module(body=node.body, type_ignores=[])
+                break
+        assert main_body is not None, "No __main__ block found in subprocess_runner"
+
+        main_code = compile(main_body, spec.origin, "exec")
+
+        # Build namespace from module (includes patched _run_child_session)
+        # with sys.argv pointing at our config file
+        with (
+            patch("sys.argv", ["runner", str(config_file)]),
+            patch(
+                "amplifier_foundation.subprocess_runner._run_child_session",
+                new=AsyncMock(return_value=mock_return),
+            ),
+            patch("sys.exit"),
+        ):
+            ns = dict(vars(runner_mod))
+            ns["__name__"] = "__main__"
+            ns["_run_child_session"] = AsyncMock(return_value=mock_return)
+            exec(main_code, ns)  # noqa: S102
+
+        return capsys.readouterr().out
+
+    def test_success_emits_json_envelope(self, tmp_path: Any, capsys: Any) -> None:
+        """__main__ success path emits a JSON envelope between framing markers."""
+        import json as _json
+
+        stdout = self._exec_main_block(
+            tmp_path, capsys, mock_return="session output text"
+        )
+        framed = _extract_framed_result(stdout)
+        # RED: currently emits raw text; after fix this must be valid JSON
+        parsed = _json.loads(framed)
+        assert parsed["output"] == "session output text"
+        assert parsed["status"] == "success"
+        assert "turn_count" in parsed
+        assert "metadata" in parsed
+
+    def test_error_emits_json_envelope_with_status_error(
+        self, tmp_path: Any, capsys: Any
+    ) -> None:
+        """__main__ error path emits a JSON envelope with status='error' and exits 1."""
+        import json as _json
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config={},
+                prompt="test",
+                parent_id="p-1",
+                project_path=str(tmp_path),
+            )
+        )
+
+        import importlib.util
+
+        import amplifier_foundation.subprocess_runner as runner_mod
+
+        spec = importlib.util.find_spec("amplifier_foundation.subprocess_runner")
+        assert spec and spec.origin
+        source = open(spec.origin).read()
+
+        import ast
+
+        tree = ast.parse(source)
+        main_body = None
+        for node in tree.body:
+            if (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "__name__"
+                and len(node.test.comparators) == 1
+                and isinstance(node.test.comparators[0], ast.Constant)
+                and node.test.comparators[0].value == "__main__"
+            ):
+                main_body = ast.Module(body=node.body, type_ignores=[])
+                break
+        assert main_body is not None
+        main_code = compile(main_body, spec.origin, "exec")
+
+        sys_exit_code: list[int] = []
+
+        def capture_exit(code: int = 0) -> None:
+            sys_exit_code.append(code)
+
+        with (
+            patch("sys.argv", ["runner", str(config_file)]),
+            patch(
+                "amplifier_foundation.subprocess_runner._run_child_session",
+                new=AsyncMock(side_effect=RuntimeError("session failed")),
+            ),
+            patch("sys.exit", side_effect=capture_exit),
+        ):
+            ns = dict(vars(runner_mod))
+            ns["__name__"] = "__main__"
+            ns["_run_child_session"] = AsyncMock(
+                side_effect=RuntimeError("session failed")
+            )
+            exec(main_code, ns)  # noqa: S102
+
+        captured = capsys.readouterr()
+        # RED: currently error path does NOT emit JSON to stdout
+        framed = _extract_framed_result(captured.out)
+        parsed = _json.loads(framed)
+        assert parsed["status"] == "error"
+        assert "session failed" in parsed.get("error", "")
+        # Process should have called sys.exit(1)
+        assert sys_exit_code and sys_exit_code[0] == 1
+
+
 class TestEnvVarAllowlist:
     """Tests for environment variable allowlist in _build_child_env()."""
 

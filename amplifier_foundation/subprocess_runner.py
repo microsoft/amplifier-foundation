@@ -434,6 +434,12 @@ async def _run_child_session(config_path: str) -> str:
     executes the prompt, and returns the result.  Cleanup is guaranteed to run
     via ``try/finally`` even when ``execute()`` raises.
 
+    NOTE: Subprocess children do not have access to the parent's approval_system
+    or display_system. These are live runtime objects that cannot cross process
+    boundaries. For recipe-dispatched agents this is acceptable — approval gates
+    are at the recipe level, not inside agent sessions. For sessions requiring
+    interactive approval, use in-process mode (use_subprocess=False).
+
     Args:
         config_path: Path to the JSON config file produced by
             ``serialize_subprocess_config()``.
@@ -500,12 +506,35 @@ if __name__ == "__main__":
         )
         sys.exit(1)
     config_path = sys.argv[1]
+    import json as _json
+
     try:
         output = asyncio.run(_run_child_session(config_path))
+        result_envelope = _json.dumps(
+            {
+                "output": output,
+                "status": "success",
+                "turn_count": 1,  # TODO: capture from orchestrator:complete event in future
+                "metadata": {},
+            }
+        )
         print(RESULT_START_MARKER)
-        print(output, end="")
+        print(result_envelope, end="")
         print()
         print(RESULT_END_MARKER)
     except Exception as e:
+        error_envelope = _json.dumps(
+            {
+                "output": "",
+                "status": "error",
+                "error": str(e),
+                "turn_count": 0,
+                "metadata": {},
+            }
+        )
+        print(RESULT_START_MARKER)
+        print(error_envelope, end="")
+        print()
+        print(RESULT_END_MARKER)
         print(f"Subprocess session error: {e}", file=sys.stderr)
         sys.exit(1)
