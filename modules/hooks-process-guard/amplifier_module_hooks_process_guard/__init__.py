@@ -14,6 +14,22 @@ from typing import Any
 from amplifier_core import HookResult
 
 
+def _kill_orphans(patterns: list[str]) -> None:
+    """Kill orphan processes matching any of the given patterns.
+
+    Iterates over patterns and calls pkill -f for each, ignoring all errors.
+    pkill returns 1 when no matching processes are found — this is expected.
+
+    Args:
+        patterns: List of patterns to pass to pkill -f.
+    """
+    for pattern in patterns:
+        try:
+            subprocess.run(["pkill", "-f", pattern], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+
 @dataclass
 class ProcessGuardConfig:
     """Configuration for process guard behavior."""
@@ -75,6 +91,10 @@ class ProcessGuardHooks:
         tool_name = data.get("tool_name", "")
         if tool_name != "bash":
             return HookResult(action="continue")
+
+        # Kill orphan processes before counting (if enabled)
+        if self.config.kill_orphans_before_exec:
+            _kill_orphans(self.config.kill_patterns)
 
         # Get current process count
         count = self._get_process_count()
