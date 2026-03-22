@@ -11,6 +11,7 @@ import pytest
 from amplifier_module_hooks_process_guard import (
     ProcessGuardConfig,
     ProcessGuardHooks,
+    _kill_orphans,
     mount,
 )
 
@@ -131,9 +132,9 @@ class TestProcessCountMonitoring:
 
     def _make_hooks(self, **config_overrides):
         """Helper to create ProcessGuardHooks with given config."""
-        base = {}
-        base.update(config_overrides)
-        config = ProcessGuardConfig(**base)
+        # Disable orphan cleanup by default so tests don't call pkill
+        config_overrides.setdefault("kill_orphans_before_exec", False)
+        config = ProcessGuardConfig(**config_overrides)
         return ProcessGuardHooks(config)
 
     def _make_bash_event(self):
@@ -218,6 +219,8 @@ class TestRepeatedCommandDetection:
 
     def _make_hooks(self, **config_overrides):
         """Helper to create ProcessGuardHooks with given config."""
+        # Disable orphan cleanup by default so tests don't call pkill
+        config_overrides.setdefault("kill_orphans_before_exec", False)
         config = ProcessGuardConfig(**config_overrides)
         return ProcessGuardHooks(config)
 
@@ -325,3 +328,108 @@ class TestRepeatedCommandDetection:
                 )
 
         assert result.action == "continue"
+
+
+# — Kill Orphans Helper Tests —
+
+
+class TestKillOrphansHelper:
+    """Tests for the _kill_orphans module-level helper function."""
+
+    def test_calls_pkill_for_each_pattern(self):
+        """_kill_orphans calls subprocess.run with pkill -f for each pattern."""
+        patterns = ["pytest", "node.*test"]
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            _kill_orphans(patterns)
+
+        assert mock_run.call_count == 2
+        mock_run.assert_any_call(
+            ["pkill", "-f", "pytest"], capture_output=True, timeout=5
+        )
+        mock_run.assert_any_call(
+            ["pkill", "-f", "node.*test"], capture_output=True, timeout=5
+        )
+
+    def test_ignores_pkill_errors(self):
+        """_kill_orphans silently ignores all errors from pkill (including returncode=1)."""
+        patterns = ["pytest", "node.*test"]
+
+        with patch("subprocess.run") as mock_run:
+            # Simulate pkill returning error (returncode=1 means no processes matched)
+            mock_run.side_effect = Exception("pkill failed unexpectedly")
+            # Should NOT raise
+            _kill_orphans(patterns)
+
+        # Both patterns should have been attempted
+        assert mock_run.call_count == 2
+
+
+# — Orphan Cleanup Integration Tests —
+
+
+class TestOrphanCleanup:
+    """Tests for orphan cleanup integration in handle_tool_pre."""
+
+    def _make_hooks(self, **config_overrides):
+        """Helper to create ProcessGuardHooks with given config."""
+        config = ProcessGuardConfig(**config_overrides)
+        return ProcessGuardHooks(config)
+
+    def _make_bash_event(self, command="ls -la", session_id="session-1"):
+        """Create a bash event data dict."""
+        return {
+            "tool_name": "bash",
+            "session_id": session_id,
+            "tool_input": {"command": command},
+        }
+
+    def _make_non_bash_event(self, tool_name="read_file"):
+        """Create a non-bash event data dict."""
+        return {"tool_name": tool_name, "tool_input": {}}
+
+    @pytest.mark.asyncio
+    async def test_kills_orphans_before_bash(self):
+        """When kill_orphans_before_exec=True and tool is bash, _kill_orphans is called."""
+        hooks = self._make_hooks(
+            kill_orphans_before_exec=True,
+            kill_patterns=["pytest", "node.*test"],
+        )
+
+        with patch.object(hooks, "_get_process_count", return_value=10):
+            with patch(
+                "amplifier_module_hooks_process_guard._kill_orphans"
+            ) as mock_kill:
+                await hooks.handle_tool_pre("tool:pre", self._make_bash_event())
+
+        mock_kill.assert_called_once_with(["pytest", "node.*test"])
+
+    @pytest.mark.asyncio
+    async def test_skips_cleanup_when_disabled(self):
+        """When kill_orphans_before_exec=False, _kill_orphans is NOT called."""
+        hooks = self._make_hooks(
+            kill_orphans_before_exec=False,
+            kill_patterns=["pytest", "node.*test"],
+        )
+
+        with patch.object(hooks, "_get_process_count", return_value=10):
+            with patch(
+                "amplifier_module_hooks_process_guard._kill_orphans"
+            ) as mock_kill:
+                await hooks.handle_tool_pre("tool:pre", self._make_bash_event())
+
+        mock_kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_cleanup_for_non_bash_tools(self):
+        """When tool is not bash, _kill_orphans is NOT called."""
+        hooks = self._make_hooks(
+            kill_orphans_before_exec=True,
+            kill_patterns=["pytest", "node.*test"],
+        )
+
+        with patch("amplifier_module_hooks_process_guard._kill_orphans") as mock_kill:
+            await hooks.handle_tool_pre("tool:pre", self._make_non_bash_event())
+
+        mock_kill.assert_not_called()
