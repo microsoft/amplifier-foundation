@@ -25,8 +25,13 @@ def _make_entries_with_lines(messages: list[dict]) -> list[dict]:
 
 
 def _tc(tc_id: str, name: str) -> dict:
-    """Build a tool_call dict."""
+    """Build a tool_call dict (OpenAI format)."""
     return {"id": tc_id, "function": {"name": name}}
+
+
+def _tc_amplifier(tc_id: str, name: str) -> dict:
+    """Build a tool_call dict (Amplifier format — 'tool' key, no 'function' wrapper)."""
+    return {"id": tc_id, "tool": name, "arguments": {}}
 
 
 def _tool_result(tc_id: str, name: str, content: str) -> dict:
@@ -166,6 +171,27 @@ class TestDiagnoseTranscript:
         )
         result = diagnose_transcript(entries)
         assert result["status"] == "healthy"
+
+    def test_detects_partial_orphan_incomplete_turn(self):
+        """Partial orphan (some results present, some missing) also detects incomplete turn."""
+        entries = _make_entries_with_lines(
+            [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [_tc("call_1", "tool_a"), _tc("call_2", "tool_b")],
+                },
+                _tool_result("call_1", "tool_a", "ok"),  # tc_1 completed
+                # tc_2 never completed — crash happened here
+            ]
+        )
+        result = diagnose_transcript(entries)
+        assert result["status"] == "broken"
+        assert "missing_tool_results" in result["failure_modes"]
+        assert "incomplete_assistant_turn" in result["failure_modes"]
+        assert result["orphaned_tool_ids"] == ["call_2"]
+        assert len(result["incomplete_turns"]) == 1
+        assert result["incomplete_turns"][0]["after_index"] == 2
 
     def test_recommended_action(self):
         """recommended_action is 'none' for healthy and 'repair' for broken."""
@@ -346,6 +372,90 @@ class TestIntegrationRoundtrip:
         re_entries = _make_entries_with_lines(repaired)
         re_diagnosis = diagnose_transcript(re_entries)
         assert re_diagnosis["status"] == "healthy"
+
+    def test_partial_orphan_roundtrip(self):
+        """Partial orphan (some results present) is fully healed in one pass.
+
+        Regression test: before the fix, repair only injected a synthetic
+        result for the orphan but not the closing assistant response, requiring
+        a second diagnose-repair cycle.
+        """
+        entries = _make_entries_with_lines(
+            [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [_tc("call_1", "tool_a"), _tc("call_2", "tool_b")],
+                },
+                _tool_result("call_1", "tool_a", "ok"),  # tc_1 completed
+                # tc_2 never completed — crash happened here
+            ]
+        )
+        diagnosis = diagnose_transcript(entries)
+        repaired = repair_transcript(entries, diagnosis)
+
+        # Verify structure: should have synthetic result for tc_2 AND closing response
+        tool_results = [e for e in repaired if e.get("role") == "tool"]
+        assert len(tool_results) == 2  # real + synthetic
+        assistant_responses = [
+            e
+            for e in repaired
+            if e.get("role") == "assistant" and "tool_calls" not in e
+        ]
+        assert len(assistant_responses) >= 1  # closing response injected
+
+        # Re-diagnose: must be healthy in ONE pass
+        re_entries = _make_entries_with_lines(repaired)
+        re_diagnosis = diagnose_transcript(re_entries)
+        assert re_diagnosis["status"] == "healthy"
+
+    def test_partial_orphan_roundtrip_without_line_num(self):
+        """Partial orphan repair works even without line_num on entries.
+
+        The app-CLI loads transcripts without line_num. After a first repair
+        pass strips line_num, any subsequent diagnosis must still work via
+        after_index rather than after_line.
+        """
+        entries = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "tool_calls": [_tc("call_1", "tool_a"), _tc("call_2", "tool_b")],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": "tool_a",
+                "content": "ok",
+            },
+        ]
+        diagnosis = diagnose_transcript(entries)
+        repaired = repair_transcript(entries, diagnosis)
+        # Re-diagnose WITHOUT adding line_num back (simulating app-CLI path)
+        re_diagnosis = diagnose_transcript(repaired)
+        assert re_diagnosis["status"] == "healthy"
+
+    def test_amplifier_format_tool_calls(self):
+        """Tool calls using Amplifier format ('tool' key) are indexed and repaired correctly."""
+        entries = _make_entries_with_lines(
+            [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [_tc_amplifier("call_1", "bash")],
+                },
+            ]
+        )
+        # Index should find the tool name
+        index = build_tool_index(entries)
+        assert index["tool_uses"]["call_1"]["tool_name"] == "bash"
+
+        # Repair should use the correct name in synthetic results
+        diagnosis = diagnose_transcript(entries)
+        repaired = repair_transcript(entries, diagnosis)
+        synthetic = [e for e in repaired if e.get("role") == "tool"]
+        assert len(synthetic) == 1
+        assert synthetic[0]["name"] == "bash"
 
     def test_combined_failures_roundtrip(self):
         """diagnose -> repair -> re-diagnose for ordering+orphans produces healthy."""
