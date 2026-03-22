@@ -6,12 +6,15 @@ and resource exhaustion during tool execution.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from amplifier_core import HookResult
+
+logger = logging.getLogger(__name__)
 
 
 def _kill_orphans(patterns: list[str]) -> None:
@@ -27,7 +30,7 @@ def _kill_orphans(patterns: list[str]) -> None:
         try:
             subprocess.run(["pkill", "-f", pattern], capture_output=True, timeout=5)
         except Exception:
-            pass
+            logger.debug("Failed to kill orphans matching %r", pattern, exc_info=True)
 
 
 @dataclass
@@ -198,7 +201,10 @@ async def mount(
     Returns:
         Module metadata dict with name, version, description, and config.
     """
-    guard_config = ProcessGuardConfig(**(config or {}))
+    # Filter config to only known fields to prevent TypeError on unknown YAML keys
+    known_fields = {f.name for f in ProcessGuardConfig.__dataclass_fields__.values()}
+    filtered_config = {k: v for k, v in (config or {}).items() if k in known_fields}
+    guard_config = ProcessGuardConfig(**filtered_config)
     hooks = ProcessGuardHooks(guard_config)
 
     coordinator.hooks.register(
