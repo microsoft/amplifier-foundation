@@ -377,21 +377,33 @@ class TestChildBootstrapBundleContext:
             )
         )
 
-        with patch(
-            "amplifier_foundation.subprocess_runner.AmplifierSession"
-        ) as MockSession:
+        path_present_at_initialize: list[bool] = []
+
+        with (
+            patch(
+                "amplifier_foundation.subprocess_runner.AmplifierSession"
+            ) as MockSession,
+            patch("amplifier_foundation.subprocess_runner.sys") as mock_sys,
+        ):
+            mock_sys.path = []
             mock_instance = MagicMock()
-            mock_instance.initialize = AsyncMock()
+
+            async def track_initialize() -> None:
+                path_present_at_initialize.append(fake_path in mock_sys.path)
+
+            mock_instance.initialize = track_initialize
             mock_instance.execute = AsyncMock(return_value="result")
             mock_instance.cleanup = AsyncMock()
             mock_instance.coordinator = MagicMock()
             mock_instance.coordinator.mount = AsyncMock()
             MockSession.return_value = mock_instance
 
-            with patch("amplifier_foundation.subprocess_runner.sys") as mock_sys:
-                mock_sys.path = []
-                await _run_child_session(str(config_file))
+            await _run_child_session(str(config_file))
 
+        assert path_present_at_initialize, "initialize was never called"
+        assert path_present_at_initialize[0], (
+            f"Expected '{fake_path}' to be in sys.path before initialize() was called"
+        )
         assert fake_path in mock_sys.path, (
             f"Expected '{fake_path}' in sys.path but got: {mock_sys.path}"
         )

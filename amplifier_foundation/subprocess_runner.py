@@ -270,7 +270,7 @@ async def _run_child_session(config_path: str) -> str:
     bundle_package_paths: list[str] = payload.get("bundle_package_paths", [])
     sys_paths: list[str] = payload.get("sys_paths", [])
 
-    # (2) Add all sys.path and bundle_package_path entries BEFORE session creation
+    # (2) Add all sys.path and bundle_package_paths entries BEFORE session creation
     for path_entry in (*sys_paths, *bundle_package_paths):
         if path_entry not in sys.path:
             logger.debug("Adding sys.path entry: %s", path_entry)
