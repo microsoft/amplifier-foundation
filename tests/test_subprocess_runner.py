@@ -19,6 +19,7 @@ from amplifier_foundation.subprocess_runner import RESULT_END_MARKER
 from amplifier_foundation.subprocess_runner import RESULT_START_MARKER
 from amplifier_foundation.subprocess_runner import _extract_framed_result
 from amplifier_foundation.subprocess_runner import _run_child_session
+from amplifier_foundation.subprocess_runner import _sanitize_error
 from amplifier_foundation.subprocess_runner import configure_subprocess_limit
 from amplifier_foundation.subprocess_runner import deserialize_subprocess_config
 from amplifier_foundation.subprocess_runner import run_session_in_subprocess
@@ -839,3 +840,56 @@ class TestStdoutFraming:
         stdout = "no markers here at all"
         with pytest.raises(RuntimeError, match="missing result envelope"):
             _extract_framed_result(stdout)
+
+
+class TestErrorSanitization:
+    """Tests for _sanitize_error() credential redaction."""
+
+    def test_sanitize_error_redacts_api_keys(self) -> None:
+        """Test that API keys matching sk-... are redacted."""
+        msg = "Error: invalid key sk-ant-api03-sometoken12345 was rejected"
+        result = _sanitize_error(msg)
+        assert "sk-ant-api03-sometoken12345" not in result
+        assert "[REDACTED]" in result
+
+    def test_sanitize_error_redacts_key_value_patterns(self) -> None:
+        """Test that key=value patterns are redacted."""
+        msg = "Authentication failed: api_key=super-secret"
+        result = _sanitize_error(msg)
+        assert "super-secret" not in result
+        assert "[REDACTED]" in result
+
+    def test_sanitize_error_preserves_safe_messages(self) -> None:
+        """Test that safe messages pass through unchanged."""
+        msg = "ModuleNotFoundError: No module named 'foo'"
+        result = _sanitize_error(msg)
+        assert result == msg
+
+    @pytest.mark.asyncio
+    async def test_parent_raises_sanitized_error(self, tmp_path: Any) -> None:
+        """Test that RuntimeError contains exit code but not raw credentials."""
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(
+            return_value=(b"", b"Error: sk-secret12345678901234 token rejected")
+        )
+        mock_process.returncode = 1
+
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                await run_session_in_subprocess(
+                    config=config,
+                    prompt=prompt,
+                    parent_id=parent_id,
+                    project_path=project_path,
+                )
+
+        error_msg = str(exc_info.value)
+        assert "exit code 1" in error_msg
+        assert "sk-secret" not in error_msg

@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -37,6 +38,36 @@ from amplifier_foundation.bundle import BundleModuleResolver
 logger = logging.getLogger(__name__)
 
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
+
+# Credential patterns — used by _sanitize_error() to redact sensitive values
+# from exception messages before they propagate to callers.
+_CREDENTIAL_PATTERNS = [
+    re.compile(r"sk-[a-zA-Z0-9\-_]{10,}"),
+    re.compile(r"key=\s*\S+", re.IGNORECASE),
+    re.compile(r"token=\s*\S+", re.IGNORECASE),
+    re.compile(r"secret=\s*\S+", re.IGNORECASE),
+    re.compile(r"password=\s*\S+", re.IGNORECASE),
+    re.compile(r"Bearer\s+\S+"),
+]
+
+
+def _sanitize_error(msg: str) -> str:
+    """Replace credential patterns in an error message with '[REDACTED]'.
+
+    Protects against leaking API keys, tokens, passwords, and other sensitive
+    values in exception messages that may appear in logs or be shown to users.
+
+    Args:
+        msg: The error message string to sanitize.
+
+    Returns:
+        The message with all recognized credential patterns replaced by
+        ``'[REDACTED]'``.
+    """
+    for pattern in _CREDENTIAL_PATTERNS:
+        msg = pattern.sub("[REDACTED]", msg)
+    return msg
+
 
 DEFAULT_MAX_SUBPROCESS: int = 4
 
@@ -284,8 +315,10 @@ async def run_session_in_subprocess(
 
             if process.returncode != 0:
                 stderr_text = stderr.decode("utf-8")
+                logger.debug("Subprocess stderr: %s", stderr_text)
+                sanitized = _sanitize_error(stderr_text)
                 raise RuntimeError(
-                    f"Subprocess session failed (exit code {process.returncode}): {stderr_text}"
+                    f"Subprocess session failed (exit code {process.returncode}): {sanitized}"
                 )
 
             raw_stdout = stdout.decode("utf-8")
