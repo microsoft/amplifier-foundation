@@ -112,7 +112,7 @@ class GitSourceHandler:
         """Verify that a cloned repository has expected structure.
 
         Checks for indicators that the clone completed successfully and contains
-        a valid Python module. This catches cases where git clone partially
+        a recognized module marker (Python, bundle, or amplifier.toml). This catches cases where git clone partially
         succeeds but leaves an incomplete directory (e.g., due to network issues,
         cloud sync interference, or disk I/O errors).
 
