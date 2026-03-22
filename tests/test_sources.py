@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from amplifier_foundation.paths.resolution import ParsedURI
 from amplifier_foundation.sources.file import FileSourceHandler
+from amplifier_foundation.sources.git import GitSourceHandler
 from amplifier_foundation.sources.http import HttpSourceHandler
 from amplifier_foundation.sources.zip import ZipSourceHandler
 
@@ -17,20 +18,30 @@ class TestFileSourceHandler:
     def test_can_handle_file_uri(self) -> None:
         """Handles file:// URIs."""
         handler = FileSourceHandler()
-        parsed = ParsedURI(scheme="file", host="", path="/some/path", ref="", subpath="")
+        parsed = ParsedURI(
+            scheme="file", host="", path="/some/path", ref="", subpath=""
+        )
         assert handler.can_handle(parsed) is True
 
     def test_can_handle_absolute_path(self) -> None:
         """Handles absolute paths (is_file=True when scheme=file)."""
         handler = FileSourceHandler()
         # Absolute paths get scheme="file" from parse_uri
-        parsed = ParsedURI(scheme="file", host="", path="/absolute/path", ref="", subpath="")
+        parsed = ParsedURI(
+            scheme="file", host="", path="/absolute/path", ref="", subpath=""
+        )
         assert handler.can_handle(parsed) is True
 
     def test_cannot_handle_git(self) -> None:
         """Does not handle git URIs."""
         handler = FileSourceHandler()
-        parsed = ParsedURI(scheme="git+https", host="github.com", path="/org/repo", ref="main", subpath="")
+        parsed = ParsedURI(
+            scheme="git+https",
+            host="github.com",
+            path="/org/repo",
+            ref="main",
+            subpath="",
+        )
         assert handler.can_handle(parsed) is False
 
     @pytest.mark.asyncio
@@ -41,7 +52,9 @@ class TestFileSourceHandler:
             test_file.write_text("name: test")
 
             handler = FileSourceHandler(base_path=Path(tmpdir))
-            parsed = ParsedURI(scheme="file", host="", path=str(test_file), ref="", subpath="")
+            parsed = ParsedURI(
+                scheme="file", host="", path=str(test_file), ref="", subpath=""
+            )
             result = await handler.resolve(parsed, Path(tmpdir) / "cache")
 
             assert result.active_path == test_file
@@ -58,7 +71,13 @@ class TestFileSourceHandler:
             (subdir / "bundle.yaml").write_text("name: core")
 
             handler = FileSourceHandler(base_path=base)
-            parsed = ParsedURI(scheme="file", host="", path=str(base / "bundles"), ref="", subpath="core")
+            parsed = ParsedURI(
+                scheme="file",
+                host="",
+                path=str(base / "bundles"),
+                ref="",
+                subpath="core",
+            )
             result = await handler.resolve(parsed, base / "cache")
 
             assert result.active_path == subdir
@@ -71,25 +90,37 @@ class TestHttpSourceHandler:
     def test_can_handle_https(self) -> None:
         """Handles https:// URIs."""
         handler = HttpSourceHandler()
-        parsed = ParsedURI(scheme="https", host="example.com", path="/bundle.yaml", ref="", subpath="")
+        parsed = ParsedURI(
+            scheme="https", host="example.com", path="/bundle.yaml", ref="", subpath=""
+        )
         assert handler.can_handle(parsed) is True
 
     def test_can_handle_http(self) -> None:
         """Handles http:// URIs."""
         handler = HttpSourceHandler()
-        parsed = ParsedURI(scheme="http", host="example.com", path="/bundle.yaml", ref="", subpath="")
+        parsed = ParsedURI(
+            scheme="http", host="example.com", path="/bundle.yaml", ref="", subpath=""
+        )
         assert handler.can_handle(parsed) is True
 
     def test_cannot_handle_file(self) -> None:
         """Does not handle file:// URIs."""
         handler = HttpSourceHandler()
-        parsed = ParsedURI(scheme="file", host="", path="/local/path", ref="", subpath="")
+        parsed = ParsedURI(
+            scheme="file", host="", path="/local/path", ref="", subpath=""
+        )
         assert handler.can_handle(parsed) is False
 
     def test_cannot_handle_git(self) -> None:
         """Does not handle git URIs."""
         handler = HttpSourceHandler()
-        parsed = ParsedURI(scheme="git+https", host="github.com", path="/org/repo", ref="main", subpath="")
+        parsed = ParsedURI(
+            scheme="git+https",
+            host="github.com",
+            path="/org/repo",
+            ref="main",
+            subpath="",
+        )
         assert handler.can_handle(parsed) is False
 
 
@@ -99,25 +130,41 @@ class TestZipSourceHandler:
     def test_can_handle_zip_https(self) -> None:
         """Handles zip+https:// URIs."""
         handler = ZipSourceHandler()
-        parsed = ParsedURI(scheme="zip+https", host="example.com", path="/bundle.zip", ref="", subpath="")
+        parsed = ParsedURI(
+            scheme="zip+https",
+            host="example.com",
+            path="/bundle.zip",
+            ref="",
+            subpath="",
+        )
         assert handler.can_handle(parsed) is True
 
     def test_can_handle_zip_file(self) -> None:
         """Handles zip+file:// URIs."""
         handler = ZipSourceHandler()
-        parsed = ParsedURI(scheme="zip+file", host="", path="/local/bundle.zip", ref="", subpath="")
+        parsed = ParsedURI(
+            scheme="zip+file", host="", path="/local/bundle.zip", ref="", subpath=""
+        )
         assert handler.can_handle(parsed) is True
 
     def test_cannot_handle_plain_https(self) -> None:
         """Does not handle plain https:// URIs."""
         handler = ZipSourceHandler()
-        parsed = ParsedURI(scheme="https", host="example.com", path="/bundle.yaml", ref="", subpath="")
+        parsed = ParsedURI(
+            scheme="https", host="example.com", path="/bundle.yaml", ref="", subpath=""
+        )
         assert handler.can_handle(parsed) is False
 
     def test_cannot_handle_git(self) -> None:
         """Does not handle git URIs."""
         handler = ZipSourceHandler()
-        parsed = ParsedURI(scheme="git+https", host="github.com", path="/org/repo", ref="main", subpath="")
+        parsed = ParsedURI(
+            scheme="git+https",
+            host="github.com",
+            path="/org/repo",
+            ref="main",
+            subpath="",
+        )
         assert handler.can_handle(parsed) is False
 
     @pytest.mark.asyncio
@@ -134,7 +181,9 @@ class TestZipSourceHandler:
                 zf.writestr("context/readme.md", "# Test Bundle")
 
             handler = ZipSourceHandler()
-            parsed = ParsedURI(scheme="zip+file", host="", path=str(zip_path), ref="", subpath="")
+            parsed = ParsedURI(
+                scheme="zip+file", host="", path=str(zip_path), ref="", subpath=""
+            )
             result = await handler.resolve(parsed, cache_dir)
 
             assert result.active_path.exists()
@@ -156,13 +205,21 @@ class TestZipSourceHandler:
                 zf.writestr("extended/bundle.yaml", "name: extended")
 
             handler = ZipSourceHandler()
-            parsed = ParsedURI(scheme="zip+file", host="", path=str(zip_path), ref="", subpath="foundation")
+            parsed = ParsedURI(
+                scheme="zip+file",
+                host="",
+                path=str(zip_path),
+                ref="",
+                subpath="foundation",
+            )
             result = await handler.resolve(parsed, cache_dir)
 
             assert result.active_path.exists()
             assert result.active_path.name == "foundation"
             assert (result.active_path / "bundle.yaml").exists()
-            assert result.source_root != result.active_path  # subpath creates a subdirectory
+            assert (
+                result.source_root != result.active_path
+            )  # subpath creates a subdirectory
 
     @pytest.mark.asyncio
     async def test_uses_cache(self) -> None:
@@ -177,7 +234,9 @@ class TestZipSourceHandler:
                 zf.writestr("bundle.yaml", "name: test")
 
             handler = ZipSourceHandler()
-            parsed = ParsedURI(scheme="zip+file", host="", path=str(zip_path), ref="", subpath="")
+            parsed = ParsedURI(
+                scheme="zip+file", host="", path=str(zip_path), ref="", subpath=""
+            )
 
             # First resolve - extracts
             result1 = await handler.resolve(parsed, cache_dir)
@@ -190,3 +249,54 @@ class TestZipSourceHandler:
 
             assert result1.active_path == result2.active_path
             assert result2.active_path.exists()
+
+
+class TestGitSourceHandlerCloneIntegrity:
+    """Tests for GitSourceHandler._verify_clone_integrity."""
+
+    def test_accepts_amplifier_toml_as_valid_marker(self) -> None:
+        """Returns True when .git dir and amplifier.toml exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clone_path = Path(tmpdir)
+            (clone_path / ".git").mkdir()
+            (clone_path / "amplifier.toml").write_text(
+                '[transport]\ntransport = "rust"\n'
+            )
+            handler = GitSourceHandler()
+            assert handler._verify_clone_integrity(clone_path) is True
+
+    def test_still_accepts_pyproject_toml(self) -> None:
+        """Returns True when .git dir and pyproject.toml exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clone_path = Path(tmpdir)
+            (clone_path / ".git").mkdir()
+            (clone_path / "pyproject.toml").write_text('[project]\nname = "test"\n')
+            handler = GitSourceHandler()
+            assert handler._verify_clone_integrity(clone_path) is True
+
+    def test_still_accepts_bundle_md(self) -> None:
+        """Returns True when .git dir and bundle.md exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clone_path = Path(tmpdir)
+            (clone_path / ".git").mkdir()
+            (clone_path / "bundle.md").write_text("# Bundle\n")
+            handler = GitSourceHandler()
+            assert handler._verify_clone_integrity(clone_path) is True
+
+    def test_rejects_clone_with_no_markers(self) -> None:
+        """Returns False when .git dir exists but no marker files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clone_path = Path(tmpdir)
+            (clone_path / ".git").mkdir()
+            handler = GitSourceHandler()
+            assert handler._verify_clone_integrity(clone_path) is False
+
+    def test_rejects_missing_git_directory(self) -> None:
+        """Returns False when .git dir is missing (even with amplifier.toml)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clone_path = Path(tmpdir)
+            (clone_path / "amplifier.toml").write_text(
+                '[transport]\ntransport = "rust"\n'
+            )
+            handler = GitSourceHandler()
+            assert handler._verify_clone_integrity(clone_path) is False
