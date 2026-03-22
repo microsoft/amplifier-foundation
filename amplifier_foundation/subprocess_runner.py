@@ -23,7 +23,11 @@ module is responsible for *how* to serialize and validate it.
 from __future__ import annotations
 
 import json
+import os
+import sys  # noqa: F401  # available for subprocess entry-point use
 from typing import Any
+
+from amplifier_core import AmplifierSession
 
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
 
@@ -90,3 +94,42 @@ def deserialize_subprocess_config(data: str) -> dict[str, Any]:
         raise ValueError(f"Subprocess config is missing required keys: {missing}")
 
     return payload
+
+
+async def _run_child_session(config_path: str) -> str:
+    """Run a child Amplifier session from a serialized config file.
+
+    Reads the config file, changes the working directory to the project path,
+    creates an ``AmplifierSession``, executes the prompt, and returns the result.
+    Cleanup is guaranteed to run via ``try/finally`` even when ``execute()`` raises.
+
+    Args:
+        config_path: Path to the JSON config file produced by
+            ``serialize_subprocess_config()``.
+
+    Returns:
+        The result string returned by ``session.execute()``.
+
+    Raises:
+        Any exception raised by ``session.execute()`` after cleanup completes.
+    """
+    with open(config_path) as f:
+        data = f.read()
+
+    payload = deserialize_subprocess_config(data)
+    config: dict[str, Any] = payload["config"]
+    prompt: str = payload["prompt"]
+    parent_id: str = payload["parent_id"]
+    project_path: str = payload["project_path"]
+    session_id: str | None = payload.get("session_id")
+
+    os.chdir(project_path)
+
+    session = AmplifierSession(
+        config=config, parent_id=parent_id, session_id=session_id
+    )
+    try:
+        result: str = await session.execute(prompt)
+        return result
+    finally:
+        await session.cleanup()
