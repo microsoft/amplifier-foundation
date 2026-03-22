@@ -358,7 +358,7 @@ class TestChildBootstrapBundleContext:
         )
 
     @pytest.mark.asyncio
-    async def test_sys_paths_added_before_session_creation(self, tmp_path: Any) -> None:
+    async def test_sys_paths_added_before_initialize(self, tmp_path: Any) -> None:
         """Test that sys_paths entries are added to sys.path before session creation."""
         config: dict[str, Any] = {"provider": "anthropic"}
         prompt = "Hello"
