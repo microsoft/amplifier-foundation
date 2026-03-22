@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -67,6 +68,22 @@ def _sanitize_error(msg: str) -> str:
     for pattern in _CREDENTIAL_PATTERNS:
         msg = pattern.sub("[REDACTED]", msg)
     return msg
+
+
+def _validate_project_path(path: str) -> None:
+    """Validate that the given path is an existing directory.
+
+    Resolves the path and checks that it exists and is a directory.
+
+    Args:
+        path: The path to validate.
+
+    Raises:
+        ValueError: If the path does not exist or is not a directory.
+    """
+    resolved = Path(path).resolve()
+    if not resolved.is_dir():
+        raise ValueError(f"{path!r} does not exist or is not a directory")
 
 
 DEFAULT_MAX_SUBPROCESS: int = 4
@@ -273,6 +290,8 @@ async def run_session_in_subprocess(
         TimeoutError: If the subprocess does not complete within ``timeout`` seconds.
         RuntimeError: If the subprocess exits with a non-zero return code.
     """
+    _validate_project_path(project_path)
+
     serialized = serialize_subprocess_config(
         config=config,
         prompt=prompt,
@@ -284,15 +303,21 @@ async def run_session_in_subprocess(
         sys_paths=sys_paths,
     )
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", prefix="amp_subprocess_", delete=False
-    ) as f:
-        tmp_path = f.name
-        f.write(serialized)
-
     semaphore = _get_semaphore()
 
+    tmp_path: str | None = None
     try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", prefix="amp_subprocess_", delete=False
+        ) as f:
+            tmp_path = f.name
+            f.write(serialized)
+
+        # Assert permissions: ensure group/other bits are not set
+        current_mode = stat.S_IMODE(os.stat(tmp_path).st_mode)
+        if current_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            os.chmod(tmp_path, 0o600)
+
         async with semaphore:
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
@@ -324,10 +349,11 @@ async def run_session_in_subprocess(
             raw_stdout = stdout.decode("utf-8")
             return _extract_framed_result(raw_stdout)
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            logger.warning("Failed to clean up temp file: %s", tmp_path)
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                logger.warning("Failed to clean up temp file: %s", tmp_path)
 
 
 async def _run_child_session(config_path: str) -> str:
@@ -370,6 +396,7 @@ async def _run_child_session(config_path: str) -> str:
             sys.path.insert(0, path_entry)
 
     # (3) Validate and chdir to project_path
+    _validate_project_path(project_path)
     os.chdir(project_path)
 
     # (4) Create AmplifierSession

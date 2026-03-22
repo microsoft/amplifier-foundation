@@ -20,6 +20,7 @@ from amplifier_foundation.subprocess_runner import RESULT_START_MARKER
 from amplifier_foundation.subprocess_runner import _extract_framed_result
 from amplifier_foundation.subprocess_runner import _run_child_session
 from amplifier_foundation.subprocess_runner import _sanitize_error
+from amplifier_foundation.subprocess_runner import _validate_project_path
 from amplifier_foundation.subprocess_runner import configure_subprocess_limit
 from amplifier_foundation.subprocess_runner import deserialize_subprocess_config
 from amplifier_foundation.subprocess_runner import run_session_in_subprocess
@@ -893,3 +894,35 @@ class TestErrorSanitization:
         error_msg = str(exc_info.value)
         assert "exit code 1" in error_msg
         assert "sk-secret" not in error_msg
+
+
+class TestCleanupHardening:
+    """Tests for project_path validation, temp file inside try, and file permissions."""
+
+    def test_nonexistent_project_path_raises(self) -> None:
+        """Test that _validate_project_path raises ValueError for a non-existent path."""
+        with pytest.raises(ValueError, match="does not exist or is not a directory"):
+            _validate_project_path("/nonexistent/path/that/does/not/exist/at/all")
+
+    def test_file_as_project_path_raises(self, tmp_path: Any) -> None:
+        """Test that _validate_project_path raises ValueError when path is a file."""
+        file_path = tmp_path / "notadir.txt"
+        file_path.write_text("hello")
+        with pytest.raises(ValueError, match="does not exist or is not a directory"):
+            _validate_project_path(str(file_path))
+
+    def test_valid_project_path_passes(self, tmp_path: Any) -> None:
+        """Test that _validate_project_path passes for a valid directory (no exception raised)."""
+        # Should not raise
+        _validate_project_path(str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_parent_validates_project_path(self) -> None:
+        """Test that run_session_in_subprocess validates project_path before spawning."""
+        with pytest.raises(ValueError, match="does not exist or is not a directory"):
+            await run_session_in_subprocess(
+                config={},
+                prompt="Hello",
+                parent_id="parent-123",
+                project_path="/nonexistent/path/that/does/not/exist/at/all",
+            )
