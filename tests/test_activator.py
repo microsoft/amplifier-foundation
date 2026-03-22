@@ -226,7 +226,7 @@ class TestPolyglotTransportSkip:
         with tempfile.TemporaryDirectory() as tmpdir:
             module_path = Path(tmpdir)
             amplifier_toml = module_path / "amplifier.toml"
-            amplifier_toml.write_text(f'transport = "{transport}"\n')
+            amplifier_toml.write_text(f'[module]\ntransport = "{transport}"\n')
 
             activator = ModuleActivator(cache_dir=module_path / "cache")
 
@@ -245,7 +245,7 @@ class TestPolyglotTransportSkip:
         with tempfile.TemporaryDirectory() as tmpdir:
             module_path = Path(tmpdir)
             amplifier_toml = module_path / "amplifier.toml"
-            amplifier_toml.write_text('transport = "python"\n')
+            amplifier_toml.write_text('[module]\ntransport = "python"\n')
             pyproject = module_path / "pyproject.toml"
             pyproject.write_text(
                 '[project]\nname = "my-python-module"\nversion = "0.1.0"\n'
