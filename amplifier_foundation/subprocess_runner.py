@@ -265,20 +265,15 @@ async def _run_child_session(config_path: str) -> str:
     parent_id: str = payload["parent_id"]
     project_path: str = payload["project_path"]
     session_id: str | None = payload.get("session_id")
+    # (1) Extract module_paths, bundle_package_paths, sys_paths from payload
     module_paths: dict[str, str] = payload.get("module_paths", {})
     bundle_package_paths: list[str] = payload.get("bundle_package_paths", [])
     sys_paths: list[str] = payload.get("sys_paths", [])
 
-    # (1) Add sys.path entries BEFORE session creation
-    for path_entry in sys_paths:
+    # (2) Add all sys.path and bundle_package_path entries BEFORE session creation
+    for path_entry in (*sys_paths, *bundle_package_paths):
         if path_entry not in sys.path:
             logger.debug("Adding sys.path entry: %s", path_entry)
-            sys.path.insert(0, path_entry)
-
-    # (2) Also add any bundle_package_paths not already on sys.path
-    for path_entry in bundle_package_paths:
-        if path_entry not in sys.path:
-            logger.debug("Adding bundle package path to sys.path: %s", path_entry)
             sys.path.insert(0, path_entry)
 
     # (3) Validate and chdir to project_path
