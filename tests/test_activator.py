@@ -215,55 +215,18 @@ class TestPolyglotTransportSkip:
     """
 
     @pytest.mark.asyncio
-    async def test_skips_install_for_rust_transport(self) -> None:
-        """_install_dependencies does NOT call subprocess.run for rust transport.
+    @pytest.mark.parametrize("transport", ["rust", "wasm", "grpc"])
+    async def test_skips_install_for_non_python_transport(self, transport: str) -> None:
+        """_install_dependencies does NOT call subprocess.run for non-Python transports.
 
-        When amplifier.toml declares transport = "rust", the module ships a
-        pre-built binary and has no Python build step — uv pip install must
-        not be invoked.
+        When amplifier.toml declares transport = "rust", "wasm", or "grpc", the
+        module ships a pre-built binary and has no Python build step — uv pip
+        install must not be invoked.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             module_path = Path(tmpdir)
             amplifier_toml = module_path / "amplifier.toml"
-            amplifier_toml.write_text('transport = "rust"\n')
-
-            activator = ModuleActivator(cache_dir=module_path / "cache")
-
-            with patch("subprocess.run") as mock_subprocess:
-                await activator._install_dependencies(module_path)
-
-                mock_subprocess.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_skips_install_for_wasm_transport(self) -> None:
-        """_install_dependencies does NOT call subprocess.run for wasm transport.
-
-        When amplifier.toml declares transport = "wasm", the module ships a
-        pre-built wasm binary — uv pip install must not be invoked.
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            module_path = Path(tmpdir)
-            amplifier_toml = module_path / "amplifier.toml"
-            amplifier_toml.write_text('transport = "wasm"\n')
-
-            activator = ModuleActivator(cache_dir=module_path / "cache")
-
-            with patch("subprocess.run") as mock_subprocess:
-                await activator._install_dependencies(module_path)
-
-                mock_subprocess.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_skips_install_for_grpc_transport(self) -> None:
-        """_install_dependencies does NOT call subprocess.run for grpc transport.
-
-        When amplifier.toml declares transport = "grpc", the module communicates
-        over gRPC (likely a non-Python server) — uv pip install must not be invoked.
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            module_path = Path(tmpdir)
-            amplifier_toml = module_path / "amplifier.toml"
-            amplifier_toml.write_text('transport = "grpc"\n')
+            amplifier_toml.write_text(f'transport = "{transport}"\n')
 
             activator = ModuleActivator(cache_dir=module_path / "cache")
 
