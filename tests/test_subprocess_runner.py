@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from amplifier_foundation.subprocess_runner import DEFAULT_MAX_SUBPROCESS
 from amplifier_foundation.subprocess_runner import _run_child_session
 from amplifier_foundation.subprocess_runner import deserialize_subprocess_config
 from amplifier_foundation.subprocess_runner import run_session_in_subprocess
@@ -478,3 +479,65 @@ class TestRunSessionInSubprocess:
             )
 
         assert file_content["data"]["session_id"] == session_id
+
+
+class TestSemaphoreConstants:
+    """Tests for module-level semaphore constants."""
+
+    def test_default_max_subprocess_is_4(self) -> None:
+        """Test that DEFAULT_MAX_SUBPROCESS equals 4."""
+        assert DEFAULT_MAX_SUBPROCESS == 4
+
+
+class TestConcurrencyLimiting:
+    """Tests that semaphore limits concurrent subprocess sessions."""
+
+    @pytest.mark.asyncio
+    async def test_max_concurrent_limits_parallelism(self, tmp_path: Any) -> None:
+        """Test that max_concurrent=2 allows at most 2 concurrent subprocesses.
+
+        Launches 6 concurrent calls with max_concurrent=2. Uses a slow_communicate
+        that sleeps briefly to simulate subprocess work and tracks the peak concurrency.
+        Asserts max_observed <= 2.
+        """
+        import amplifier_foundation.subprocess_runner as runner_module
+
+        # Reset semaphore state between tests
+        runner_module._subprocess_semaphore = None
+        runner_module._semaphore_limit = runner_module.DEFAULT_MAX_SUBPROCESS
+
+        active_count = 0
+        max_observed = 0
+
+        async def slow_communicate() -> tuple[bytes, bytes]:
+            nonlocal active_count, max_observed
+            active_count += 1
+            if active_count > max_observed:
+                max_observed = active_count
+            await asyncio.sleep(0.05)
+            active_count -= 1
+            return (b"result", b"")
+
+        mock_process = MagicMock()
+        mock_process.communicate = slow_communicate
+        mock_process.returncode = 0
+
+        config: dict[str, Any] = {"provider": "anthropic"}
+        project_path = str(tmp_path)
+
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            tasks = [
+                run_session_in_subprocess(
+                    config=config,
+                    prompt="Hello",
+                    parent_id="parent-123",
+                    project_path=project_path,
+                    max_concurrent=2,
+                )
+                for _ in range(6)
+            ]
+            await asyncio.gather(*tasks)
+
+        assert max_observed <= 2

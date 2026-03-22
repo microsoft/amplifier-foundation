@@ -36,6 +36,34 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
 
+DEFAULT_MAX_SUBPROCESS: int = 4
+_subprocess_semaphore: asyncio.Semaphore | None = None
+_semaphore_limit: int = DEFAULT_MAX_SUBPROCESS
+
+
+def _get_semaphore(max_concurrent: int | None = None) -> asyncio.Semaphore:
+    """Return the module-level semaphore, creating or recreating it as needed.
+
+    Lazily creates the semaphore on first call. If ``max_concurrent`` differs
+    from the current limit, the semaphore is recreated with the new limit.
+
+    Args:
+        max_concurrent: Maximum number of concurrent subprocess sessions.
+            If ``None``, uses the current ``_semaphore_limit``.
+
+    Returns:
+        The asyncio.Semaphore for gating concurrent subprocesses.
+    """
+    global _subprocess_semaphore, _semaphore_limit
+
+    limit = max_concurrent if max_concurrent is not None else _semaphore_limit
+
+    if _subprocess_semaphore is None or limit != _semaphore_limit:
+        _semaphore_limit = limit
+        _subprocess_semaphore = asyncio.Semaphore(limit)
+
+    return _subprocess_semaphore
+
 
 def serialize_subprocess_config(
     config: dict[str, Any],
@@ -126,7 +154,9 @@ async def run_session_in_subprocess(
         session_id: Optional pre-assigned session ID for the child session.
             If ``None``, the child will generate its own ID.
         timeout: Seconds to wait for the subprocess to complete (default: 1800).
-        max_concurrent: Not yet enforced.
+        max_concurrent: Maximum number of concurrent subprocess sessions allowed.
+            If ``None``, uses the current module-level semaphore limit
+            (default: ``DEFAULT_MAX_SUBPROCESS``).
 
     Returns:
         The output string from the child session (stdout, stripped).
@@ -149,33 +179,36 @@ async def run_session_in_subprocess(
         tmp_path = f.name
         f.write(serialized)
 
+    semaphore = _get_semaphore(max_concurrent)
+
     try:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "amplifier_foundation.subprocess_runner",
-            tmp_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=project_path,
-        )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
-            )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
-            raise TimeoutError(f"Subprocess session timed out after {timeout}s")
-
-        if process.returncode != 0:
-            stderr_text = stderr.decode("utf-8")
-            raise RuntimeError(
-                f"Subprocess session failed (exit code {process.returncode}): {stderr_text}"
+        async with semaphore:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "amplifier_foundation.subprocess_runner",
+                tmp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=project_path,
             )
 
-        return stdout.decode("utf-8").strip()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                raise TimeoutError(f"Subprocess session timed out after {timeout}s")
+
+            if process.returncode != 0:
+                stderr_text = stderr.decode("utf-8")
+                raise RuntimeError(
+                    f"Subprocess session failed (exit code {process.returncode}): {stderr_text}"
+                )
+
+            return stdout.decode("utf-8").strip()
     finally:
         try:
             os.unlink(tmp_path)
