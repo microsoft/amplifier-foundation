@@ -335,7 +335,7 @@ class ModuleActivator:
                 )
                 return False
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Could not parse amplifier.toml in %s, assuming Python install",
                 module_path,
                 exc_info=True,

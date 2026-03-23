@@ -213,7 +213,7 @@ class GitSourceHandler:
                 shutil.rmtree(cache_path, ignore_errors=True)
                 raise BundleNotFoundError(
                     f"Clone of {git_url}@{ref} completed but result is invalid "
-                    "(missing pyproject.toml/setup.py/bundle.md). "
+                    "(missing pyproject.toml/setup.py/bundle.md/amplifier.toml). "
                     "This may indicate a network issue or cloud sync interference."
                 )
 
