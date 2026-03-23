@@ -335,7 +335,11 @@ class ModuleActivator:
                 )
                 return False
         except Exception:
-            pass  # If we can't read amplifier.toml, assume Python install needed
+            logger.debug(
+                "Could not parse amplifier.toml in %s, assuming Python install",
+                module_path,
+                exc_info=True,
+            )
         return True
 
     async def _install_dependencies(
