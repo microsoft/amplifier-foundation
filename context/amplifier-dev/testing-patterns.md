@@ -154,7 +154,17 @@ The highest-confidence validation — tests the actual built artifact in a clean
 ```bash
 # In amplifier-core:
 ./scripts/e2e-smoke-test.sh
+
+# Cross-repo smoke test (validates local changes to CLI, foundation, modules, etc.):
+./scripts/e2e-smoke-test.sh \
+    --local-source ../amplifier-app-cli \
+    --local-source ../amplifier-foundation \
+    --local-source ../amplifier-bundle-modes/modules/hooks-mode \
+    --local-source ../amplifier-bundle-modes/modules/tool-mode \
+    --local-source ../amplifier-module-hooks-approval
 ```
+
+**Note:** For bundles with modules in subdirectories, point `--local-source` at the module path (e.g., `../amplifier-bundle-modes/modules/hooks-mode`), not the bundle root. The module subdirectory must have its own `pyproject.toml`.
 
 ### What It Does
 
@@ -162,9 +172,12 @@ The highest-confidence validation — tests the actual built artifact in a clean
 2. Creates a fresh Docker container (`python:3.12-slim`)
 3. Installs `amplifier` from git (CLI + foundation from GitHub)
 4. Overrides `amplifier-core` with the local wheel
-5. Runs a real session: `amplifier run "Ask recipe author to run one of its example recipes"`
-6. Detects crashes, tool failures, and timeouts
-7. Reports PASS/FAIL
+5. Overrides additional packages with `--local-source` repos (if any)
+6. Runs a real session: `amplifier run "Ask recipe author to run one of its example recipes"`
+7. Detects crashes, tool failures, and timeouts
+8. Reports PASS/FAIL
+
+The `--local-source` flag can be specified multiple times. Each path is copied into the container and installed with `pip install --force-reinstall --no-deps`, following the same override pattern used for the core wheel. This enables testing cross-repo changes before pushing.
 
 ### When Required
 

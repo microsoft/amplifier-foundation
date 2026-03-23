@@ -20,16 +20,13 @@ def _make_delegate_tool(
     *,
     spawn_fn=None,
     agents: dict | None = None,
-    session_state: dict | None = None,
+    routing_matrix: dict | None = None,
 ) -> DelegateTool:
     """Create a DelegateTool with mocked coordinator for model_role testing."""
     coordinator = MagicMock()
     coordinator.session_id = "parent-session-123"
 
     coordinator.config = {"agents": agents or {}}
-
-    # Session state for routing matrix availability
-    coordinator.session_state = session_state or {}
 
     capabilities: dict = {
         "session.spawn": spawn_fn
@@ -46,6 +43,7 @@ def _make_delegate_tool(
         "agents.list": lambda: agents or {},
         "agents.get": lambda name: (agents or {}).get(name),
         "self_delegation_depth": 0,
+        "session.routing_matrix": routing_matrix,
     }
 
     def get_capability(name):
@@ -134,17 +132,15 @@ class TestDelegateModelRole:
                         "description": "A test agent",
                     }
                 },
-                session_state={
-                    "routing_matrix": {
-                        "roles": {
-                            "fast": {
-                                "candidates": [
-                                    {
-                                        "provider": "anthropic",
-                                        "model": "claude-haiku-*",
-                                    },
-                                ]
-                            }
+                routing_matrix={
+                    "roles": {
+                        "fast": {
+                            "candidates": [
+                                {
+                                    "provider": "anthropic",
+                                    "model": "claude-haiku-*",
+                                },
+                            ]
                         }
                     }
                 },
@@ -205,17 +201,15 @@ class TestDelegateModelRole:
                 agents={
                     "test-agent": {"description": "A test agent"},
                 },
-                session_state={
-                    "routing_matrix": {
-                        "roles": {
-                            "fast": {
-                                "candidates": [
-                                    {
-                                        "provider": "anthropic",
-                                        "model": "claude-haiku-3.5",
-                                    },
-                                ]
-                            }
+                routing_matrix={
+                    "roles": {
+                        "fast": {
+                            "candidates": [
+                                {
+                                    "provider": "anthropic",
+                                    "model": "claude-haiku-3.5",
+                                },
+                            ]
                         }
                     }
                 },
@@ -276,18 +270,16 @@ class TestDelegateModelRole:
                 agents={
                     "coding-agent": {"description": "A coding agent"},
                 },
-                session_state={
-                    "routing_matrix": {
-                        "roles": {
-                            "coding": {
-                                "candidates": [
-                                    {
-                                        "provider": "anthropic",
-                                        "model": "claude-sonnet-4-6",
-                                        "config": {"reasoning_effort": "high"},
-                                    },
-                                ]
-                            }
+                routing_matrix={
+                    "roles": {
+                        "coding": {
+                            "candidates": [
+                                {
+                                    "provider": "anthropic",
+                                    "model": "claude-sonnet-4-6",
+                                    "config": {"reasoning_effort": "high"},
+                                },
+                            ]
                         }
                     }
                 },
@@ -340,8 +332,7 @@ class TestDelegateModelRole:
             agents={
                 "test-agent": {"description": "A test agent"},
             },
-            session_state={},  # No routing_matrix
-        )
+        )  # routing_matrix=None by default — no routing matrix
 
         result = await tool.execute(
             {
