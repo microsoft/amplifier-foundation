@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock
@@ -358,3 +359,388 @@ class TestDelegateModelRole:
         _, kwargs = spawn_fn.call_args
         # No matrix means no resolution — provider_preferences stays None
         assert kwargs["provider_preferences"] is None
+
+
+# =============================================================================
+# Tests: Fix 1 — observability warnings for model_role failures
+# =============================================================================
+
+
+class TestModelRoleObservabilityWarnings:
+    """Tests that silent model_role failures now emit WARNING-level log messages."""
+
+    @pytest.mark.asyncio
+    async def test_model_role_empty_resolution_logs_warning(self, caplog):
+        """resolve_model_role returning [] logs a WARNING with diagnostic context."""
+        spawn_fn = AsyncMock(
+            return_value={
+                "output": "done",
+                "session_id": "child-001",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+        )
+
+        # Resolver returns empty list — role exists in matrix but no provider matched
+        mock_resolve = AsyncMock(return_value=[])
+        cleanup = _install_mock_resolver(mock_resolve)
+
+        try:
+            tool = _make_delegate_tool(
+                spawn_fn=spawn_fn,
+                agents={"test-agent": {"description": "A test agent"}},
+                session_state={
+                    "routing_matrix": {
+                        "roles": {
+                            "coding": {
+                                "candidates": [
+                                    {
+                                        "provider": "anthropic",
+                                        "model": "claude-sonnet-4-6",
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
+            tool.coordinator.get = MagicMock(
+                side_effect=lambda key: (
+                    {"provider-openai": MagicMock()} if key == "providers" else None
+                )
+            )
+
+            with caplog.at_level(
+                logging.WARNING, logger="amplifier_module_tool_delegate"
+            ):
+                result = await tool.execute(
+                    {
+                        "agent": "test-agent",
+                        "instruction": "Write some code",
+                        "context_depth": "none",
+                        "model_role": "coding",
+                    }
+                )
+
+            # Should still succeed — fall-through is graceful
+            assert result.success is True
+
+            # Resolver was called but returned empty
+            mock_resolve.assert_called_once()
+
+            # spawn received provider_preferences=None (resolution failed)
+            spawn_fn.assert_called_once()
+            _, kwargs = spawn_fn.call_args
+            assert kwargs["provider_preferences"] is None, (
+                "Empty resolution should leave provider_preferences as None"
+            )
+
+            # Warning was emitted — must mention the role, available roles, and providers
+            warning_messages = [
+                r.message for r in caplog.records if r.levelno == logging.WARNING
+            ]
+            assert any("coding" in str(m) for m in warning_messages), (
+                f"Expected WARNING mentioning 'coding' role; got: {warning_messages}"
+            )
+        finally:
+            cleanup()
+
+    @pytest.mark.asyncio
+    async def test_model_role_without_matrix_logs_warning(self, caplog):
+        """model_role with no routing_matrix logs WARNING (not just DEBUG)."""
+        spawn_fn = AsyncMock(
+            return_value={
+                "output": "done",
+                "session_id": "child-001",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+        )
+
+        tool = _make_delegate_tool(
+            spawn_fn=spawn_fn,
+            agents={"test-agent": {"description": "A test agent"}},
+            session_state={},  # No routing_matrix
+        )
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_module_tool_delegate"):
+            result = await tool.execute(
+                {
+                    "agent": "test-agent",
+                    "instruction": "Do something",
+                    "context_depth": "none",
+                    "model_role": "fast",
+                }
+            )
+
+        assert result.success is True
+
+        # At least one WARNING mentioning the role
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert any("fast" in str(m) for m in warning_messages), (
+            f"Expected WARNING mentioning 'fast' role; got: {warning_messages}"
+        )
+
+        # No DEBUG-only records for the missing-matrix case (it should be WARNING)
+        debug_only = [
+            r.message
+            for r in caplog.records
+            if r.levelno == logging.DEBUG and "fast" in str(r.message)
+        ]
+        assert not debug_only, (
+            f"Expected WARNING (not DEBUG) for missing routing_matrix; "
+            f"found DEBUG: {debug_only}"
+        )
+
+
+# =============================================================================
+# Tests: Fix 3 — provider_routing in ToolResult output
+# =============================================================================
+
+
+class TestProviderRoutingInResult:
+    """Tests that ToolResult output includes provider_routing when routing was requested."""
+
+    @pytest.mark.asyncio
+    async def test_provider_routing_in_result_on_success(self):
+        """Successful model_role resolution returns provider_routing in output."""
+        spawn_fn = AsyncMock(
+            return_value={
+                "output": "done",
+                "session_id": "child-001",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+        )
+
+        mock_resolve = AsyncMock(
+            return_value=[
+                {"provider": "anthropic", "model": "claude-sonnet-4-6", "config": {}}
+            ]
+        )
+        cleanup = _install_mock_resolver(mock_resolve)
+
+        try:
+            tool = _make_delegate_tool(
+                spawn_fn=spawn_fn,
+                agents={"test-agent": {"description": "A test agent"}},
+                session_state={
+                    "routing_matrix": {
+                        "roles": {
+                            "coding": {
+                                "candidates": [
+                                    {
+                                        "provider": "anthropic",
+                                        "model": "claude-sonnet-4-6",
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
+            tool.coordinator.get = MagicMock(
+                side_effect=lambda key: (
+                    {"provider-anthropic": MagicMock()} if key == "providers" else None
+                )
+            )
+
+            result = await tool.execute(
+                {
+                    "agent": "test-agent",
+                    "instruction": "Write code",
+                    "context_depth": "none",
+                    "model_role": "coding",
+                }
+            )
+
+            assert result.success is True
+            assert result.output is not None
+            assert "provider_routing" in result.output, (
+                f"Expected 'provider_routing' key in output; got keys: {list(result.output.keys())}"
+            )
+
+            routing = result.output["provider_routing"]
+            assert routing["model_role"] == "coding"
+            assert routing["resolved"] is not None, (
+                "Successful resolution should produce non-null 'resolved'"
+            )
+            assert len(routing["resolved"]) >= 1
+            assert routing["resolved"][0]["provider"] == "anthropic"
+        finally:
+            cleanup()
+
+    @pytest.mark.asyncio
+    async def test_provider_routing_in_result_on_failure(self):
+        """Failed model_role resolution returns provider_routing with resolved=None."""
+        spawn_fn = AsyncMock(
+            return_value={
+                "output": "done",
+                "session_id": "child-001",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+        )
+
+        # Resolver returns empty — no candidates matched installed providers
+        mock_resolve = AsyncMock(return_value=[])
+        cleanup = _install_mock_resolver(mock_resolve)
+
+        try:
+            tool = _make_delegate_tool(
+                spawn_fn=spawn_fn,
+                agents={"test-agent": {"description": "A test agent"}},
+                session_state={
+                    "routing_matrix": {
+                        "roles": {
+                            "coding": {
+                                "candidates": [
+                                    {
+                                        "provider": "anthropic",
+                                        "model": "claude-sonnet-4-6",
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
+            tool.coordinator.get = MagicMock(
+                side_effect=lambda key: (
+                    {"provider-openai": MagicMock()} if key == "providers" else None
+                )
+            )
+
+            result = await tool.execute(
+                {
+                    "agent": "test-agent",
+                    "instruction": "Write code",
+                    "context_depth": "none",
+                    "model_role": "coding",
+                }
+            )
+
+            assert result.success is True
+            assert result.output is not None
+            assert "provider_routing" in result.output, (
+                "provider_routing should be present even on resolution failure"
+            )
+
+            routing = result.output["provider_routing"]
+            assert routing["model_role"] == "coding"
+            assert routing["resolved"] is None, (
+                "Empty resolution should produce resolved=None"
+            )
+        finally:
+            cleanup()
+
+
+# =============================================================================
+# Tests: Fix 2 — delegate:agent_spawned event includes routing intent
+# =============================================================================
+
+
+class TestAgentSpawnedEventIncludesRouting:
+    """Tests that delegate:agent_spawned event payload includes routing fields."""
+
+    @pytest.mark.asyncio
+    async def test_agent_spawned_event_includes_routing(self):
+        """delegate:agent_spawned event includes model_role and provider_preferences."""
+        spawn_fn = AsyncMock(
+            return_value={
+                "output": "done",
+                "session_id": "child-001",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+        )
+
+        mock_resolve = AsyncMock(
+            return_value=[
+                {"provider": "anthropic", "model": "claude-haiku-3.5", "config": {}}
+            ]
+        )
+        cleanup = _install_mock_resolver(mock_resolve)
+
+        try:
+            tool = _make_delegate_tool(
+                spawn_fn=spawn_fn,
+                agents={"test-agent": {"description": "A test agent"}},
+                session_state={
+                    "routing_matrix": {
+                        "roles": {
+                            "fast": {
+                                "candidates": [
+                                    {"provider": "anthropic", "model": "claude-haiku-*"}
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
+            tool.coordinator.get = MagicMock(
+                side_effect=lambda key: (
+                    {"provider-anthropic": MagicMock()} if key == "providers" else None
+                )
+            )
+
+            # Set up a mock hooks object so events are emitted
+            mock_hooks = MagicMock()
+            mock_hooks.emit = AsyncMock()
+            tool.coordinator.get = MagicMock(
+                side_effect=lambda key: (
+                    mock_hooks
+                    if key == "hooks"
+                    else (
+                        {"provider-anthropic": MagicMock()}
+                        if key == "providers"
+                        else None
+                    )
+                )
+            )
+
+            await tool.execute(
+                {
+                    "agent": "test-agent",
+                    "instruction": "Do something fast",
+                    "context_depth": "none",
+                    "model_role": "fast",
+                }
+            )
+
+            # Find the agent_spawned event call
+            spawned_calls = [
+                call
+                for call in mock_hooks.emit.call_args_list
+                if call.args[0] == "delegate:agent_spawned"
+            ]
+            assert len(spawned_calls) == 1, (
+                f"Expected exactly one delegate:agent_spawned event; got {len(spawned_calls)}"
+            )
+
+            payload = spawned_calls[0].args[1]
+
+            # model_role must be present
+            assert "model_role" in payload, (
+                f"Expected 'model_role' in event payload; got keys: {list(payload.keys())}"
+            )
+            assert payload["model_role"] == "fast"
+
+            # provider_preferences must be present — non-null because resolution succeeded
+            assert "provider_preferences" in payload, (
+                f"Expected 'provider_preferences' in event payload; got keys: {list(payload.keys())}"
+            )
+            assert payload["provider_preferences"] is not None, (
+                "provider_preferences should be non-null after successful resolution"
+            )
+            assert len(payload["provider_preferences"]) >= 1
+            assert payload["provider_preferences"][0]["provider"] == "anthropic"
+        finally:
+            cleanup()

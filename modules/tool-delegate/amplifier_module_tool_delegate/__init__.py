@@ -748,13 +748,21 @@ Agent usage notes:
                             )
                             for r in resolved
                         ]
+                    else:
+                        logger.warning(
+                            "model_role '%s' resolved to no candidates "
+                            "(available roles: %s, installed providers: %s)",
+                            raw_model_role,
+                            list(matrix.keys()),
+                            list(providers.keys()),
+                        )
                 except ImportError:
                     logger.warning(
                         "model_role '%s' specified but amplifier_module_hooks_routing not available",
                         raw_model_role,
                     )
             else:
-                logger.debug(
+                logger.warning(
                     "model_role '%s' specified but no routing_matrix in session state",
                     raw_model_role,
                 )
@@ -875,6 +883,12 @@ Agent usage notes:
                         "context_scope": context_scope,
                         "tool_call_id": tool_call_id,
                         "parallel_group_id": parallel_group_id,
+                        "model_role": raw_model_role or None,
+                        "provider_preferences": (
+                            [p.to_dict() for p in provider_preferences]
+                            if provider_preferences
+                            else None
+                        ),
                     },
                 )
 
@@ -987,6 +1001,20 @@ Agent usage notes:
                     },
                 )
 
+            # Build provider routing summary (only when routing was requested)
+            # Always include both keys for a stable dict shape — consumers
+            # can safely read provider_routing["model_role"] without KeyError.
+            provider_routing = None
+            if raw_model_role or provider_preferences:
+                provider_routing = {
+                    "model_role": raw_model_role or None,
+                    "resolved": (
+                        [p.to_dict() for p in provider_preferences]
+                        if provider_preferences
+                        else None
+                    ),
+                }
+
             # Return output with session_id for multi-turn capability
             session_id_result = result["session_id"]
             return ToolResult(
@@ -998,6 +1026,11 @@ Agent usage notes:
                     "turn_count": result.get("turn_count", 1),
                     "status": result.get("status", "success"),
                     "metadata": result.get("metadata", {}),
+                    **(
+                        {"provider_routing": provider_routing}
+                        if provider_routing
+                        else {}
+                    ),
                 },
             )
 
