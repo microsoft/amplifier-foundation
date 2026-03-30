@@ -225,14 +225,24 @@ delegate(agent="foundation:bug-hunter", instruction="Why did this fail?",
          context_depth="all", context_scope="full")
 ```
 
-### Git Operations
+### Delegation Quality: Semantic Context
 
-**ALWAYS delegate git operations to `foundation:git-ops`** including:
-- Commits and PRs (creates quality messages with context, has safety protocols)
-- Multi-repo sync operations (fetch, pull, status checks)
-- Branch management and conflict resolution
+Agents that produce artifacts — commit messages, PR descriptions, design docs, bug reports — need to know **WHY**, not just WHAT. A fast model given only `"commit the changes"` produces generic output; one given a semantic summary of what was accomplished produces something meaningful.
 
-When delegating, pass context: what was accomplished, files changed, and intent.
+**Always include in your instruction:**
+- What was accomplished (semantic summary, not just file names or vague directives)
+- Why it was done (fix, feature, refactor — the motivation)
+- What specific output is needed (commit + push, create PR, write design doc, etc.)
+
+Complement with `context_depth`/`context_scope` to reinforce the instruction via conversation history:
+
+| Situation | Recommendation |
+|-----------|----------------|
+| Work just completed | `context_depth="recent"` — recent turns hold the story |
+| Complex multi-step work | `context_depth="all"`, `context_scope="agents"` — full arc needed |
+| Independent task | `context_depth="none"` — clean slate, no prior context |
+
+**Explicit summary in instruction + matching context parameters** is better than either alone. Check each agent's description for its preferred parameters when it has specific requirements.
 
 ---
 
