@@ -578,6 +578,51 @@ class TestRunSessionInSubprocess:
         mock_process.wait.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_timeout_wait_guarded_logs_warning_if_wait_hangs(
+        self, tmp_path: Any, caplog: Any
+    ) -> None:
+        """Test that process.wait() after kill is guarded with a 10s timeout.
+
+        If the process doesn't exit after SIGKILL (zombie, kernel hang), the
+        code should log a warning and still raise TimeoutError rather than
+        blocking indefinitely.
+        """
+        import logging
+
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+        mock_process.kill = MagicMock()
+        mock_process.wait = AsyncMock()
+
+        # First asyncio.wait_for call (process.communicate) times out.
+        # Second asyncio.wait_for call (process.wait guard) also times out,
+        # simulating a process that ignores SIGKILL.
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            with patch(
+                "asyncio.wait_for",
+                side_effect=[asyncio.TimeoutError(), asyncio.TimeoutError()],
+            ):
+                with caplog.at_level(logging.WARNING):
+                    with pytest.raises(TimeoutError, match="timed out after 30s"):
+                        await run_session_in_subprocess(
+                            config=config,
+                            prompt=prompt,
+                            parent_id=parent_id,
+                            project_path=project_path,
+                            timeout=30,
+                        )
+
+        mock_process.kill.assert_called_once()
+        assert "did not exit" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_temp_file_cleanup_on_success(self, tmp_path: Any) -> None:
         """Test that temp file is cleaned up after successful subprocess execution."""
         config: dict[str, Any] = {"provider": "anthropic"}

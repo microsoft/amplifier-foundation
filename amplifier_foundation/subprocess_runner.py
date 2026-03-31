@@ -414,7 +414,13 @@ async def run_session_in_subprocess(
                 )
             except asyncio.TimeoutError:
                 process.kill()
-                await process.wait()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Subprocess %s did not exit within 10s after SIGKILL",
+                        process.pid,
+                    )
                 raise TimeoutError(f"Subprocess session timed out after {timeout}s")
 
             if process.returncode != 0:
