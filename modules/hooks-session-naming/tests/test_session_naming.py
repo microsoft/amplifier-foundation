@@ -119,3 +119,71 @@ def _install_mock_routing(
                 del sys.modules[mod_name]
 
     return cleanup
+
+
+# =============================================================================
+# Task 2: Async fire-and-forget
+# =============================================================================
+
+
+class TestAsyncFireAndForget:
+    """on_orchestrator_complete must return immediately without awaiting the task."""
+
+    @pytest.mark.asyncio
+    async def test_returns_hookresult_without_awaiting_generate_name(
+        self, tmp_path: Path
+    ) -> None:
+        """HookResult is returned before _generate_name completes."""
+        task_finished = asyncio.Event()
+
+        async def slow_generate(*args, **kwargs) -> None:
+            await asyncio.sleep(0.3)
+            task_finished.set()
+
+        hook = _make_hook()
+        hook._generate_name = slow_generate
+        hook._get_session_dir = MagicMock(return_value=tmp_path)
+        # turn_count=1 → current_turn=2 → hits initial_trigger_turn=2
+        hook._load_metadata = MagicMock(return_value={"turn_count": 1})
+
+        from amplifier_core import HookResult
+
+        result = await hook.on_orchestrator_complete(
+            "prompt:complete", {"session_id": "test-session-abc"}
+        )
+
+        assert isinstance(result, HookResult)
+        assert result.action == "continue"
+        # The task should NOT have finished by the time we return
+        assert not task_finished.is_set(), (
+            "on_orchestrator_complete should NOT await _generate_name"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pending_tasks_holds_reference_and_discards_on_done(
+        self, tmp_path: Path
+    ) -> None:
+        """Task is added to _pending_tasks and removed when it completes."""
+        task_started = asyncio.Event()
+
+        async def quick_generate(*args, **kwargs) -> None:
+            task_started.set()
+
+        hook = _make_hook()
+        hook._generate_name = quick_generate
+        hook._get_session_dir = MagicMock(return_value=tmp_path)
+        hook._load_metadata = MagicMock(return_value={"turn_count": 1})
+
+        await hook.on_orchestrator_complete(
+            "prompt:complete", {"session_id": "test-session-def"}
+        )
+
+        assert len(hook._pending_tasks) == 1, "Task must be tracked immediately"
+
+        # Yield to event loop so the task runs and the done-callback fires
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert len(hook._pending_tasks) == 0, (
+            "Task must be removed from _pending_tasks after completion"
+        )

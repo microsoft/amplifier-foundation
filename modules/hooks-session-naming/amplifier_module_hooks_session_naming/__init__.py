@@ -28,6 +28,8 @@ class SessionNamingConfig:
     max_name_length: int = 50
     max_description_length: int = 200
     max_retries: int = 3
+    model_role: str | None = None
+    provider_preferences: list[dict] | None = None
 
 
 INITIAL_NAMING_PROMPT = """You generate names and descriptions for conversation sessions.
@@ -95,15 +97,17 @@ class SessionNamingHook:
         self.coordinator = coordinator
         self.config = config
         self._defer_counts: dict[str, int] = {}
+        self._pending_tasks: set[asyncio.Task] = set()
 
     async def on_orchestrator_complete(
         self, event: str, data: dict[str, Any]
     ) -> HookResult:
         """Handle orchestrator completion - trigger naming if appropriate.
 
-        Naming runs synchronously (awaits the LLM call) to ensure it completes
-        before the session ends. This adds a few seconds to turns where naming
-        happens, but is more reliable than background tasks.
+        Naming runs as a background asyncio task (non-blocking). The task is
+        tracked in self._pending_tasks so it is not garbage-collected by Python
+        3.12+ before it completes. The session:end handler drains any in-flight
+        task before teardown.
         """
         # DEBUG: Emit to events.jsonl so we can trace execution
         await self.coordinator.hooks.emit(
@@ -143,8 +147,11 @@ class SessionNamingHook:
         if current_turn >= self.config.initial_trigger_turn and not has_name:
             defer_count = self._defer_counts.get(session_id, 0)
             if defer_count < self.config.max_retries:
-                # Run naming synchronously to ensure completion
-                await self._generate_name(session_id, session_dir, is_update=False)
+                task = asyncio.create_task(
+                    self._generate_name(session_id, session_dir, is_update=False)
+                )
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
 
         # Description update: has name and at update interval
         elif (
@@ -152,8 +159,11 @@ class SessionNamingHook:
             and current_turn > 0
             and current_turn % self.config.update_interval_turns == 0
         ):
-            # Run description update synchronously
-            await self._generate_name(session_id, session_dir, is_update=True)
+            task = asyncio.create_task(
+                self._generate_name(session_id, session_dir, is_update=True)
+            )
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
 
         return HookResult(action="continue")
 
