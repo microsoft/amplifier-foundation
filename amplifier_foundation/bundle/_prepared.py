@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
     from amplifier_foundation.modules.activator import ModuleActivator
 
+from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFoundError
+
 from amplifier_foundation.spawn_utils import ProviderPreference
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 
@@ -81,7 +83,7 @@ class BundleModuleResolver:
         """
         _hint = profile_hint if profile_hint is not None else source_hint  # noqa: F841
         if module_id not in self._paths:
-            raise ModuleNotFoundError(
+            raise CoreModuleNotFoundError(
                 f"Module '{module_id}' not found in prepared bundle. "
                 f"Available modules: {list(self._paths.keys())}. "
                 f"Use async_resolve() for lazy activation support."
@@ -113,13 +115,13 @@ class BundleModuleResolver:
 
         # Lazy activation path
         if not self._activator:
-            raise ModuleNotFoundError(
+            raise CoreModuleNotFoundError(
                 f"Module '{module_id}' not found in prepared bundle and no activator available. "
                 f"Available modules: {list(self._paths.keys())}"
             )
 
         if not hint:
-            raise ModuleNotFoundError(
+            raise CoreModuleNotFoundError(
                 f"Module '{module_id}' not found and no source hint provided for activation. "
                 f"Available modules: {list(self._paths.keys())}"
             )
@@ -138,7 +140,7 @@ class BundleModuleResolver:
                 return BundleModuleSource(module_path)
             except Exception as e:
                 logger.error(f"Failed to lazy-activate '{module_id}': {e}")
-                raise ModuleNotFoundError(
+                raise CoreModuleNotFoundError(
                     f"Module '{module_id}' not found and activation failed: {e}"
                 ) from e
 

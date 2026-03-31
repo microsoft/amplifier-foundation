@@ -241,6 +241,7 @@ def serialize_subprocess_config(
     module_paths: dict[str, str] | None = None,
     bundle_package_paths: list[str] | None = None,
     sys_paths: list[str] | None = None,
+    mention_mappings: dict[str, str] | None = None,
 ) -> str:
     """Serialize subprocess configuration to a JSON string.
 
@@ -264,6 +265,9 @@ def serialize_subprocess_config(
             Defaults to empty list when None.
         sys_paths: Optional list of additional sys.path entries to inject in
             the child process. Defaults to empty list when None.
+        mention_mappings: Optional mapping of bundle namespace to base path
+            for @mention resolution in the child session. Defaults to empty
+            dict when None.
 
     Returns:
         JSON string containing all fields.
@@ -279,6 +283,7 @@ def serialize_subprocess_config(
         if bundle_package_paths is not None
         else [],
         "sys_paths": sys_paths if sys_paths is not None else [],
+        "mention_mappings": mention_mappings if mention_mappings is not None else {},
     }
     return json.dumps(payload)
 
@@ -311,6 +316,7 @@ def deserialize_subprocess_config(data: str) -> dict[str, Any]:
     payload.setdefault("module_paths", {})
     payload.setdefault("bundle_package_paths", [])
     payload.setdefault("sys_paths", [])
+    payload.setdefault("mention_mappings", {})
 
     return payload
 
@@ -325,6 +331,7 @@ async def run_session_in_subprocess(
     module_paths: dict[str, str] | None = None,
     bundle_package_paths: list[str] | None = None,
     sys_paths: list[str] | None = None,
+    mention_mappings: dict[str, str] | None = None,
 ) -> str:
     """Run an Amplifier session in an isolated subprocess.
 
@@ -350,6 +357,8 @@ async def run_session_in_subprocess(
         bundle_package_paths: Optional list of bundle package root paths.
         sys_paths: Optional list of additional sys.path entries to inject in
             the child process.
+        mention_mappings: Optional mapping of bundle namespace to base path
+            for @mention resolution in the child session.
 
     Returns:
         The output string from the child session (stdout, stripped).
@@ -369,6 +378,7 @@ async def run_session_in_subprocess(
         module_paths=module_paths,
         bundle_package_paths=bundle_package_paths,
         sys_paths=sys_paths,
+        mention_mappings=mention_mappings,
     )
 
     semaphore = _get_semaphore()
@@ -480,11 +490,36 @@ async def _run_child_session(config_path: str) -> str:
     )
 
     # (5) If module_paths non-empty, construct BundleModuleResolver and mount
-    #     on coordinator as 'module-source-resolver' BEFORE initialize()
+    #     on coordinator as 'module-source-resolver' BEFORE initialize().
+    #     Wrap with AppModuleResolver + FoundationSettingsResolver fallback so
+    #     provider modules (provider-anthropic, etc.) configured via user
+    #     settings (~/.amplifier/settings.yaml) can also be resolved.  This
+    #     mirrors what resume_sub_session() does in session_spawner.py.
+    #     Graceful degradation: fall back to bare BundleModuleResolver if
+    #     amplifier_app_cli is not installed (non-CLI environments).
     if module_paths:
-        resolver = BundleModuleResolver(
+        bundle_resolver = BundleModuleResolver(
             {name: Path(path) for name, path in module_paths.items()}
         )
+        try:
+            from amplifier_app_cli.lib.bundle_loader import AppModuleResolver  # type: ignore[import-untyped,import-not-found]
+            from amplifier_app_cli.paths import create_foundation_resolver  # type: ignore[import-untyped,import-not-found]
+
+            resolver = AppModuleResolver(
+                bundle_resolver=bundle_resolver,
+                settings_resolver=create_foundation_resolver(),
+            )
+            logger.debug(
+                "Subprocess child: wrapped BundleModuleResolver with AppModuleResolver "
+                "(settings fallback enabled for provider modules)"
+            )
+        except ImportError:
+            # amplifier_app_cli not available — non-CLI environment, use bare resolver
+            resolver = bundle_resolver
+            logger.debug(
+                "Subprocess child: amplifier_app_cli not available, "
+                "using bare BundleModuleResolver (provider modules from settings unavailable)"
+            )
         await session.coordinator.mount("module-source-resolver", resolver)
 
     # (6) Call session.initialize() BEFORE session.execute()
@@ -495,12 +530,52 @@ async def _run_child_session(config_path: str) -> str:
     await session.initialize()
 
     # (6a) Register capabilities that the in-process spawn path provides but
-    # subprocess children lack.  The most critical is session.working_dir —
-    # without it, tool-filesystem defaults to allowed_write_paths: ["."]
-    # (CWD) which can silently block agents from writing artifacts to paths
-    # outside the working directory.
+    # subprocess children lack.  Ordered from most critical to least.
+    #
+    # session.working_dir: tool-filesystem uses this for path validation.
+    # Without it, writes to absolute paths outside CWD may be blocked.
     session.coordinator.register_capability("session.working_dir", project_path)
-    logger.debug("Subprocess child session initialized, tools mounted on coordinator")
+
+    # self_delegation_depth: tracks recursion depth for delegation loops.
+    # Matches what spawn_sub_session() and resume_sub_session() register.
+    session.coordinator.register_capability("self_delegation_depth", 0)
+
+    # mention_resolver: enables @namespace:path resolution in subprocess agents.
+    # Requires mention_mappings in the payload and amplifier_app_cli installed.
+    mention_mappings: dict[str, str] = payload.get("mention_mappings", {})
+    if mention_mappings:
+        try:
+            from pathlib import Path as _Path
+
+            from amplifier_app_cli.lib.mention_loading.app_resolver import (  # type: ignore[import-untyped,import-not-found]
+                AppMentionResolver,
+            )
+
+            session.coordinator.register_capability(
+                "mention_resolver",
+                AppMentionResolver(
+                    bundle_mappings={k: _Path(v) for k, v in mention_mappings.items()}
+                ),
+            )
+            logger.debug(
+                "Subprocess child: registered AppMentionResolver with %d bundle mappings",
+                len(mention_mappings),
+            )
+        except ImportError:
+            logger.debug(
+                "Subprocess child: amplifier_app_cli not available, "
+                "mention_resolver not registered (@mention resolution unavailable)"
+            )
+
+    # mention_deduplicator: prevents redundant context inclusion within a session.
+    # ContentDeduplicator is available in amplifier_foundation.mentions.
+    from amplifier_foundation.mentions import ContentDeduplicator
+
+    session.coordinator.register_capability(
+        "mention_deduplicator", ContentDeduplicator()
+    )
+
+    logger.debug("Subprocess child session initialized, capabilities registered")
 
     # (7) Wrap execute/cleanup in try/finally
     try:
