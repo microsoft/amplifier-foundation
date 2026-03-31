@@ -1131,3 +1131,116 @@ class TestEnvVarAllowlist:
         assert result["AWS_DEFAULT_REGION"] == "us-east-1"
         assert "MY_INTERNAL_SECRET" not in result
         assert "CORP_DATABASE_URL" not in result
+
+
+class TestChildSessionCapabilities:
+    """Tests that _run_child_session registers the session.working_dir capability."""
+
+    @pytest.mark.asyncio
+    async def test_child_registers_working_dir_capability(self, tmp_path: Any) -> None:
+        """Test that _run_child_session registers session.working_dir on the coordinator.
+
+        Without this capability, tool-filesystem defaults to allowed_write_paths: ['.']
+        which may silently block investigation agents from writing artifacts.
+        """
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+            )
+        )
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            mock_instance.coordinator.register_capability = MagicMock()
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(str(config_file))
+
+        mock_instance.coordinator.register_capability.assert_any_call(
+            "session.working_dir", project_path
+        )
+
+    @pytest.mark.asyncio
+    async def test_working_dir_registered_after_initialize_before_execute(
+        self, tmp_path: Any
+    ) -> None:
+        """Test that session.working_dir is registered AFTER initialize() and BEFORE execute().
+
+        The capability must be available when tools (like tool-filesystem) are first invoked,
+        which happens during execute(). Registering before initialize() is too early
+        (coordinator may be reset); registering after execute() is too late.
+        """
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+            )
+        )
+
+        call_order: list[str] = []
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+
+            async def track_initialize() -> None:
+                call_order.append("initialize")
+
+            async def track_execute(p: str) -> str:
+                call_order.append("execute")
+                return "result"
+
+            async def track_cleanup() -> None:
+                call_order.append("cleanup")
+
+            def track_register_capability(name: str, value: Any) -> None:
+                if name == "session.working_dir":
+                    call_order.append("register_working_dir")
+
+            mock_instance.initialize = track_initialize
+            mock_instance.execute = track_execute
+            mock_instance.cleanup = track_cleanup
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            mock_instance.coordinator.register_capability = track_register_capability
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(str(config_file))
+
+        assert "register_working_dir" in call_order, (
+            "_run_child_session must call coordinator.register_capability('session.working_dir', ...)"
+        )
+        init_idx = call_order.index("initialize")
+        reg_idx = call_order.index("register_working_dir")
+        exec_idx = call_order.index("execute")
+        assert reg_idx > init_idx, (
+            f"register_working_dir (pos {reg_idx}) must come after initialize (pos {init_idx})"
+        )
+        assert reg_idx < exec_idx, (
+            f"register_working_dir (pos {reg_idx}) must come before execute (pos {exec_idx})"
+        )

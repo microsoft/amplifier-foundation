@@ -488,7 +488,19 @@ async def _run_child_session(config_path: str) -> str:
         await session.coordinator.mount("module-source-resolver", resolver)
 
     # (6) Call session.initialize() BEFORE session.execute()
+    logger.debug(
+        "Initializing subprocess child session with %d tools in config",
+        len(config.get("tools", [])),
+    )
     await session.initialize()
+
+    # (6a) Register capabilities that the in-process spawn path provides but
+    # subprocess children lack.  The most critical is session.working_dir —
+    # without it, tool-filesystem defaults to allowed_write_paths: ["."]
+    # (CWD) which can silently block agents from writing artifacts to paths
+    # outside the working directory.
+    session.coordinator.register_capability("session.working_dir", project_path)
+    logger.debug("Subprocess child session initialized, tools mounted on coordinator")
 
     # (7) Wrap execute/cleanup in try/finally
     try:
