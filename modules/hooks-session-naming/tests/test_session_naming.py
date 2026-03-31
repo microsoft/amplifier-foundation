@@ -1,4 +1,5 @@
 """Tests for hooks-session-naming async behavior and model role/provider preferences."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +25,9 @@ def _make_mock_provider() -> MagicMock:
     """Return a mock provider whose complete() returns a text response."""
     provider = MagicMock()
     text_block = MagicMock()
-    text_block.text = '{"action": "set", "name": "Test Session", "description": "A test."}'
+    text_block.text = (
+        '{"action": "set", "name": "Test Session", "description": "A test."}'
+    )
     response = MagicMock()
     response.content = [text_block]
     provider.complete = AsyncMock(return_value=response)
@@ -45,7 +48,9 @@ def _make_coordinator(
     coordinator.mount_points = MagicMock()
     coordinator.mount_points.get = MagicMock(return_value=None)
 
-    _providers = providers if providers is not None else {"provider-1": _make_mock_provider()}
+    _providers = (
+        providers if providers is not None else {"provider-1": _make_mock_provider()}
+    )
     coordinator.get = MagicMock(
         side_effect=lambda key: _providers if key == "providers" else None
     )
@@ -187,3 +192,75 @@ class TestAsyncFireAndForget:
         assert len(hook._pending_tasks) == 0, (
             "Task must be removed from _pending_tasks after completion"
         )
+
+
+# =============================================================================
+# Task 3: Session-end drain
+# =============================================================================
+
+
+class TestSessionEndDrain:
+    """on_session_end must drain in-flight tasks within the 15 s timeout."""
+
+    @pytest.mark.asyncio
+    async def test_on_session_end_awaits_in_flight_task(self) -> None:
+        """on_session_end waits for a pending task that completes quickly."""
+        hook = _make_hook()
+        completed = asyncio.Event()
+
+        async def quick_task() -> None:
+            await asyncio.sleep(0.05)
+            completed.set()
+
+        task = asyncio.create_task(quick_task())
+        hook._pending_tasks.add(task)
+        task.add_done_callback(hook._pending_tasks.discard)
+
+        from amplifier_core import HookResult
+
+        result = await hook.on_session_end("session:end", {})
+
+        assert isinstance(result, HookResult)
+        assert result.action == "continue"
+        assert completed.is_set(), "on_session_end must drain the in-flight task"
+
+    @pytest.mark.asyncio
+    async def test_on_session_end_handles_timeout_gracefully(self) -> None:
+        """on_session_end returns HookResult even when a task times out (15 s)."""
+        hook = _make_hook()
+
+        async def infinite_task() -> None:
+            await asyncio.sleep(999)
+
+        task = asyncio.create_task(infinite_task())
+        hook._pending_tasks.add(task)
+        task.add_done_callback(hook._pending_tasks.discard)
+
+        from amplifier_core import HookResult
+
+        # Patch asyncio.wait_for to immediately raise TimeoutError (no real wait)
+        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            result = await hook.on_session_end("session:end", {})
+
+        assert isinstance(result, HookResult)
+        assert result.action == "continue"
+
+        # Clean up the dangling task
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    @pytest.mark.asyncio
+    async def test_on_session_end_no_pending_returns_immediately(self) -> None:
+        """on_session_end with no pending tasks returns HookResult immediately."""
+        hook = _make_hook()
+        assert len(hook._pending_tasks) == 0
+
+        from amplifier_core import HookResult
+
+        result = await hook.on_session_end("session:end", {})
+
+        assert isinstance(result, HookResult)
+        assert result.action == "continue"

@@ -167,6 +167,23 @@ class SessionNamingHook:
 
         return HookResult(action="continue")
 
+    async def on_session_end(self, event: str, data: dict[str, Any]) -> HookResult:
+        """Drain any in-flight naming tasks before session teardown.
+
+        Waits up to 15 seconds for each pending task. If a task times out or is
+        cancelled, logs at DEBUG and continues — naming is best-effort.
+        """
+        if not self._pending_tasks:
+            return HookResult(action="continue")
+
+        for task in list(self._pending_tasks):
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=15.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                logger.debug("Session naming drain timed out or was cancelled: %s", exc)
+
+        return HookResult(action="continue")
+
     def _get_session_dir(self, session_id: str) -> Path | None:
         """Get session directory path."""
         # Try to get from coordinator's session info
@@ -494,6 +511,16 @@ async def mount(
         hook.on_orchestrator_complete,
         priority=100,
         name="session-naming",
+    )
+
+    # Register for session end to drain any in-flight naming task
+    from amplifier_core.events import SESSION_END
+
+    coordinator.hooks.register(
+        SESSION_END,
+        hook.on_session_end,
+        priority=100,
+        name="session-naming-drain",
     )
 
     return {
