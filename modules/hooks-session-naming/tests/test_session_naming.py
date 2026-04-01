@@ -287,9 +287,13 @@ class TestProviderTimeout:
         )
         hook._load_metadata = MagicMock(return_value={})
 
-        # Patch asyncio.wait_for to immediately raise TimeoutError —
-        # simulates the 10 s timeout without actually waiting
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+        # Replace wait_for with a version that closes the coroutine before
+        # raising, so the GC never sees an unawaited coroutine (no RuntimeWarning)
+        async def fake_wait_for(coro, timeout=None):  # noqa: RUF029
+            coro.close()
+            raise asyncio.TimeoutError
+
+        with patch("asyncio.wait_for", new=fake_wait_for):
             # Must not raise — timeout must be caught inside _generate_name
             await hook._generate_name("session-abc123", tmp_path, is_update=False)
 
