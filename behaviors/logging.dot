@@ -1,8 +1,9 @@
+// Session Logging — records session events to JSONL files for analysis and debugging
 digraph behavior_logging {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-logging — Session logging to JSONL files"
+    label="Session Logging Behavior\nRecords session events to JSONL files for analysis and debugging"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,8 +15,8 @@ digraph behavior_logging {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-logging\n~85 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    hook_hooks_logging [label="hooks-logging\n~49 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    root [label="Session Logging\nJSONL event recording\n~85 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    hook_hooks_logging [label="Logging Hook\nWrites events to session log file\n~49 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
     summary [label="Total: ~134 tok\nhooks: 49", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
 
     root -> hook_hooks_logging

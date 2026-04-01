@@ -1,8 +1,9 @@
+// Agent Topology — all 16 agents with their model roles and description sizes, grouped by capability tier
 digraph agents_topology {
     rankdir=TB
     fontname="Helvetica"
     fontsize=12
-    label="Agents Topology"
+    label="Agent Delegation Topology\nAll 16 agents organized by model tier — fast (lightweight), general (standard), reasoning (deep)"
     labelloc=t
     labeljust=c
     nodesep=0.6
@@ -13,21 +14,28 @@ digraph agents_topology {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    amplifier_smoke_test [label="amplifier-smoke-test\nfast\n~271 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    bug_hunter [label="bug-hunter\ncoding, general\n~190 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-    ecosystem_expert [label="ecosystem-expert\ngeneral\n~368 tok desc", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
-    explorer [label="explorer\ngeneral\n~289 tok desc", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
-    file_ops [label="file-ops\nfast\n~371 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    foundation_expert [label="foundation-expert\ngeneral\n~504 tok desc", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
-    git_ops [label="git-ops\nfast\n~568 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    integration_specialist [label="integration-specialist\ngeneral\n~296 tok desc", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
-    modular_builder [label="modular-builder\ncoding, general\n~458 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-    post_task_cleanup [label="post-task-cleanup\nfast\n~367 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    security_guardian [label="security-guardian\nsecurity-audit, critique, general\n~459 tok desc", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
-    session_analyst [label="session-analyst\nfast\n~887 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    shell_exec [label="shell-exec\nfast\n~365 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    test_coverage [label="test-coverage\ncoding, general\n~190 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-    web_research [label="web-research\nfast\n~376 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    zen_architect [label="zen-architect\nreasoning, general\n~342 tok desc", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+    // Fast-tier agents (lightweight, quick utility tasks)
+    amplifier_smoke_test [label="Amplifier Smoke Test\nValidates shadow environments\nfast · ~271 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    file_ops [label="File Operations\nPrecise file read/write/edit\nfast · ~371 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    git_ops [label="Git & GitHub Ops\nCommits, PRs, branches safely\nfast · ~568 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    post_task_cleanup [label="Post-Task Cleanup\nCodebase hygiene after tasks\nfast · ~367 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    session_analyst [label="Session Analyst\nDebug and repair sessions\nfast · ~887 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    shell_exec [label="Shell Execution\nRuns builds, tests, packages\nfast · ~365 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    web_research [label="Web Research\nLooks up docs and resources\nfast · ~376 tok desc", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+
+    // General-tier agents (standard capability tasks)
+    ecosystem_expert [label="Ecosystem Expert\nCross-repo coordination\ngeneral · ~368 tok desc", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+    explorer [label="Explorer\nDeep codebase reconnaissance\ngeneral · ~289 tok desc", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+    foundation_expert [label="Foundation Expert\nBundle and pattern advisor\ngeneral · ~504 tok desc", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+    integration_specialist [label="Integration Specialist\nAPIs, services, dependencies\ngeneral · ~296 tok desc", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+
+    // Coding-tier agents (code generation and analysis)
+    bug_hunter [label="Bug Hunter\nHypothesis-driven debugging\ncoding, general · ~190 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+    modular_builder [label="Modular Builder\nImplements from specifications\ncoding, general · ~458 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+    test_coverage [label="Test Coverage\nAnalyzes gaps, suggests tests\ncoding, general · ~190 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+
+    // Security and reasoning tier (high-capability tasks)
+    security_guardian [label="Security Guardian\nVulnerability and security review\nsecurity-audit, critique, general · ~459 tok desc", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    zen_architect [label="Zen Architect\nPlans and designs solutions\nreasoning, general · ~342 tok desc", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
 
 }

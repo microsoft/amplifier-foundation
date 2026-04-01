@@ -1,8 +1,9 @@
+// Explorer — deep local-context reconnaissance agent for surveying code, docs, and configuration
 digraph explorer {
     rankdir=TB
     fontname="Helvetica"
     fontsize=12
-    label="explorer — general"
+    label="Explorer Agent\nDeep codebase reconnaissance — surveys code, docs, and configuration"
     labelloc=t
     labeljust=c
     nodesep=0.6
@@ -13,12 +14,12 @@ digraph explorer {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    agent [label="explorer\nmodel_role: general\ndescription: ~289 tok", shape=box, fillcolor="#c8e6c9", style="filled,bold", color="#80cbc4"]
-    tool_tool_filesystem [label="tool-filesystem", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    tool_tool_search [label="tool-search", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    tool_tool_lsp [label="tool-lsp", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    ctx_foundation_context_LANGUAGE_PHILOSOPHY_md [label="LANGUAGE_PHILOSOPHY.md\n~3723 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
-    ctx_foundation_context_shared_common_agent_base_md [label="common-agent-base.md\n~3543 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    agent [label="Explorer\nmodel_role: general\ndescription: ~289 tok", shape=box, fillcolor="#c8e6c9", style="filled,bold", color="#80cbc4"]
+    tool_tool_filesystem [label="File System Access\nNavigate and read files", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_search [label="Code Search\nGrep and glob across files", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_lsp [label="Language Intelligence\nSemantic code analysis (LSP)", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    ctx_foundation_context_LANGUAGE_PHILOSOPHY_md [label="Language Philosophy\nAI-first language choices\n~3723 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    ctx_foundation_context_shared_common_agent_base_md [label="Agent Base Instructions\nShared agent operating rules\n~3543 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
 
     agent -> tool_tool_filesystem
     agent -> tool_tool_search

@@ -1,8 +1,9 @@
+// Streaming UI — live terminal display of thinking blocks, tool calls, and token usage
 digraph behavior_streaming_ui {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-streaming-ui — Streaming UI display for thinking blocks, tool calls, and token usage"
+    label="Streaming UI Behavior\nLive terminal display of thinking blocks, tool calls, and token usage"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,8 +15,8 @@ digraph behavior_streaming_ui {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-streaming-ui\n~95 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    hook_hooks_streaming_ui [label="hooks-streaming-ui\n~44 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    root [label="Streaming Display\nLive thinking and tool UI\n~95 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    hook_hooks_streaming_ui [label="Live Display Hook\nShows thinking, tools, tokens\n~44 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
     summary [label="Total: ~139 tok\nhooks: 44", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
 
     root -> hook_hooks_streaming_ui

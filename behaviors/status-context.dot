@@ -1,8 +1,9 @@
+// Status Context — injects current environment info (datetime, git branch) into agent context
 digraph behavior_status_context {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-status-context — Inject environment and git status into agent context"
+    label="Status Context Behavior\nInjects current environment, datetime, and git status into agent context"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,8 +15,8 @@ digraph behavior_status_context {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-status-context\n~83 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    hook_hooks_status_context [label="hooks-status-context\n~39 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    root [label="Status Context\nInjects env and git info\n~83 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    hook_hooks_status_context [label="Environment Info Hook\nAdds datetime, git branch, platform\n~39 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
     summary [label="Total: ~122 tok\nhooks: 39", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
 
     root -> hook_hooks_status_context

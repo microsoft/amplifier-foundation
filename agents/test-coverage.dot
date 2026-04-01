@@ -1,8 +1,9 @@
+// Test Coverage — analyzes test gaps, suggests test cases, and ensures quality through strategic testing
 digraph test_coverage {
     rankdir=TB
     fontname="Helvetica"
     fontsize=12
-    label="test-coverage — coding, general"
+    label="Test Coverage Agent\nAnalyzes test gaps, suggests cases, and ensures quality through strategic testing"
     labelloc=t
     labeljust=c
     nodesep=0.6
@@ -13,15 +14,15 @@ digraph test_coverage {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    agent [label="test-coverage\nmodel_role: coding, general\ndescription: ~190 tok", shape=box, fillcolor="#c8e6c9", style="filled,bold", color="#80cbc4"]
-    tool_tool_filesystem [label="tool-filesystem", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    tool_tool_search [label="tool-search", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    tool_tool_bash [label="tool-bash", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    tool_tool_lsp [label="tool-lsp", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    ctx_foundation_context_IMPLEMENTATION_PHILOSOPHY_md [label="IMPLEMENTATION_PHILOSOPHY.md\n~4382 tok", shape=note, fillcolor="#ffcdd2", style="filled"]
-    ctx_foundation_context_MODULAR_DESIGN_PHILOSOPHY_md [label="MODULAR_DESIGN_PHILOSOPHY.md\n~1435 tok", shape=note, fillcolor="#fff9c4", style="filled"]
-    ctx_foundation_context_LANGUAGE_PHILOSOPHY_md [label="LANGUAGE_PHILOSOPHY.md\n~3723 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
-    ctx_foundation_context_shared_common_agent_base_md [label="common-agent-base.md\n~3543 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    agent [label="Test Coverage\nmodel_role: coding, general\ndescription: ~190 tok", shape=box, fillcolor="#c8e6c9", style="filled,bold", color="#80cbc4"]
+    tool_tool_filesystem [label="File System Access\nRead test and source files", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_search [label="Code Search\nFind untested code paths", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_bash [label="Shell Commands\nRun test suites and coverage", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_lsp [label="Language Intelligence\nSemantic code analysis (LSP)", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    ctx_foundation_context_IMPLEMENTATION_PHILOSOPHY_md [label="Implementation Philosophy\nRuthless simplicity principles\n~4382 tok", shape=note, fillcolor="#ffcdd2", style="filled"]
+    ctx_foundation_context_MODULAR_DESIGN_PHILOSOPHY_md [label="Modular Design Philosophy\nBricks and studs approach\n~1435 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+    ctx_foundation_context_LANGUAGE_PHILOSOPHY_md [label="Language Philosophy\nAI-first language choices\n~3723 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    ctx_foundation_context_shared_common_agent_base_md [label="Agent Base Instructions\nShared agent operating rules\n~3543 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
 
     agent -> tool_tool_filesystem
     agent -> tool_tool_search

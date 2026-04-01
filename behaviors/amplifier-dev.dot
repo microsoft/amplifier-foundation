@@ -1,8 +1,9 @@
+// Amplifier Dev — multi-repo development workflows, testing patterns, and ecosystem expertise
 digraph behavior_amplifier_dev {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-amplifier-dev — Amplifier ecosystem development behavior - multi-repo workflows, testing patt..."
+    label="Amplifier Dev Behavior\nMulti-repo development workflows, testing patterns, and ecosystem expertise"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,11 +15,11 @@ digraph behavior_amplifier_dev {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-amplifier-dev\n~106 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    agent_foundation_ecosystem_expert [label="foundation:ecosystem-expert\n~368 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-    ctx_foundation_context_amplifier_dev_ecosystem_map_md [label="ecosystem-map.md\n~1067 tok", shape=note, fillcolor="#fff9c4", style="filled"]
-    ctx_foundation_context_amplifier_dev_dev_workflows_md [label="dev-workflows.md\n~1292 tok", shape=note, fillcolor="#fff9c4", style="filled"]
-    ctx_foundation_context_amplifier_dev_testing_patterns_md [label="testing-patterns.md\n~2341 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    root [label="Amplifier Dev Behavior\nMulti-repo development support\n~106 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    agent_foundation_ecosystem_expert [label="Ecosystem Expert\nCross-repo coordination specialist\n~368 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+    ctx_foundation_context_amplifier_dev_ecosystem_map_md [label="Ecosystem Map\nRepo roles and dependencies\n~1067 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+    ctx_foundation_context_amplifier_dev_dev_workflows_md [label="Dev Workflows\nCross-repo change patterns\n~1292 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+    ctx_foundation_context_amplifier_dev_testing_patterns_md [label="Testing Patterns\nLocal override to shadow to CI\n~2341 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
     summary [label="Total: ~5174 tok\nagents: 368, context: 4700", shape=box, fillcolor="#fff9c4", style="filled,rounded", peripheries=2]
 
     root -> agent_foundation_ecosystem_expert

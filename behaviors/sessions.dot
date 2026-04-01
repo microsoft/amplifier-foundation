@@ -1,8 +1,9 @@
+// Session Management — auto-naming, event logging, and a dedicated session analysis agent
 digraph behavior_sessions {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-sessions — Session management - naming, logging, analysis, and debugging"
+    label="Session Management Behavior\nAuto-naming, event logging, and a dedicated session analysis agent"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,9 +15,9 @@ digraph behavior_sessions {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-sessions\n~140 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded,bold", color="#80cbc4"]
-    hook_hooks_session_naming [label="hooks-session-naming\n~43 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
-    agent_foundation_session_analyst [label="foundation:session-analyst\n~887 tok", shape=box, fillcolor="#fff9c4", style="filled,rounded"]
+    root [label="Session Management\nNaming, logging, and analysis\n~140 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded,bold", color="#80cbc4"]
+    hook_hooks_session_naming [label="Auto Session Naming\nNames sessions after 2 turns\n~43 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    agent_foundation_session_analyst [label="Session Analyst\nDebug, repair, and search sessions\n~887 tok", shape=box, fillcolor="#fff9c4", style="filled,rounded"]
     summary [label="Total: ~1204 tok\nagents: 887, hooks: 43, includes: 134", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
 
     root -> hook_hooks_session_naming
@@ -24,14 +25,15 @@ digraph behavior_sessions {
     root -> cluster_inc_0_root [lhead=cluster_inc_0]
     root -> summary [style=dashed, arrowhead=none]
 
+    // Included behavior: Session Logging
     subgraph cluster_inc_0 {
-        label="behavior-logging"
+        label="Session Logging\nJSONL event recording"
         style="filled,rounded"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        cluster_inc_0_root [label="behavior-logging\n~85 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        cluster_inc_0_hook_hooks_logging [label="hooks-logging\n~49 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+        cluster_inc_0_root [label="Session Logging\nJSONL event recording\n~85 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        cluster_inc_0_hook_hooks_logging [label="Logging Hook\nWrites events to session log\n~49 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
         cluster_inc_0_root -> cluster_inc_0_hook_hooks_logging
     }
 

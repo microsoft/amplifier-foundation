@@ -1,8 +1,9 @@
+// Agent Orchestration — delegation engine, skill discovery, and multi-agent collaboration patterns
 digraph behavior_agents {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-agents — Agent orchestration capability with enhanced delegate tool"
+    label="Agent Infrastructure\nDelegation tools, context sharing, and multi-agent collaboration patterns"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,11 +15,18 @@ digraph behavior_agents {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-agents\n~368 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    tool_tool_delegate [label="tool-delegate", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    tool_tool_skills [label="tool-skills", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    ctx_foundation_context_agents_delegation_instructions_md [label="delegation-instructions.md\n~3352 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
-    ctx_foundation_context_agents_multi_agent_patterns_md [label="multi-agent-patterns.md\n~1863 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+    // Behavior root
+    root [label="Agent Infrastructure\nDelegation and multi-agent patterns\n~368 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+
+    // Tools provided by this behavior
+    tool_tool_delegate [label="Delegation Engine\nSpawns and manages sub-agents", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_skills [label="Skills Discovery\nFinds and loads skill knowledge", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+
+    // Context documents loaded
+    ctx_foundation_context_agents_delegation_instructions_md [label="Delegation Instructions\nHow to delegate effectively\n~3352 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    ctx_foundation_context_agents_multi_agent_patterns_md [label="Multi-Agent Patterns\nCollaboration and handoff guides\n~1863 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+
+    // Token cost summary
     summary [label="Total: ~5583 tok\ncontext: 5215", shape=box, fillcolor="#fff9c4", style="filled,rounded", peripheries=2]
 
     root -> tool_tool_delegate

@@ -1,8 +1,9 @@
+// Todo Tracking — task lists with automatic context reminders and visual progress display
 digraph behavior_todo_reminder {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-todo-reminder — Todo tracking with automatic context reminders and visual progress display"
+    label="Todo Tracking Behavior\nTask lists with automatic context reminders and visual progress display"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,10 +15,10 @@ digraph behavior_todo_reminder {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-todo-reminder\n~232 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    tool_tool_todo [label="tool-todo", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    hook_hooks_todo_reminder [label="hooks-todo-reminder\n~33 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
-    hook_hooks_todo_display [label="hooks-todo-display\n~41 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    root [label="Todo Tracking\nTask lists with reminders\n~232 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    tool_tool_todo [label="Todo Tool\nCreate, update, and track tasks", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    hook_hooks_todo_reminder [label="Todo Reminder\nInjects pending tasks into context\n~33 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    hook_hooks_todo_display [label="Progress Display\nVisual progress bar in terminal\n~41 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
     summary [label="Total: ~306 tok\nhooks: 74", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
 
     root -> tool_tool_todo

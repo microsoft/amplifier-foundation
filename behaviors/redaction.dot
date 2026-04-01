@@ -1,8 +1,9 @@
+// Security Redaction — filters secrets and PII from log output to prevent data leaks
 digraph behavior_redaction {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-redaction — Redact secrets and PII from logs"
+    label="Security Redaction Behavior\nFilters secrets and PII from logs to prevent data leaks"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,8 +15,8 @@ digraph behavior_redaction {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-redaction\n~82 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    hook_hooks_redaction [label="hooks-redaction\n~38 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    root [label="Security Redaction\nProtects secrets and PII\n~82 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    hook_hooks_redaction [label="Redaction Filter\nScrubs credentials from output\n~38 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
     summary [label="Total: ~120 tok\nhooks: 38", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
 
     root -> hook_hooks_redaction

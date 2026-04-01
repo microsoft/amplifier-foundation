@@ -1,8 +1,9 @@
+// Legacy Tasks — backwards-compatible task tool for older bundles (prefer agents behavior for new work)
 digraph behavior_tasks {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-tasks — Legacy task tool behavior for backwards compatibility"
+    label="Legacy Tasks Behavior\nBackwards-compatible task tool (prefer 'agents' behavior for new work)"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,10 +15,10 @@ digraph behavior_tasks {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-tasks\n~155 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    tool_tool_task [label="tool-task", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    ctx_foundation_context_agents_delegation_instructions_md [label="delegation-instructions.md\n~3352 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
-    ctx_foundation_context_agents_multi_agent_patterns_md [label="multi-agent-patterns.md\n~1863 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+    root [label="Legacy Tasks\nBackwards-compatible task tool\n~155 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    tool_tool_task [label="Task Tool (Legacy)\nOlder delegation mechanism", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    ctx_foundation_context_agents_delegation_instructions_md [label="Delegation Instructions\nHow to delegate effectively\n~3352 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    ctx_foundation_context_agents_multi_agent_patterns_md [label="Multi-Agent Patterns\nCollaboration and handoff guides\n~1863 tok", shape=note, fillcolor="#fff9c4", style="filled"]
     summary [label="Total: ~5370 tok\ncontext: 5215", shape=box, fillcolor="#fff9c4", style="filled,rounded", peripheries=2]
 
     root -> tool_tool_task

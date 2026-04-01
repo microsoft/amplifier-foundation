@@ -1,8 +1,9 @@
+// Progress Monitor — detects when the agent is stuck in analysis loops and nudges it forward
 digraph behavior_progress_monitor {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="behavior-progress-monitor — Detects analysis paralysis patterns and injects corrective prompts"
+    label="Progress Monitor Behavior\nDetects analysis paralysis and nudges the agent to make progress"
     labelloc=t
     labeljust=c
     compound=true
@@ -14,8 +15,8 @@ digraph behavior_progress_monitor {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root [label="behavior-progress-monitor\n~190 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
-    hook_hooks_progress_monitor [label="hooks-progress-monitor\n~53 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    root [label="Progress Monitor\nDetects stuck analysis loops\n~190 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    hook_hooks_progress_monitor [label="Progress Hook\nWarns after 30 reads with 0 writes\n~53 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
     summary [label="Total: ~243 tok\nhooks: 53", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
 
     root -> hook_hooks_progress_monitor
