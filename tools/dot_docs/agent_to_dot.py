@@ -38,6 +38,18 @@ _COLOR_DELEGATION = "#c8e6c9"  # green — delegation target nodes
 _COLOR_LEGEND_FILL = "white"
 _COLOR_LEGEND_BORDER = "#cccccc"
 
+# Topology node fill colours keyed by model_role value
+_ROLE_COLORS: dict[str, str] = {
+    "reasoning": "#80cbc4",
+    "coding": "#c8e6c9",
+    "fast": "#bbdefb",
+    "general": "#e0e0e0",
+    "creative": "#e1bee7",
+    "critique": "#fff9c4",
+    "security-audit": "#ffe0b2",
+}
+_DEFAULT_ROLE_COLOR = "#e0e0e0"
+
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -196,20 +208,105 @@ def agent_to_dot(md_path: str | Path, *, repo_root: Path | None = None) -> str:
     return "\n".join(out)
 
 
-def agents_topology_dot(repo_root: str | Path) -> str:  # noqa: ARG001
-    """Generate a topology DOT diagram for all agents in a repo.
+def agents_topology_dot(agents_dir: str | Path) -> str:
+    """Generate a delegation topology DOT diagram for all agents in a directory.
 
-    .. note::
-        This function is a placeholder for Task 9.  Calling it raises
-        :exc:`NotImplementedError`.
+    Scans *agents_dir* for ``.md`` files, parses each one, and builds a
+    directed graph where nodes are agents (coloured by ``model_role``) and
+    edges represent delegation relationships extracted from each agent body.
+
+    An edge is drawn from agent *A* to agent *B* when agent *A*'s body
+    contains a ``namespace:agent-name`` pattern (via
+    :func:`~dot_docs.frontmatter.extract_delegation_targets`) whose *name*
+    part matches the ``meta.name`` of an agent present in *agents_dir*.
 
     Args:
-        repo_root: Repository root containing an ``agents/`` directory.
+        agents_dir: Path to a directory containing agent ``.md`` files.
 
-    Raises:
-        NotImplementedError: Always — implementation deferred to Task 9.
+    Returns:
+        Complete, valid DOT string suitable for passing to ``dot -Tsvg``.
     """
-    raise NotImplementedError("agents_topology_dot() is not yet implemented (Task 9)")
+    agents_dir = Path(agents_dir)
+
+    # ── Collect agent files ───────────────────────────────────────────────
+    agent_files = sorted(agents_dir.glob("*.md"))
+
+    # ── Parse each agent ────────────────────────────────────────────────
+    agents: list[dict] = []
+    for f in agent_files:
+        data, body = parse_frontmatter(f)
+        meta: dict = data.get("meta") or {}
+        name: str = meta.get("name") or f.stem
+        description: str = meta.get("description") or ""
+        model_role_raw = data.get("model_role") or meta.get("model_role") or ""
+        delegation_targets: list[str] = extract_delegation_targets(body) if body else []
+        agents.append(
+            {
+                "name": name,
+                "model_role": model_role_raw,
+                "description": description,
+                "delegation_targets": delegation_targets,
+            }
+        )
+
+    # Build a lookup of known agent names
+    known_names: set[str] = {a["name"] for a in agents}
+
+    # ── Build nodes and edges ───────────────────────────────────────────
+    node_lines: list[str] = []
+    edge_lines: list[str] = []
+
+    for agent in agents:
+        node_id = _sanitize_id(agent["name"])
+        role_raw = agent["model_role"]
+        role_str = _format_model_role(role_raw)
+
+        # Determine fill colour from the primary (first) model_role value
+        primary_role = role_raw[0] if isinstance(role_raw, list) else str(role_raw)
+        fill_color = _ROLE_COLORS.get(str(primary_role), _DEFAULT_ROLE_COLOR)
+
+        desc_tokens = estimate_tokens(agent["description"])
+        label = _q(f"{agent['name']}\\n{role_str}\\n~{desc_tokens} tok desc")
+        node_lines.append(
+            f"    {node_id} [label={label}, shape=box,"
+            f' fillcolor="{fill_color}", style="filled,rounded"]'
+        )
+
+        # Emit edges for delegation targets that resolve to known agents
+        for target in agent["delegation_targets"]:
+            target_name = target.split(":", 1)[1] if ":" in target else target
+            if target_name in known_names:
+                target_id = _sanitize_id(target_name)
+                edge_lines.append(f"    {node_id} -> {target_id}")
+
+    # ── Assemble body ──────────────────────────────────────────────────────
+    body_str = "\n".join(node_lines + [""] + edge_lines)
+
+    # Source hash derived from structural body
+    structural_hash = hashlib.sha256(body_str.encode()).hexdigest()
+
+    # ── Full graph ───────────────────────────────────────────────────────────
+    out: list[str] = [
+        "digraph agents_topology {",
+        "    rankdir=TB",
+        '    fontname="Helvetica"',
+        "    fontsize=12",
+        '    label="Agents Topology"',
+        "    labelloc=t",
+        "    labeljust=c",
+        "    nodesep=0.6",
+        "    ranksep=0.7",
+        '    bgcolor="white"',
+        f'    source_hash="{structural_hash}"',
+        "",
+        '    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]',
+        '    edge [fontname="Helvetica", fontsize=9]',
+        "",
+        body_str,
+        "}",
+    ]
+
+    return "\n".join(out)
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

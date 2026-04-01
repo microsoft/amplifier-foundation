@@ -653,11 +653,84 @@ class TestRealFileOps:
         assert 'source_hash="' in dot
 
 
-# ── Test: agents_topology_dot placeholder ────────────────────────────────────
+# ── Test: agents_topology_dot ──────────────────────────────────────────────────────
+
+
+def _make_topology_agent(
+    tmp_path: Path,
+    name: str,
+    model_role: str = "general",
+    description: str = "An agent.",
+    body: str = "",
+) -> None:
+    """Create a minimal agent .md in tmp_path for topology tests."""
+    content = f"""\
+---
+meta:
+  name: {name}
+  description: "{description}"
+model_role: {model_role}
+---
+
+{body}
+"""
+    (tmp_path / f"{name}.md").write_text(content)
 
 
 class TestAgentsTopologyDot:
-    def test_agents_topology_dot_raises_not_implemented(self) -> None:
-        """agents_topology_dot() raises NotImplementedError (Task 9 placeholder)."""
-        with pytest.raises(NotImplementedError):
-            agents_topology_dot(REPO_ROOT)
+    def test_minimal_agents_dir(self, tmp_path: Path) -> None:
+        """2 agents where alpha delegates to beta → valid DOT with both node names."""
+        _make_topology_agent(tmp_path, "alpha", body="Delegate to ns:beta for help.")
+        _make_topology_agent(tmp_path, "beta")
+        dot = agents_topology_dot(tmp_path)
+        assert isinstance(dot, str)
+        assert "digraph" in dot
+        assert dot.strip().endswith("}")
+        assert "alpha" in dot
+        assert "beta" in dot
+
+    def test_delegation_edges(self, tmp_path: Path) -> None:
+        """orchestrator delegates to worker → edge exists in DOT output."""
+        _make_topology_agent(
+            tmp_path,
+            "orchestrator",
+            model_role="reasoning",
+            body="Delegate to foundation:worker for execution.",
+        )
+        _make_topology_agent(tmp_path, "worker", model_role="coding")
+        dot = agents_topology_dot(tmp_path)
+        assert "orchestrator" in dot
+        assert "worker" in dot
+        assert "->" in dot
+
+    def test_island_agents_included(self, tmp_path: Path) -> None:
+        """Agent with no delegation references still appears as a node."""
+        _make_topology_agent(tmp_path, "solo", body="I work alone.")
+        dot = agents_topology_dot(tmp_path)
+        assert "solo" in dot
+        assert "digraph" in dot
+
+    @pytest.mark.skipif(
+        not AGENTS_DIR.exists(),
+        reason="agents/ directory not found",
+    )
+    def test_real_agents_dir(self) -> None:
+        """Real foundation agents/ dir → valid DOT with zen-architect and explorer."""
+        dot = agents_topology_dot(AGENTS_DIR)
+        assert isinstance(dot, str)
+        assert "digraph" in dot
+        assert dot.strip().endswith("}")
+        assert 'source_hash="' in dot
+        assert "zen-architect" in dot
+        assert "explorer" in dot
+        assert "agents_topology" in dot
+        assert "Agents Topology" in dot
+
+    def test_source_hash_deterministic(self, tmp_path: Path) -> None:
+        """Same input directory → same source_hash on every call."""
+        _make_topology_agent(tmp_path, "stable", body="Stable agent content.")
+        _make_topology_agent(tmp_path, "helper", body="Helper content.")
+        dot1 = agents_topology_dot(tmp_path)
+        dot2 = agents_topology_dot(tmp_path)
+        assert dot1 == dot2
+        assert 'source_hash="' in dot1
