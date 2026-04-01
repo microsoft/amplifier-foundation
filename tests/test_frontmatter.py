@@ -7,6 +7,7 @@ from dot_docs.frontmatter import (
     extract_mentions,
     parse_frontmatter,
 )
+from dot_docs.frontmatter import resolve_local_mention
 
 
 class TestParseFrontmatter:
@@ -141,3 +142,48 @@ class TestExtractDelegationTargets:
         # Inline-code targets must be excluded
         assert "lsp:code-navigator" not in targets
         assert "python-dev:code-intel" not in targets
+
+
+class TestResolveLocalMention:
+    """Tests for resolve_local_mention()."""
+
+    def test_resolves_existing_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "context" / "file.md"
+        f.parent.mkdir(parents=True)
+        f.write_text("content")
+        result = resolve_local_mention("@foundation:context/file.md", tmp_path)
+        assert result == f.resolve()
+
+    def test_resolves_with_md_fallback(self, tmp_path: Path) -> None:
+        f = tmp_path / "context" / "file.md"
+        f.parent.mkdir(parents=True)
+        f.write_text("content")
+        result = resolve_local_mention("@foundation:context/file", tmp_path)
+        assert result == f.resolve()
+
+    def test_resolves_yaml_fallback(self, tmp_path: Path) -> None:
+        f = tmp_path / "behaviors" / "agents.yaml"
+        f.parent.mkdir(parents=True)
+        f.write_text("bundle:\n  name: test\n")
+        result = resolve_local_mention("@foundation:behaviors/agents", tmp_path)
+        assert result == f.resolve()
+
+    def test_nonexistent_returns_none(self, tmp_path: Path) -> None:
+        result = resolve_local_mention("@foundation:nonexistent/file.md", tmp_path)
+        assert result is None
+
+    def test_no_namespace_returns_none(self, tmp_path: Path) -> None:
+        result = resolve_local_mention("@justfile.md", tmp_path)
+        assert result is None
+
+    def test_not_mention_returns_none(self, tmp_path: Path) -> None:
+        result = resolve_local_mention("foundation:context/file.md", tmp_path)
+        assert result is None
+
+    def test_real_repo_mention(self) -> None:
+        repo = Path(__file__).parent.parent
+        result = resolve_local_mention(
+            "@foundation:context/agents/delegation-instructions.md", repo
+        )
+        assert result is not None
+        assert result.exists()

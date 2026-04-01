@@ -96,6 +96,36 @@ def extract_delegation_targets(text: str) -> list[str]:
     return targets
 
 
+def resolve_local_mention(mention: str, repo_root: Path) -> Path | None:
+    """Resolve an @namespace:path mention to a local file.
+
+    Tries the path as-is under repo_root, then with .md, .yaml,
+    and .yml suffixes appended.
+
+    Returns:
+        Resolved absolute Path, or None if no file found.
+    """
+    if not mention.startswith("@"):
+        return None
+
+    bare = mention[1:]  # strip leading @
+    if ":" not in bare:
+        return None
+
+    _namespace, rel_path = bare.split(":", 1)
+
+    candidates = [
+        repo_root / rel_path,
+        repo_root / f"{rel_path}.md",
+        repo_root / f"{rel_path}.yaml",
+        repo_root / f"{rel_path}.yml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
 def _strip_code(text: str) -> str:
     """Remove fenced and inline code blocks from text."""
     cleaned = re.sub(r"```[\s\S]*?```", "", text)
