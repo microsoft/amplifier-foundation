@@ -1,0 +1,38 @@
+digraph foundation_expert_behavior {
+    rankdir=LR
+    fontname="Helvetica"
+    fontsize=12
+    label="foundation-expert-behavior — Expert consultant for bundle composition, patterns, and building AI applications"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="cd4682f978d225f7d2b15d32cf6595ecb21eb1652c5b6636a687ee6c3962358c"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    root [label="foundation-expert-behavior\n~132 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    agent_foundation_foundation_expert [label="foundation:foundation-expert\n~504 tok", shape=box, fillcolor="#fff9c4", style="filled,rounded"]
+    ctx_foundation_context_bundle_awareness_md [label="bundle-awareness.md\n~504 tok", shape=note, fillcolor="#c8e6c9", style="filled"]
+    summary [label="Total: ~1140 tok\nagents: 504, context: 504", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
+
+    root -> agent_foundation_foundation_expert
+    root -> ctx_foundation_context_bundle_awareness_md
+    root -> summary [style=dashed, arrowhead=none]
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_root [label="Bundle Root", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        leg_agent [label="Agent", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        leg_ctx [label="Context File", shape=note, fillcolor="#e1bee7", style="filled,rounded"]
+        leg_root -> leg_agent -> leg_ctx [style=invis]
+    }
+}

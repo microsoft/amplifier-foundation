@@ -1,0 +1,40 @@
+digraph file_ops {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="file-ops — fast"
+    labelloc=t
+    labeljust=c
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="42076e4bce3954a17db61d5b25a82178eeb6735dbc5cd9bf68ac9ab2fe697f4e"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    agent [label="file-ops\nmodel_role: fast\ndescription: ~371 tok", shape=box, fillcolor="#c8e6c9", style="filled,bold", color="#80cbc4"]
+    tool_tool_filesystem [label="tool-filesystem", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_search [label="tool-search", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    ctx_foundation_context_shared_common_agent_base_md [label="common-agent-base.md\n~3543 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    del_file_line [label="file:line", shape=box, fillcolor="#c8e6c9", style="filled,rounded,dashed"]
+
+    agent -> tool_tool_filesystem
+    agent -> tool_tool_search
+    agent -> ctx_foundation_context_shared_common_agent_base_md
+    agent -> del_file_line [style=dashed]
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="Agent", shape=box, fillcolor="#80cbc4", style="filled,bold"]
+        leg_tool [label="Tool", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        leg_ctx [label="Context File", shape=note, fillcolor="#e1bee7", style="filled,rounded"]
+        leg_del [label="Delegation Target", shape=box, fillcolor="#c8e6c9", style="filled,rounded,dashed"]
+        leg_agent -> leg_tool -> leg_ctx -> leg_del [style=invis]
+    }
+}
