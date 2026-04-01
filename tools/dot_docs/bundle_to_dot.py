@@ -92,11 +92,12 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     name: str = bundle_info.get("name") or yaml_path.stem
     graph_id = _sanitize_id(name)
 
-    # Body token cost — for .yaml files use raw content; for .md use body text
-    raw_content = yaml_path.read_text(encoding="utf-8")
-    body_source = body if body else raw_content
-    body_tokens = estimate_tokens(body_source)
-    body_color = color_tier(body_tokens, "bundle_body")
+    # Body token cost — only the markdown body counts as "instruction" (system prompt).
+    # Pure YAML behavior files have no markdown body, so no instruction token cost.
+    if body:
+        body_tokens = estimate_tokens(body)
+    else:
+        body_tokens = 0
 
     # ── Extract elements ──────────────────────────────────────────────────────
     tools: list[dict] = data.get("tools") or []
@@ -118,15 +119,21 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     # ── Root node ─────────────────────────────────────────────────────────────
     has_includes = bool(includes)
     root_style = '"filled,rounded,bold"' if has_includes else '"filled,rounded"'
-    root_label = _q(f"{name}\\n~{body_tokens} tok")
+    # Show instruction token cost only when there is a markdown body
+    if body_tokens > 0:
+        root_label = _q(f"{name}\\ninstruction: ~{body_tokens} tok")
+    else:
+        root_label = _q(name)
     node_lines.append(
         f"    root [label={root_label}, shape=box,"
-        f' fillcolor="{body_color}", style={root_style},'
+        f' fillcolor="{_COLOR_BUNDLE_ROOT}", style={root_style},'
         f' color="{_COLOR_BUNDLE_ROOT}"]'
     )
 
     total_tokens = body_tokens
-    token_breakdown: dict[str, int] = {"body": body_tokens}
+    token_breakdown: dict[str, int] = {}
+    if body_tokens > 0:
+        token_breakdown["instruction"] = body_tokens
 
     # ── Tool nodes ─────────────────────────────────────────────────────────────
     if tools:
@@ -147,17 +154,13 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     for i, hook in enumerate(hooks):
         module = hook.get("module") or f"hook_{i}"
         hid = f"hook_{_sanitize_id(module)}"
-        source = str(hook.get("source") or "")
-        config_str = str(hook.get("config") or "")
-        hook_tok = estimate_tokens(module + source + config_str)
-        label = _q(f"{module}\\n~{hook_tok} tok")
+        # Hooks contribute ~0 tokens to LLM requests — show name only, no tok label
+        label = _q(module)
         node_lines.append(
             f"    {hid} [label={label}, shape=box,"
             f' fillcolor="{_COLOR_HOOK}", style="filled,rounded"]'
         )
         edge_lines.append(f"    root -> {hid}")
-        total_tokens += hook_tok
-        token_breakdown["hooks"] = token_breakdown.get("hooks", 0) + hook_tok
 
     # ── Agent reference nodes ─────────────────────────────────────────────────
     if agent_includes:
@@ -165,11 +168,11 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     for ref in agent_includes:
         aid = f"agent_{_sanitize_id(ref)}"
         agent_tok = _estimate_agent_tokens(ref, repo_root)
-        agent_color = color_tier(agent_tok, "agent_description")
+        # Fixed green color — token cost shown as text label, not color override
         label = _q(f"{ref}\\n~{agent_tok} tok")
         node_lines.append(
             f"    {aid} [label={label}, shape=box,"
-            f' fillcolor="{agent_color}", style="filled,rounded"]'
+            f' fillcolor="{_COLOR_AGENT_BASE}", style="filled,rounded"]'
         )
         edge_lines.append(f"    root -> {aid}")
         total_tokens += agent_tok
@@ -185,12 +188,12 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
             continue
         ctx_seen.add(ctx_id)
         ctx_tok = _estimate_context_tokens(ref, repo_root)
-        ctx_color = color_tier(ctx_tok, "context_file")
+        # Fixed purple color — token cost shown as text label, not color override
         short_label = _short_path(ref)
         label = _q(f"{short_label}\\n~{ctx_tok} tok")
         node_lines.append(
             f"    {ctx_id} [label={label}, shape=note,"
-            f' fillcolor="{ctx_color}", style="filled"]'
+            f' fillcolor="{_COLOR_CONTEXT}", style="filled"]'
         )
         edge_lines.append(f"    root -> {ctx_id}")
         total_tokens += ctx_tok
@@ -205,12 +208,12 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
             continue
         ctx_seen.add(ctx_id)
         ctx_tok = _estimate_context_tokens(mention, repo_root)
-        ctx_color = color_tier(ctx_tok, "context_file")
+        # Fixed purple color — token cost shown as text label, not color override
         short_label = _short_path(mention)
         label = _q(f"{short_label}\\n~{ctx_tok} tok")
         node_lines.append(
             f"    {ctx_id} [label={label}, shape=note,"
-            f' fillcolor="{ctx_color}", style="filled"]'
+            f' fillcolor="{_COLOR_CONTEXT}", style="filled"]'
         )
         edge_lines.append(f"    root -> {ctx_id} [style=dashed]")
         total_tokens += ctx_tok
@@ -219,21 +222,19 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     # ── Session config node ───────────────────────────────────────────────────
     if session_cfg:
         types_used.add("session")
-        sess_tok = estimate_tokens(str(session_cfg))
+        # Session config does not contribute tokens to LLM requests — no tok label
         orch_module = ""
         if isinstance(session_cfg.get("orchestrator"), dict):
             orch_module = session_cfg["orchestrator"].get("module") or ""
         if orch_module:
-            label = _q(f"session: {orch_module}\\n~{sess_tok} tok")
+            label = _q(f"session: {orch_module}")
         else:
-            label = _q(f"session\\n~{sess_tok} tok")
+            label = _q("session")
         node_lines.append(
             f"    session_cfg [label={label}, shape=box,"
             f' fillcolor="{_COLOR_SESSION}", style="filled,rounded,dotted"]'
         )
         edge_lines.append("    root -> session_cfg")
-        total_tokens += sess_tok
-        token_breakdown["session"] = sess_tok
 
     # ── Local/external includes ───────────────────────────────────────────────
     local_cluster_lines: list[str] = []
@@ -270,17 +271,23 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
             )
             edge_lines.append(f"    root -> {eid}")
 
-    # ── Summary node ──────────────────────────────────────────────────────────
-    breakdown_parts = [
-        f"{k}: {v}" for k, v in sorted(token_breakdown.items()) if k != "body" and v > 0
-    ]
-    summary_color = color_tier(total_tokens, "all_context")
-    summary_label = f"Total: ~{total_tokens} tok"
-    if breakdown_parts:
-        summary_label += "\\n" + ", ".join(breakdown_parts)
+    # ── Summary node ─────────────────────────────────────────────────────────────
+    # Build breakdown — only include categories with non-zero tokens
+    breakdown_lines: list[str] = []
+    if token_breakdown.get("instruction", 0) > 0:
+        breakdown_lines.append(f"Instruction: ~{token_breakdown['instruction']} tok")
+    if token_breakdown.get("context", 0) > 0:
+        breakdown_lines.append(f"Context files: ~{token_breakdown['context']} tok")
+    if token_breakdown.get("agents", 0) > 0:
+        breakdown_lines.append(f"Agent descriptions: ~{token_breakdown['agents']} tok")
+    sep = "\u2500" * 13  # "─────────────"
+    summary_label = f"Per-Request Token Estimate\\n~{total_tokens} tok total (local)"
+    if breakdown_lines:
+        summary_label += f"\\n{sep}\\n" + "\\n".join(breakdown_lines)
+    summary_label += "\\n(excludes tools, external)"
     node_lines.append(
         f"    summary [label={_q(summary_label)}, shape=box,"
-        f' fillcolor="{summary_color}", style="filled,rounded",'
+        f' fillcolor="{_COLOR_SUMMARY}", style="filled,rounded",'
         " peripheries=2]"
     )
     edge_lines.append("    root -> summary [style=dashed, arrowhead=none]")
@@ -711,11 +718,11 @@ def _render_behavior_cluster(
     lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
     lines.append("")
 
-    body_color = color_tier(body_tokens, "bundle_body")
-    root_label = _q(f"{name}\\n~{body_tokens} tok")
+    # Included behaviors are pure YAML — no instruction body, no tok label
+    root_label = _q(name)
     lines.append(
         f"        {root_id} [label={root_label}, shape=box,"
-        f' fillcolor="{body_color}", style="filled,rounded"]'
+        f' fillcolor="{_COLOR_BUNDLE_ROOT}", style="filled,rounded"]'
     )
 
     # Tools
@@ -730,34 +737,29 @@ def _render_behavior_cluster(
         )
         lines.append(f"        {root_id} -> {tid}")
 
-    # Hooks
+    # Hooks — no token label (hooks contribute ~0 tokens to LLM requests)
     hooks: list[dict] = data.get("hooks") or []
     for i, hook in enumerate(hooks):
         module = hook.get("module") or f"hook_{i}"
         hid = f"{cluster_id}_hook_{_sanitize_id(module)}"
-        source = str(hook.get("source") or "")
-        config_str = str(hook.get("config") or "")
-        hook_tok = estimate_tokens(module + source + config_str)
-        total_tokens += hook_tok
-        label = _q(f"{module}\\n~{hook_tok} tok")
+        label = _q(module)
         lines.append(
             f"        {hid} [label={label}, shape=box,"
             f' fillcolor="{_COLOR_HOOK}", style="filled,rounded"]'
         )
         lines.append(f"        {root_id} -> {hid}")
 
-    # Agent references
+    # Agent references — fixed green color
     agents_info: dict = data.get("agents") or {}
     agent_includes: list[str] = agents_info.get("include") or []
     for ref in agent_includes:
         aid = f"{cluster_id}_agent_{_sanitize_id(ref)}"
         agent_tok = _estimate_agent_tokens(ref, repo_root)
         total_tokens += agent_tok
-        agent_color = color_tier(agent_tok, "agent_description")
         label = _q(f"{ref}\\n~{agent_tok} tok")
         lines.append(
             f"        {aid} [label={label}, shape=box,"
-            f' fillcolor="{agent_color}", style="filled,rounded"]'
+            f' fillcolor="{_COLOR_AGENT_BASE}", style="filled,rounded"]'
         )
         lines.append(f"        {root_id} -> {aid}")
 

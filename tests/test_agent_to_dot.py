@@ -758,3 +758,61 @@ class TestAllAgents:
         assert dot.startswith("digraph ")
         assert 'source_hash="' in dot
         assert "}" in dot
+
+
+# ── Test: fixed colors in agent diagrams ─────────────────────────────────────────────────────────
+
+
+class TestFixedColorsInAgentDiagram:
+    """agent_to_dot uses fixed type colors, not tier colors."""
+
+    def test_central_node_uses_fixed_teal_fillcolor(self, tmp_path: Path) -> None:
+        """Central agent node fillcolor is always fixed teal #80cbc4, not a tier color."""
+        # Long description: >500 tokens → yellow tier (#fff9c4) if tier-based coloring
+        long_desc = "Analyze and design system architecture. " * 55  # ~550 tokens
+        f = _make_agent_md(
+            tmp_path,
+            f"""---
+meta:
+  name: big-desc-agent
+  description: '{long_desc}'
+model_role: reasoning
+---
+""",
+        )
+        dot = agent_to_dot(f)
+        # fillcolor="#80cbc4" must appear for the central agent node
+        assert 'fillcolor="#80cbc4"' in dot, (
+            "Central agent node should use fixed teal fillcolor #80cbc4, not a tier color"
+        )
+        # Yellow tier must NOT appear as any fillcolor
+        assert 'fillcolor="#fff9c4"' not in dot, (
+            "Central node must not use yellow tier fillcolor #fff9c4"
+        )
+
+    def test_context_mention_node_uses_fixed_purple_color(self, tmp_path: Path) -> None:
+        """Context mention nodes always use fixed purple #e1bee7, not green tier for 0-token.
+
+        The legend always shows #e1bee7 (1 occurrence); after the fix the actual context
+        node should contribute a SECOND occurrence via fillcolor on the node itself.
+        """
+        f = _make_agent_md(
+            tmp_path,
+            """\
+---
+meta:
+  name: purple-ctx-test
+  description: "Test agent."
+model_role: fast
+---
+
+See @foundation:context/nonexistent-file.md for details.
+""",
+        )
+        dot = agent_to_dot(f)
+        # Legend contributes 1 occurrence; the actual context node must add a 2nd
+        count = dot.count("#e1bee7")
+        assert count >= 2, (
+            f"Expected context mention node to use #e1bee7 (found only {count} occurrence(s)). "
+            "Actual node must also have fillcolor='#e1bee7', not just the legend."
+        )

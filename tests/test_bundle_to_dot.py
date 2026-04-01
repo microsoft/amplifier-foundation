@@ -299,9 +299,9 @@ class TestRealBehaviorAgentsYaml:
         assert "Legend" in dot
 
     def test_agents_yaml_has_summary(self) -> None:
-        """Summary node is present showing total token estimate."""
+        """Summary node is present showing per-request token estimate."""
         dot = bundle_to_dot(self.BEHAVIOR, repo_root=REPO_ROOT)
-        assert "Total" in dot
+        assert "Per-Request" in dot
         assert "tok" in dot
 
 
@@ -595,3 +595,147 @@ class TestAllBehaviors:
         assert dot.startswith("digraph ")
         assert 'source_hash="' in dot
         assert "}" in dot
+
+
+# ── Test: fixed colors and corrected token cost model ─────────────────────────────────────────────
+
+
+class TestFixedColorsAndTokenModel:
+    """Fixed type colors (no tier overrides) and corrected token cost model."""
+
+    def test_hook_node_label_has_no_token_count(self, tmp_path: Path) -> None:
+        """Hook nodes should show module name only — no '~N tok' label."""
+        import re
+
+        f = _make_yaml(
+            tmp_path,
+            """
+bundle:
+  name: hook-no-tok
+hooks:
+  - module: hooks-redaction
+    source: git+https://github.com/example/hooks@main
+""",
+        )
+        dot = bundle_to_dot(f, repo_root=tmp_path)
+        assert "hooks-redaction" in dot
+        # hook node id is hook_hooks_redaction — its label must not contain "tok"
+        hook_match = re.search(r'hook_hooks_redaction \[label="([^"]+)"', dot)
+        assert hook_match is not None, "Hook node definition not found in DOT"
+        label = hook_match.group(1)
+        assert "tok" not in label, (
+            f"Hook node label should not contain 'tok', got: {label!r}"
+        )
+
+    def test_pure_yaml_root_node_no_token_label(self, tmp_path: Path) -> None:
+        """Pure YAML behavior root node should NOT show '~N tok'."""
+        import re
+
+        f = _make_yaml(
+            tmp_path,
+            """
+bundle:
+  name: pure-yaml-beh
+hooks:
+  - module: hooks-redaction
+    source: git+https://github.com/example/hooks@main
+""",
+        )
+        dot = bundle_to_dot(f, repo_root=tmp_path)
+        root_match = re.search(r'root \[label="([^"]+)"', dot)
+        assert root_match is not None, "Root node definition not found in DOT"
+        label = root_match.group(1)
+        assert "tok" not in label, (
+            f"Pure YAML root node should not show token count, got: {label!r}"
+        )
+
+    def test_md_bundle_root_shows_instruction_label(self, tmp_path: Path) -> None:
+        """.md bundle with body → root shows 'instruction: ~N tok'."""
+        import re
+
+        f = tmp_path / "test.md"
+        f.write_text(
+            "---\nbundle:\n  name: md-bundle\n  version: 1.0.0\n---\n"
+            "This is the instruction body with some content.\n"
+        )
+        dot = bundle_to_dot(f, repo_root=tmp_path)
+        root_match = re.search(r'root \[label="([^"]+)"', dot)
+        assert root_match is not None, "Root node definition not found in DOT"
+        label = root_match.group(1)
+        assert "instruction:" in label, (
+            f".md bundle root node should show 'instruction:' prefix, got: {label!r}"
+        )
+
+    def test_context_node_uses_fixed_purple_color(self, tmp_path: Path) -> None:
+        """Context nodes always use fixed purple #e1bee7, not green tier for 0-token files.
+
+        The legend always shows #e1bee7 (1 occurrence), so after the fix the actual
+        context node should add a SECOND occurrence (fillcolor on the node itself).
+        """
+        f = _make_yaml(
+            tmp_path,
+            """
+bundle:
+  name: ctx-color-fixed
+context:
+  include:
+    - foundation:context/nonexistent.md
+""",
+        )
+        dot = bundle_to_dot(f, repo_root=tmp_path)
+        # Legend contributes 1 occurrence; the actual node must contribute a 2nd
+        count = dot.count("#e1bee7")
+        assert count >= 2, (
+            f"Expected context node to use #e1bee7 (found only {count} occurrence(s) — "
+            "legend only?). Context node must also have fillcolor='#e1bee7'."
+        )
+
+    def test_agent_node_uses_fixed_green_not_yellow_tier(self, tmp_path: Path) -> None:
+        """Agent nodes always use fixed green, never yellow tier for large descriptions."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        # >500 tokens = >2000 chars → yellow tier if tier-based coloring were used
+        long_desc = "A detailed explanation of the agent. " * 60  # ~540 tokens
+        (agents_dir / "big-agent.md").write_text(
+            f"---\nmeta:\n  name: big-agent\n  description: '{long_desc}'\n---\n"
+        )
+        f = _make_yaml(
+            tmp_path,
+            """
+bundle:
+  name: agent-color-fixed
+agents:
+  include:
+    - foundation:big-agent
+""",
+        )
+        dot = bundle_to_dot(f, repo_root=tmp_path)
+        # Yellow tier must NOT appear (should be using fixed green, not tier)
+        assert "#fff9c4" not in dot, (
+            "Agent node should not use yellow tier color #fff9c4 — must use fixed #c8e6c9"
+        )
+
+    def test_summary_contains_per_request_header(self, tmp_path: Path) -> None:
+        """Summary node shows new 'Per-Request' header format."""
+        f = tmp_path / "test.md"
+        f.write_text(
+            "---\nbundle:\n  name: summary-test\n  version: 1.0.0\n---\n"
+            "Instruction body here.\n"
+        )
+        dot = bundle_to_dot(f, repo_root=tmp_path)
+        assert "Per-Request" in dot, (
+            "Summary node should contain 'Per-Request Token Estimate' header"
+        )
+
+    def test_redaction_hook_has_no_tok_label(self) -> None:
+        """Real redaction.yaml hook nodes don't show token count."""
+        import re
+
+        repo = Path(__file__).parent.parent
+        dot = bundle_to_dot(repo / "behaviors" / "redaction.yaml", repo_root=repo)
+        hook_match = re.search(r'hook_hooks_redaction \[label="([^"]+)"', dot)
+        assert hook_match is not None, "hook_hooks_redaction node not found"
+        label = hook_match.group(1)
+        assert "tok" not in label, (
+            f"hooks-redaction node label should not have token count, got: {label!r}"
+        )

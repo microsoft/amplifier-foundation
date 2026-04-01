@@ -1,30 +1,29 @@
-// Zen Architect — plans and designs with ruthless simplicity, creates specs for modular-builder
 digraph zen_architect {
     rankdir=TB
     fontname="Helvetica"
     fontsize=12
-    label="Zen Architect Agent\nPlans architecture with ruthless simplicity — creates specs for modular-builder"
+    label="zen-architect — reasoning, general"
     labelloc=t
     labeljust=c
     nodesep=0.6
     ranksep=0.7
     bgcolor="white"
-    source_hash="deaea3f73965b16dd4b36524b80fe0c16189cf91294a0c237dd592dd1912bb99"
+    source_hash="27ae53602ea8b47c219b319ca50cf0e2c83c311a0ed56192102ce4a92ab5b111"
 
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    agent [label="Zen Architect\nmodel_role: reasoning, general\ndescription: ~342 tok", shape=box, fillcolor="#c8e6c9", style="filled,bold", color="#80cbc4"]
-    tool_tool_filesystem [label="File System Access\nRead existing architecture", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    tool_tool_search [label="Code Search\nFind patterns and contracts", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    tool_tool_lsp [label="Language Intelligence\nSemantic code analysis (LSP)", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-    ctx_foundation_context_IMPLEMENTATION_PHILOSOPHY_md [label="Implementation Philosophy\nRuthless simplicity principles\n~4382 tok", shape=note, fillcolor="#ffcdd2", style="filled"]
-    ctx_foundation_context_MODULAR_DESIGN_PHILOSOPHY_md [label="Modular Design Philosophy\nBricks and studs approach\n~1435 tok", shape=note, fillcolor="#fff9c4", style="filled"]
-    ctx_foundation_context_LANGUAGE_PHILOSOPHY_md [label="Language Philosophy\nAI-first language choices\n~3723 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
-    ctx_foundation_context_shared_PROBLEM_SOLVING_PHILOSOPHY_md [label="Problem Solving Philosophy\nAnalysis-first approach\n~652 tok", shape=note, fillcolor="#c8e6c9", style="filled"]
-    ctx_foundation_context_KERNEL_PHILOSOPHY_md [label="Kernel Philosophy\nMechanism vs policy design\n~2782 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
-    ctx_foundation_context_ISSUE_HANDLING_md [label="Issue Handling Guide\nBug triage and resolution\n~8517 tok", shape=note, fillcolor="#ffcdd2", style="filled"]
-    ctx_foundation_context_shared_common_agent_base_md [label="Agent Base Instructions\nShared agent operating rules\n~3543 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    agent [label="zen-architect\nmodel_role: reasoning, general\ndescription: ~342 tok", shape=box, fillcolor="#80cbc4", style="filled,bold", color="#80cbc4"]
+    tool_tool_filesystem [label="tool-filesystem", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_search [label="tool-search", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_lsp [label="tool-lsp", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    ctx_foundation_context_IMPLEMENTATION_PHILOSOPHY_md [label="IMPLEMENTATION_PHILOSOPHY.md\n~4382 tok", shape=note, fillcolor="#e1bee7", style="filled"]
+    ctx_foundation_context_MODULAR_DESIGN_PHILOSOPHY_md [label="MODULAR_DESIGN_PHILOSOPHY.md\n~1435 tok", shape=note, fillcolor="#e1bee7", style="filled"]
+    ctx_foundation_context_LANGUAGE_PHILOSOPHY_md [label="LANGUAGE_PHILOSOPHY.md\n~3723 tok", shape=note, fillcolor="#e1bee7", style="filled"]
+    ctx_foundation_context_shared_PROBLEM_SOLVING_PHILOSOPHY_md [label="PROBLEM_SOLVING_PHILOSOPHY.md\n~652 tok", shape=note, fillcolor="#e1bee7", style="filled"]
+    ctx_foundation_context_KERNEL_PHILOSOPHY_md [label="KERNEL_PHILOSOPHY.md\n~2782 tok", shape=note, fillcolor="#e1bee7", style="filled"]
+    ctx_foundation_context_ISSUE_HANDLING_md [label="ISSUE_HANDLING.md\n~8517 tok", shape=note, fillcolor="#e1bee7", style="filled"]
+    ctx_foundation_context_shared_common_agent_base_md [label="common-agent-base.md\n~3543 tok", shape=note, fillcolor="#e1bee7", style="filled"]
 
     agent -> tool_tool_filesystem
     agent -> tool_tool_search

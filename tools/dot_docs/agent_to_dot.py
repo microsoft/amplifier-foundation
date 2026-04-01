@@ -25,7 +25,6 @@ from dot_docs.frontmatter import (
     parse_frontmatter,
 )
 from dot_docs.token_cost import (
-    color_tier,
     estimate_tokens,
 )
 
@@ -112,14 +111,14 @@ def agent_to_dot(md_path: str | Path, *, repo_root: Path | None = None) -> str:
     node_lines: list[str] = []
     edge_lines: list[str] = []
 
-    # ── Central agent node ─────────────────────────────────────────────────
-    agent_color = color_tier(desc_tokens, "agent_description")
+    # ── Central agent node ───────────────────────────────────────────────────────
+    # Fixed teal fillcolor — token cost shown as text label, not color override
     central_label = _q(
         f"{agent_name}\\nmodel_role: {model_role_str}\\ndescription: ~{desc_tokens} tok"
     )
     node_lines.append(
         f"    agent [label={central_label}, shape=box,"
-        f' fillcolor="{agent_color}", style="filled,bold",'
+        f' fillcolor="{_COLOR_AGENT_CENTRAL}", style="filled,bold",'
         f' color="{_COLOR_AGENT_CENTRAL}"]'
     )
 
@@ -148,12 +147,12 @@ def agent_to_dot(md_path: str | Path, *, repo_root: Path | None = None) -> str:
             continue
         ctx_seen.add(ctx_id)
         ctx_tok = _estimate_context_tokens(mention, repo_root)
-        ctx_color = color_tier(ctx_tok, "context_file")
+        # Fixed purple color — token cost shown as text label, not color override
         short = _short_path(mention)
         label = _q(f"{short}\\n~{ctx_tok} tok")
         node_lines.append(
             f"    {ctx_id} [label={label}, shape=note,"
-            f' fillcolor="{ctx_color}", style="filled"]'
+            f' fillcolor="{_COLOR_CONTEXT}", style="filled"]'
         )
         edge_lines.append(f"    agent -> {ctx_id}")
 
