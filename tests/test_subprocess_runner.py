@@ -578,6 +578,51 @@ class TestRunSessionInSubprocess:
         mock_process.wait.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_timeout_wait_guarded_logs_warning_if_wait_hangs(
+        self, tmp_path: Any, caplog: Any
+    ) -> None:
+        """Test that process.wait() after kill is guarded with a 10s timeout.
+
+        If the process doesn't exit after SIGKILL (zombie, kernel hang), the
+        code should log a warning and still raise TimeoutError rather than
+        blocking indefinitely.
+        """
+        import logging
+
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+        mock_process.kill = MagicMock()
+        mock_process.wait = AsyncMock()
+
+        # First asyncio.wait_for call (process.communicate) times out.
+        # Second asyncio.wait_for call (process.wait guard) also times out,
+        # simulating a process that ignores SIGKILL.
+        with patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
+        ):
+            with patch(
+                "asyncio.wait_for",
+                side_effect=[asyncio.TimeoutError(), asyncio.TimeoutError()],
+            ):
+                with caplog.at_level(logging.WARNING):
+                    with pytest.raises(TimeoutError, match="timed out after 30s"):
+                        await run_session_in_subprocess(
+                            config=config,
+                            prompt=prompt,
+                            parent_id=parent_id,
+                            project_path=project_path,
+                            timeout=30,
+                        )
+
+        mock_process.kill.assert_called_once()
+        assert "did not exit" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_temp_file_cleanup_on_success(self, tmp_path: Any) -> None:
         """Test that temp file is cleaned up after successful subprocess execution."""
         config: dict[str, Any] = {"provider": "anthropic"}
@@ -1244,3 +1289,254 @@ class TestChildSessionCapabilities:
         assert reg_idx < exec_idx, (
             f"register_working_dir (pos {reg_idx}) must come before execute (pos {exec_idx})"
         )
+
+
+class TestBundleModuleResolverExceptionClass:
+    """Tests that BundleModuleResolver raises the core amplifier exception, not Python's builtin.
+
+    The loader in amplifier_core checks isinstance(error, core.ModuleNotFoundError) to fire
+    the entry-point discovery fallback. If BundleModuleResolver raises Python's builtin
+    ModuleNotFoundError (a subclass of ImportError), the isinstance check fails and the
+    fallback never fires — causing ALL provider modules to fail silently.
+    """
+
+    def test_resolve_raises_core_module_not_found_error(self) -> None:
+        """BundleModuleResolver.resolve() must raise amplifier_core.module_sources.ModuleNotFoundError.
+
+        Raises Python's builtin ModuleNotFoundError BEFORE this fix, which is a different class.
+        The amplifier_core loader checks isinstance(e, core.ModuleNotFoundError), so the
+        entry-point fallback never fires when the wrong exception class is raised.
+        """
+        from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFoundError
+
+        from amplifier_foundation.bundle import BundleModuleResolver
+
+        resolver = BundleModuleResolver({})
+        with pytest.raises(CoreModuleNotFoundError):
+            resolver.resolve("nonexistent-module-id")
+
+    @pytest.mark.asyncio
+    async def test_async_resolve_raises_core_module_not_found_error_no_activator(
+        self,
+    ) -> None:
+        """BundleModuleResolver.async_resolve() raises CoreModuleNotFoundError when no activator."""
+        from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFoundError
+
+        from amplifier_foundation.bundle import BundleModuleResolver
+
+        resolver = BundleModuleResolver({})
+        with pytest.raises(CoreModuleNotFoundError):
+            await resolver.async_resolve("nonexistent-module-id")
+
+
+class TestChildUsesAppModuleResolver:
+    """Tests that _run_child_session wraps BundleModuleResolver with AppModuleResolver + settings fallback.
+
+    The primary cause of 'No providers available' in subprocess agents:
+    - BundleModuleResolver only knows about bundle modules (tools, agents, behaviors)
+    - Provider modules (provider-anthropic etc.) come from user settings (~/.amplifier/settings.yaml)
+    - Without AppModuleResolver wrapping, providers can never be resolved in subprocess children
+    """
+
+    def test_run_child_session_source_uses_app_module_resolver(self) -> None:
+        """Verify that _run_child_session source code imports and uses AppModuleResolver.
+
+        AppModuleResolver wraps BundleModuleResolver with a FoundationSettingsResolver fallback,
+        enabling provider modules (like provider-anthropic) to be resolved via user settings.
+        """
+        import inspect
+
+        import amplifier_foundation.subprocess_runner as runner_module
+
+        source = inspect.getsource(runner_module._run_child_session)
+        assert "AppModuleResolver" in source, (
+            "_run_child_session must use AppModuleResolver to wrap BundleModuleResolver "
+            "so provider modules not in bundle paths can be resolved via settings fallback"
+        )
+
+    def test_run_child_session_source_uses_create_foundation_resolver(self) -> None:
+        """Verify that _run_child_session uses create_foundation_resolver for the settings fallback.
+
+        create_foundation_resolver() reads ~/.amplifier/settings.yaml to find provider modules.
+        Without it, provider-anthropic and other non-bundled modules can't be located.
+        """
+        import inspect
+
+        import amplifier_foundation.subprocess_runner as runner_module
+
+        source = inspect.getsource(runner_module._run_child_session)
+        assert "create_foundation_resolver" in source, (
+            "_run_child_session must call create_foundation_resolver() to get the settings-based "
+            "fallback resolver so provider-anthropic etc. can be found"
+        )
+
+    def test_run_child_session_source_has_import_error_fallback(self) -> None:
+        """Verify that _run_child_session gracefully degrades when amplifier_app_cli not installed.
+
+        Non-CLI environments (e.g., standalone foundation usage) don't have amplifier_app_cli.
+        The ImportError fallback ensures BundleModuleResolver still works in those environments.
+        """
+        import inspect
+
+        import amplifier_foundation.subprocess_runner as runner_module
+
+        source = inspect.getsource(runner_module._run_child_session)
+        assert "ImportError" in source, (
+            "_run_child_session must catch ImportError when amplifier_app_cli is unavailable "
+            "so non-CLI environments still work (bare BundleModuleResolver as fallback)"
+        )
+
+
+class TestChildSessionAdditionalCapabilities:
+    """Tests for additional capabilities _run_child_session must register for in-process parity."""
+
+    @pytest.mark.asyncio
+    async def test_child_registers_self_delegation_depth(self, tmp_path: Any) -> None:
+        """Test that _run_child_session registers self_delegation_depth capability.
+
+        Without self_delegation_depth, subprocess agents can't track recursion depth for
+        delegation loops, causing stack overflows on recursive agent calls.
+        Matches what resume_sub_session() and spawn_sub_session() register.
+        """
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+            )
+        )
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            mock_instance.coordinator.register_capability = MagicMock()
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(str(config_file))
+
+        registered_caps = [
+            call.args[0]
+            for call in mock_instance.coordinator.register_capability.call_args_list
+        ]
+        assert "self_delegation_depth" in registered_caps, (
+            "_run_child_session must register 'self_delegation_depth' capability "
+            "for parity with spawn_sub_session() and resume_sub_session()"
+        )
+
+    @pytest.mark.asyncio
+    async def test_child_registers_mention_deduplicator(self, tmp_path: Any) -> None:
+        """Test that _run_child_session registers mention_deduplicator capability.
+
+        Without mention_deduplicator, subprocess agents can't deduplicate @mention context
+        loading within a session, leading to redundant context inclusion.
+        ContentDeduplicator is available in amplifier_foundation.mentions.
+        """
+        config: dict[str, Any] = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-123"
+        project_path = str(tmp_path)
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config=config,
+                prompt=prompt,
+                parent_id=parent_id,
+                project_path=project_path,
+            )
+        )
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            mock_instance.coordinator.register_capability = MagicMock()
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(str(config_file))
+
+        registered_caps = [
+            call.args[0]
+            for call in mock_instance.coordinator.register_capability.call_args_list
+        ]
+        assert "mention_deduplicator" in registered_caps, (
+            "_run_child_session must register 'mention_deduplicator' capability "
+            "for parity with spawn_sub_session() and resume_sub_session()"
+        )
+
+    def test_run_child_session_source_registers_mention_resolver(self) -> None:
+        """Verify that _run_child_session source code registers mention_resolver capability.
+
+        When mention_mappings are in the payload, the subprocess child should register a
+        mention_resolver (AppMentionResolver) for @namespace:path resolution.
+        """
+        import inspect
+
+        import amplifier_foundation.subprocess_runner as runner_module
+
+        source = inspect.getsource(runner_module._run_child_session)
+        assert "mention_resolver" in source, (
+            "_run_child_session must register 'mention_resolver' capability "
+            "when mention_mappings are present in the payload"
+        )
+
+
+class TestMentionMappingsSerialization:
+    """Tests for mention_mappings serialization in IPC payload."""
+
+    def test_roundtrip_with_mention_mappings(self) -> None:
+        """Test that mention_mappings round-trips correctly through serialize/deserialize."""
+        config = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-abc"
+        project_path = "/tmp/project"
+        mention_mappings = {
+            "superpowers": "/path/to/superpowers",
+            "foundation": "/path/to/foundation",
+        }
+
+        serialized = serialize_subprocess_config(
+            config=config,
+            prompt=prompt,
+            parent_id=parent_id,
+            project_path=project_path,
+            mention_mappings=mention_mappings,
+        )
+        deserialized = deserialize_subprocess_config(serialized)
+
+        assert deserialized["mention_mappings"] == mention_mappings
+
+    def test_roundtrip_without_mention_mappings_defaults_to_empty(self) -> None:
+        """Test that mention_mappings defaults to empty dict when not provided."""
+        config = {"provider": "anthropic"}
+        prompt = "Hello"
+        parent_id = "parent-abc"
+        project_path = "/tmp/project"
+
+        serialized = serialize_subprocess_config(
+            config=config,
+            prompt=prompt,
+            parent_id=parent_id,
+            project_path=project_path,
+        )
+        deserialized = deserialize_subprocess_config(serialized)
+
+        assert deserialized["mention_mappings"] == {}
