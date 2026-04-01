@@ -333,3 +333,128 @@ class TestSessionNamingConfig:
         assert config.max_name_length == 50
         assert config.max_description_length == 200
         assert config.max_retries == 3
+
+
+# =============================================================================
+# Task 6: model_role resolution
+# =============================================================================
+
+
+class TestModelRoleResolution:
+    """_call_provider resolves model_role via routing matrix when available."""
+
+    @pytest.mark.asyncio
+    async def test_model_role_uses_resolved_provider_and_model(self) -> None:
+        """When model_role resolves, the matching provider is called with model override."""
+        anthropic_provider = _make_mock_provider()
+        openai_provider = _make_mock_provider()
+        providers = {
+            "provider-anthropic": anthropic_provider,
+            "provider-openai": openai_provider,
+        }
+
+        routing_matrix = {
+            "roles": {
+                "fast": {
+                    "candidates": [{"provider": "anthropic", "model": "claude-haiku-*"}]
+                }
+            }
+        }
+
+        mock_resolve = AsyncMock(
+            return_value=[
+                {"provider": "anthropic", "model": "claude-haiku-4-5", "config": {}}
+            ]
+        )
+        cleanup = _install_mock_routing(resolve_fn=mock_resolve)
+        try:
+            hook = _make_hook(
+                providers=providers,
+                session_state={"routing_matrix": routing_matrix},
+                model_role="fast",
+            )
+            await hook._call_provider("name this session")
+
+            assert anthropic_provider.complete.called, (
+                "Expected anthropic provider to be called based on model_role resolution"
+            )
+            assert not openai_provider.complete.called
+
+            mock_resolve.assert_called_once()
+            call_args = mock_resolve.call_args
+            assert call_args[0][0] == ["fast"], "Must pass [model_role] as roles list"
+
+            call_kwargs = anthropic_provider.complete.call_args
+            request = call_kwargs[0][0]
+            assert request.model == "claude-haiku-4-5"
+        finally:
+            cleanup()
+
+    @pytest.mark.asyncio
+    async def test_model_role_falls_back_when_routing_not_installed(
+        self, caplog
+    ) -> None:
+        """ImportError on hooks-routing → falls back to priority provider, logs warning."""
+        priority_provider = _make_mock_provider()
+        providers = {"provider-priority": priority_provider}
+
+        for mod_name in (
+            "amplifier_module_hooks_routing",
+            "amplifier_module_hooks_routing.resolver",
+        ):
+            sys.modules.pop(mod_name, None)
+
+        hook = _make_hook(
+            providers=providers,
+            session_state={"routing_matrix": {"roles": {}}},
+            model_role="fast",
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            await hook._call_provider("name this session")
+
+        assert priority_provider.complete.called, (
+            "Must fall back to priority provider when hooks-routing not available"
+        )
+        assert any(
+            "hooks-routing" in msg or "model_role" in msg for msg in caplog.messages
+        ), "Must log a warning mentioning model_role or hooks-routing"
+
+    @pytest.mark.asyncio
+    async def test_model_role_falls_back_when_no_routing_matrix(self) -> None:
+        """No routing_matrix in session_state → falls back to priority provider."""
+        priority_provider = _make_mock_provider()
+        providers = {"provider-priority": priority_provider}
+
+        mock_resolve = AsyncMock(return_value=[])
+        cleanup = _install_mock_routing(resolve_fn=mock_resolve)
+        try:
+            hook = _make_hook(
+                providers=providers,
+                session_state={},
+                model_role="fast",
+            )
+            await hook._call_provider("name this session")
+
+            assert priority_provider.complete.called, (
+                "Must fall back to priority provider when routing_matrix absent"
+            )
+            mock_resolve.assert_not_called()
+        finally:
+            cleanup()
+
+    @pytest.mark.asyncio
+    async def test_no_model_role_uses_priority_provider(self) -> None:
+        """Without model_role, existing behavior is preserved (priority provider)."""
+        priority_provider = _make_mock_provider()
+        providers = {"provider-priority": priority_provider}
+
+        hook = _make_hook(providers=providers)
+        await hook._call_provider("name this session")
+
+        assert priority_provider.complete.called
+        call_kwargs = priority_provider.complete.call_args
+        request = call_kwargs[0][0]
+        assert request.model is None, "No model override without model_role"

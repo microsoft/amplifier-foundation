@@ -440,23 +440,85 @@ class SessionNamingHook:
         return truncated + "..."
 
     async def _call_provider(self, prompt: str) -> str | None:
-        """Call the LLM provider to generate name/description."""
+        """Call the LLM provider to generate name/description.
+
+        Resolution order (highest to lowest priority):
+          1. provider_preferences — explicit provider/model list (Task 7)
+          2. model_role           — resolved via routing matrix (lazy import)
+          3. Fallback             — next(iter(providers.values()))
+
+        model_role resolution requires amplifier_module_hooks_routing. When that
+        module is not installed, logs a warning and falls back to #3.
+        """
         try:
-            # Get the priority provider from coordinator using standard API
-            provider = None
             providers = self.coordinator.get("providers")
-            if providers:
-                # Get first/priority provider
+            if not providers:
+                logger.warning("No provider available for session naming")
+                return None
+
+            # Resolution order: provider_preferences > model_role > priority provider
+            provider = None
+            model_override: str | None = None
+
+            if self.config.provider_preferences:
+                # Handled in Task 7 — provider_preferences resolution
+                # Falls through to priority provider until Task 7 is implemented
+                pass
+
+            elif self.config.model_role:
+                routing_matrix = getattr(self.coordinator, "session_state", {}).get(
+                    "routing_matrix"
+                )
+                if routing_matrix:
+                    try:
+                        from amplifier_module_hooks_routing.resolver import (
+                            resolve_model_role,
+                        )
+
+                        roles = [self.config.model_role]
+                        matrix = routing_matrix.get("roles", {})
+                        resolved = await resolve_model_role(roles, matrix, providers)
+                        if resolved:
+                            resolved_provider_name = resolved[0]["provider"]
+                            model_override = resolved[0].get("model")
+                            # Find the provider whose key contains the resolved name
+                            for key, p in providers.items():
+                                if resolved_provider_name.lower() in key.lower():
+                                    provider = p
+                                    break
+                        else:
+                            logger.warning(
+                                "model_role %r resolved to no candidates",
+                                self.config.model_role,
+                            )
+                    except ImportError:
+                        logger.warning(
+                            "model_role %r specified but hooks-routing not available,"
+                            " falling back to priority provider",
+                            self.config.model_role,
+                        )
+                else:
+                    logger.debug(
+                        "model_role %r set but no routing_matrix in session state,"
+                        " falling back to priority provider",
+                        self.config.model_role,
+                    )
+
+            # Fallback: use first/priority provider
+            if provider is None:
                 provider = next(iter(providers.values()), None)
 
             if not provider:
                 logger.warning("No provider available for session naming")
                 return None
 
-            # Make the request
+            # Make the request — model=None means use provider default
             from amplifier_core import ChatRequest, Message
 
-            request = ChatRequest(messages=[Message(role="user", content=prompt)])
+            request = ChatRequest(
+                messages=[Message(role="user", content=prompt)],
+                model=model_override,
+            )
 
             response = await provider.complete(request)
 
