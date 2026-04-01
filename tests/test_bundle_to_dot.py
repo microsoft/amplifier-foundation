@@ -502,3 +502,96 @@ class TestBundleToDotRootBundle:
         hashes2 = re.findall(r'source_hash="([a-f0-9]+)"', dot2)
         assert len(hashes1) == 1
         assert hashes1 == hashes2
+
+
+# ── Test: package-level imports ───────────────────────────────────────────────────────────────────
+
+
+class TestPackageImports:
+    """Verify top-level dot_docs package re-exports every public symbol."""
+
+    def test_bundle_to_dot_importable_from_package(self) -> None:
+        from dot_docs import bundle_to_dot as _bundle_to_dot  # noqa: F401
+
+        assert callable(_bundle_to_dot)
+
+    def test_bundle_overview_dot_importable_from_package(self) -> None:
+        from dot_docs import bundle_overview_dot as _bundle_overview_dot  # noqa: F401
+
+        assert callable(_bundle_overview_dot)
+
+    def test_agent_to_dot_importable_from_package(self) -> None:
+        from dot_docs import agent_to_dot as _agent_to_dot  # noqa: F401
+
+        assert callable(_agent_to_dot)
+
+    def test_agents_topology_dot_importable_from_package(self) -> None:
+        from dot_docs import agents_topology_dot as _agents_topology_dot  # noqa: F401
+
+        assert callable(_agents_topology_dot)
+
+    def test_estimate_tokens_importable_from_package(self) -> None:
+        from dot_docs import estimate_tokens as _estimate_tokens  # noqa: F401
+
+        assert callable(_estimate_tokens)
+
+    def test_color_tier_importable_from_package(self) -> None:
+        from dot_docs import color_tier as _color_tier  # noqa: F401
+
+        assert callable(_color_tier)
+
+    def test_parse_frontmatter_importable_from_package(self) -> None:
+        from dot_docs import parse_frontmatter as _parse_frontmatter  # noqa: F401
+
+        assert callable(_parse_frontmatter)
+
+    def test_extract_mentions_importable_from_package(self) -> None:
+        from dot_docs import extract_mentions as _extract_mentions  # noqa: F401
+
+        assert callable(_extract_mentions)
+
+    def test_extract_delegation_targets_importable_from_package(self) -> None:
+        from dot_docs import extract_delegation_targets as _edt  # noqa: F401
+
+        assert callable(_edt)
+
+    def test_resolve_local_mention_importable_from_package(self) -> None:
+        from dot_docs import resolve_local_mention as _rlm  # noqa: F401
+
+        assert callable(_rlm)
+
+    def test_all_dunder_all_entries_importable(self) -> None:
+        """Every name in __all__ can be imported and resolved."""
+        import dot_docs
+
+        assert hasattr(dot_docs, "__all__")
+        for name in dot_docs.__all__:
+            obj = getattr(dot_docs, name, None)
+            assert obj is not None, f"dot_docs.{name} not found after import"
+            assert callable(obj), f"dot_docs.{name} is not callable"
+
+
+# ── Test: parametrized real behavior files ────────────────────────────────────────────────────────
+
+import glob  # noqa: E402
+
+_BEHAVIOR_FILES = sorted(
+    glob.glob(str(Path(__file__).parent.parent / "behaviors" / "*.yaml"))
+)
+
+
+class TestAllBehaviors:
+    """Parametrized tests over all real behavior files."""
+
+    @pytest.mark.parametrize(
+        "behavior_path",
+        _BEHAVIOR_FILES,
+        ids=[Path(p).stem for p in _BEHAVIOR_FILES],
+    )
+    def test_behavior_generates_valid_dot(self, behavior_path: str) -> None:
+        """Every behavior file generates valid DOT."""
+        repo = Path(__file__).parent.parent
+        dot = bundle_to_dot(behavior_path, repo_root=repo)
+        assert dot.startswith("digraph ")
+        assert 'source_hash="' in dot
+        assert "}" in dot

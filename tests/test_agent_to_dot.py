@@ -734,3 +734,27 @@ class TestAgentsTopologyDot:
         dot2 = agents_topology_dot(tmp_path)
         assert dot1 == dot2
         assert 'source_hash="' in dot1
+
+
+# ── Test: parametrized real agent files ───────────────────────────────────────────────────────────
+
+import glob  # noqa: E402
+
+_AGENT_FILES = sorted(glob.glob(str(Path(__file__).parent.parent / "agents" / "*.md")))
+
+
+class TestAllAgents:
+    """Parametrized tests over all real agent files."""
+
+    @pytest.mark.parametrize(
+        "agent_path",
+        _AGENT_FILES,
+        ids=[Path(p).stem for p in _AGENT_FILES],
+    )
+    def test_agent_generates_valid_dot(self, agent_path: str) -> None:
+        """Every agent file generates valid DOT."""
+        repo = Path(__file__).parent.parent
+        dot = agent_to_dot(agent_path, repo_root=repo)
+        assert dot.startswith("digraph ")
+        assert 'source_hash="' in dot
+        assert "}" in dot
