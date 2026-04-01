@@ -509,6 +509,8 @@ async def mount(
         max_name_length=config.get("max_name_length", 50),
         max_description_length=config.get("max_description_length", 200),
         max_retries=config.get("max_retries", 3),
+        model_role=config.get("model_role"),
+        provider_preferences=config.get("provider_preferences"),
     )
 
     hook = SessionNamingHook(coordinator, hook_config)

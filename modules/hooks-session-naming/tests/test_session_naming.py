@@ -298,3 +298,38 @@ class TestProviderTimeout:
             await hook._generate_name("session-abc123", tmp_path, is_update=False)
 
         # If we reach here, the timeout was handled correctly — no exception propagated
+
+
+# =============================================================================
+# Task 5: Config dataclass extension
+# =============================================================================
+
+
+class TestSessionNamingConfig:
+    """SessionNamingConfig must accept model_role and provider_preferences."""
+
+    def test_defaults_are_none(self) -> None:
+        """Both new fields default to None."""
+        config = SessionNamingConfig()
+        assert config.model_role is None
+        assert config.provider_preferences is None
+
+    def test_model_role_can_be_set(self) -> None:
+        """model_role can be set to a role name string."""
+        config = SessionNamingConfig(model_role="fast")
+        assert config.model_role == "fast"
+
+    def test_provider_preferences_can_be_set(self) -> None:
+        """provider_preferences can be set to a list of dicts."""
+        prefs = [{"provider": "anthropic", "model": "claude-haiku-4-5"}]
+        config = SessionNamingConfig(provider_preferences=prefs)
+        assert config.provider_preferences == prefs
+
+    def test_existing_fields_still_have_defaults(self) -> None:
+        """Adding new fields must not break existing defaults."""
+        config = SessionNamingConfig()
+        assert config.initial_trigger_turn == 2
+        assert config.update_interval_turns == 5
+        assert config.max_name_length == 50
+        assert config.max_description_length == 200
+        assert config.max_retries == 3
