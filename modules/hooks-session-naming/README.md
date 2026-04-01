@@ -30,31 +30,33 @@ hooks:
       max_name_length: 50            # Maximum name length (default: 50)
       max_description_length: 200    # Maximum description length (default: 200)
       max_retries: 3                 # Max retries on defer (default: 3)
-      model_role: fast               # Optional: resolve provider via routing matrix
-      provider_preferences:          # Optional: explicit provider/model list
-        - provider: anthropic
-          model: claude-haiku-*
-        - provider: openai
-          model: gpt-4o-mini
+      # model_role defaults to "fast" — no config needed for cheap/fast naming.
+      # Set to null to use your priority provider explicitly.
+      model_role: fast
 ```
 
 ## Provider Selection
 
-The module resolves which LLM provider to use for naming through a 3-tier priority order:
+`model_role` (default: `"fast"`) routes naming to a cheap/fast model via the routing
+matrix — the same mechanism used by the `delegate` tool and recipe agent steps.
+Session naming is a simple classification task; it does not need the priority model.
 
-1. **`provider_preferences`** — An explicit ordered list of `{provider, model}` entries. The module iterates the list and uses the first matching provider found via `find_provider_by_type` from `hooks-routing`. Requires `hooks-routing` to be installed.
+Resolution order:
 
-2. **`model_role`** — A named role (e.g., `fast`, `coding`) resolved against the session's routing matrix via `resolve_model_role` from `hooks-routing`. The resolved provider and optional model override are extracted from the matrix result. Requires `hooks-routing` to be installed.
+1. **`model_role`** — Resolved against `coordinator.session_state["routing_matrix"]`
+   via `resolve_model_role` from `hooks-routing`. Defaults to `"fast"`.
 
-3. **Fallback** — `next(iter(providers.values()))` — the first/priority provider registered with the coordinator. Used when neither of the above tiers yields a result, or when `hooks-routing` is not installed.
+2. **Fallback** — `next(iter(providers.values()))` — the first/priority provider.
+   Used when `model_role` is `None`, or when resolution fails.
 
 ### Optional Dependency: hooks-routing
 
-`hooks-routing` is an **optional runtime dependency**. The module degrades gracefully when it is not installed:
+`hooks-routing` is an **optional runtime dependency**. The module degrades gracefully:
 
-- If `provider_preferences` is configured but `hooks-routing` is missing, a warning is logged and the fallback provider is used.
-- If `model_role` is configured but `hooks-routing` is missing, a warning is logged and the fallback provider is used.
-- If neither `provider_preferences` nor `model_role` is configured, `hooks-routing` is never imported and there is no impact.
+- If `hooks-routing` is not installed, the module silently falls back to the priority
+  provider. No warning is emitted — falling back is the expected behaviour when the
+  routing module is absent.
+- To disable routing explicitly and always use the priority provider, set `model_role: null`.
 
 ## Async Behavior
 

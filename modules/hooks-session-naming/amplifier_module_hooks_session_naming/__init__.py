@@ -23,8 +23,10 @@ logger = logging.getLogger(__name__)
 class SessionNamingConfig:
     """Configuration for session naming.
 
-    Set model_role to route naming to a fast/cheap model via the routing matrix
-    (e.g. model_role="fast"). If not set, the priority provider is used.
+    model_role routes naming to a cheap/fast model via the routing matrix.
+    Defaults to "fast" — session naming is a simple classification task that
+    does not need the priority/expensive model. Set to None to use the
+    priority provider explicitly.
     """
 
     initial_trigger_turn: int = 2
@@ -32,7 +34,7 @@ class SessionNamingConfig:
     max_name_length: int = 50
     max_description_length: int = 200
     max_retries: int = 3
-    model_role: str | None = None
+    model_role: str | None = "fast"
 
 
 INITIAL_NAMING_PROMPT = """You generate names and descriptions for conversation sessions.
@@ -499,8 +501,8 @@ class SessionNamingHook:
                                 self.config.model_role,
                             )
                     except ImportError:
-                        logger.warning(
-                            "model_role %r specified but hooks-routing not available,"
+                        logger.debug(
+                            "model_role %r specified but hooks-routing not installed,"
                             " falling back to priority provider",
                             self.config.model_role,
                         )
@@ -569,9 +571,10 @@ async def mount(
         max_name_length: int (default: 50) - Maximum name length
         max_description_length: int (default: 200) - Maximum description length
         max_retries: int (default: 3) - Max retries on defer
-        model_role: str | None (default: None) - Model role resolved via routing matrix
-            (e.g. "fast"). Falls back to priority provider when not set or when
-            hooks-routing is not installed.
+        model_role: str | None (default: "fast") - Model role resolved via routing matrix.
+            Defaults to "fast" so naming uses a cheap model automatically.
+            Set to None to use the priority provider explicitly.
+            Falls back to priority provider silently when hooks-routing is not installed.
     """
     config = config or {}
 

@@ -307,10 +307,10 @@ class TestProviderTimeout:
 class TestSessionNamingConfig:
     """SessionNamingConfig must accept model_role."""
 
-    def test_model_role_defaults_to_none(self) -> None:
-        """model_role defaults to None."""
+    def test_model_role_defaults_to_fast(self) -> None:
+        """model_role defaults to 'fast' so naming uses a cheap model automatically."""
         config = SessionNamingConfig()
-        assert config.model_role is None
+        assert config.model_role == "fast"
 
     def test_model_role_can_be_set(self) -> None:
         """model_role can be set to a role name string."""
@@ -404,7 +404,7 @@ class TestModelRoleResolution:
 
         import logging
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             await hook._call_provider("name this session")
 
         assert priority_provider.complete.called, (
@@ -412,7 +412,7 @@ class TestModelRoleResolution:
         )
         assert any(
             "hooks-routing" in msg or "model_role" in msg for msg in caplog.messages
-        ), "Must log a warning mentioning model_role or hooks-routing"
+        ), "Must log a debug message mentioning model_role or hooks-routing"
 
     @pytest.mark.asyncio
     async def test_model_role_falls_back_when_no_routing_matrix(self) -> None:
