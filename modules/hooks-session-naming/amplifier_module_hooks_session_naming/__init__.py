@@ -23,9 +23,8 @@ logger = logging.getLogger(__name__)
 class SessionNamingConfig:
     """Configuration for session naming.
 
-    Provider selection — both optional.
-    provider_preferences takes precedence over model_role.
-    If neither is set, the priority provider is used (existing behavior).
+    Set model_role to route naming to a fast/cheap model via the routing matrix
+    (e.g. model_role="fast"). If not set, the priority provider is used.
     """
 
     initial_trigger_turn: int = 2
@@ -34,7 +33,6 @@ class SessionNamingConfig:
     max_description_length: int = 200
     max_retries: int = 3
     model_role: str | None = None
-    provider_preferences: list[dict] | None = None
 
 
 INITIAL_NAMING_PROMPT = """You generate names and descriptions for conversation sessions.
@@ -166,7 +164,7 @@ class SessionNamingHook:
 
         for task in list(self._pending_tasks):
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=15.0)
+                await asyncio.wait_for(task, timeout=15.0)
             except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
                 logger.debug("Session naming drain timed out or was cancelled: %s", exc)
 
@@ -255,6 +253,10 @@ class SessionNamingHook:
                     "Session naming provider call timed out (10 s) for session %s",
                     session_id[:8],
                 )
+                await self.coordinator.hooks.emit(
+                    "session-naming:timeout",
+                    {"session_id": session_id, "is_update": is_update},
+                )
                 return
             if not response:
                 return
@@ -272,8 +274,15 @@ class SessionNamingHook:
                 self._defer_counts[session_id] = (
                     self._defer_counts.get(session_id, 0) + 1
                 )
+                defer_count = self._defer_counts[session_id]
                 logger.debug(
-                    f"Session {session_id[:8]} deferred naming (attempt {self._defer_counts[session_id]})"
+                    "Session %s deferred naming (attempt %d)",
+                    session_id[:8],
+                    defer_count,
+                )
+                await self.coordinator.hooks.emit(
+                    "session-naming:deferred",
+                    {"session_id": session_id, "defer_count": defer_count},
                 )
                 return
 
@@ -283,7 +292,7 @@ class SessionNamingHook:
                     name = result["name"][: self.config.max_name_length]
                     metadata["name"] = name
                     metadata["name_generated_at"] = now
-                    logger.info(f"Session {session_id[:8]} named: {name}")
+                    logger.info("Session %s named: %s", session_id[:8], name)
 
                 if result.get("description"):
                     description = result["description"][
@@ -292,19 +301,32 @@ class SessionNamingHook:
                     metadata["description"] = description
                     metadata["description_updated_at"] = now
                     if is_update:
-                        logger.debug(f"Session {session_id[:8]} description updated")
+                        logger.debug("Session %s description updated", session_id[:8])
 
                 self._save_metadata(session_dir, metadata)
                 # Clear defer count on success
                 self._defer_counts.pop(session_id, None)
+                await self.coordinator.hooks.emit(
+                    "session-naming:set",
+                    {
+                        "session_id": session_id,
+                        "name": metadata.get("name"),
+                        "description": metadata.get("description"),
+                        "is_update": is_update,
+                    },
+                )
 
             elif action == "keep":
-                logger.debug(f"Session {session_id[:8]} description unchanged")
+                logger.debug("Session %s description unchanged", session_id[:8])
 
         except asyncio.CancelledError:
-            logger.debug(f"Naming task cancelled for session {session_id[:8]}")
+            logger.debug("Naming task cancelled for session %s", session_id[:8])
         except Exception as e:
-            logger.error(f"Error generating name for session {session_id[:8]}: {e}")
+            logger.error("Error generating name for session %s: %s", session_id[:8], e)
+            await self.coordinator.hooks.emit(
+                "session-naming:error",
+                {"session_id": session_id, "error": str(e)},
+            )
 
     async def _get_conversation_context(
         self,
@@ -431,12 +453,11 @@ class SessionNamingHook:
         """Call the LLM provider to generate name/description.
 
         Resolution order (highest to lowest priority):
-          1. provider_preferences — explicit provider/model list (Task 7)
-          2. model_role           — resolved via routing matrix (lazy import)
-          3. Fallback             — next(iter(providers.values()))
+          1. model_role — resolved via routing matrix (lazy import)
+          2. Fallback   — next(iter(providers.values()))
 
         model_role resolution requires amplifier_module_hooks_routing. When that
-        module is not installed, logs a warning and falls back to #3.
+        module is not installed, logs a warning and falls back to #2.
         """
         try:
             providers = self.coordinator.get("providers")
@@ -444,36 +465,11 @@ class SessionNamingHook:
                 logger.warning("No provider available for session naming")
                 return None
 
-            # Resolution order: provider_preferences > model_role > priority provider
+            # Resolution order: model_role > priority provider
             provider = None
             model_override: str | None = None
 
-            if self.config.provider_preferences:
-                try:
-                    from amplifier_module_hooks_routing.resolver import (
-                        find_provider_by_type,
-                    )
-
-                    for pref in self.config.provider_preferences:
-                        provider_type = pref.get("provider", "")
-                        found = find_provider_by_type(provider_type, providers)
-                        if found:
-                            provider = found
-                            model_override = pref.get("model")
-                            break
-
-                    if provider is None:
-                        logger.warning(
-                            "provider_preferences specified but no matching provider"
-                            " found, falling back to priority provider"
-                        )
-                except ImportError:
-                    logger.warning(
-                        "provider_preferences specified but hooks-routing not available,"
-                        " falling back to priority provider"
-                    )
-
-            elif self.config.model_role:
+            if self.config.model_role:
                 routing_matrix = getattr(self.coordinator, "session_state", {}).get(
                     "routing_matrix"
                 )
@@ -570,10 +566,9 @@ async def mount(
         max_name_length: int (default: 50) - Maximum name length
         max_description_length: int (default: 200) - Maximum description length
         max_retries: int (default: 3) - Max retries on defer
-        model_role: str | None (default: None) - Model role for provider selection
-        provider_preferences: list[dict] | None (default: None) - Ordered provider
-            preferences. Takes precedence over model_role. Each entry is a dict with
-            ``provider`` and optional ``model`` keys.
+        model_role: str | None (default: None) - Model role resolved via routing matrix
+            (e.g. "fast"). Falls back to priority provider when not set or when
+            hooks-routing is not installed.
     """
     config = config or {}
 
@@ -584,7 +579,6 @@ async def mount(
         max_description_length=config.get("max_description_length", 200),
         max_retries=config.get("max_retries", 3),
         model_role=config.get("model_role"),
-        provider_preferences=config.get("provider_preferences"),
     )
 
     hook = SessionNamingHook(coordinator, hook_config)
