@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dot_docs.bundle_to_dot import bundle_to_dot
+from dot_docs.bundle_to_dot import bundle_overview_dot, bundle_to_dot
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -334,12 +334,50 @@ class TestRealBehaviorRedactionYaml:
 # ── Test: bundle_overview_dot placeholder ────────────────────────────────────
 
 
-class TestBundleOverviewDotPlaceholder:
-    def test_bundle_overview_dot_raises_not_implemented(self, tmp_path: Path) -> None:
-        from dot_docs.bundle_to_dot import bundle_overview_dot
+class TestBundleOverviewDot:
+    def test_overview_with_minimal_repo(self, tmp_path: Path) -> None:
+        f = tmp_path / "bundle.md"
+        f.write_text("---\nbundle:\n  name: test\n  version: 1.0.0\n---\n# Test\n")
+        dot = bundle_overview_dot(tmp_path)
+        assert dot.startswith("digraph ")
+        assert "test" in dot
 
-        with pytest.raises(NotImplementedError):
-            bundle_overview_dot(tmp_path)
+    def test_overview_shows_behaviors(self, tmp_path: Path) -> None:
+        b = tmp_path / "bundle.md"
+        b.write_text(
+            "---\nbundle:\n  name: root\n  version: 1.0.0\n"
+            "includes:\n  - bundle: test:behaviors/helper\n---\n# Root\n"
+        )
+        bdir = tmp_path / "behaviors"
+        bdir.mkdir()
+        bh = bdir / "helper.yaml"
+        bh.write_text(
+            "bundle:\n  name: helper\n  version: 1.0.0\n  description: Help\n"
+        )
+        dot = bundle_overview_dot(tmp_path)
+        assert "helper" in dot
+        assert "root" in dot
+
+    def test_overview_shows_include_edges(self, tmp_path: Path) -> None:
+        b = tmp_path / "bundle.md"
+        b.write_text(
+            "---\nbundle:\n  name: root\n  version: 1.0.0\n"
+            "includes:\n  - bundle: test:behaviors/child\n---\n# Root\n"
+        )
+        bdir = tmp_path / "behaviors"
+        bdir.mkdir()
+        (bdir / "child.yaml").write_text(
+            "bundle:\n  name: child\n  version: 1.0.0\n  description: Child\n"
+        )
+        dot = bundle_overview_dot(tmp_path)
+        assert "->" in dot
+
+    def test_real_repo_overview(self) -> None:
+        repo = Path(__file__).parent.parent
+        dot = bundle_overview_dot(repo)
+        assert "digraph " in dot
+        assert "foundation" in dot
+        assert 'source_hash="' in dot
 
 
 # ── Test: tool node color is fixed blue ───────────────────────────────────────────

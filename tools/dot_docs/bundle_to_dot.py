@@ -337,17 +337,166 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     return "\n".join(out)
 
 
-def bundle_overview_dot(
-    bundles_dir: str | Path, *, repo_root: Path | None = None
-) -> str:
-    """Generate an overview DOT diagram across all behaviors in a directory.
+def bundle_overview_dot(repo_root: str | Path) -> str:
+    """Generate an overview DOT diagram for all bundle/behavior files in a repo.
 
-    Not yet implemented — see Task 7.
+    Discovers ``bundle.md`` at the repo root, all ``behaviors/*.yaml`` /
+    ``behaviors/*.yml`` files, and ``bundles/*.yaml`` / ``bundles/*.md``
+    standalone bundles.  Each file becomes a single node annotated with its
+    aggregate token cost.  Edges represent ``includes:`` relationships.
 
-    Raises:
-        NotImplementedError: Always.
+    This is the "table of contents" view — a lightweight map of every
+    component and how they connect.
+
+    Args:
+        repo_root: Repository root to scan for bundle and behavior files.
+
+    Returns:
+        Complete, valid DOT string suitable for passing to ``dot -Tsvg``.
     """
-    raise NotImplementedError("bundle_overview_dot is not yet implemented (Task 7)")
+    repo_root = Path(repo_root)
+
+    # ── Discover files ──────────────────────────────────────────────────────
+    # (role, path): role is "root", "behavior", or "bundle"
+    files: list[tuple[str, Path]] = []
+
+    root_bundle = repo_root / "bundle.md"
+    if root_bundle.exists():
+        files.append(("root", root_bundle))
+
+    behaviors_dir = repo_root / "behaviors"
+    if behaviors_dir.is_dir():
+        for p in sorted(behaviors_dir.glob("*.yaml")):
+            files.append(("behavior", p))
+        for p in sorted(behaviors_dir.glob("*.yml")):
+            files.append(("behavior", p))
+
+    bundles_dir = repo_root / "bundles"
+    if bundles_dir.is_dir():
+        for p in sorted(bundles_dir.glob("*.yaml")):
+            files.append(("bundle", p))
+        for p in sorted(bundles_dir.glob("*.md")):
+            files.append(("bundle", p))
+
+    # ── Build file → node-id mapping (use resolved paths as keys) ──────────
+    file_node_ids: dict[Path, str] = {}
+    file_names: dict[Path, str] = {}
+    file_roles: dict[Path, str] = {}
+
+    for role, path in files:
+        resolved = path.resolve()
+        try:
+            data, _ = parse_frontmatter(path)
+        except Exception:
+            data = {}
+        bundle_info: dict = data.get("bundle") or {}
+        name: str = bundle_info.get("name") or path.stem
+        node_id = _sanitize_id(f"file_{name}")
+        file_node_ids[resolved] = node_id
+        file_names[resolved] = name
+        file_roles[resolved] = role
+
+    # ── Build nodes and edges ───────────────────────────────────────────────
+    node_lines: list[str] = []
+    edge_lines: list[str] = []
+    # ext_id → node definition line (deduplicated externals)
+    external_nodes: dict[str, str] = {}
+
+    for role, path in files:
+        resolved = path.resolve()
+        name = file_names[resolved]
+        node_id = file_node_ids[resolved]
+
+        # Aggregate token cost from raw file content
+        raw_content = path.read_text(encoding="utf-8")
+        tok = estimate_tokens(raw_content)
+
+        # Base fill: root=deep teal, others=light teal
+        if role == "root":
+            base_color = _COLOR_BUNDLE_ROOT
+            style = '"filled,rounded,bold"'
+        else:
+            base_color = _COLOR_BEHAVIOR_LOCAL
+            style = '"filled,rounded"'
+
+        # Token tier can override the fill when cost is elevated
+        tier_color = color_tier(tok, "bundle_body")
+        fill_color = tier_color if tier_color != "#c8e6c9" else base_color
+
+        label = _q(f"{name}\\n~{tok} tok")
+        node_lines.append(
+            f"    {node_id} [label={label}, shape=box,"
+            f' fillcolor="{fill_color}", style={style}]'
+        )
+
+        # Parse includes and emit edges
+        try:
+            data, _ = parse_frontmatter(path)
+        except Exception:
+            data = {}
+        includes: list[dict] = data.get("includes") or []
+
+        for inc in includes:
+            ref = str(inc.get("bundle") or "")
+            if not ref:
+                continue
+            local_path = _resolve_local_include(ref, repo_root)
+            if local_path is not None and local_path in file_node_ids:
+                target_id = file_node_ids[local_path]
+                edge_lines.append(f"    {node_id} -> {target_id}")
+            else:
+                eid = f"ext_{_sanitize_id(ref)}"
+                if eid not in external_nodes:
+                    disp = _extract_external_name(ref)
+                    ext_label = _q(f"{disp}\\n(external)")
+                    external_nodes[eid] = (
+                        f"    {eid} [label={ext_label}, shape=box,"
+                        f' fillcolor="{_COLOR_EXTERNAL_INCLUDE}",'
+                        ' style="filled,rounded,dashed"]'
+                    )
+                edge_lines.append(f"    {node_id} -> {eid} [style=dashed]")
+
+    # Append external nodes after all file nodes
+    for ext_def in external_nodes.values():
+        node_lines.append(ext_def)
+
+    # ── Source hash ─────────────────────────────────────────────────────────
+    body_str = "\n".join(node_lines + [""] + edge_lines)
+    structural_hash = hashlib.sha256(body_str.encode()).hexdigest()
+
+    # ── Graph title ─────────────────────────────────────────────────────────
+    root_name = "bundle-overview"
+    if root_bundle.exists():
+        try:
+            data, _ = parse_frontmatter(root_bundle)
+            root_name = (data.get("bundle") or {}).get("name") or "bundle-overview"
+        except Exception:
+            pass
+    graph_id = _sanitize_id(root_name)
+    title = f"{root_name} \u2014 bundle overview"
+
+    # ── Assemble full graph ─────────────────────────────────────────────────
+    out: list[str] = [
+        f"digraph {graph_id} {{",
+        "    rankdir=TB",
+        '    fontname="Helvetica"',
+        "    fontsize=12",
+        f"    label={_q(title)}",
+        "    labelloc=t",
+        "    labeljust=c",
+        "    nodesep=0.6",
+        "    ranksep=0.7",
+        '    bgcolor="white"',
+        f'    source_hash="{structural_hash}"',
+        "",
+        '    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]',
+        '    edge [fontname="Helvetica", fontsize=9]',
+        "",
+        body_str,
+        "}",
+    ]
+
+    return "\n".join(out)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
