@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SessionNamingConfig:
-    """Configuration for session naming."""
+    """Configuration for session naming.
+
+    Provider selection — both optional.
+    provider_preferences takes precedence over model_role.
+    If neither is set, the priority provider is used (existing behavior).
+    """
 
     initial_trigger_turn: int = 2
     update_interval_turns: int = 5
@@ -109,25 +114,8 @@ class SessionNamingHook:
         3.12+ before it completes. The session:end handler drains any in-flight
         task before teardown.
         """
-        # DEBUG: Emit to events.jsonl so we can trace execution
-        await self.coordinator.hooks.emit(
-            "session-naming:debug",
-            {
-                "stage": "handler_called",
-                "event": event,
-                "data_keys": list(data.keys()),
-            },
-        )
-
         session_id = data.get("session_id")
         if not session_id:
-            await self.coordinator.hooks.emit(
-                "session-naming:debug",
-                {
-                    "stage": "no_session_id",
-                    "message": "session_id not in data, skipping",
-                },
-            )
             return HookResult(action="continue")
 
         # Get session directory from coordinator's session store path
@@ -582,6 +570,10 @@ async def mount(
         max_name_length: int (default: 50) - Maximum name length
         max_description_length: int (default: 200) - Maximum description length
         max_retries: int (default: 3) - Max retries on defer
+        model_role: str | None (default: None) - Model role for provider selection
+        provider_preferences: list[dict] | None (default: None) - Ordered provider
+            preferences. Takes precedence over model_role. Each entry is a dict with
+            ``provider`` and optional ``model`` keys.
     """
     config = config or {}
 
@@ -618,7 +610,7 @@ async def mount(
 
     return {
         "name": "hooks-session-naming",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "description": "Automatic session naming and description generation",
         "config": {
             "initial_trigger_turn": hook_config.initial_trigger_turn,

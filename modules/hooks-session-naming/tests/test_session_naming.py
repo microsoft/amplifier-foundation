@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -82,7 +83,7 @@ def _install_mock_routing(
     *,
     resolve_fn=None,
     find_fn=None,
-) -> callable:
+) -> Callable[[], None]:
     """Inject a mock amplifier_module_hooks_routing.resolver into sys.modules.
 
     Returns a cleanup() callable — always call it in a finally block.
@@ -96,9 +97,9 @@ def _install_mock_routing(
     """
     mock_resolver_mod = types.ModuleType("amplifier_module_hooks_routing.resolver")
     if resolve_fn is not None:
-        mock_resolver_mod.resolve_model_role = resolve_fn
+        mock_resolver_mod.resolve_model_role = resolve_fn  # type: ignore[attr-defined]
     if find_fn is not None:
-        mock_resolver_mod.find_provider_by_type = find_fn
+        mock_resolver_mod.find_provider_by_type = find_fn  # type: ignore[attr-defined]
 
     mock_routing_mod = types.ModuleType("amplifier_module_hooks_routing")
 
@@ -555,7 +556,10 @@ class TestProviderPreferencesResolution:
             await hook._call_provider("name this session")
 
         assert priority_provider.complete.called
-        assert any("provider_preferences" in msg or "hooks-routing" in msg for msg in caplog.messages)
+        assert any(
+            "provider_preferences" in msg or "hooks-routing" in msg
+            for msg in caplog.messages
+        )
 
     @pytest.mark.asyncio
     async def test_provider_preferences_wins_over_model_role(self) -> None:
@@ -578,15 +582,15 @@ class TestProviderPreferencesResolution:
                 providers=providers,
                 session_state={"routing_matrix": routing_matrix},
                 model_role="fast",
-                provider_preferences=[{"provider": "anthropic", "model": "claude-haiku-4-5"}],
+                provider_preferences=[
+                    {"provider": "anthropic", "model": "claude-haiku-4-5"}
+                ],
             )
             await hook._call_provider("name this session")
 
             assert anthropic_provider.complete.called, (
                 "provider_preferences must win over model_role"
             )
-            mock_resolve.assert_not_called(), (
-                "resolve_model_role must NOT be called when provider_preferences is set"
-            )
+            mock_resolve.assert_not_called()
         finally:
             cleanup()
