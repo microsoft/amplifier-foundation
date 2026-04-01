@@ -1,0 +1,38 @@
+// Git Ops — safe git and GitHub operations with conventional commits and PR generation
+digraph git_ops {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Git & GitHub Ops Agent\nSafe version control — commits, PRs, branches with co-author attribution"
+    labelloc=t
+    labeljust=c
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="5005583966fc992d23c8c8cb1fecfaed76dbe3c7bbd0fd5750a3d00e963c08c6"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    agent [label="Git & GitHub Ops\nmodel_role: fast\ndescription: ~568 tok", shape=box, fillcolor="#fff9c4", style="filled,bold", color="#80cbc4"]
+    tool_tool_bash [label="Shell Commands\nGit and GitHub CLI (gh)", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_filesystem [label="File System Access\nRead commit templates, configs", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    ctx_foundation_context_shared_common_agent_base_md [label="Agent Base Instructions\nShared agent operating rules\n~3543 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+
+    agent -> tool_tool_bash
+    agent -> tool_tool_filesystem
+    agent -> ctx_foundation_context_shared_common_agent_base_md
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="Agent", shape=box, fillcolor="#80cbc4", style="filled,bold"]
+        leg_tool [label="Tool", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        leg_ctx [label="Context File", shape=note, fillcolor="#e1bee7", style="filled,rounded"]
+        leg_agent -> leg_tool -> leg_ctx [style=invis]
+    }
+}

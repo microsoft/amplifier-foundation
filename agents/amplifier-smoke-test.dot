@@ -1,0 +1,40 @@
+// Amplifier Smoke Test — validates Amplifier changes in isolated shadow environments with pass/fail verdicts
+digraph amplifier_smoke_test {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Amplifier Smoke Test Agent\nValidates Amplifier changes in shadow environments with objective pass/fail verdicts"
+    labelloc=t
+    labeljust=c
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="0dd56b20ee6a9ccfa97c55ff0effff7f90495ed922de579360f581d46401bc72"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    agent [label="Amplifier Smoke Test\nmodel_role: fast\ndescription: ~271 tok", shape=box, fillcolor="#c8e6c9", style="filled,bold", color="#80cbc4"]
+    tool_tool_bash [label="Shell Commands\nRun validation commands", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_filesystem [label="File System Access\nCheck files and configs", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    ctx_shadow_context_shadow_instructions_md [label="Shadow Instructions\nGeneric shadow env docs\n~0 tok", shape=note, fillcolor="#c8e6c9", style="filled"]
+    ctx_foundation_context_amplifier_shadow_tests_md [label="Amplifier Test Patterns\nEcosystem-specific test cases\n~1947 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+
+    agent -> tool_tool_bash
+    agent -> tool_tool_filesystem
+    agent -> ctx_shadow_context_shadow_instructions_md
+    agent -> ctx_foundation_context_amplifier_shadow_tests_md
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="Agent", shape=box, fillcolor="#80cbc4", style="filled,bold"]
+        leg_tool [label="Tool", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        leg_ctx [label="Context File", shape=note, fillcolor="#e1bee7", style="filled,rounded"]
+        leg_agent -> leg_tool -> leg_ctx [style=invis]
+    }
+}

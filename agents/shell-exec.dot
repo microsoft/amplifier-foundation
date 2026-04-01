@@ -1,0 +1,36 @@
+// Shell Exec — dedicated agent for running terminal commands: builds, tests, package management
+digraph shell_exec {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Shell Execution Agent\nRuns builds, tests, package management, and system administration commands"
+    labelloc=t
+    labeljust=c
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="e3101cbffa437fa332c11ade70535273c97d29da6782f7d8882fbe91d574732e"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    agent [label="Shell Execution\nmodel_role: fast\ndescription: ~365 tok", shape=box, fillcolor="#c8e6c9", style="filled,bold", color="#80cbc4"]
+    tool_tool_bash [label="Shell Commands\nExecute any terminal command", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    ctx_foundation_context_shared_common_agent_base_md [label="Agent Base Instructions\nShared agent operating rules\n~3543 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+
+    agent -> tool_tool_bash
+    agent -> ctx_foundation_context_shared_common_agent_base_md
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="Agent", shape=box, fillcolor="#80cbc4", style="filled,bold"]
+        leg_tool [label="Tool", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        leg_ctx [label="Context File", shape=note, fillcolor="#e1bee7", style="filled,rounded"]
+        leg_agent -> leg_tool -> leg_ctx [style=invis]
+    }
+}

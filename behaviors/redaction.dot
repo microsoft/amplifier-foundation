@@ -1,0 +1,36 @@
+// Security Redaction — filters secrets and PII from log output to prevent data leaks
+digraph behavior_redaction {
+    rankdir=LR
+    fontname="Helvetica"
+    fontsize=12
+    label="Security Redaction Behavior\nFilters secrets and PII from logs to prevent data leaks"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="6bac2401a9a70510b095ba4e3f45b5d1cb9044d8202a0320797f26e200cf8322"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    root [label="Security Redaction\nProtects secrets and PII\n~82 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    hook_hooks_redaction [label="Redaction Filter\nScrubs credentials from output\n~38 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+    summary [label="Total: ~120 tok\nhooks: 38", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
+
+    root -> hook_hooks_redaction
+    root -> summary [style=dashed, arrowhead=none]
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_root [label="Bundle Root", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        leg_hook [label="Hook", shape=box, fillcolor="#ffe0b2", style="filled,rounded"]
+        leg_root -> leg_hook [style=invis]
+    }
+}

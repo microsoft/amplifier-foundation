@@ -1,0 +1,39 @@
+// Shadow Amplifier — isolated test environments for validating Amplifier ecosystem changes
+digraph behavior_shadow_amplifier {
+    rankdir=LR
+    fontname="Helvetica"
+    fontsize=12
+    label="Shadow Testing Behavior\nIsolated environments for validating Amplifier ecosystem changes safely"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="a6ee0e19d8a19f5a16a671f994c481c1d54333ad6050b0efa59a959550bcefbf"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    root [label="Shadow Testing\nIsolated environment validation\n~239 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded,bold", color="#80cbc4"]
+    agent_foundation_amplifier_smoke_test [label="Smoke Test Agent\nObjective pass/fail validation\n~271 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_shadow_main_0 [label="Shadow Testing Bundle\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    summary [label="Total: ~510 tok\nagents: 271", shape=box, fillcolor="#c8e6c9", style="filled,rounded", peripheries=2]
+
+    root -> agent_foundation_amplifier_smoke_test
+    root -> ext_githttps___github_com_microsoft_amplifier_bundle_shadow_main_0
+    root -> summary [style=dashed, arrowhead=none]
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_root [label="Bundle Root", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        leg_agent [label="Agent", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        leg_ext [label="External Include", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+        leg_root -> leg_agent -> leg_ext [style=invis]
+    }
+}

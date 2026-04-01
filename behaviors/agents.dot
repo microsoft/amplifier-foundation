@@ -1,0 +1,50 @@
+// Agent Orchestration — delegation engine, skill discovery, and multi-agent collaboration patterns
+digraph behavior_agents {
+    rankdir=LR
+    fontname="Helvetica"
+    fontsize=12
+    label="Agent Infrastructure\nDelegation tools, context sharing, and multi-agent collaboration patterns"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="5247843b449a27b09940d52a81f947abde4c834e25a30bca9fcd3395cfab0099"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    // Behavior root
+    root [label="Agent Infrastructure\nDelegation and multi-agent patterns\n~368 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+
+    // Tools provided by this behavior
+    tool_tool_delegate [label="Delegation Engine\nSpawns and manages sub-agents", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    tool_tool_skills [label="Skills Discovery\nFinds and loads skill knowledge", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+
+    // Context documents loaded
+    ctx_foundation_context_agents_delegation_instructions_md [label="Delegation Instructions\nHow to delegate effectively\n~3352 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    ctx_foundation_context_agents_multi_agent_patterns_md [label="Multi-Agent Patterns\nCollaboration and handoff guides\n~1863 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+
+    // Token cost summary
+    summary [label="Total: ~5583 tok\ncontext: 5215", shape=box, fillcolor="#fff9c4", style="filled,rounded", peripheries=2]
+
+    root -> tool_tool_delegate
+    root -> tool_tool_skills
+    root -> ctx_foundation_context_agents_delegation_instructions_md
+    root -> ctx_foundation_context_agents_multi_agent_patterns_md
+    root -> summary [style=dashed, arrowhead=none]
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_root [label="Bundle Root", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        leg_tool [label="Tool", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        leg_ctx [label="Context File", shape=note, fillcolor="#e1bee7", style="filled,rounded"]
+        leg_root -> leg_tool -> leg_ctx [style=invis]
+    }
+}

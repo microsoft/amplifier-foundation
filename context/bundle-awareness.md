@@ -46,3 +46,7 @@ Working without expert consultation results in preventable errors:
 | Tool contract | `core:docs/contracts/TOOL_CONTRACT.md` |
 
 For anything beyond a quick lookup, delegate to `foundation:foundation-expert`.
+
+---
+
+**Diagrams are auto-maintained:** `validate-bundle-repo` and `validate-agents` auto-regenerate stale or missing DOT+PNG diagrams with LLM-enhanced accessible labels by default. Set `enhance_diagrams: "false"` to get structural-only regeneration. Run `generate-bundle-docs` or `generate-agent-docs` directly for bulk generation.

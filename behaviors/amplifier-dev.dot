@@ -1,0 +1,43 @@
+// Amplifier Dev — multi-repo development workflows, testing patterns, and ecosystem expertise
+digraph behavior_amplifier_dev {
+    rankdir=LR
+    fontname="Helvetica"
+    fontsize=12
+    label="Amplifier Dev Behavior\nMulti-repo development workflows, testing patterns, and ecosystem expertise"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="9a31038774713d3f4e5f435a6d9891edbd3c444c4c37f014511411ece59f3de7"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    root [label="Amplifier Dev Behavior\nMulti-repo development support\n~106 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded", color="#80cbc4"]
+    agent_foundation_ecosystem_expert [label="Ecosystem Expert\nCross-repo coordination specialist\n~368 tok", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+    ctx_foundation_context_amplifier_dev_ecosystem_map_md [label="Ecosystem Map\nRepo roles and dependencies\n~1067 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+    ctx_foundation_context_amplifier_dev_dev_workflows_md [label="Dev Workflows\nCross-repo change patterns\n~1292 tok", shape=note, fillcolor="#fff9c4", style="filled"]
+    ctx_foundation_context_amplifier_dev_testing_patterns_md [label="Testing Patterns\nLocal override to shadow to CI\n~2341 tok", shape=note, fillcolor="#ffe0b2", style="filled"]
+    summary [label="Total: ~5174 tok\nagents: 368, context: 4700", shape=box, fillcolor="#fff9c4", style="filled,rounded", peripheries=2]
+
+    root -> agent_foundation_ecosystem_expert
+    root -> ctx_foundation_context_amplifier_dev_ecosystem_map_md
+    root -> ctx_foundation_context_amplifier_dev_dev_workflows_md
+    root -> ctx_foundation_context_amplifier_dev_testing_patterns_md
+    root -> summary [style=dashed, arrowhead=none]
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_root [label="Bundle Root", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        leg_agent [label="Agent", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        leg_ctx [label="Context File", shape=note, fillcolor="#e1bee7", style="filled,rounded"]
+        leg_root -> leg_agent -> leg_ctx [style=invis]
+    }
+}
