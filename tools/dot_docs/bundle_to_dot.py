@@ -220,7 +220,13 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     if session_cfg:
         types_used.add("session")
         sess_tok = estimate_tokens(str(session_cfg))
-        label = _q(f"session\\n~{sess_tok} tok")
+        orch_module = ""
+        if isinstance(session_cfg.get("orchestrator"), dict):
+            orch_module = session_cfg["orchestrator"].get("module") or ""
+        if orch_module:
+            label = _q(f"session: {orch_module}\\n~{sess_tok} tok")
+        else:
+            label = _q(f"session\\n~{sess_tok} tok")
         node_lines.append(
             f"    session_cfg [label={label}, shape=box,"
             f' fillcolor="{_COLOR_SESSION}", style="filled,rounded,dotted"]'

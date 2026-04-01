@@ -416,3 +416,51 @@ class TestEstimateAgentTokens:
 
         tokens = _estimate_agent_tokens("foundation:ghost-agent", tmp_path)
         assert tokens == 0
+
+
+class TestBundleToDotRootBundle:
+    """Tests for bundle_to_dot() with root bundle (has includes)."""
+
+    def test_root_bundle_generates_dot(self) -> None:
+        repo = Path(__file__).parent.parent
+        dot = bundle_to_dot(repo / "bundle.md", repo_root=repo)
+        assert dot.startswith("digraph ")
+        assert "foundation" in dot
+        assert 'source_hash="' in dot
+
+    def test_root_bundle_has_local_behavior_clusters(self) -> None:
+        repo = Path(__file__).parent.parent
+        dot = bundle_to_dot(repo / "bundle.md", repo_root=repo)
+        assert "cluster_" in dot
+
+    def test_root_bundle_has_external_nodes(self) -> None:
+        repo = Path(__file__).parent.parent
+        dot = bundle_to_dot(repo / "bundle.md", repo_root=repo)
+        assert "ext_" in dot
+        assert "(external)" in dot
+
+    def test_root_bundle_has_direct_tools(self) -> None:
+        repo = Path(__file__).parent.parent
+        dot = bundle_to_dot(repo / "bundle.md", repo_root=repo)
+        assert "tool-filesystem" in dot or "tool_filesystem" in dot
+
+    def test_root_bundle_has_session_config(self) -> None:
+        repo = Path(__file__).parent.parent
+        dot = bundle_to_dot(repo / "bundle.md", repo_root=repo)
+        assert "loop-streaming" in dot or "loop_streaming" in dot
+
+    def test_root_bundle_has_summary_node(self) -> None:
+        repo = Path(__file__).parent.parent
+        dot = bundle_to_dot(repo / "bundle.md", repo_root=repo)
+        assert "summary" in dot
+
+    def test_source_hash_deterministic(self) -> None:
+        import re
+
+        repo = Path(__file__).parent.parent
+        dot1 = bundle_to_dot(repo / "bundle.md", repo_root=repo)
+        dot2 = bundle_to_dot(repo / "bundle.md", repo_root=repo)
+        hashes1 = re.findall(r'source_hash="([a-f0-9]+)"', dot1)
+        hashes2 = re.findall(r'source_hash="([a-f0-9]+)"', dot2)
+        assert len(hashes1) == 1
+        assert hashes1 == hashes2
