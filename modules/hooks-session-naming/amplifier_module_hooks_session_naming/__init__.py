@@ -21,13 +21,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SessionNamingConfig:
-    """Configuration for session naming."""
+    """Configuration for session naming.
+
+    model_role routes naming to a cheap/fast model via the routing matrix.
+    Defaults to "fast" — session naming is a simple classification task that
+    does not need the priority/expensive model. Set to None to use the
+    priority provider explicitly.
+    """
 
     initial_trigger_turn: int = 2
     update_interval_turns: int = 5
     max_name_length: int = 50
     max_description_length: int = 200
     max_retries: int = 3
+    model_role: str | None = "fast"
 
 
 INITIAL_NAMING_PROMPT = """You generate names and descriptions for conversation sessions.
@@ -95,35 +102,20 @@ class SessionNamingHook:
         self.coordinator = coordinator
         self.config = config
         self._defer_counts: dict[str, int] = {}
+        self._pending_tasks: set[asyncio.Task] = set()
 
     async def on_orchestrator_complete(
         self, event: str, data: dict[str, Any]
     ) -> HookResult:
         """Handle orchestrator completion - trigger naming if appropriate.
 
-        Naming runs synchronously (awaits the LLM call) to ensure it completes
-        before the session ends. This adds a few seconds to turns where naming
-        happens, but is more reliable than background tasks.
+        Naming runs as a background asyncio task (non-blocking). The task is
+        tracked in self._pending_tasks so it is not garbage-collected by Python
+        3.12+ before it completes. The session:end handler drains any in-flight
+        task before teardown.
         """
-        # DEBUG: Emit to events.jsonl so we can trace execution
-        await self.coordinator.hooks.emit(
-            "session-naming:debug",
-            {
-                "stage": "handler_called",
-                "event": event,
-                "data_keys": list(data.keys()),
-            },
-        )
-
         session_id = data.get("session_id")
         if not session_id:
-            await self.coordinator.hooks.emit(
-                "session-naming:debug",
-                {
-                    "stage": "no_session_id",
-                    "message": "session_id not in data, skipping",
-                },
-            )
             return HookResult(action="continue")
 
         # Get session directory from coordinator's session store path
@@ -143,8 +135,11 @@ class SessionNamingHook:
         if current_turn >= self.config.initial_trigger_turn and not has_name:
             defer_count = self._defer_counts.get(session_id, 0)
             if defer_count < self.config.max_retries:
-                # Run naming synchronously to ensure completion
-                await self._generate_name(session_id, session_dir, is_update=False)
+                task = asyncio.create_task(
+                    self._generate_name(session_id, session_dir, is_update=False)
+                )
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
 
         # Description update: has name and at update interval
         elif (
@@ -152,8 +147,28 @@ class SessionNamingHook:
             and current_turn > 0
             and current_turn % self.config.update_interval_turns == 0
         ):
-            # Run description update synchronously
-            await self._generate_name(session_id, session_dir, is_update=True)
+            task = asyncio.create_task(
+                self._generate_name(session_id, session_dir, is_update=True)
+            )
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
+
+        return HookResult(action="continue")
+
+    async def on_session_end(self, event: str, data: dict[str, Any]) -> HookResult:
+        """Drain any in-flight naming tasks before session teardown.
+
+        Waits up to 15 seconds for each pending task. If a task times out or is
+        cancelled, logs at DEBUG and continues — naming is best-effort.
+        """
+        if not self._pending_tasks:
+            return HookResult(action="continue")
+
+        for task in list(self._pending_tasks):
+            try:
+                await asyncio.wait_for(task, timeout=15.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                logger.debug("Session naming drain timed out or was cancelled: %s", exc)
 
         return HookResult(action="continue")
 
@@ -230,8 +245,21 @@ class SessionNamingHook:
             else:
                 prompt = INITIAL_NAMING_PROMPT.format(context=context)
 
-            # Call the provider
-            response = await self._call_provider(prompt)
+            # Call the provider — hard timeout caps stalled providers
+            try:
+                response = await asyncio.wait_for(
+                    self._call_provider(prompt), timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Session naming provider call timed out (10 s) for session %s",
+                    session_id[:8],
+                )
+                await self.coordinator.hooks.emit(
+                    "session-naming:timeout",
+                    {"session_id": session_id, "is_update": is_update},
+                )
+                return
             if not response:
                 return
 
@@ -248,8 +276,15 @@ class SessionNamingHook:
                 self._defer_counts[session_id] = (
                     self._defer_counts.get(session_id, 0) + 1
                 )
+                defer_count = self._defer_counts[session_id]
                 logger.debug(
-                    f"Session {session_id[:8]} deferred naming (attempt {self._defer_counts[session_id]})"
+                    "Session %s deferred naming (attempt %d)",
+                    session_id[:8],
+                    defer_count,
+                )
+                await self.coordinator.hooks.emit(
+                    "session-naming:deferred",
+                    {"session_id": session_id, "defer_count": defer_count},
                 )
                 return
 
@@ -259,7 +294,7 @@ class SessionNamingHook:
                     name = result["name"][: self.config.max_name_length]
                     metadata["name"] = name
                     metadata["name_generated_at"] = now
-                    logger.info(f"Session {session_id[:8]} named: {name}")
+                    logger.info("Session %s named: %s", session_id[:8], name)
 
                 if result.get("description"):
                     description = result["description"][
@@ -268,19 +303,35 @@ class SessionNamingHook:
                     metadata["description"] = description
                     metadata["description_updated_at"] = now
                     if is_update:
-                        logger.debug(f"Session {session_id[:8]} description updated")
+                        logger.debug("Session %s description updated", session_id[:8])
 
                 self._save_metadata(session_dir, metadata)
                 # Clear defer count on success
                 self._defer_counts.pop(session_id, None)
+                await self.coordinator.hooks.emit(
+                    "session-naming:set",
+                    {
+                        "session_id": session_id,
+                        "name": metadata.get("name"),
+                        "description": metadata.get("description"),
+                        "is_update": is_update,
+                    },
+                )
 
             elif action == "keep":
-                logger.debug(f"Session {session_id[:8]} description unchanged")
+                logger.debug("Session %s description unchanged", session_id[:8])
 
         except asyncio.CancelledError:
-            logger.debug(f"Naming task cancelled for session {session_id[:8]}")
+            logger.debug("Naming task cancelled for session %s", session_id[:8])
         except Exception as e:
-            logger.error(f"Error generating name for session {session_id[:8]}: {e}")
+            logger.error("Error generating name for session %s: %s", session_id[:8], e)
+            try:
+                await self.coordinator.hooks.emit(
+                    "session-naming:error",
+                    {"session_id": session_id, "error": str(e)},
+                )
+            except Exception:
+                pass  # emit failure must never suppress the original error path
 
     async def _get_conversation_context(
         self,
@@ -404,23 +455,79 @@ class SessionNamingHook:
         return truncated + "..."
 
     async def _call_provider(self, prompt: str) -> str | None:
-        """Call the LLM provider to generate name/description."""
+        """Call the LLM provider to generate name/description.
+
+        Resolution order (highest to lowest priority):
+          1. model_role — resolved via routing matrix (lazy import)
+          2. Fallback   — next(iter(providers.values()))
+
+        model_role resolution requires amplifier_module_hooks_routing. When that
+        module is not installed, logs a warning and falls back to #2.
+        """
         try:
-            # Get the priority provider from coordinator using standard API
-            provider = None
             providers = self.coordinator.get("providers")
-            if providers:
-                # Get first/priority provider
+            if not providers:
+                logger.warning("No provider available for session naming")
+                return None
+
+            # Resolution order: model_role > priority provider
+            provider = None
+            model_override: str | None = None
+
+            if self.config.model_role:
+                routing_matrix = getattr(self.coordinator, "session_state", {}).get(
+                    "routing_matrix"
+                )
+                if routing_matrix:
+                    try:
+                        from amplifier_module_hooks_routing.resolver import (
+                            resolve_model_role,
+                        )
+
+                        roles = [self.config.model_role]
+                        matrix = routing_matrix.get("roles", {})
+                        resolved = await resolve_model_role(roles, matrix, providers)
+                        if resolved:
+                            resolved_provider_name = resolved[0]["provider"]
+                            model_override = resolved[0].get("model")
+                            # Find the provider whose key contains the resolved name
+                            for key, p in providers.items():
+                                if resolved_provider_name.lower() in key.lower():
+                                    provider = p
+                                    break
+                        else:
+                            logger.warning(
+                                "model_role %r resolved to no candidates",
+                                self.config.model_role,
+                            )
+                    except ImportError:
+                        logger.debug(
+                            "model_role %r specified but hooks-routing not installed,"
+                            " falling back to priority provider",
+                            self.config.model_role,
+                        )
+                else:
+                    logger.debug(
+                        "model_role %r set but no routing_matrix in session state,"
+                        " falling back to priority provider",
+                        self.config.model_role,
+                    )
+
+            # Fallback: use first/priority provider
+            if provider is None:
                 provider = next(iter(providers.values()), None)
 
             if not provider:
                 logger.warning("No provider available for session naming")
                 return None
 
-            # Make the request
+            # Make the request — model=None means use provider default
             from amplifier_core import ChatRequest, Message
 
-            request = ChatRequest(messages=[Message(role="user", content=prompt)])
+            request = ChatRequest(
+                messages=[Message(role="user", content=prompt)],
+                model=model_override,
+            )
 
             response = await provider.complete(request)
 
@@ -464,6 +571,10 @@ async def mount(
         max_name_length: int (default: 50) - Maximum name length
         max_description_length: int (default: 200) - Maximum description length
         max_retries: int (default: 3) - Max retries on defer
+        model_role: str | None (default: "fast") - Model role resolved via routing matrix.
+            Defaults to "fast" so naming uses a cheap model automatically.
+            Set to None to use the priority provider explicitly.
+            Falls back to priority provider silently when hooks-routing is not installed.
     """
     config = config or {}
 
@@ -473,6 +584,7 @@ async def mount(
         max_name_length=config.get("max_name_length", 50),
         max_description_length=config.get("max_description_length", 200),
         max_retries=config.get("max_retries", 3),
+        model_role=config.get("model_role"),
     )
 
     hook = SessionNamingHook(coordinator, hook_config)
@@ -486,9 +598,19 @@ async def mount(
         name="session-naming",
     )
 
+    # Register for session end to drain any in-flight naming task
+    from amplifier_core.events import SESSION_END
+
+    coordinator.hooks.register(
+        SESSION_END,
+        hook.on_session_end,
+        priority=100,
+        name="session-naming-drain",
+    )
+
     return {
         "name": "hooks-session-naming",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "description": "Automatic session naming and description generation",
         "config": {
             "initial_trigger_turn": hook_config.initial_trigger_turn,
