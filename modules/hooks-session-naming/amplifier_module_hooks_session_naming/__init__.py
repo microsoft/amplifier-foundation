@@ -323,10 +323,13 @@ class SessionNamingHook:
             logger.debug("Naming task cancelled for session %s", session_id[:8])
         except Exception as e:
             logger.error("Error generating name for session %s: %s", session_id[:8], e)
-            await self.coordinator.hooks.emit(
-                "session-naming:error",
-                {"session_id": session_id, "error": str(e)},
-            )
+            try:
+                await self.coordinator.hooks.emit(
+                    "session-naming:error",
+                    {"session_id": session_id, "error": str(e)},
+                )
+            except Exception:
+                pass  # emit failure must never suppress the original error path
 
     async def _get_conversation_context(
         self,
