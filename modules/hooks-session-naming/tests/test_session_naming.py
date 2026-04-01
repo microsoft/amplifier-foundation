@@ -264,3 +264,33 @@ class TestSessionEndDrain:
 
         assert isinstance(result, HookResult)
         assert result.action == "continue"
+
+
+# =============================================================================
+# Task 4: Internal provider timeout
+# =============================================================================
+
+
+class TestProviderTimeout:
+    """_generate_name must handle a stalled provider call within 10 s."""
+
+    @pytest.mark.asyncio
+    async def test_generate_name_returns_on_provider_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        """_generate_name catches asyncio.TimeoutError from stalled _call_provider."""
+        hook = _make_hook()
+
+        # Give it real context so it reaches the _call_provider call
+        hook._get_conversation_context = AsyncMock(
+            return_value="some conversation text"
+        )
+        hook._load_metadata = MagicMock(return_value={})
+
+        # Patch asyncio.wait_for to immediately raise TimeoutError —
+        # simulates the 10 s timeout without actually waiting
+        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            # Must not raise — timeout must be caught inside _generate_name
+            await hook._generate_name("session-abc123", tmp_path, is_update=False)
+
+        # If we reach here, the timeout was handled correctly — no exception propagated

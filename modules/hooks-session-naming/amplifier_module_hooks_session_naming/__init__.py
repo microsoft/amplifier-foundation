@@ -257,8 +257,17 @@ class SessionNamingHook:
             else:
                 prompt = INITIAL_NAMING_PROMPT.format(context=context)
 
-            # Call the provider
-            response = await self._call_provider(prompt)
+            # Call the provider — hard timeout caps stalled providers
+            try:
+                response = await asyncio.wait_for(
+                    self._call_provider(prompt), timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Session naming provider call timed out (10 s) for session %s",
+                    session_id[:8],
+                )
+                return
             if not response:
                 return
 
