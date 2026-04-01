@@ -461,9 +461,29 @@ class SessionNamingHook:
             model_override: str | None = None
 
             if self.config.provider_preferences:
-                # Handled in Task 7 — provider_preferences resolution
-                # Falls through to priority provider until Task 7 is implemented
-                pass
+                try:
+                    from amplifier_module_hooks_routing.resolver import (
+                        find_provider_by_type,
+                    )
+
+                    for pref in self.config.provider_preferences:
+                        provider_type = pref.get("provider", "")
+                        found = find_provider_by_type(provider_type, providers)
+                        if found:
+                            provider = found
+                            model_override = pref.get("model")
+                            break
+
+                    if provider is None:
+                        logger.warning(
+                            "provider_preferences specified but no matching provider"
+                            " found, falling back to priority provider"
+                        )
+                except ImportError:
+                    logger.warning(
+                        "provider_preferences specified but hooks-routing not available,"
+                        " falling back to priority provider"
+                    )
 
             elif self.config.model_role:
                 routing_matrix = getattr(self.coordinator, "session_state", {}).get(

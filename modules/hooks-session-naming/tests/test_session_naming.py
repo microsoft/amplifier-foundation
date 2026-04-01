@@ -458,3 +458,135 @@ class TestModelRoleResolution:
         call_kwargs = priority_provider.complete.call_args
         request = call_kwargs[0][0]
         assert request.model is None, "No model override without model_role"
+
+
+# =============================================================================
+# Task 7: provider_preferences resolution
+# =============================================================================
+
+
+class TestProviderPreferencesResolution:
+    """_call_provider resolves provider_preferences using find_provider_by_type."""
+
+    @pytest.mark.asyncio
+    async def test_provider_preferences_selects_correct_provider_and_model(
+        self,
+    ) -> None:
+        """First matching provider_preference wins; model is passed to ChatRequest."""
+        anthropic_provider = _make_mock_provider()
+        openai_provider = _make_mock_provider()
+        providers = {
+            "provider-anthropic": anthropic_provider,
+            "provider-openai": openai_provider,
+        }
+
+        prefs = [{"provider": "anthropic", "model": "claude-haiku-4-5"}]
+
+        mock_find = MagicMock(return_value=anthropic_provider)
+        cleanup = _install_mock_routing(find_fn=mock_find)
+        try:
+            hook = _make_hook(providers=providers, provider_preferences=prefs)
+            await hook._call_provider("name this session")
+
+            assert anthropic_provider.complete.called
+            assert not openai_provider.complete.called
+
+            mock_find.assert_called_once_with("anthropic", providers)
+
+            call_kwargs = anthropic_provider.complete.call_args
+            request = call_kwargs[0][0]
+            assert request.model == "claude-haiku-4-5"
+        finally:
+            cleanup()
+
+    @pytest.mark.asyncio
+    async def test_provider_preferences_skips_to_next_when_first_not_found(
+        self,
+    ) -> None:
+        """If first preference provider not found, tries next preference."""
+        openai_provider = _make_mock_provider()
+        providers = {"provider-openai": openai_provider}
+
+        prefs = [
+            {"provider": "anthropic", "model": "claude-haiku-4-5"},
+            {"provider": "openai", "model": "gpt-4o-mini"},
+        ]
+
+        def find_by_type(provider_type: str, _providers: dict):
+            if provider_type == "anthropic":
+                return None
+            if provider_type == "openai":
+                return openai_provider
+            return None
+
+        cleanup = _install_mock_routing(find_fn=find_by_type)
+        try:
+            hook = _make_hook(providers=providers, provider_preferences=prefs)
+            await hook._call_provider("name this session")
+
+            assert openai_provider.complete.called
+            call_kwargs = openai_provider.complete.call_args
+            request = call_kwargs[0][0]
+            assert request.model == "gpt-4o-mini"
+        finally:
+            cleanup()
+
+    @pytest.mark.asyncio
+    async def test_provider_preferences_falls_back_when_routing_not_installed(
+        self, caplog
+    ) -> None:
+        """ImportError on hooks-routing → falls back to priority provider, logs warning."""
+        priority_provider = _make_mock_provider()
+        providers = {"provider-priority": priority_provider}
+
+        prefs = [{"provider": "anthropic", "model": "claude-haiku-4-5"}]
+
+        for mod_name in (
+            "amplifier_module_hooks_routing",
+            "amplifier_module_hooks_routing.resolver",
+        ):
+            sys.modules.pop(mod_name, None)
+
+        hook = _make_hook(providers=providers, provider_preferences=prefs)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            await hook._call_provider("name this session")
+
+        assert priority_provider.complete.called
+        assert any("provider_preferences" in msg or "hooks-routing" in msg for msg in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_provider_preferences_wins_over_model_role(self) -> None:
+        """provider_preferences takes precedence when both are set."""
+        anthropic_provider = _make_mock_provider()
+        priority_provider = _make_mock_provider()
+        providers = {
+            "provider-anthropic": anthropic_provider,
+            "provider-priority": priority_provider,
+        }
+
+        routing_matrix = {"roles": {"fast": {"candidates": []}}}
+        mock_resolve = AsyncMock(
+            return_value=[{"provider": "priority", "model": "big-model"}]
+        )
+        mock_find = MagicMock(return_value=anthropic_provider)
+        cleanup = _install_mock_routing(resolve_fn=mock_resolve, find_fn=mock_find)
+        try:
+            hook = _make_hook(
+                providers=providers,
+                session_state={"routing_matrix": routing_matrix},
+                model_role="fast",
+                provider_preferences=[{"provider": "anthropic", "model": "claude-haiku-4-5"}],
+            )
+            await hook._call_provider("name this session")
+
+            assert anthropic_provider.complete.called, (
+                "provider_preferences must win over model_role"
+            )
+            mock_resolve.assert_not_called(), (
+                "resolve_model_role must NOT be called when provider_preferences is set"
+            )
+        finally:
+            cleanup()
