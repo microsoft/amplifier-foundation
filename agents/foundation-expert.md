@@ -127,6 +127,11 @@ Agent definitions with proper frontmatter and instructions.
 - @foundation:context/shared/common-system-base.md - Base system instructions
 - @foundation:context/shared/common-agent-base.md - Base agent instructions
 
+### Skills
+
+- @foundation:skills/bundle-to-dot/SKILL.md — Bundle DOT diagram convention
+- @foundation:skills/agent-to-dot/SKILL.md — Agent DOT diagram convention
+
 ### Source Code (Optional Deep Dive)
 
 For implementation details beyond the docs, you may read these source files if needed:
