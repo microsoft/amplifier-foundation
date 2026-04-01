@@ -423,15 +423,24 @@ async def run_session_in_subprocess(
                     )
                 raise TimeoutError(f"Subprocess session timed out after {timeout}s")
 
+            raw_stdout = stdout.decode("utf-8")
+            stderr_text = stderr.decode("utf-8")
+            logger.debug("Subprocess stderr: %s", stderr_text)
+
+            # When exit code != 0, prefer the result envelope from stdout (which
+            # contains the real error from the subprocess __main__ except block)
+            # over stderr (which only contains Python's RuntimeWarning about module
+            # import ordering). Only fall back to stderr if no envelope was printed.
             if process.returncode != 0:
-                stderr_text = stderr.decode("utf-8")
-                logger.debug("Subprocess stderr: %s", stderr_text)
+                if RESULT_START_MARKER in raw_stdout:
+                    # Subprocess caught the exception and printed a proper error
+                    # envelope — extract it so the caller gets the real error message.
+                    return _extract_framed_result(raw_stdout)
                 sanitized = _sanitize_error(stderr_text)
                 raise RuntimeError(
                     f"Subprocess session failed (exit code {process.returncode}): {sanitized}"
                 )
 
-            raw_stdout = stdout.decode("utf-8")
             return _extract_framed_result(raw_stdout)
     finally:
         if tmp_path is not None:
