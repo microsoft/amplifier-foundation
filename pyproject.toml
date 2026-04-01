@@ -65,7 +65,12 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tools"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.pyright]
+include = ["amplifier_foundation", "tests", "tools"]
+extraPaths = ["tools"]
 
