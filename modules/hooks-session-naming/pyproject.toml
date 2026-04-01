@@ -1,6 +1,6 @@
 [project]
 name = "amplifier-module-hooks-session-naming"
-version = "0.1.0"
+version = "0.1.1"
 description = "Automatic session naming and description generation"
 readme = "README.md"
 requires-python = ">=3.11"
