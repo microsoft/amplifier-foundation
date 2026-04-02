@@ -1,8 +1,13 @@
+// Foundation Bundle Overview
+// Shows how the main AI assistant is assembled from behaviors, tools, and external packages.
+// Orange node = root bundle. Teal nodes = built-in behaviors. Grey dashed nodes = external dependencies.
+// Solid arrows = local includes. Dashed arrows = external includes.
+// Token costs reflect each file's own configuration size.
 digraph foundation {
     rankdir=TB
     fontname="Helvetica"
     fontsize=12
-    label="foundation — bundle overview"
+    label="Foundation Bundle — How the AI Assistant Is Assembled"
     labelloc=t
     labeljust=c
     nodesep=0.6
@@ -13,42 +18,50 @@ digraph foundation {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    file_foundation [label="foundation\n~1140 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded,bold"]
-    file_behavior_agents [label="behavior-agents\n~368 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_amplifier_dev [label="behavior-amplifier-dev\n~106 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_foundation_expert_behavior [label="foundation-expert-behavior\n~132 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_logging [label="behavior-logging\n~85 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_progress_monitor [label="behavior-progress-monitor\n~190 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_redaction [label="behavior-redaction\n~82 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_sessions [label="behavior-sessions\n~140 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_shadow_amplifier [label="behavior-shadow-amplifier\n~239 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_status_context [label="behavior-status-context\n~83 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_streaming_ui [label="behavior-streaming-ui\n~95 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_tasks [label="behavior-tasks\n~155 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_behavior_todo_reminder [label="behavior-todo-reminder\n~232 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_amplifier_dev [label="amplifier-dev\n~192 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_foundation_minimal [label="foundation-minimal\n~119 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_foundation_anthropic [label="foundation-anthropic\n~51 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    file_foundation_openai [label="foundation-openai\n~50 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-    ext_githttps___github_com_microsoft_amplifier_mainsubdirectorybehaviors_amplifier_expert_yaml [label="amplifier-expert.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_core_mainsubdirectorybehaviors_core_expert_yaml [label="core-expert.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_recipes_mainsubdirectorybehaviors_recipes_yaml [label="recipes.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_design_intelligence_mainsubdirectorybehaviors_design_intelligence_yaml [label="design-intelligence.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_python_dev_main [label="amplifier-bundle-python-dev\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_shadow_main [label="amplifier-bundle-shadow\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_skills_mainsubdirectorybehaviors_skills_yaml [label="skills.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_browser_tester_mainsubdirectorybehaviors_browser_tester_yaml [label="browser-tester.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_superpowers_mainsubdirectorybehaviors_superpowers_methodology_yaml [label="superpowers-methodology.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_module_hook_shell_mainsubdirectorybehaviors_hook_shell_yaml [label="hook-shell.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_module_tool_mcp_mainsubdirectorybehaviors_mcp_yaml [label="mcp.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_filesystem_mainsubdirectorybehaviors_apply_patch_yaml [label="apply-patch.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_bundle_routing_matrix_main [label="amplifier-bundle-routing-matrix\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_foundation [label="foundation\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_foundation_mainsubdirectorybehaviors_amplifier_dev_yaml [label="amplifier-dev.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_githttps___github_com_microsoft_amplifier_foundation_mainsubdirectorybehaviors_shadow_amplifier_yaml [label="shadow-amplifier.yaml\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_foundation_providers_anthropic_opus [label="anthropic-opus\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
-    ext_foundation_providers_openai_gpt_codex [label="openai-gpt-codex\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    // Root bundle — the main entry point that composes everything together
+    file_foundation [label="Foundation v2.0\nCore AI Assistant Platform\n4 tools · 11 agents · 1 ctx\n~1140 tok", shape=box, fillcolor="#ffe0b2", style="filled,rounded,bold"]
 
+    // Built-in behaviors — each adds a specific capability
+    file_behavior_agents [label="Agent Orchestration\nDelegate tool + multi-agent patterns\n2 tools · 2 ctx\n~368 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_amplifier_dev [label="Amplifier Dev Workflows\nEcosystem maps, testing, multi-repo\n1 agent · 3 ctx\n~106 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_foundation_expert_behavior [label="Foundation Expert\nBundle composition consultant\n1 agent · 1 ctx\n~132 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_logging [label="Session Logging\nSaves events to JSONL files\n1 hook\n~85 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_progress_monitor [label="Progress Monitor\nDetects stuck loops, nudges forward\n1 hook\n~190 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_redaction [label="Security Redaction\nHides secrets and PII from logs\n1 hook\n~82 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_sessions [label="Session Management\nNaming, logging, and analysis\n1 agent · 1 hook\n~140 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_shadow_amplifier [label="Shadow Environments\nSafe testing with smoke-test agent\n1 agent\n~239 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_status_context [label="Environment Awareness\nInjects git and system status\n1 hook\n~83 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_streaming_ui [label="Live Streaming UI\nShows thinking, tool calls, usage\n1 hook\n~95 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_tasks [label="Legacy Task Tool\nBackwards-compatible delegation\n1 tool · 2 ctx\n~155 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_behavior_todo_reminder [label="Todo Tracking\nTask lists with progress reminders\n1 tool · 2 hooks\n~232 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+
+    // Variant bundles — pre-configured combinations for specific use cases
+    file_amplifier_dev [label="Amplifier Dev Bundle\nFull dev setup with shadow envs\n~192 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_foundation_minimal [label="Minimal Foundation\nBasic tools only, no agents\n~119 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_foundation_anthropic [label="Foundation + Anthropic\nClaude Opus provider\n~51 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+    file_foundation_openai [label="Foundation + OpenAI\nGPT Codex provider\n~50 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+
+    // External dependencies — behaviors and bundles pulled from other repositories
+    ext_githttps___github_com_microsoft_amplifier_mainsubdirectorybehaviors_amplifier_expert_yaml [label="Amplifier Expert\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_core_mainsubdirectorybehaviors_core_expert_yaml [label="Core Expert\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_recipes_mainsubdirectorybehaviors_recipes_yaml [label="Recipes\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_design_intelligence_mainsubdirectorybehaviors_design_intelligence_yaml [label="Design Intelligence\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_python_dev_main [label="Python Dev\n(external bundle)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_shadow_main [label="Shadow Environments\n(external bundle)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_skills_mainsubdirectorybehaviors_skills_yaml [label="Skills Discovery\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_browser_tester_mainsubdirectorybehaviors_browser_tester_yaml [label="Browser Testing\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_superpowers_mainsubdirectorybehaviors_superpowers_methodology_yaml [label="Superpowers Methodology\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_module_hook_shell_mainsubdirectorybehaviors_hook_shell_yaml [label="Shell Hooks\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_module_tool_mcp_mainsubdirectorybehaviors_mcp_yaml [label="MCP Integration\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_filesystem_mainsubdirectorybehaviors_apply_patch_yaml [label="File Patching\n(external behavior)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_bundle_routing_matrix_main [label="Routing Matrix\n(external bundle)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_foundation [label="Foundation\n(external ref)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_foundation_mainsubdirectorybehaviors_amplifier_dev_yaml [label="Amplifier Dev Behavior\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_githttps___github_com_microsoft_amplifier_foundation_mainsubdirectorybehaviors_shadow_amplifier_yaml [label="Shadow Amplifier\n(external)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_foundation_providers_anthropic_opus [label="Anthropic Claude Opus\n(external provider)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+    ext_foundation_providers_openai_gpt_codex [label="OpenAI GPT Codex\n(external provider)", shape=box, fillcolor="#f5f5f5", style="filled,rounded,dashed"]
+
+    // Edges — all relationships preserved exactly as-is
     file_foundation -> ext_githttps___github_com_microsoft_amplifier_mainsubdirectorybehaviors_amplifier_expert_yaml [style=dashed]
     file_foundation -> ext_githttps___github_com_microsoft_amplifier_core_mainsubdirectorybehaviors_core_expert_yaml [style=dashed]
     file_foundation -> file_foundation_expert_behavior
