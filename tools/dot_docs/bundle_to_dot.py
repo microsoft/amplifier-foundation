@@ -850,9 +850,193 @@ def _build_legend(types_used: set[str]) -> str:
     return "\n".join(lines)
 
 
-def bundle_detail_md(entry_point: str | Path, *, repo_root: Path | None = None) -> str:
-    """Single entry point → markdown detail table.
-    
-    Not yet implemented (Task 4).
+def bundle_detail_md(yaml_path: str | Path, *, repo_root: Path | None = None) -> str:
+    """Single entry point → markdown detail tables showing composition and token costs.
+
+    Reads the file at *yaml_path* and emits a structured markdown document with
+    per-section tables (Tools, Context Files, Agents, Hooks, Skills) annotated
+    with per-request main-session token cost estimates.
+
+    Token counting model:
+    * **Tools** — schema cost is injected at runtime; shown as ``—`` (not countable
+      from YAML alone).
+    * **Agents** — ``meta.description`` length divided by 4 (matches what the
+      delegate tool injects per request).
+    * **Context files** — full file content length divided by 4.
+    * **Markdown body** — length divided by 4 (instruction cost for ``.md`` bundles).
+    * **Hooks** — listed by name only; contribute ~0 tokens.
+
+    Args:
+        yaml_path: Path to a ``.yaml`` behavior file or ``.md`` bundle file with
+            YAML frontmatter.
+        repo_root: Repository root used to resolve ``namespace:path`` mentions and
+            local context-file references.  When omitted the function walks up from
+            *yaml_path* looking for a ``.git`` directory or ``bundle.md``; if
+            neither is found it falls back to *yaml_path*'s parent.
+
+    Returns:
+        Complete markdown string with section tables and a footer containing the
+        ``source_hash`` (SHA-256 of the raw file content).
+
+    Raises:
+        FileNotFoundError: If *yaml_path* does not exist.
     """
-    raise NotImplementedError("bundle_detail_md is not yet implemented (see Task 4)")
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"Bundle file not found: {yaml_path}")
+
+    # ── Infer repo_root ────────────────────────────────────────────────────────
+    if repo_root is None:
+        candidate = yaml_path.parent
+        while candidate != candidate.parent:
+            if (candidate / ".git").exists() or (candidate / "bundle.md").exists():
+                repo_root = candidate
+                break
+            candidate = candidate.parent
+        else:
+            repo_root = yaml_path.parent
+
+    # ── Parse file ─────────────────────────────────────────────────────────────
+    data, body = parse_frontmatter(yaml_path)
+    bundle_info: dict = data.get("bundle") or {}
+    name: str = bundle_info.get("name") or yaml_path.stem
+
+    # Markdown body = instruction tokens (only for .md bundles)
+    body_tokens = estimate_tokens(body) if body else 0
+
+    # ── Extract elements ───────────────────────────────────────────────────────
+    tools: list[dict] = data.get("tools") or []
+    hooks: list[dict] = data.get("hooks") or []
+    agents_info: dict = data.get("agents") or {}
+    agent_includes: list[str] = agents_info.get("include") or []
+    ctx_info: dict = data.get("context") or {}
+    ctx_includes: list[str] = ctx_info.get("include") or []
+    skills: list = data.get("skills") or []
+
+    # @mentions from markdown body
+    body_mentions: list[str] = extract_mentions(body) if body else []
+
+    # ── Agents ─────────────────────────────────────────────────────────────────
+    agent_rows: list[tuple[str, int]] = []
+    for ref in agent_includes:
+        tok = _estimate_agent_tokens(ref, repo_root)
+        agent_name = ref.split(":", 1)[1] if ":" in ref else ref
+        agent_rows.append((agent_name, tok))
+    agents_total = sum(t for _, t in agent_rows)
+
+    # ── Context files (context.include + body @mentions, deduplicated) ─────────
+    # Each row: (display_name, tokens_or_None, source_label)
+    ctx_rows: list[tuple[str, int | None, str]] = []
+    seen_ctx_keys: set[str] = set()
+
+    def _add_ctx_row(ref: str, source: str) -> None:
+        # Normalise for deduplication: strip leading @ so bare and @-prefixed refs match
+        bare = ref.lstrip("@")
+        key = _sanitize_id(bare)
+        if key in seen_ctx_keys:
+            return
+        seen_ctx_keys.add(key)
+
+        short = _short_path(ref)
+        mention = ref if ref.startswith("@") else f"@{ref}"
+        local = resolve_local_mention(mention, repo_root)
+
+        if local and local.exists():
+            try:
+                content = local.read_text(encoding="utf-8")
+                ctx_rows.append((short, estimate_tokens(content), source))
+            except OSError:
+                ctx_rows.append((short, None, source))
+        else:
+            ctx_rows.append((short, None, source))
+
+    for ref in ctx_includes:
+        _add_ctx_row(ref, "context.include")
+    for mention in body_mentions:
+        _add_ctx_row(mention, "@mention in body")
+
+    ctx_total = sum(t for _, t, _ in ctx_rows if t is not None)
+
+    # ── Per-request cost ───────────────────────────────────────────────────────
+    total_tokens = body_tokens + agents_total + ctx_total
+
+    # ── Source hash ────────────────────────────────────────────────────────────
+    raw_content = yaml_path.read_text(encoding="utf-8")
+    source_hash = hashlib.sha256(raw_content.encode()).hexdigest()
+
+    # ── Render markdown ────────────────────────────────────────────────────────
+    lines: list[str] = []
+
+    # Header
+    lines.append(f"# {name} — Composition Detail")
+    lines.append("")
+    lines.append(f"**Per-request main-session token cost: ~{total_tokens} tok**")
+    lines.append("")
+
+    # Tools section
+    lines.append(f"## Tools ({len(tools)})")
+    if not tools:
+        lines.append("(No direct tools)")
+    else:
+        lines.append("| Tool | Tokens |")
+        lines.append("|------|--------|")
+        for tool in tools:
+            module = tool.get("module") or "(unknown)"
+            lines.append(f"| {module} | — |")
+        lines.append("| **Total** | **—** |")
+    lines.append("")
+
+    # Context Files section
+    lines.append(f"## Context Files ({len(ctx_rows)})")
+    if not ctx_rows:
+        lines.append("(No direct context files)")
+    else:
+        lines.append("| File | Tokens | Source |")
+        lines.append("|------|--------|--------|")
+        for short, tok, source in ctx_rows:
+            tok_str = f"~{tok} tok" if tok is not None else "(not found)"
+            lines.append(f"| {short} | {tok_str} | {source} |")
+        lines.append(f"| **Total** | **~{ctx_total} tok** | |")
+    lines.append("")
+
+    # Agents section
+    lines.append(f"## Agents ({len(agent_rows)})")
+    if not agent_rows:
+        lines.append("(No direct agents)")
+    else:
+        lines.append("| Agent | Description Tokens |")
+        lines.append("|-------|--------------------|")
+        for agent_name, tok in agent_rows:
+            lines.append(f"| {agent_name} | ~{tok} tok |")
+        lines.append(f"| **Total** | **~{agents_total} tok** |")
+    lines.append("")
+
+    # Hooks section
+    lines.append(f"## Hooks ({len(hooks)})")
+    if not hooks:
+        lines.append("(No direct hooks)")
+    else:
+        lines.append("| Hook |")
+        lines.append("|------|")
+        for hook in hooks:
+            module = hook.get("module") or "(unknown)"
+            lines.append(f"| {module} |")
+    lines.append("")
+
+    # Skills section
+    lines.append(f"## Skills ({len(skills)})")
+    if not skills:
+        lines.append("(No direct skills)")
+    else:
+        lines.append("| Skill |")
+        lines.append("|-------|")
+        for skill in skills if isinstance(skills, list) else []:
+            skill_name = skill if isinstance(skill, str) else str(skill)
+            lines.append(f"| {skill_name} |")
+    lines.append("")
+
+    # Footer
+    lines.append("---")
+    lines.append(f"*Generated by dot_docs · source_hash: {source_hash}*")
+
+    return "\n".join(lines)
