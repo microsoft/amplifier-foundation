@@ -129,8 +129,7 @@ Agent definitions with proper frontmatter and instructions.
 
 ### Skills
 
-- @foundation:skills/bundle-to-dot/SKILL.md — Bundle DOT diagram convention
-- @foundation:skills/agent-to-dot/SKILL.md — Agent DOT diagram convention
+- @foundation:skills/bundle-to-dot/SKILL.md — Bundle documentation convention (v2: detail tables + overview DOT)
 
 ### Source Code (Optional Deep Dive)
 
