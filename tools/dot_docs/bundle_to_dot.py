@@ -92,11 +92,12 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     name: str = bundle_info.get("name") or yaml_path.stem
     graph_id = _sanitize_id(name)
 
-    # Body token cost — for .yaml files use raw content; for .md use body text
-    raw_content = yaml_path.read_text(encoding="utf-8")
-    body_source = body if body else raw_content
-    body_tokens = estimate_tokens(body_source)
-    body_color = color_tier(body_tokens, "bundle_body")
+    # Body token cost — only the markdown body counts as "instruction" (system prompt).
+    # Pure YAML behavior files have no markdown body, so no instruction token cost.
+    if body:
+        body_tokens = estimate_tokens(body)
+    else:
+        body_tokens = 0
 
     # ── Extract elements ──────────────────────────────────────────────────────
     tools: list[dict] = data.get("tools") or []
@@ -118,15 +119,21 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     # ── Root node ─────────────────────────────────────────────────────────────
     has_includes = bool(includes)
     root_style = '"filled,rounded,bold"' if has_includes else '"filled,rounded"'
-    root_label = _q(f"{name}\\n~{body_tokens} tok")
+    # Show instruction token cost only when there is a markdown body
+    if body_tokens > 0:
+        root_label = _q(f"{name}\\ninstruction: ~{body_tokens} tok")
+    else:
+        root_label = _q(name)
     node_lines.append(
         f"    root [label={root_label}, shape=box,"
-        f' fillcolor="{body_color}", style={root_style},'
+        f' fillcolor="{_COLOR_BUNDLE_ROOT}", style={root_style},'
         f' color="{_COLOR_BUNDLE_ROOT}"]'
     )
 
     total_tokens = body_tokens
-    token_breakdown: dict[str, int] = {"body": body_tokens}
+    token_breakdown: dict[str, int] = {}
+    if body_tokens > 0:
+        token_breakdown["instruction"] = body_tokens
 
     # ── Tool nodes ─────────────────────────────────────────────────────────────
     if tools:
@@ -147,17 +154,13 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     for i, hook in enumerate(hooks):
         module = hook.get("module") or f"hook_{i}"
         hid = f"hook_{_sanitize_id(module)}"
-        source = str(hook.get("source") or "")
-        config_str = str(hook.get("config") or "")
-        hook_tok = estimate_tokens(module + source + config_str)
-        label = _q(f"{module}\\n~{hook_tok} tok")
+        # Hooks contribute ~0 tokens to LLM requests — show name only, no tok label
+        label = _q(module)
         node_lines.append(
             f"    {hid} [label={label}, shape=box,"
             f' fillcolor="{_COLOR_HOOK}", style="filled,rounded"]'
         )
         edge_lines.append(f"    root -> {hid}")
-        total_tokens += hook_tok
-        token_breakdown["hooks"] = token_breakdown.get("hooks", 0) + hook_tok
 
     # ── Agent reference nodes ─────────────────────────────────────────────────
     if agent_includes:
@@ -165,11 +168,11 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     for ref in agent_includes:
         aid = f"agent_{_sanitize_id(ref)}"
         agent_tok = _estimate_agent_tokens(ref, repo_root)
-        agent_color = color_tier(agent_tok, "agent_description")
+        # Fixed green color — token cost shown as text label, not color override
         label = _q(f"{ref}\\n~{agent_tok} tok")
         node_lines.append(
             f"    {aid} [label={label}, shape=box,"
-            f' fillcolor="{agent_color}", style="filled,rounded"]'
+            f' fillcolor="{_COLOR_AGENT_BASE}", style="filled,rounded"]'
         )
         edge_lines.append(f"    root -> {aid}")
         total_tokens += agent_tok
@@ -185,12 +188,12 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
             continue
         ctx_seen.add(ctx_id)
         ctx_tok = _estimate_context_tokens(ref, repo_root)
-        ctx_color = color_tier(ctx_tok, "context_file")
+        # Fixed purple color — token cost shown as text label, not color override
         short_label = _short_path(ref)
         label = _q(f"{short_label}\\n~{ctx_tok} tok")
         node_lines.append(
             f"    {ctx_id} [label={label}, shape=note,"
-            f' fillcolor="{ctx_color}", style="filled"]'
+            f' fillcolor="{_COLOR_CONTEXT}", style="filled"]'
         )
         edge_lines.append(f"    root -> {ctx_id}")
         total_tokens += ctx_tok
@@ -205,12 +208,12 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
             continue
         ctx_seen.add(ctx_id)
         ctx_tok = _estimate_context_tokens(mention, repo_root)
-        ctx_color = color_tier(ctx_tok, "context_file")
+        # Fixed purple color — token cost shown as text label, not color override
         short_label = _short_path(mention)
         label = _q(f"{short_label}\\n~{ctx_tok} tok")
         node_lines.append(
             f"    {ctx_id} [label={label}, shape=note,"
-            f' fillcolor="{ctx_color}", style="filled"]'
+            f' fillcolor="{_COLOR_CONTEXT}", style="filled"]'
         )
         edge_lines.append(f"    root -> {ctx_id} [style=dashed]")
         total_tokens += ctx_tok
@@ -219,21 +222,19 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
     # ── Session config node ───────────────────────────────────────────────────
     if session_cfg:
         types_used.add("session")
-        sess_tok = estimate_tokens(str(session_cfg))
+        # Session config does not contribute tokens to LLM requests — no tok label
         orch_module = ""
         if isinstance(session_cfg.get("orchestrator"), dict):
             orch_module = session_cfg["orchestrator"].get("module") or ""
         if orch_module:
-            label = _q(f"session: {orch_module}\\n~{sess_tok} tok")
+            label = _q(f"session: {orch_module}")
         else:
-            label = _q(f"session\\n~{sess_tok} tok")
+            label = _q("session")
         node_lines.append(
             f"    session_cfg [label={label}, shape=box,"
             f' fillcolor="{_COLOR_SESSION}", style="filled,rounded,dotted"]'
         )
         edge_lines.append("    root -> session_cfg")
-        total_tokens += sess_tok
-        token_breakdown["session"] = sess_tok
 
     # ── Local/external includes ───────────────────────────────────────────────
     local_cluster_lines: list[str] = []
@@ -270,17 +271,23 @@ def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> st
             )
             edge_lines.append(f"    root -> {eid}")
 
-    # ── Summary node ──────────────────────────────────────────────────────────
-    breakdown_parts = [
-        f"{k}: {v}" for k, v in sorted(token_breakdown.items()) if k != "body" and v > 0
-    ]
-    summary_color = color_tier(total_tokens, "all_context")
-    summary_label = f"Total: ~{total_tokens} tok"
-    if breakdown_parts:
-        summary_label += "\\n" + ", ".join(breakdown_parts)
+    # ── Summary node ─────────────────────────────────────────────────────────────
+    # Build breakdown — only include categories with non-zero tokens
+    breakdown_lines: list[str] = []
+    if token_breakdown.get("instruction", 0) > 0:
+        breakdown_lines.append(f"Instruction: ~{token_breakdown['instruction']} tok")
+    if token_breakdown.get("context", 0) > 0:
+        breakdown_lines.append(f"Context files: ~{token_breakdown['context']} tok")
+    if token_breakdown.get("agents", 0) > 0:
+        breakdown_lines.append(f"Agent descriptions: ~{token_breakdown['agents']} tok")
+    sep = "\u2500" * 13  # "─────────────"
+    summary_label = f"Per-Request Token Estimate\\n~{total_tokens} tok total (local)"
+    if breakdown_lines:
+        summary_label += f"\\n{sep}\\n" + "\\n".join(breakdown_lines)
+    summary_label += "\\n(excludes tools, external)"
     node_lines.append(
         f"    summary [label={_q(summary_label)}, shape=box,"
-        f' fillcolor="{summary_color}", style="filled,rounded",'
+        f' fillcolor="{_COLOR_SUMMARY}", style="filled,rounded",'
         " peripheries=2]"
     )
     edge_lines.append("    root -> summary [style=dashed, arrowhead=none]")
@@ -711,11 +718,11 @@ def _render_behavior_cluster(
     lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
     lines.append("")
 
-    body_color = color_tier(body_tokens, "bundle_body")
-    root_label = _q(f"{name}\\n~{body_tokens} tok")
+    # Included behaviors are pure YAML — no instruction body, no tok label
+    root_label = _q(name)
     lines.append(
         f"        {root_id} [label={root_label}, shape=box,"
-        f' fillcolor="{body_color}", style="filled,rounded"]'
+        f' fillcolor="{_COLOR_BUNDLE_ROOT}", style="filled,rounded"]'
     )
 
     # Tools
@@ -730,34 +737,29 @@ def _render_behavior_cluster(
         )
         lines.append(f"        {root_id} -> {tid}")
 
-    # Hooks
+    # Hooks — no token label (hooks contribute ~0 tokens to LLM requests)
     hooks: list[dict] = data.get("hooks") or []
     for i, hook in enumerate(hooks):
         module = hook.get("module") or f"hook_{i}"
         hid = f"{cluster_id}_hook_{_sanitize_id(module)}"
-        source = str(hook.get("source") or "")
-        config_str = str(hook.get("config") or "")
-        hook_tok = estimate_tokens(module + source + config_str)
-        total_tokens += hook_tok
-        label = _q(f"{module}\\n~{hook_tok} tok")
+        label = _q(module)
         lines.append(
             f"        {hid} [label={label}, shape=box,"
             f' fillcolor="{_COLOR_HOOK}", style="filled,rounded"]'
         )
         lines.append(f"        {root_id} -> {hid}")
 
-    # Agent references
+    # Agent references — fixed green color
     agents_info: dict = data.get("agents") or {}
     agent_includes: list[str] = agents_info.get("include") or []
     for ref in agent_includes:
         aid = f"{cluster_id}_agent_{_sanitize_id(ref)}"
         agent_tok = _estimate_agent_tokens(ref, repo_root)
         total_tokens += agent_tok
-        agent_color = color_tier(agent_tok, "agent_description")
         label = _q(f"{ref}\\n~{agent_tok} tok")
         lines.append(
             f"        {aid} [label={label}, shape=box,"
-            f' fillcolor="{agent_color}", style="filled,rounded"]'
+            f' fillcolor="{_COLOR_AGENT_BASE}", style="filled,rounded"]'
         )
         lines.append(f"        {root_id} -> {aid}")
 
@@ -845,4 +847,196 @@ def _build_legend(types_used: set[str]) -> str:
         lines.append(f"        {chain} [style=invis]")
 
     lines.append("    }")
+    return "\n".join(lines)
+
+
+def bundle_detail_md(yaml_path: str | Path, *, repo_root: Path | None = None) -> str:
+    """Single entry point → markdown detail tables showing composition and token costs.
+
+    Reads the file at *yaml_path* and emits a structured markdown document with
+    per-section tables (Tools, Context Files, Agents, Hooks, Skills) annotated
+    with per-request main-session token cost estimates.
+
+    Token counting model:
+    * **Tools** — schema cost is injected at runtime; shown as ``—`` (not countable
+      from YAML alone).
+    * **Agents** — ``meta.description`` length divided by 4 (matches what the
+      delegate tool injects per request).
+    * **Context files** — full file content length divided by 4.
+    * **Markdown body** — length divided by 4 (instruction cost for ``.md`` bundles).
+    * **Hooks** — listed by name only; contribute ~0 tokens.
+
+    Args:
+        yaml_path: Path to a ``.yaml`` behavior file or ``.md`` bundle file with
+            YAML frontmatter.
+        repo_root: Repository root used to resolve ``namespace:path`` mentions and
+            local context-file references.  When omitted the function walks up from
+            *yaml_path* looking for a ``.git`` directory or ``bundle.md``; if
+            neither is found it falls back to *yaml_path*'s parent.
+
+    Returns:
+        Complete markdown string with section tables and a footer containing the
+        ``source_hash`` (SHA-256 of the raw file content).
+
+    Raises:
+        FileNotFoundError: If *yaml_path* does not exist.
+    """
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"Bundle file not found: {yaml_path}")
+
+    # ── Infer repo_root ────────────────────────────────────────────────────────
+    if repo_root is None:
+        candidate = yaml_path.parent
+        while candidate != candidate.parent:
+            if (candidate / ".git").exists() or (candidate / "bundle.md").exists():
+                repo_root = candidate
+                break
+            candidate = candidate.parent
+        else:
+            repo_root = yaml_path.parent
+
+    # ── Parse file ─────────────────────────────────────────────────────────────
+    data, body = parse_frontmatter(yaml_path)
+    bundle_info: dict = data.get("bundle") or {}
+    name: str = bundle_info.get("name") or yaml_path.stem
+
+    # Markdown body = instruction tokens (only for .md bundles)
+    body_tokens = estimate_tokens(body) if body else 0
+
+    # ── Extract elements ───────────────────────────────────────────────────────
+    tools: list[dict] = data.get("tools") or []
+    hooks: list[dict] = data.get("hooks") or []
+    agents_info: dict = data.get("agents") or {}
+    agent_includes: list[str] = agents_info.get("include") or []
+    ctx_info: dict = data.get("context") or {}
+    ctx_includes: list[str] = ctx_info.get("include") or []
+    skills: list = data.get("skills") or []
+
+    # @mentions from markdown body
+    body_mentions: list[str] = extract_mentions(body) if body else []
+
+    # ── Agents ─────────────────────────────────────────────────────────────────
+    agent_rows: list[tuple[str, int]] = []
+    for ref in agent_includes:
+        tok = _estimate_agent_tokens(ref, repo_root)
+        agent_name = ref.split(":", 1)[1] if ":" in ref else ref
+        agent_rows.append((agent_name, tok))
+    agents_total = sum(t for _, t in agent_rows)
+
+    # ── Context files (context.include + body @mentions, deduplicated) ─────────
+    # Each row: (display_name, tokens_or_None, source_label)
+    ctx_rows: list[tuple[str, int | None, str]] = []
+    seen_ctx_keys: set[str] = set()
+
+    def _add_ctx_row(ref: str, source: str) -> None:
+        # Normalise for deduplication: strip leading @ so bare and @-prefixed refs match
+        bare = ref.lstrip("@")
+        key = _sanitize_id(bare)
+        if key in seen_ctx_keys:
+            return
+        seen_ctx_keys.add(key)
+
+        short = _short_path(ref)
+        mention = ref if ref.startswith("@") else f"@{ref}"
+        local = resolve_local_mention(mention, repo_root)
+
+        if local and local.exists():
+            try:
+                content = local.read_text(encoding="utf-8")
+                ctx_rows.append((short, estimate_tokens(content), source))
+            except OSError:
+                ctx_rows.append((short, None, source))
+        else:
+            ctx_rows.append((short, None, source))
+
+    for ref in ctx_includes:
+        _add_ctx_row(ref, "context.include")
+    for mention in body_mentions:
+        _add_ctx_row(mention, "@mention in body")
+
+    ctx_total = sum(t for _, t, _ in ctx_rows if t is not None)
+
+    # ── Per-request cost ───────────────────────────────────────────────────────
+    total_tokens = body_tokens + agents_total + ctx_total
+
+    # ── Source hash ────────────────────────────────────────────────────────────
+    raw_content = yaml_path.read_text(encoding="utf-8")
+    source_hash = hashlib.sha256(raw_content.encode()).hexdigest()
+
+    # ── Render markdown ────────────────────────────────────────────────────────
+    lines: list[str] = []
+
+    # Header
+    lines.append(f"# {name} — Composition Detail")
+    lines.append("")
+    lines.append(f"**Per-request main-session token cost: ~{total_tokens} tok**")
+    lines.append("")
+
+    # Tools section
+    lines.append(f"## Tools ({len(tools)})")
+    if not tools:
+        lines.append("(No direct tools)")
+    else:
+        lines.append("| Tool | Tokens |")
+        lines.append("|------|--------|")
+        for tool in tools:
+            module = tool.get("module") or "(unknown)"
+            lines.append(f"| {module} | — |")
+        lines.append("| **Total** | **—** |")
+    lines.append("")
+
+    # Context Files section
+    lines.append(f"## Context Files ({len(ctx_rows)})")
+    if not ctx_rows:
+        lines.append("(No direct context files)")
+    else:
+        lines.append("| File | Tokens | Source |")
+        lines.append("|------|--------|--------|")
+        for short, tok, source in ctx_rows:
+            tok_str = f"~{tok} tok" if tok is not None else "(not found)"
+            lines.append(f"| {short} | {tok_str} | {source} |")
+        lines.append(f"| **Total** | **~{ctx_total} tok** | |")
+    lines.append("")
+
+    # Agents section
+    lines.append(f"## Agents ({len(agent_rows)})")
+    if not agent_rows:
+        lines.append("(No direct agents)")
+    else:
+        lines.append("| Agent | Description Tokens |")
+        lines.append("|-------|--------------------|")
+        for agent_name, tok in agent_rows:
+            lines.append(f"| {agent_name} | ~{tok} tok |")
+        lines.append(f"| **Total** | **~{agents_total} tok** |")
+    lines.append("")
+
+    # Hooks section
+    lines.append(f"## Hooks ({len(hooks)})")
+    if not hooks:
+        lines.append("(No direct hooks)")
+    else:
+        lines.append("| Hook |")
+        lines.append("|------|")
+        for hook in hooks:
+            module = hook.get("module") or "(unknown)"
+            lines.append(f"| {module} |")
+    lines.append("")
+
+    # Skills section
+    lines.append(f"## Skills ({len(skills)})")
+    if not skills:
+        lines.append("(No direct skills)")
+    else:
+        lines.append("| Skill |")
+        lines.append("|-------|")
+        for skill in skills if isinstance(skills, list) else []:
+            skill_name = skill if isinstance(skill, str) else str(skill)
+            lines.append(f"| {skill_name} |")
+    lines.append("")
+
+    # Footer
+    lines.append("---")
+    lines.append(f"*Generated by dot_docs · source_hash: {source_hash}*")
+
     return "\n".join(lines)

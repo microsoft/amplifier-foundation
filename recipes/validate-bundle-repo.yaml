@@ -2723,16 +2723,15 @@ steps:
     depends_on: ["composition-analysis"]
 
   # ============================================================================
-  # PHASE 6: Bundle DOT Freshness Check (optional)
-  # Checks that each bundle/behavior file has a co-located DOT composition
-  # diagram and that the DOT's embedded source_hash matches the current source.
-  # Supports LLM-enhanced DOTs — uses source_hash rather than full content hash,
-  # so label enhancements don't trigger false staleness.
+  # PHASE 6: Bundle Doc Freshness Check (v2)
+  # Checks that each bundle/behavior entry point has a co-located .detail.md
+  # and that the overview.dot at repo root exists and is fresh.
+  # Uses source_hash embedded in .detail.md footer and overview.dot attribute.
   # Gracefully degrades if dot_docs is not importable from tools/.
-  # Produces BUNDLE_DOT_MISSING (SUGGESTION) and BUNDLE_DOT_STALE (WARNING).
+  # Produces BUNDLE_DOC_MISSING (SUGGESTION) and BUNDLE_DOC_STALE (WARNING).
   # ============================================================================
 
-  - id: "bundle-dot-freshness-check"
+  - id: "bundle-doc-freshness-check"
     type: "bash"
     depends_on: ["repo-discovery"]
     on_error: "continue"
@@ -2749,21 +2748,22 @@ steps:
       dot_available = False
       try:
           sys.path.insert(0, str(repo_path / "tools"))
-          from dot_docs.bundle_to_dot import bundle_to_dot
+          from dot_docs.bundle_to_dot import bundle_detail_md, bundle_overview_dot
           dot_available = True
       except ImportError:
           pass
 
       results = {
-          "phase": "bundle_dot_freshness",
+          "phase": "bundle_doc_freshness",
           "dot_available": dot_available,
           "findings": [],
           "summary": {
-              "total_bundles": 0,
-              "with_dot": 0,
-              "missing_dot": 0,
-              "stale_dot": 0,
-              "fresh_dot": 0,
+              "total_entry_points": 0,
+              "with_detail_md": 0,
+              "missing_detail_md": 0,
+              "stale_detail_md": 0,
+              "fresh_detail_md": 0,
+              "overview_status": "not_checked",
               "skipped": 0,
           },
       }
@@ -2773,7 +2773,7 @@ steps:
               "code": "DOT_TOOL_UNAVAILABLE",
               "severity": "INFO",
               "message": (
-                  "dot_docs not available — skipping bundle DOT freshness checks. "
+                  "dot_docs not available — skipping bundle doc freshness checks. "
                   "Ensure tools/dot_docs/ exists in the target repo."
               ),
               "detail": "",
@@ -2781,7 +2781,7 @@ steps:
           print(json.dumps(results))
           raise SystemExit(0)
 
-      # Collect all bundle/behavior files (exclude agents/providers — those have their own DOTs)
+      # Check .detail.md for each bundle/behavior entry point
       all_files = []
       for category, paths in discovery.get("bundles_found", {}).items():
           if category in ("agents", "providers"):
@@ -2792,172 +2792,226 @@ steps:
       for category, file_path in all_files:
           fp = Path(file_path)
           rel_path = str(fp.relative_to(repo_path)) if fp.is_absolute() else file_path
-          results["summary"]["total_bundles"] += 1
+          results["summary"]["total_entry_points"] += 1
 
-          dot_path = fp.with_suffix(".dot")
-          dot_rel = str(dot_path.relative_to(repo_path)) if dot_path.is_absolute() else str(dot_path)
+          detail_path = fp.with_name(fp.stem + ".detail.md")
+          detail_rel = str(detail_path.relative_to(repo_path)) if detail_path.is_absolute() else str(detail_path)
 
-          if not dot_path.exists():
-              results["summary"]["missing_dot"] += 1
+          if not detail_path.exists():
+              results["summary"]["missing_detail_md"] += 1
               results["findings"].append({
-                  "code": "BUNDLE_DOT_MISSING",
+                  "code": "BUNDLE_DOC_MISSING",
                   "severity": "SUGGESTION",
                   "message": (
-                      f"Bundle '{fp.stem}' ({rel_path}) has no composition diagram. "
-                      f"Expected: {dot_rel}"
+                      f"Bundle '{fp.stem}' ({rel_path}) has no detail doc. "
+                      f"Expected: {detail_rel}"
                   ),
-                  "detail": dot_rel,
+                  "detail": detail_rel,
                   "bundle_path": rel_path,
                   "bundle_name": fp.stem,
               })
               continue
 
-          # DOT file exists — check source_hash for structural freshness.
+          # .detail.md exists — check source_hash in footer for freshness
           try:
-              fresh_dot = bundle_to_dot(str(fp), repo_root=repo_path)
-              fresh_match = re.search(r'source_hash="([a-f0-9]+)"', fresh_dot)
-              existing_dot = dot_path.read_text()
-              existing_match = re.search(r'source_hash="([a-f0-9]+)"', existing_dot)
+              fresh_md = bundle_detail_md(str(fp), repo_root=repo_path)
+              fresh_match = re.search(r'source_hash:\s*([a-f0-9]+)', fresh_md)
+              existing_md = detail_path.read_text()
+              existing_match = re.search(r'source_hash:\s*([a-f0-9]+)', existing_md)
 
               if fresh_match and existing_match:
                   if fresh_match.group(1) == existing_match.group(1):
-                      results["summary"]["fresh_dot"] += 1
-                      results["summary"]["with_dot"] += 1
+                      results["summary"]["fresh_detail_md"] += 1
+                      results["summary"]["with_detail_md"] += 1
                   else:
-                      results["summary"]["stale_dot"] += 1
-                      results["summary"]["with_dot"] += 1
+                      results["summary"]["stale_detail_md"] += 1
+                      results["summary"]["with_detail_md"] += 1
                       results["findings"].append({
-                          "code": "BUNDLE_DOT_STALE",
+                          "code": "BUNDLE_DOC_STALE",
                           "severity": "WARNING",
                           "message": (
-                              f"Bundle '{fp.stem}' ({rel_path}) DOT is stale "
-                              f"(source changed). Regenerate: {dot_rel}"
+                              f"Bundle '{fp.stem}' ({rel_path}) detail doc is stale "
+                              f"(source changed). Regenerate: {detail_rel}"
                           ),
-                          "detail": dot_rel,
+                          "detail": detail_rel,
                           "bundle_path": rel_path,
                           "bundle_name": fp.stem,
                       })
               elif not existing_match:
-                  # Old-format DOT without source_hash — treat as stale
-                  results["summary"]["stale_dot"] += 1
-                  results["summary"]["with_dot"] += 1
+                  # No source_hash — treat as stale
+                  results["summary"]["stale_detail_md"] += 1
+                  results["summary"]["with_detail_md"] += 1
                   results["findings"].append({
-                      "code": "BUNDLE_DOT_STALE",
+                      "code": "BUNDLE_DOC_STALE",
                       "severity": "WARNING",
                       "message": (
-                          f"Bundle '{fp.stem}' ({rel_path}) DOT has no "
+                          f"Bundle '{fp.stem}' ({rel_path}) detail doc has no "
                           f"source_hash — regenerate to enable freshness tracking"
                       ),
-                      "detail": dot_rel,
+                      "detail": detail_rel,
                       "bundle_path": rel_path,
                       "bundle_name": fp.stem,
                   })
               else:
-                  results["summary"]["fresh_dot"] += 1
-                  results["summary"]["with_dot"] += 1
+                  results["summary"]["fresh_detail_md"] += 1
+                  results["summary"]["with_detail_md"] += 1
           except Exception as exc:
               results["summary"]["skipped"] += 1
               results["findings"].append({
-                  "code": "DOT_CHECK_ERROR",
+                  "code": "DOC_CHECK_ERROR",
                   "severity": "INFO",
-                  "message": f"Error checking DOT for '{fp.stem}': {exc}",
+                  "message": f"Error checking detail doc for '{fp.stem}': {exc}",
                   "detail": str(exc),
               })
 
+      # Check overview.dot at repo root
+      try:
+          fresh_overview = bundle_overview_dot(repo_path)
+          overview_path = repo_path / "overview.dot"
+          if not overview_path.exists():
+              results["summary"]["overview_status"] = "missing"
+              results["findings"].append({
+                  "code": "BUNDLE_DOC_MISSING",
+                  "severity": "SUGGESTION",
+                  "message": "overview.dot missing at repo root — run generate-bundle-docs",
+                  "detail": "overview.dot",
+                  "bundle_path": None,
+                  "bundle_name": "overview",
+              })
+          else:
+              existing_ov = overview_path.read_text()
+              fresh_hash = re.search(r'source_hash="([a-f0-9]+)"', fresh_overview)
+              old_hash = re.search(r'source_hash="([a-f0-9]+)"', existing_ov)
+              if fresh_hash and old_hash and fresh_hash.group(1) == old_hash.group(1):
+                  results["summary"]["overview_status"] = "fresh"
+              else:
+                  results["summary"]["overview_status"] = "stale"
+                  results["findings"].append({
+                      "code": "BUNDLE_DOC_STALE",
+                      "severity": "WARNING",
+                      "message": "overview.dot is stale (bundles/behaviors changed). Regenerate.",
+                      "detail": "overview.dot",
+                      "bundle_path": None,
+                      "bundle_name": "overview",
+                  })
+          results["overview_structural_dot"] = fresh_overview
+      except Exception as exc:
+          results["summary"]["overview_status"] = "error"
+          results["overview_structural_dot"] = ""
+          results["findings"].append({
+              "code": "DOC_CHECK_ERROR",
+              "severity": "INFO",
+              "message": f"Error checking overview.dot: {exc}",
+              "detail": str(exc),
+          })
+
       print(json.dumps(results))
       EOF
-    output: "bundle_dot_freshness"
+    output: "bundle_doc_freshness"
     parse_json: true
     timeout: 60
 
   # ============================================================================
-  # PHASE 6b: Bundle DOT Auto-Regeneration (LLM-enhanced by default)
-  # For any bundles missing a DOT or with a stale source_hash, regenerates
-  # DOT+PNG in-place (co-located next to the source file).
+  # PHASE 6b: Bundle Doc Auto-Regeneration (v2)
   #
-  # Default (enhance_diagrams: "true"): LLM-enhanced labels for accessibility.
-  # Opt-out (enhance_diagrams: "false"): structural DOTs only, faster, no LLM.
+  # 6b-detail: Regenerate stale/missing .detail.md files (no LLM needed).
+  # 6b-overview-structural: Generate structural overview DOT.
+  # 6b-overview-enhance: LLM-enhance overview DOT labels (conditional).
+  # 6b-overview-write: Write overview.dot + render PNG.
   # ============================================================================
 
-  - id: "bundle-dot-regen-structural"
+  - id: "bundle-doc-regen-detail"
     type: "bash"
-    depends_on: ["bundle-dot-freshness-check"]
+    depends_on: ["bundle-doc-freshness-check"]
     on_error: "continue"
     command: |
       python3 << 'EOF'
       import json, sys
       from pathlib import Path
 
-      raw = r"""{{bundle_dot_freshness}}"""
-      bundle_dot_freshness = json.loads(raw)
-      if not bundle_dot_freshness.get("dot_available"):
-          print(json.dumps({"skipped": True, "bundles": []})); sys.exit(0)
+      raw = r"""{{bundle_doc_freshness}}"""
+      freshness = json.loads(raw)
+      if not freshness.get("dot_available"):
+          print(json.dumps({"skipped": True, "written": 0, "errors": []})); sys.exit(0)
 
-      to_regen = [f for f in bundle_dot_freshness.get("findings", [])
-                  if f.get("code") in ("BUNDLE_DOT_MISSING", "BUNDLE_DOT_STALE")
-                  and f.get("bundle_path")]
+      to_regen = [f for f in freshness.get("findings", [])
+                  if f.get("code") in ("BUNDLE_DOC_MISSING", "BUNDLE_DOC_STALE")
+                  and f.get("bundle_path")]  # bundle_path=None means overview
       if not to_regen:
-          print(json.dumps({"skipped": False, "bundles": []})); sys.exit(0)
+          print(json.dumps({"skipped": False, "written": 0, "errors": []})); sys.exit(0)
 
       _discovery_raw = r"""{{discovery_results}}"""
       discovery = json.loads(_discovery_raw)
       repo_path = Path(discovery.get("repo_path", "")).resolve()
 
       sys.path.insert(0, str(repo_path / "tools"))
-      from dot_docs.bundle_to_dot import bundle_to_dot
-      from dot_docs.frontmatter import parse_frontmatter
+      from dot_docs.bundle_to_dot import bundle_detail_md
 
-      bundles = []
+      results = {"skipped": False, "written": 0, "errors": []}
       for finding in to_regen:
           rel = finding["bundle_path"]
           fp = repo_path / rel
           if not fp.exists():
               continue
           try:
-              structural_dot = bundle_to_dot(str(fp), repo_root=repo_path)
-              data, body = parse_frontmatter(fp)
-              bundle_info = data.get("bundle", {})
-              name = bundle_info.get("name", fp.stem)
-              desc = str(bundle_info.get("description", ""))[:300]
-          except Exception:
-              continue
-          bundles.append({
-              "yaml_path": str(fp),
-              "dot_path": str(fp.with_suffix(".dot")),
-              "name": name,
-              "description": desc,
-              "structural_dot": structural_dot,
-          })
+              md_content = bundle_detail_md(str(fp), repo_root=repo_path)
+              detail_path = fp.with_name(fp.stem + ".detail.md")
+              detail_path.write_text(md_content)
+              results["written"] += 1
+          except Exception as exc:
+              results["errors"].append(f"Regen failed for {rel}: {exc}")
 
-      print(json.dumps({"skipped": False, "bundles": bundles}))
+      print(json.dumps(results))
       EOF
-    output: "bundle_regen_targets"
+    output: "bundle_detail_regen"
     parse_json: true
     timeout: 60
 
-  - id: "bundle-dot-regen-enhance"
+  - id: "bundle-overview-regen-structural"
+    type: "bash"
+    depends_on: ["bundle-doc-freshness-check"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json, sys
+      from pathlib import Path
+
+      raw = r"""{{bundle_doc_freshness}}"""
+      freshness = json.loads(raw)
+      if not freshness.get("dot_available"):
+          print(json.dumps({"skipped": True, "needs_regen": False, "overview_dot": ""}))
+          sys.exit(0)
+
+      # Check if overview needs regen
+      overview_status = freshness.get("summary", {}).get("overview_status", "not_checked")
+      needs_regen = overview_status in ("missing", "stale")
+      overview_dot = freshness.get("overview_structural_dot", "")
+
+      print(json.dumps({
+          "skipped": False,
+          "needs_regen": needs_regen,
+          "overview_dot": overview_dot,
+      }))
+      EOF
+    output: "bundle_overview_regen_targets"
+    parse_json: true
+    timeout: 30
+
+  - id: "bundle-overview-regen-enhance"
     agent: "foundation:zen-architect"
     mode: "ARCHITECT"
     condition: "{{enhance_diagrams}} != 'false'"
-    depends_on: ["bundle-dot-regen-structural"]
-    foreach: "{{bundle_regen_targets.bundles}}"
-    as: "bundle"
-    parallel: 3
-    collect: "bundle_enhanced_dots"
+    depends_on: ["bundle-overview-regen-structural"]
     on_error: "continue"
     timeout: 120
     prompt: |
-      You are rewriting the labels of a DOT composition diagram to be accessible and friendly.
-      The goal: a non-technical person should understand what each component does just
-      from reading the diagram.
-
-      ## Source Bundle
-      Name: {{bundle.name}}
-      Description: {{bundle.description}}
+      You are rewriting the labels of a DOT overview diagram for an Amplifier bundle repository.
+      The goal: a non-technical person should understand the repository structure
+      just from reading the diagram.
 
       ## Structural DOT (current auto-generated labels)
       ```dot
-      {{bundle.structural_dot}}
+      {{bundle_overview_regen_targets.overview_dot}}
       ```
 
       ## Your Task
@@ -2972,7 +3026,7 @@ steps:
          would understand. Use \n (backslash-n) for line breaks within label strings.
       5. For cluster subgraph labels: make them descriptive.
       6. Keep labels to 2-3 lines max.
-      7. Add a short // comment at the top explaining the bundle in one sentence.
+      7. Add a short // comment at the top explaining the repository in one sentence.
       8. Keep the source_hash="..." graph attribute exactly as-is.
 
       Return ONLY the complete rewritten DOT. No explanation, no markdown fences,
@@ -2980,77 +3034,81 @@ steps:
 
       CRITICAL: Preserve every node ID, every edge, every shape/color/style attribute.
       Only labels and the top comment change.
+    output: "bundle_overview_enhanced_dot"
 
-  - id: "bundle-dot-regen-write"
+  - id: "bundle-overview-regen-write"
     type: "bash"
-    depends_on: ["bundle-dot-regen-enhance"]
+    depends_on: ["bundle-overview-regen-enhance"]
     on_error: "continue"
     command: |
       python3 << 'EOF'
       import json, subprocess, re, sys
       from pathlib import Path
 
-      bundle_regen_targets = json.loads(r"""{{bundle_regen_targets}}""")
-      enhanced_raw = r"""{{bundle_enhanced_dots}}"""
-      if bundle_regen_targets.get("skipped") or not bundle_regen_targets.get("bundles"):
+      targets = json.loads(r"""{{bundle_overview_regen_targets}}""")
+      if targets.get("skipped") or not targets.get("needs_regen") or not targets.get("overview_dot"):
           print(json.dumps({"written": 0, "rendered": 0, "fallback": 0, "errors": []}))
           sys.exit(0)
 
-      bundles = bundle_regen_targets["bundles"]
-      enhanced_list = []
-      try:
-          enhanced_list = json.loads(enhanced_raw)
-      except (json.JSONDecodeError, TypeError):
-          s = enhanced_raw.strip()
-          if s and s != "null":
-              enhanced_list = [s]
+      overview_dot = targets["overview_dot"]
+      _discovery_raw = r"""{{discovery_results}}"""
+      discovery = json.loads(_discovery_raw)
+      repo_path = Path(discovery.get("repo_path", "")).resolve()
+      overview_path = repo_path / "overview.dot"
+      png_path = repo_path / "overview.png"
 
       results = {"written": 0, "rendered": 0, "fallback": 0, "errors": []}
-      for i, bi in enumerate(bundles):
-          dot_path = Path(bi["dot_path"])
-          png_path = dot_path.with_suffix(".png")
-          dot_content = None
-          if i < len(enhanced_list) and enhanced_list[i]:
-              candidate = str(enhanced_list[i]).strip()
-              candidate = re.sub(r"^```(?:dot)?\s*\n", "", candidate)
-              candidate = re.sub(r"\n```\s*$", "", candidate)
-              if candidate.startswith("//") or candidate.startswith("digraph"):
-                  dot_content = candidate
-              elif "digraph" in candidate:
-                  m = re.search(r"((?://[^\n]*\n)*digraph\s+\w+\s*\{.*\})", candidate, re.DOTALL)
-                  if m:
-                      dot_content = m.group(1)
-          if not dot_content:
-              dot_content = bi["structural_dot"]
-              results["fallback"] += 1
-          if "source_hash" not in dot_content:
-              m = re.search(r'source_hash="[a-f0-9]+"', bi["structural_dot"])
+
+      # Try LLM-enhanced version first
+      enhanced_raw = r"""{{bundle_overview_enhanced_dot}}"""
+      dot_content = None
+      if enhanced_raw and enhanced_raw.strip() and enhanced_raw.strip() != "null":
+          candidate = enhanced_raw.strip()
+          candidate = re.sub(r"^```(?:dot)?\s*\n", "", candidate)
+          candidate = re.sub(r"\n```\s*$", "", candidate)
+          if candidate.startswith("//") or candidate.startswith("digraph"):
+              dot_content = candidate
+          elif "digraph" in candidate:
+              m = re.search(r"((?://[^\n]*\n)*digraph\s+\w+\s*\{.*\})", candidate, re.DOTALL)
               if m:
-                  dot_content = dot_content.replace('bgcolor="white"',
-                      'bgcolor="white"\n    ' + m.group(0))
-          try:
-              dot_path.write_text(dot_content)
-              results["written"] += 1
-          except Exception as exc:
-              results["errors"].append(f"Write failed: {exc}")
-              continue
-          proc = subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
-                                capture_output=True, text=True, timeout=15)
-          if proc.returncode == 0:
+                  dot_content = m.group(1)
+
+      if not dot_content:
+          dot_content = overview_dot
+          results["fallback"] += 1
+
+      if "source_hash" not in dot_content:
+          m = re.search(r'source_hash="[a-f0-9]+"', overview_dot)
+          if m:
+              dot_content = dot_content.replace('bgcolor="white"',
+                  'bgcolor="white"\n    ' + m.group(0))
+
+      try:
+          overview_path.write_text(dot_content)
+          results["written"] += 1
+      except Exception as exc:
+          results["errors"].append(f"Write failed: {exc}")
+          print(json.dumps(results))
+          sys.exit(0)
+
+      proc = subprocess.run(["dot", "-Tpng", str(overview_path), "-o", str(png_path)],
+                            capture_output=True, text=True, timeout=15)
+      if proc.returncode == 0:
+          results["rendered"] += 1
+      else:
+          overview_path.write_text(overview_dot)
+          results["fallback"] += 1
+          proc2 = subprocess.run(["dot", "-Tpng", str(overview_path), "-o", str(png_path)],
+                                 capture_output=True, text=True, timeout=15)
+          if proc2.returncode == 0:
               results["rendered"] += 1
           else:
-              dot_path.write_text(bi["structural_dot"])
-              results["fallback"] += 1
-              proc2 = subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
-                                     capture_output=True, text=True, timeout=15)
-              if proc2.returncode == 0:
-                  results["rendered"] += 1
-              else:
-                  results["errors"].append(f"Render failed: {dot_path.name}")
-      results["total"] = len(bundles)
+              results["errors"].append(f"Render failed: {proc2.stderr[:100]}")
+
+      results["total"] = 1
       print(json.dumps(results))
       EOF
-    output: "bundle_dot_regen"
+    output: "bundle_overview_regen"
     parse_json: true
     timeout: 120
 
@@ -3132,9 +3190,9 @@ steps:
       {{recipe_validation}}
       ```
 
-      **Bundle DOT Freshness (Phase 6):**
+      **Bundle Doc Freshness (Phase 6 v2):**
       ```json
-      {{bundle_dot_freshness}}
+      {{bundle_doc_freshness}}
       ```
 
       **Quick Approval Summary:**
@@ -3263,12 +3321,13 @@ steps:
       ### Suggestions (Consider) - LOW Priority
       Tool placement optimizations, context sink improvements
 
-      ### DOT Diagram Freshness (Phase 6)
-      If `bundle_dot_freshness.dot_available` is true, report:
-      - Total bundles checked, how many have fresh/stale/missing DOTs
-      - List BUNDLE_DOT_STALE findings as WARNINGs (should regenerate)
-      - List BUNDLE_DOT_MISSING findings as SUGGESTIONs (optional but useful)
-      - If dot_available is false, briefly note DOT checks were skipped
+      ### Bundle Doc Freshness (Phase 6 v2)
+      If `bundle_doc_freshness.dot_available` is true, report:
+      - Total entry points checked, how many have fresh/stale/missing .detail.md
+      - Overview DOT status: fresh/stale/missing
+      - List BUNDLE_DOC_STALE findings as WARNINGs (should regenerate)
+      - List BUNDLE_DOC_MISSING findings as SUGGESTIONs (optional but useful)
+      - If dot_available is false, briefly note doc checks were skipped
 
       ## Recommendations
 
@@ -3288,4 +3347,4 @@ steps:
     output: "final_report"
     timeout: 300
     on_error: "fail"
-    depends_on: ["quality-classification", "quick-approval", "composition-analysis", "repo-conventions", "set-default-approval-summary", "set-default-composition-analysis", "set-default-repo-conventions", "set-default-recipe-validation", "bundle-dot-regen-write"]
+    depends_on: ["quality-classification", "quick-approval", "composition-analysis", "repo-conventions", "set-default-approval-summary", "set-default-composition-analysis", "set-default-repo-conventions", "set-default-recipe-validation", "bundle-doc-regen-detail", "bundle-overview-regen-write"]
