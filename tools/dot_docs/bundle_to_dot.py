@@ -848,3 +848,11 @@ def _build_legend(types_used: set[str]) -> str:
 
     lines.append("    }")
     return "\n".join(lines)
+
+
+def bundle_detail_md(entry_point: str | Path, *, repo_root: Path | None = None) -> str:
+    """Single entry point → markdown detail table.
+    
+    Not yet implemented (Task 4).
+    """
+    raise NotImplementedError("bundle_detail_md is not yet implemented (see Task 4)")
