@@ -438,3 +438,165 @@ class TestOverviewSameRepoEdges:
         assert any(t > 500 for t in tok_values), (
             f"Expected at least one node with >500 tok (big-behavior included), got: {tok_values}"
         )
+
+
+# ── TestBundleRepoDot ─────────────────────────────────────────────────────────
+
+
+class TestBundleRepoDot:
+    """Tests for the new bundle_repo_dot() with 7 cluster categories."""
+
+    def test_returns_valid_dot(self, tmp_path: Path) -> None:
+        """bundle_repo_dot() returns a valid DOT string with source_hash."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        (tmp_path / "bundle.md").write_text(
+            "---\nbundle:\n  name: myrepo\n  version: 1.0.0\n---\n# Test\n"
+        )
+        dot = bundle_repo_dot(tmp_path)
+        assert dot.startswith("digraph ")
+        assert dot.strip().endswith("}")
+        assert 'source_hash="' in dot
+
+    def test_has_behavior_cluster(self, tmp_path: Path) -> None:
+        """bundle_repo_dot() generates a cluster_behaviors subgraph."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        beh_dir = tmp_path / "behaviors"
+        beh_dir.mkdir()
+        (beh_dir / "mybeh.yaml").write_text(
+            "bundle:\n  name: mybeh\n  version: 1.0.0\n  description: My behavior\n"
+        )
+        dot = bundle_repo_dot(tmp_path)
+        assert "cluster_behaviors" in dot
+        assert "mybeh" in dot
+
+    def test_has_agents_cluster(self, tmp_path: Path) -> None:
+        """bundle_repo_dot() generates a cluster_agents subgraph."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        agt_dir = tmp_path / "agents"
+        agt_dir.mkdir()
+        (agt_dir / "myagent.md").write_text(
+            "---\nmeta:\n  name: myagent\n  description: My agent description\n---\nBody\n"
+        )
+        dot = bundle_repo_dot(tmp_path)
+        assert "cluster_agents" in dot
+        assert "myagent" in dot
+
+    def test_has_modules_cluster(self, tmp_path: Path) -> None:
+        """bundle_repo_dot() generates a cluster_modules subgraph for local modules."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        mod_dir = tmp_path / "modules" / "my-tool"
+        pkg_dir = mod_dir / "amplifier_module_my_tool"
+        pkg_dir.mkdir(parents=True)
+        (pkg_dir / "__init__.py").write_text("# tool module\n")
+        dot = bundle_repo_dot(tmp_path)
+        assert "cluster_modules" in dot
+        assert "my-tool" in dot
+
+    def test_has_providers_cluster(self, tmp_path: Path) -> None:
+        """bundle_repo_dot() generates a cluster_providers subgraph."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        prov_dir = tmp_path / "providers"
+        prov_dir.mkdir()
+        (prov_dir / "my-provider.yaml").write_text("provider:\n  name: my-provider\n")
+        dot = bundle_repo_dot(tmp_path)
+        assert "cluster_providers" in dot
+        assert "my-provider" in dot
+
+    def test_has_experiments_cluster(self, tmp_path: Path) -> None:
+        """bundle_repo_dot() generates a cluster_experiments subgraph."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        exp_dir = tmp_path / "experiments"
+        exp_dir.mkdir()
+        (exp_dir / "exp-alpha.md").write_text(
+            "---\nbundle:\n  name: exp-alpha\n  version: 0.1.0\n---\n# Exp\n"
+        )
+        dot = bundle_repo_dot(tmp_path)
+        assert "cluster_experiments" in dot
+        assert "exp-alpha" in dot
+
+    def test_has_context_cluster_when_behaviors_declare_context(
+        self, tmp_path: Path
+    ) -> None:
+        """bundle_repo_dot() generates cluster_context when behaviors include context."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        beh_dir = tmp_path / "behaviors"
+        beh_dir.mkdir()
+        ctx_dir = tmp_path / "context"
+        ctx_dir.mkdir()
+        (ctx_dir / "instructions.md").write_text("# Instructions\nDo stuff.\n")
+        (beh_dir / "mybeh.yaml").write_text(
+            "bundle:\n  name: mybeh\n  version: 1.0.0\n"
+            "context:\n  include:\n    - test:context/instructions.md\n"
+        )
+        dot = bundle_repo_dot(tmp_path)
+        assert "cluster_context" in dot
+        assert "instructions.md" in dot
+
+    def test_root_to_behavior_composes_edge(self, tmp_path: Path) -> None:
+        """Root to local behavior includes are labeled 'composes'."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        (tmp_path / "bundle.md").write_text(
+            "---\nbundle:\n  name: root\n  version: 1.0.0\n"
+            "includes:\n  - bundle: test:behaviors/mybeh\n---\n"
+        )
+        beh_dir = tmp_path / "behaviors"
+        beh_dir.mkdir()
+        (beh_dir / "mybeh.yaml").write_text(
+            "bundle:\n  name: mybeh\n  version: 1.0.0\n"
+        )
+        dot = bundle_repo_dot(tmp_path)
+        assert "composes" in dot
+
+    def test_external_behavior_includes_shown_dashed(self, tmp_path: Path) -> None:
+        """External git+ behavior includes appear as dashed nodes."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        (tmp_path / "bundle.md").write_text(
+            "---\nbundle:\n  name: root\n  version: 1.0.0\n"
+            "includes:\n"
+            "  - bundle: git+https://github.com/example/ext@main#subdirectory=behaviors/ext.yaml\n"
+            "---\n"
+        )
+        dot = bundle_repo_dot(tmp_path)
+        assert "dashed" in dot
+
+    def test_disclaimer_node_present(self, tmp_path: Path) -> None:
+        """A disclaimer note node with token legend text appears."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        dot = bundle_repo_dot(tmp_path)
+        assert "Token estimates" in dot
+
+    def test_source_hash_deterministic(self, tmp_path: Path) -> None:
+        """Same input always produces the same source_hash."""
+        import re
+
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        (tmp_path / "bundle.md").write_text(
+            "---\nbundle:\n  name: stable\n  version: 1.0.0\n---\n"
+        )
+        dot1 = bundle_repo_dot(tmp_path)
+        dot2 = bundle_repo_dot(tmp_path)
+        hashes1 = re.findall(r'source_hash="([a-f0-9]+)"', dot1)
+        hashes2 = re.findall(r'source_hash="([a-f0-9]+)"', dot2)
+        assert len(hashes1) == 1
+        assert hashes1 == hashes2
+
+    def test_real_repo_covers_all_behaviors(self) -> None:
+        """bundle_repo_dot() on the real repo includes all behavior file stems."""
+        from dot_docs.bundle_to_dot import bundle_repo_dot
+
+        dot = bundle_repo_dot(REPO_ROOT)
+        behaviors_dir = REPO_ROOT / "behaviors"
+        for f in sorted(behaviors_dir.glob("*.yaml")):
+            stem = f.stem
+            assert stem in dot, f"Behavior '{stem}' not found in repo DOT output"
