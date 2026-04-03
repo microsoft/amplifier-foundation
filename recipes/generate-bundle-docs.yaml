@@ -105,6 +105,14 @@ steps:
       ## Your Task
 
       Rewrite the DOT to have clear, accessible labels. Rules:
+      CRITICAL: Preserve ALL numerical annotations EXACTLY as they appear in the structural DOT:
+      - Token costs: ~N tok, ~N tok desc, ~N tok aggregate
+      - Counts: N tools · M agents · K ctx
+      - Version strings: vX.Y.Z
+      - Filenames: keep the original filename alongside any description you add
+      These are structural data, not labels to rewrite. Only add a BRIEF friendly description BEFORE the existing annotation. Example:
+        BEFORE: "behavior-agents\n2 tools · 2 ctx\n~5583 tok"
+        AFTER:  "Agent Delegation & Context\n2 tools · 2 ctx\n~5583 tok"
       1. Keep ALL structural elements unchanged: node IDs, edges, shapes, colors,
          fillcolor, style, cluster subgraphs — don't touch them.
       2. ONLY change label="..." values on nodes and clusters, AND the graph title.
