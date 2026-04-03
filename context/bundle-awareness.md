@@ -49,4 +49,4 @@ For anything beyond a quick lookup, delegate to `foundation:foundation-expert`.
 
 ---
 
-**Diagrams are auto-maintained:** `validate-bundle-repo` auto-regenerates stale or missing `overview.dot` and `.detail.md` files. Set `enhance_diagrams: "false"` for structural-only overview DOT (no LLM enhancement). Run `generate-bundle-docs` directly for bulk generation.
+**Diagrams are auto-maintained:** `validate-bundle-repo` auto-regenerates a stale or missing `bundle.dot`. Set `enhance_diagrams: "false"` for structural-only DOT (no LLM enhancement). Run `generate-bundle-docs` directly for bulk generation.

@@ -1,37 +1,31 @@
 name: generate-bundle-docs
 description: |
-  Generates .detail.md composition tables for each bundle and behavior entry point,
-  plus overview.dot + overview.png for the whole repository.
+  Generates bundle.dot + bundle.png for the whole repository via bundle_repo_dot().
 
-  Entry points discovered:
-    - bundle.md (root bundle)
-    - behaviors/*.yaml (behavior bundles)
-    - bundles/*.yaml (standalone bundles)
+  Calls bundle_repo_dot() with repo_path to produce a single 7-cluster structural
+  DOT diagram covering behaviors, standalones, agents, modules, providers,
+  experiments, and context files.
 
   Output files:
-    bundle.md          → bundle.detail.md   (co-located)
-    behaviors/x.yaml   → behaviors/x.detail.md  (co-located)
-    bundles/x.yaml     → bundles/x.detail.md    (co-located)
-    overview.dot / overview.png  → repo root
+    bundle.dot  → repo root (structural or LLM-enhanced)
+    bundle.png  → repo root (rendered via graphviz)
 
-  Detail markdown is structured data — no LLM enhancement needed.
-  Overview DOT labels are LLM-enhanced by default (set enhance_diagrams: "false" to skip).
-  Both types embed source_hash for freshness tracking.
-version: "2.0.0"
+  Both embed source_hash for freshness tracking.
+  LLM label enhancement is on by default (set enhance_diagrams: "false" to skip).
+version: "3.0.0"
 author: "Amplifier Foundation"
-tags: ["bundles", "documentation", "detail-md", "visualization"]
+tags: ["bundles", "documentation", "visualization", "dot"]
 
 context:
   repo_path: ""        # Required: path to bundle repository root
-  enhance_diagrams: "true"  # Optional: LLM-enhance overview DOT labels (true/false)
+  enhance_diagrams: "true"  # Optional: LLM-enhance bundle DOT labels (true/false)
 
 steps:
   # ============================================================================
-  # STEP 1: Discover entry points and generate content
-  # Calls bundle_detail_md() for each source file and bundle_overview_dot()
-  # for the overview. Checks freshness via source_hash before including.
+  # STEP 1: Generate structural bundle.dot via bundle_repo_dot().
+  # Checks freshness via source_hash — skips regeneration if hash matches.
   # ============================================================================
-  - id: "discover-and-generate"
+  - id: "generate-bundle-dot"
     type: "bash"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'PYEOF'
@@ -43,150 +37,70 @@ steps:
       if not repo_path.exists():
           print(json.dumps({
               "error": f"repo_path not found: {repo_path}",
-              "detail_files": [],
-              "overview_dot": "",
-              "overview_needs_regen": False,
+              "bundle_dot": "",
+              "needs_regen": False,
           }))
           sys.exit(0)
 
       sys.path.insert(0, str(repo_path / "tools"))
       try:
-          from dot_docs.bundle_to_dot import bundle_detail_md, bundle_overview_dot
-          from dot_docs.frontmatter import parse_frontmatter
+          from dot_docs import bundle_repo_dot
       except ImportError:
           print(json.dumps({
-              "error": "dot_docs not available",
-              "detail_files": [],
-              "overview_dot": "",
-              "overview_needs_regen": False,
+              "error": "dot_docs not available — ensure tools/dot_docs/ exists in the target repo",
+              "bundle_dot": "",
+              "needs_regen": False,
           }))
           sys.exit(0)
 
-      # Discover entry points: root bundle, behaviors, standalone bundles
-      files = []
-      root = repo_path / "bundle.md"
-      if root.exists():
-          files.append(root)
-      beh_dir = repo_path / "behaviors"
-      if beh_dir.is_dir():
-          files.extend(sorted(beh_dir.glob("*.yaml")))
-          files.extend(sorted(beh_dir.glob("*.yml")))
-      bun_dir = repo_path / "bundles"
-      if bun_dir.is_dir():
-          files.extend(sorted(bun_dir.glob("*.yaml")))
-          files.extend(sorted(bun_dir.glob("*.yml")))
-
-      detail_files = []
-      for f in files:
-          try:
-              md_content = bundle_detail_md(f, repo_root=repo_path)
-          except Exception:
-              continue
-
-          # Check freshness: .detail.md co-located with source file
-          detail_path = f.with_name(f.stem + ".detail.md")
-          needs_regen = True
-          if detail_path.exists():
-              existing = detail_path.read_text()
-              new_hash = re.search(r'source_hash:\s*([a-f0-9]+)', md_content)
-              old_hash = re.search(r'source_hash:\s*([a-f0-9]+)', existing)
-              if new_hash and old_hash and new_hash.group(1) == old_hash.group(1):
-                  needs_regen = False
-
-          if not needs_regen:
-              continue
-
-          data, body = parse_frontmatter(f)
-          bundle_info = data.get("bundle", {})
-          name = bundle_info.get("name", f.stem)
-
-          detail_files.append({
-              "source_path": str(f),
-              "detail_path": str(detail_path),
-              "name": name,
-              "content": md_content,
-          })
-
-      # Generate overview DOT and check freshness
-      overview_dot = ""
-      overview_needs_regen = False
       try:
-          overview_dot = bundle_overview_dot(repo_path)
-          overview_path = repo_path / "overview.dot"
-          if overview_path.exists():
-              existing_ov = overview_path.read_text()
-              new_hash = re.search(r'source_hash="([a-f0-9]+)"', overview_dot)
-              old_hash = re.search(r'source_hash="([a-f0-9]+)"', existing_ov)
-              if new_hash and old_hash and new_hash.group(1) == old_hash.group(1):
-                  overview_needs_regen = False
-              else:
-                  overview_needs_regen = True
-          else:
-              overview_needs_regen = bool(overview_dot)
-      except Exception:
-          overview_dot = ""
+          bundle_dot = bundle_repo_dot(repo_path)
+      except Exception as exc:
+          print(json.dumps({
+              "error": f"bundle_repo_dot failed: {exc}",
+              "bundle_dot": "",
+              "needs_regen": False,
+          }))
+          sys.exit(0)
+
+      # Check freshness: compare source_hash in existing bundle.dot
+      bundle_path = repo_path / "bundle.dot"
+      needs_regen = True
+      if bundle_path.exists():
+          existing = bundle_path.read_text()
+          new_hash = re.search(r'source_hash="([a-f0-9]+)"', bundle_dot)
+          old_hash = re.search(r'source_hash="([a-f0-9]+)"', existing)
+          if new_hash and old_hash and new_hash.group(1) == old_hash.group(1):
+              needs_regen = False
 
       print(json.dumps({
-          "detail_files": detail_files,
-          "overview_dot": overview_dot,
-          "overview_needs_regen": overview_needs_regen,
+          "bundle_dot": bundle_dot,
+          "needs_regen": needs_regen,
       }))
       PYEOF
-    output: "discovery"
+    output: "generation"
     parse_json: true
     timeout: 60
 
   # ============================================================================
-  # STEP 2: Write .detail.md files (no LLM needed — structured data tables)
+  # STEP 2: LLM-enhance bundle DOT labels (skip with enhance_diagrams: "false")
+  # Only runs when a bundle DOT needs to be written.
   # ============================================================================
-  - id: "write-detail-files"
-    type: "bash"
-    depends_on: ["discover-and-generate"]
-    on_error: "continue"
-    command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'PYEOF'
-      import json, sys
-      from pathlib import Path
-
-      _raw = r"""{{discovery}}"""
-      discovery = json.loads(_raw)
-
-      detail_files = discovery.get("detail_files", [])
-      results = {"written": 0, "total": len(detail_files), "errors": []}
-
-      for df in detail_files:
-          detail_path = Path(df["detail_path"])
-          try:
-              detail_path.write_text(df["content"])
-              results["written"] += 1
-          except Exception as exc:
-              results["errors"].append(f"Write failed for {detail_path.name}: {exc}")
-
-      print(json.dumps(results))
-      PYEOF
-    output: "detail_write_results"
-    parse_json: true
-    timeout: 60
-
-  # ============================================================================
-  # STEP 3: LLM-enhance overview DOT labels (skip with enhance_diagrams: "false")
-  # Only runs if an overview DOT needs to be written.
-  # ============================================================================
-  - id: "enhance-overview"
+  - id: "enhance-bundle-dot"
     agent: "foundation:zen-architect"
     mode: "ARCHITECT"
     condition: "{{enhance_diagrams}} != 'false'"
-    depends_on: ["discover-and-generate"]
+    depends_on: ["generate-bundle-dot"]
     on_error: "continue"
     timeout: 120
     prompt: |
-      You are rewriting the labels of a DOT overview diagram for an Amplifier bundle repository.
+      You are rewriting the labels of a DOT diagram for an Amplifier bundle repository.
       The goal: a non-technical person should understand the repository structure
       just from reading the diagram.
 
       ## Structural DOT (current auto-generated labels)
       ```dot
-      {{discovery.overview_dot}}
+      {{generation.bundle_dot}}
       ```
 
       ## Your Task
@@ -203,39 +117,38 @@ steps:
       8. Keep the source_hash="..." graph attribute exactly as-is.
 
       Return ONLY the complete rewritten DOT. No explanation, no markdown fences.
-    output: "enhanced_overview_dot"
+    output: "enhanced_bundle_dot"
 
   # ============================================================================
-  # STEP 4: Write overview.dot and render overview.png
+  # STEP 3: Write bundle.dot and render bundle.png.
   # Uses LLM-enhanced DOT if available, falls back to structural.
   # ============================================================================
-  - id: "write-overview"
+  - id: "write-bundle-dot"
     type: "bash"
-    depends_on: ["enhance-overview"]
+    depends_on: ["enhance-bundle-dot"]
     on_error: "continue"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'PYEOF'
       import json, subprocess, re, sys
       from pathlib import Path
 
-      _raw = r"""{{discovery}}"""
-      discovery = json.loads(_raw)
-
-      overview_dot = discovery.get("overview_dot", "")
-      overview_needs_regen = discovery.get("overview_needs_regen", False)
+      _raw = r"""{{generation}}"""
+      generation = json.loads(_raw)
+      bundle_dot = generation.get("bundle_dot", "")
+      needs_regen = generation.get("needs_regen", False)
 
       results = {"written": 0, "rendered": 0, "fallback": 0, "errors": []}
 
-      if not overview_dot or not overview_needs_regen:
+      if not bundle_dot or not needs_regen:
           print(json.dumps(results))
           sys.exit(0)
 
       repo = Path("{{repo_path}}").expanduser().resolve()
-      overview_path = repo / "overview.dot"
-      png_path = repo / "overview.png"
+      bundle_path = repo / "bundle.dot"
+      png_path = repo / "bundle.png"
 
       # Try LLM-enhanced version first
-      enhanced_raw = r"""{{enhanced_overview_dot}}"""
+      enhanced_raw = r"""{{enhanced_bundle_dot}}"""
       dot_content = None
       if enhanced_raw and enhanced_raw.strip() and enhanced_raw.strip() != "null":
           candidate = enhanced_raw.strip()
@@ -249,33 +162,33 @@ steps:
                   dot_content = m.group(1)
 
       if not dot_content:
-          dot_content = overview_dot
+          dot_content = bundle_dot
           results["fallback"] += 1
 
       # Ensure source_hash is preserved in the written DOT
       if "source_hash" not in dot_content:
-          m = re.search(r'source_hash="[a-f0-9]+"', overview_dot)
+          m = re.search(r'source_hash="[a-f0-9]+"', bundle_dot)
           if m:
               dot_content = dot_content.replace('bgcolor="white"',
                   f'bgcolor="white"\n    {m.group(0)}')
 
       try:
-          overview_path.write_text(dot_content)
+          bundle_path.write_text(dot_content)
           results["written"] += 1
       except Exception as exc:
           results["errors"].append(f"Write failed: {exc}")
           print(json.dumps(results))
           sys.exit(0)
 
-      proc = subprocess.run(["dot", "-Tpng", str(overview_path), "-o", str(png_path)],
+      proc = subprocess.run(["dot", "-Tpng", str(bundle_path), "-o", str(png_path)],
                             capture_output=True, text=True, timeout=15)
       if proc.returncode == 0:
           results["rendered"] += 1
       else:
           # Fallback to structural DOT
-          overview_path.write_text(overview_dot)
+          bundle_path.write_text(bundle_dot)
           results["fallback"] += 1
-          proc2 = subprocess.run(["dot", "-Tpng", str(overview_path), "-o", str(png_path)],
+          proc2 = subprocess.run(["dot", "-Tpng", str(bundle_path), "-o", str(png_path)],
                                  capture_output=True, text=True, timeout=15)
           if proc2.returncode == 0:
               results["rendered"] += 1
@@ -284,48 +197,51 @@ steps:
 
       print(json.dumps(results))
       PYEOF
-    output: "overview_write_results"
+    output: "write_results"
     parse_json: true
     timeout: 60
 
   # ============================================================================
-  # STEP 5: Summary
+  # STEP 4: Summary
   # ============================================================================
   - id: "summary"
     type: "bash"
-    depends_on: ["write-detail-files", "write-overview"]
+    depends_on: ["write-bundle-dot"]
     on_error: "continue"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'PYEOF'
       import json
 
-      _detail_raw = r"""{{detail_write_results}}"""
-      _overview_raw = r"""{{overview_write_results}}"""
-      detail = json.loads(_detail_raw)
-      overview = json.loads(_overview_raw)
+      _gen_raw = r"""{{generation}}"""
+      _write_raw = r"""{{write_results}}"""
+      generation = json.loads(_gen_raw)
+      write = json.loads(_write_raw)
 
-      total_detail = detail.get("total", 0)
-      written_detail = detail.get("written", 0)
-      written_overview = overview.get("written", 0)
-      rendered_overview = overview.get("rendered", 0)
-      fallback = overview.get("fallback", 0)
-      errors = detail.get("errors", []) + overview.get("errors", [])
+      bundle_dot = generation.get("bundle_dot", "")
+      needs_regen = generation.get("needs_regen", False)
+      written = write.get("written", 0)
+      rendered = write.get("rendered", 0)
+      fallback = write.get("fallback", 0)
+      errors = write.get("errors", [])
 
       print(f"\n{'='*60}")
       print(f"Bundle Documentation Generation Complete")
       print(f"{'='*60}")
-      print(f"  Entry points processed:  {total_detail}")
-      print(f"  .detail.md files written: {written_detail}")
-      print(f"  overview.dot written:    {written_overview}")
-      print(f"  overview.png rendered:   {rendered_overview}")
-      if fallback:
-          print(f"  Structural fallback:     {fallback} (LLM output invalid, used auto-labels)")
-      if errors:
-          print(f"  Errors:                  {len(errors)}")
-          for e in errors[:5]:
-              print(f"    - {e}")
+      if not bundle_dot:
+          err = generation.get("error", "unknown error")
+          print(f"  Error: {err}")
+      elif not needs_regen:
+          print(f"  bundle.dot is up-to-date (source_hash unchanged)")
+      else:
+          print(f"  bundle.dot written:   {written}")
+          print(f"  bundle.png rendered:  {rendered}")
+          if fallback:
+              print(f"  Structural fallback:  {fallback} (LLM output invalid, used auto-labels)")
+          if errors:
+              print(f"  Errors:               {len(errors)}")
+              for e in errors[:5]:
+                  print(f"    - {e}")
       print(f"{'='*60}")
-      print(f"\n.detail.md files written next to their source files.")
-      print(f"overview.dot/.png written to repo root.")
+      print(f"\nbundle.dot / bundle.png written to repo root.")
       PYEOF
     timeout: 15
