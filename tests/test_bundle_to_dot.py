@@ -182,6 +182,14 @@ class TestBundleRepoDot:
         assert len(hashes1) == 1
         assert hashes1 == hashes2
 
+    def test_rankdir_is_lr(self, tmp_path: Path) -> None:
+        """bundle_repo_dot() generates rankdir=LR (left-to-right layout)."""
+        (tmp_path / "bundle.md").write_text(
+            "---\\nbundle:\\n  name: myrepo\\n  version: 1.0.0\\n---\\n# Test\\n"
+        )
+        dot = bundle_repo_dot(tmp_path)
+        assert "rankdir=LR" in dot, "Expected rankdir=LR in DOT output"
+
     def test_real_repo_covers_all_behaviors(self) -> None:
         """bundle_repo_dot() on the real repo includes all behavior file stems."""
         dot = bundle_repo_dot(REPO_ROOT)

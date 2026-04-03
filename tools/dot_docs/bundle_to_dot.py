@@ -616,7 +616,7 @@ def bundle_repo_dot(repo_root: str | Path) -> str:
 
     out: list[str] = [
         f"digraph {graph_id} {{",
-        "    rankdir=TB",
+        "    rankdir=LR",
         '    fontname="Helvetica"',
         "    fontsize=12",
         f"    label={_q(title)}",
