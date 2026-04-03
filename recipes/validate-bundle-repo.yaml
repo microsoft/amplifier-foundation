@@ -2723,12 +2723,11 @@ steps:
     depends_on: ["composition-analysis"]
 
   # ============================================================================
-  # PHASE 6: Bundle Doc Freshness Check (v2)
-  # Checks that each bundle/behavior entry point has a co-located .detail.md
-  # and that the overview.dot at repo root exists and is fresh.
-  # Uses source_hash embedded in .detail.md footer and overview.dot attribute.
+  # PHASE 6: Bundle Doc Freshness Check (v3)
+  # Checks that bundle.dot exists at repo root and is fresh.
+  # Uses source_hash embedded in bundle.dot attribute.
   # Gracefully degrades if dot_docs is not importable from tools/.
-  # Produces BUNDLE_DOC_MISSING (SUGGESTION) and BUNDLE_DOC_STALE (WARNING).
+  # Produces BUNDLE_DOT_MISSING (SUGGESTION) and BUNDLE_DOT_STALE (WARNING).
   # ============================================================================
 
   - id: "bundle-doc-freshness-check"
@@ -2748,7 +2747,7 @@ steps:
       dot_available = False
       try:
           sys.path.insert(0, str(repo_path / "tools"))
-          from dot_docs.bundle_to_dot import bundle_detail_md, bundle_overview_dot
+          from dot_docs import bundle_repo_dot
           dot_available = True
       except ImportError:
           pass
@@ -2758,12 +2757,7 @@ steps:
           "dot_available": dot_available,
           "findings": [],
           "summary": {
-              "total_entry_points": 0,
-              "with_detail_md": 0,
-              "missing_detail_md": 0,
-              "stale_detail_md": 0,
-              "fresh_detail_md": 0,
-              "overview_status": "not_checked",
+              "bundle_dot_status": "not_checked",
               "skipped": 0,
           },
       }
@@ -2781,127 +2775,44 @@ steps:
           print(json.dumps(results))
           raise SystemExit(0)
 
-      # Check .detail.md for each bundle/behavior entry point
-      all_files = []
-      for category, paths in discovery.get("bundles_found", {}).items():
-          if category in ("agents", "providers"):
-              continue
-          for p in paths:
-              all_files.append((category, p))
-
-      for category, file_path in all_files:
-          fp = Path(file_path)
-          rel_path = str(fp.relative_to(repo_path)) if fp.is_absolute() else file_path
-          results["summary"]["total_entry_points"] += 1
-
-          detail_path = fp.with_name(fp.stem + ".detail.md")
-          detail_rel = str(detail_path.relative_to(repo_path)) if detail_path.is_absolute() else str(detail_path)
-
-          if not detail_path.exists():
-              results["summary"]["missing_detail_md"] += 1
-              results["findings"].append({
-                  "code": "BUNDLE_DOC_MISSING",
-                  "severity": "SUGGESTION",
-                  "message": (
-                      f"Bundle '{fp.stem}' ({rel_path}) has no detail doc. "
-                      f"Expected: {detail_rel}"
-                  ),
-                  "detail": detail_rel,
-                  "bundle_path": rel_path,
-                  "bundle_name": fp.stem,
-              })
-              continue
-
-          # .detail.md exists — check source_hash in footer for freshness
-          try:
-              fresh_md = bundle_detail_md(str(fp), repo_root=repo_path)
-              fresh_match = re.search(r'source_hash:\s*([a-f0-9]+)', fresh_md)
-              existing_md = detail_path.read_text()
-              existing_match = re.search(r'source_hash:\s*([a-f0-9]+)', existing_md)
-
-              if fresh_match and existing_match:
-                  if fresh_match.group(1) == existing_match.group(1):
-                      results["summary"]["fresh_detail_md"] += 1
-                      results["summary"]["with_detail_md"] += 1
-                  else:
-                      results["summary"]["stale_detail_md"] += 1
-                      results["summary"]["with_detail_md"] += 1
-                      results["findings"].append({
-                          "code": "BUNDLE_DOC_STALE",
-                          "severity": "WARNING",
-                          "message": (
-                              f"Bundle '{fp.stem}' ({rel_path}) detail doc is stale "
-                              f"(source changed). Regenerate: {detail_rel}"
-                          ),
-                          "detail": detail_rel,
-                          "bundle_path": rel_path,
-                          "bundle_name": fp.stem,
-                      })
-              elif not existing_match:
-                  # No source_hash — treat as stale
-                  results["summary"]["stale_detail_md"] += 1
-                  results["summary"]["with_detail_md"] += 1
-                  results["findings"].append({
-                      "code": "BUNDLE_DOC_STALE",
-                      "severity": "WARNING",
-                      "message": (
-                          f"Bundle '{fp.stem}' ({rel_path}) detail doc has no "
-                          f"source_hash — regenerate to enable freshness tracking"
-                      ),
-                      "detail": detail_rel,
-                      "bundle_path": rel_path,
-                      "bundle_name": fp.stem,
-                  })
-              else:
-                  results["summary"]["fresh_detail_md"] += 1
-                  results["summary"]["with_detail_md"] += 1
-          except Exception as exc:
-              results["summary"]["skipped"] += 1
-              results["findings"].append({
-                  "code": "DOC_CHECK_ERROR",
-                  "severity": "INFO",
-                  "message": f"Error checking detail doc for '{fp.stem}': {exc}",
-                  "detail": str(exc),
-              })
-
-      # Check overview.dot at repo root
+      # Generate fresh structural DOT and check bundle.dot freshness
       try:
-          fresh_overview = bundle_overview_dot(repo_path)
-          overview_path = repo_path / "overview.dot"
-          if not overview_path.exists():
-              results["summary"]["overview_status"] = "missing"
+          fresh_dot = bundle_repo_dot(repo_path)
+          bundle_path = repo_path / "bundle.dot"
+          if not bundle_path.exists():
+              results["summary"]["bundle_dot_status"] = "missing"
               results["findings"].append({
-                  "code": "BUNDLE_DOC_MISSING",
+                  "code": "BUNDLE_DOT_MISSING",
                   "severity": "SUGGESTION",
-                  "message": "overview.dot missing at repo root — run generate-bundle-docs",
-                  "detail": "overview.dot",
+                  "message": "bundle.dot missing at repo root — run generate-bundle-docs",
+                  "detail": "bundle.dot",
                   "bundle_path": None,
-                  "bundle_name": "overview",
+                  "bundle_name": "bundle",
               })
           else:
-              existing_ov = overview_path.read_text()
-              fresh_hash = re.search(r'source_hash="([a-f0-9]+)"', fresh_overview)
-              old_hash = re.search(r'source_hash="([a-f0-9]+)"', existing_ov)
+              existing_dot = bundle_path.read_text()
+              fresh_hash = re.search(r'source_hash="([a-f0-9]+)"', fresh_dot)
+              old_hash = re.search(r'source_hash="([a-f0-9]+)"', existing_dot)
               if fresh_hash and old_hash and fresh_hash.group(1) == old_hash.group(1):
-                  results["summary"]["overview_status"] = "fresh"
+                  results["summary"]["bundle_dot_status"] = "fresh"
               else:
-                  results["summary"]["overview_status"] = "stale"
+                  results["summary"]["bundle_dot_status"] = "stale"
                   results["findings"].append({
-                      "code": "BUNDLE_DOC_STALE",
+                      "code": "BUNDLE_DOT_STALE",
                       "severity": "WARNING",
-                      "message": "overview.dot is stale (bundles/behaviors changed). Regenerate.",
-                      "detail": "overview.dot",
+                      "message": "bundle.dot is stale (repo changed). Regenerate.",
+                      "detail": "bundle.dot",
                       "bundle_path": None,
-                      "bundle_name": "overview",
+                      "bundle_name": "bundle",
                   })
-          results["overview_structural_dot"] = fresh_overview
+          results["overview_structural_dot"] = fresh_dot
       except Exception as exc:
-          results["summary"]["overview_status"] = "error"
+          results["summary"]["bundle_dot_status"] = "error"
           results["overview_structural_dot"] = ""
           results["findings"].append({
               "code": "DOC_CHECK_ERROR",
               "severity": "INFO",
-              "message": f"Error checking overview.dot: {exc}",
+              "message": f"Error checking bundle.dot: {exc}",
               "detail": str(exc),
           })
 
@@ -2912,12 +2823,12 @@ steps:
     timeout: 60
 
   # ============================================================================
-  # PHASE 6b: Bundle Doc Auto-Regeneration (v2)
+  # PHASE 6b: Bundle Doc Auto-Regeneration (v3)
   #
-  # 6b-detail: Regenerate stale/missing .detail.md files (no LLM needed).
-  # 6b-overview-structural: Generate structural overview DOT.
-  # 6b-overview-enhance: LLM-enhance overview DOT labels (conditional).
-  # 6b-overview-write: Write overview.dot + render PNG.
+  # 6b-detail: No-op (no per-entry-point .detail.md files in v3).
+  # 6b-overview-structural: Pass through structural DOT from freshness check.
+  # 6b-overview-enhance: LLM-enhance bundle DOT labels (conditional).
+  # 6b-overview-write: Write bundle.dot + render bundle.png.
   # ============================================================================
 
   - id: "bundle-doc-regen-detail"
@@ -2926,46 +2837,13 @@ steps:
     on_error: "continue"
     command: |
       python3 << 'EOF'
-      import json, sys
-      from pathlib import Path
-
-      raw = r"""{{bundle_doc_freshness}}"""
-      freshness = json.loads(raw)
-      if not freshness.get("dot_available"):
-          print(json.dumps({"skipped": True, "written": 0, "errors": []})); sys.exit(0)
-
-      to_regen = [f for f in freshness.get("findings", [])
-                  if f.get("code") in ("BUNDLE_DOC_MISSING", "BUNDLE_DOC_STALE")
-                  and f.get("bundle_path")]  # bundle_path=None means overview
-      if not to_regen:
-          print(json.dumps({"skipped": False, "written": 0, "errors": []})); sys.exit(0)
-
-      _discovery_raw = r"""{{discovery_results}}"""
-      discovery = json.loads(_discovery_raw)
-      repo_path = Path(discovery.get("repo_path", "")).resolve()
-
-      sys.path.insert(0, str(repo_path / "tools"))
-      from dot_docs.bundle_to_dot import bundle_detail_md
-
-      results = {"skipped": False, "written": 0, "errors": []}
-      for finding in to_regen:
-          rel = finding["bundle_path"]
-          fp = repo_path / rel
-          if not fp.exists():
-              continue
-          try:
-              md_content = bundle_detail_md(str(fp), repo_root=repo_path)
-              detail_path = fp.with_name(fp.stem + ".detail.md")
-              detail_path.write_text(md_content)
-              results["written"] += 1
-          except Exception as exc:
-              results["errors"].append(f"Regen failed for {rel}: {exc}")
-
-      print(json.dumps(results))
+      import json
+      # v3: No per-entry-point .detail.md files — this step is a no-op.
+      print(json.dumps({"skipped": True, "written": 0, "errors": []}))
       EOF
     output: "bundle_detail_regen"
     parse_json: true
-    timeout: 60
+    timeout: 10
 
   - id: "bundle-overview-regen-structural"
     type: "bash"
@@ -2982,9 +2860,9 @@ steps:
           print(json.dumps({"skipped": True, "needs_regen": False, "overview_dot": ""}))
           sys.exit(0)
 
-      # Check if overview needs regen
-      overview_status = freshness.get("summary", {}).get("overview_status", "not_checked")
-      needs_regen = overview_status in ("missing", "stale")
+      # Check if bundle.dot needs regen
+      bundle_dot_status = freshness.get("summary", {}).get("bundle_dot_status", "not_checked")
+      needs_regen = bundle_dot_status in ("missing", "stale")
       overview_dot = freshness.get("overview_structural_dot", "")
 
       print(json.dumps({
@@ -3005,7 +2883,7 @@ steps:
     on_error: "continue"
     timeout: 120
     prompt: |
-      You are rewriting the labels of a DOT overview diagram for an Amplifier bundle repository.
+      You are rewriting the labels of a DOT diagram for an Amplifier bundle repository.
       The goal: a non-technical person should understand the repository structure
       just from reading the diagram.
 
@@ -3054,8 +2932,8 @@ steps:
       _discovery_raw = r"""{{discovery_results}}"""
       discovery = json.loads(_discovery_raw)
       repo_path = Path(discovery.get("repo_path", "")).resolve()
-      overview_path = repo_path / "overview.dot"
-      png_path = repo_path / "overview.png"
+      bundle_path = repo_path / "bundle.dot"
+      png_path = repo_path / "bundle.png"
 
       results = {"written": 0, "rendered": 0, "fallback": 0, "errors": []}
 
@@ -3084,21 +2962,21 @@ steps:
                   'bgcolor="white"\n    ' + m.group(0))
 
       try:
-          overview_path.write_text(dot_content)
+          bundle_path.write_text(dot_content)
           results["written"] += 1
       except Exception as exc:
           results["errors"].append(f"Write failed: {exc}")
           print(json.dumps(results))
           sys.exit(0)
 
-      proc = subprocess.run(["dot", "-Tpng", str(overview_path), "-o", str(png_path)],
+      proc = subprocess.run(["dot", "-Tpng", str(bundle_path), "-o", str(png_path)],
                             capture_output=True, text=True, timeout=15)
       if proc.returncode == 0:
           results["rendered"] += 1
       else:
-          overview_path.write_text(overview_dot)
+          bundle_path.write_text(overview_dot)
           results["fallback"] += 1
-          proc2 = subprocess.run(["dot", "-Tpng", str(overview_path), "-o", str(png_path)],
+          proc2 = subprocess.run(["dot", "-Tpng", str(bundle_path), "-o", str(png_path)],
                                  capture_output=True, text=True, timeout=15)
           if proc2.returncode == 0:
               results["rendered"] += 1
@@ -3190,7 +3068,7 @@ steps:
       {{recipe_validation}}
       ```
 
-      **Bundle Doc Freshness (Phase 6 v2):**
+      **Bundle Doc Freshness (Phase 6 v3):**
       ```json
       {{bundle_doc_freshness}}
       ```
@@ -3321,12 +3199,11 @@ steps:
       ### Suggestions (Consider) - LOW Priority
       Tool placement optimizations, context sink improvements
 
-      ### Bundle Doc Freshness (Phase 6 v2)
+      ### Bundle Doc Freshness (Phase 6 v3)
       If `bundle_doc_freshness.dot_available` is true, report:
-      - Total entry points checked, how many have fresh/stale/missing .detail.md
-      - Overview DOT status: fresh/stale/missing
-      - List BUNDLE_DOC_STALE findings as WARNINGs (should regenerate)
-      - List BUNDLE_DOC_MISSING findings as SUGGESTIONs (optional but useful)
+      - bundle.dot status: fresh/stale/missing
+      - List BUNDLE_DOT_STALE findings as WARNINGs (should regenerate via generate-bundle-docs)
+      - List BUNDLE_DOT_MISSING findings as SUGGESTIONs (optional but useful)
       - If dot_available is false, briefly note doc checks were skipped
 
       ## Recommendations

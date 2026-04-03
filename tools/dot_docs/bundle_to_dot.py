@@ -1,14 +1,13 @@
-"""Bundle/behavior YAML to DOT composition diagram.
+"""Bundle/behavior YAML to DOT repository diagrams.
 
-Converts Amplifier behavior ``.yaml`` files (and ``.md`` bundle files with
-YAML frontmatter) into Graphviz DOT composition diagrams that show tools,
-hooks, agent references, context files, and nested includes — all annotated
-with per-request token cost estimates.
+Generates repository-wide Graphviz DOT diagrams showing all bundle and behavior
+files in a repository, with 7 cluster categories, edges representing include
+relationships, and nodes annotated with per-request token cost estimates.
 
 Usage::
 
-    from dot_docs.bundle_to_dot import bundle_to_dot
-    dot_str = bundle_to_dot("behaviors/agents.yaml", repo_root=Path("."))
+    from dot_docs.bundle_to_dot import bundle_repo_dot
+    dot_str = bundle_repo_dot(repo_root=Path("."))
 
 No LLM calls — pure deterministic function.  Only requires PyYAML and the
 Python standard library.
@@ -26,11 +25,11 @@ from dot_docs.frontmatter import (
     resolve_local_mention,
 )
 from dot_docs.token_cost import (
-    color_tier,
     estimate_tokens,
 )
+from dot_docs.tool_schema import estimate_module_tool_tokens
 
-# ── Visual constants ──────────────────────────────────────────────────────────
+# ── Visual constants ───────────────────────────────────────────────────────────
 
 _COLOR_BUNDLE_ROOT = "#80cbc4"
 _COLOR_BEHAVIOR_LOCAL = "#e0f2f1"
@@ -46,314 +45,34 @@ _COLOR_LEGEND_FILL = "white"
 _COLOR_LEGEND_BORDER = "#cccccc"
 _COLOR_SUMMARY = "#eceff1"
 
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-
-def bundle_to_dot(yaml_path: str | Path, *, repo_root: Path | None = None) -> str:
-    """Convert a bundle/behavior YAML or .md file to a DOT composition diagram.
-
-    Reads the file, extracts tools, hooks, agent references, context includes,
-    and nested includes, then emits a Graphviz DOT graph annotated with token
-    cost estimates and colour-coded by cost tier.
-
-    Args:
-        yaml_path: Path to a ``.yaml`` behavior file or ``.md`` bundle file
-            with YAML frontmatter.
-        repo_root: Repository root used to resolve ``namespace:path`` mentions
-            and local include references.  When omitted the function walks up
-            from *yaml_path* looking for a ``.git`` directory or ``bundle.md``;
-            if neither is found it falls back to *yaml_path*'s parent directory.
-
-    Returns:
-        Complete, valid DOT string suitable for passing to ``dot -Tsvg``.
-
-    Raises:
-        FileNotFoundError: If *yaml_path* does not exist.
-    """
-    yaml_path = Path(yaml_path)
-    if not yaml_path.exists():
-        raise FileNotFoundError(f"Bundle file not found: {yaml_path}")
-
-    # ── Infer repo_root ───────────────────────────────────────────────────────
-    if repo_root is None:
-        candidate = yaml_path.parent
-        while candidate != candidate.parent:
-            if (candidate / ".git").exists() or (candidate / "bundle.md").exists():
-                repo_root = candidate
-                break
-            candidate = candidate.parent
-        else:
-            repo_root = yaml_path.parent
-
-    # ── Parse file ────────────────────────────────────────────────────────────
-    data, body = parse_frontmatter(yaml_path)
-    bundle_info: dict = data.get("bundle") or {}
-    name: str = bundle_info.get("name") or yaml_path.stem
-    graph_id = _sanitize_id(name)
-
-    # Body token cost — only the markdown body counts as "instruction" (system prompt).
-    # Pure YAML behavior files have no markdown body, so no instruction token cost.
-    if body:
-        body_tokens = estimate_tokens(body)
-    else:
-        body_tokens = 0
-
-    # ── Extract elements ──────────────────────────────────────────────────────
-    tools: list[dict] = data.get("tools") or []
-    hooks: list[dict] = data.get("hooks") or []
-    agents_info: dict = data.get("agents") or {}
-    agent_includes: list[str] = agents_info.get("include") or []
-    ctx_info: dict = data.get("context") or {}
-    ctx_includes: list[str] = ctx_info.get("include") or []
-    includes: list[dict] = data.get("includes") or []
-    session_cfg: dict = data.get("session") or {}
-
-    # @mentions from markdown body
-    body_mentions: list[str] = extract_mentions(body) if body else []
-
-    types_used: set[str] = set()
-    node_lines: list[str] = []
-    edge_lines: list[str] = []
-
-    # ── Root node ─────────────────────────────────────────────────────────────
-    has_includes = bool(includes)
-    root_style = '"filled,rounded,bold"' if has_includes else '"filled,rounded"'
-    # Show instruction token cost only when there is a markdown body
-    if body_tokens > 0:
-        root_label = _q(f"{name}\\ninstruction: ~{body_tokens} tok")
-    else:
-        root_label = _q(name)
-    node_lines.append(
-        f"    root [label={root_label}, shape=box,"
-        f' fillcolor="{_COLOR_BUNDLE_ROOT}", style={root_style},'
-        f' color="{_COLOR_BUNDLE_ROOT}"]'
-    )
-
-    total_tokens = body_tokens
-    token_breakdown: dict[str, int] = {}
-    if body_tokens > 0:
-        token_breakdown["instruction"] = body_tokens
-
-    # ── Tool nodes ─────────────────────────────────────────────────────────────
-    if tools:
-        types_used.add("tool")
-    for i, tool in enumerate(tools):
-        module = tool.get("module") or f"tool_{i}"
-        tid = f"tool_{_sanitize_id(module)}"
-        label = _q(module)
-        node_lines.append(
-            f"    {tid} [label={label}, shape=box,"
-            f' fillcolor="{_COLOR_TOOL}", style="filled,rounded"]'
-        )
-        edge_lines.append(f"    root -> {tid}")
-
-    # ── Hook nodes ─────────────────────────────────────────────────────────────
-    if hooks:
-        types_used.add("hook")
-    for i, hook in enumerate(hooks):
-        module = hook.get("module") or f"hook_{i}"
-        hid = f"hook_{_sanitize_id(module)}"
-        # Hooks contribute ~0 tokens to LLM requests — show name only, no tok label
-        label = _q(module)
-        node_lines.append(
-            f"    {hid} [label={label}, shape=box,"
-            f' fillcolor="{_COLOR_HOOK}", style="filled,rounded"]'
-        )
-        edge_lines.append(f"    root -> {hid}")
-
-    # ── Agent reference nodes ─────────────────────────────────────────────────
-    if agent_includes:
-        types_used.add("agent")
-    for ref in agent_includes:
-        aid = f"agent_{_sanitize_id(ref)}"
-        agent_tok = _estimate_agent_tokens(ref, repo_root)
-        # Fixed green color — token cost shown as text label, not color override
-        label = _q(f"{ref}\\n~{agent_tok} tok")
-        node_lines.append(
-            f"    {aid} [label={label}, shape=box,"
-            f' fillcolor="{_COLOR_AGENT_BASE}", style="filled,rounded"]'
-        )
-        edge_lines.append(f"    root -> {aid}")
-        total_tokens += agent_tok
-        token_breakdown["agents"] = token_breakdown.get("agents", 0) + agent_tok
-
-    # ── Context file nodes ─────────────────────────────────────────────────────
-    ctx_seen: set[str] = set()
-    if ctx_includes:
-        types_used.add("context")
-    for ref in ctx_includes:
-        ctx_id = f"ctx_{_sanitize_id(ref)}"
-        if ctx_id in ctx_seen:
-            continue
-        ctx_seen.add(ctx_id)
-        ctx_tok = _estimate_context_tokens(ref, repo_root)
-        # Fixed purple color — token cost shown as text label, not color override
-        short_label = _short_path(ref)
-        label = _q(f"{short_label}\\n~{ctx_tok} tok")
-        node_lines.append(
-            f"    {ctx_id} [label={label}, shape=note,"
-            f' fillcolor="{_COLOR_CONTEXT}", style="filled"]'
-        )
-        edge_lines.append(f"    root -> {ctx_id}")
-        total_tokens += ctx_tok
-        token_breakdown["context"] = token_breakdown.get("context", 0) + ctx_tok
-
-    # ── @mention nodes from markdown body ────────────────────────────────────
-    if body_mentions:
-        types_used.add("context")
-    for mention in body_mentions:
-        ctx_id = f"ctx_{_sanitize_id(mention)}"
-        if ctx_id in ctx_seen:
-            continue
-        ctx_seen.add(ctx_id)
-        ctx_tok = _estimate_context_tokens(mention, repo_root)
-        # Fixed purple color — token cost shown as text label, not color override
-        short_label = _short_path(mention)
-        label = _q(f"{short_label}\\n~{ctx_tok} tok")
-        node_lines.append(
-            f"    {ctx_id} [label={label}, shape=note,"
-            f' fillcolor="{_COLOR_CONTEXT}", style="filled"]'
-        )
-        edge_lines.append(f"    root -> {ctx_id} [style=dashed]")
-        total_tokens += ctx_tok
-        token_breakdown["context"] = token_breakdown.get("context", 0) + ctx_tok
-
-    # ── Session config node ───────────────────────────────────────────────────
-    if session_cfg:
-        types_used.add("session")
-        # Session config does not contribute tokens to LLM requests — no tok label
-        orch_module = ""
-        if isinstance(session_cfg.get("orchestrator"), dict):
-            orch_module = session_cfg["orchestrator"].get("module") or ""
-        if orch_module:
-            label = _q(f"session: {orch_module}")
-        else:
-            label = _q("session")
-        node_lines.append(
-            f"    session_cfg [label={label}, shape=box,"
-            f' fillcolor="{_COLOR_SESSION}", style="filled,rounded,dotted"]'
-        )
-        edge_lines.append("    root -> session_cfg")
-
-    # ── Local/external includes ───────────────────────────────────────────────
-    local_cluster_lines: list[str] = []
-    for idx, inc in enumerate(includes):
-        ref = str(inc.get("bundle") or "")
-        if not ref:
-            continue
-        local_path = _resolve_local_include(ref, repo_root)
-        if local_path is not None:
-            types_used.add("local_include")
-            cluster_lines, cluster_tokens, _ = _render_behavior_cluster(
-                local_path, repo_root, idx
-            )
-            if cluster_lines:
-                local_cluster_lines.extend(cluster_lines)
-                # Edge to the cluster root node
-                cluster_root_id = f"cluster_inc_{idx}_root"
-                edge_lines.append(
-                    f"    root -> {cluster_root_id} [lhead=cluster_inc_{idx}]"
-                )
-                total_tokens += cluster_tokens
-                token_breakdown["includes"] = (
-                    token_breakdown.get("includes", 0) + cluster_tokens
-                )
-        else:
-            types_used.add("external_include")
-            disp = _extract_external_name(ref)
-            eid = f"ext_{_sanitize_id(ref)}_{idx}"
-            label = _q(f"{disp}\\n(external)")
-            node_lines.append(
-                f"    {eid} [label={label}, shape=box,"
-                f' fillcolor="{_COLOR_EXTERNAL_INCLUDE}",'
-                ' style="filled,rounded,dashed"]'
-            )
-            edge_lines.append(f"    root -> {eid}")
-
-    # ── Summary node ─────────────────────────────────────────────────────────────
-    # Build breakdown — only include categories with non-zero tokens
-    breakdown_lines: list[str] = []
-    if token_breakdown.get("instruction", 0) > 0:
-        breakdown_lines.append(f"Instruction: ~{token_breakdown['instruction']} tok")
-    if token_breakdown.get("context", 0) > 0:
-        breakdown_lines.append(f"Context files: ~{token_breakdown['context']} tok")
-    if token_breakdown.get("agents", 0) > 0:
-        breakdown_lines.append(f"Agent descriptions: ~{token_breakdown['agents']} tok")
-    sep = "\u2500" * 13  # "─────────────"
-    summary_label = f"Per-Request Token Estimate\\n~{total_tokens} tok total (local)"
-    if breakdown_lines:
-        summary_label += f"\\n{sep}\\n" + "\\n".join(breakdown_lines)
-    summary_label += "\\n(excludes tools, external)"
-    node_lines.append(
-        f"    summary [label={_q(summary_label)}, shape=box,"
-        f' fillcolor="{_COLOR_SUMMARY}", style="filled,rounded",'
-        " peripheries=2]"
-    )
-    edge_lines.append("    root -> summary [style=dashed, arrowhead=none]")
-
-    # ── Assemble body ─────────────────────────────────────────────────────────
-    body_str = "\n".join(node_lines + [""] + edge_lines)
-
-    # Source hash derived from structural body (before full graph header)
-    structural_hash = hashlib.sha256(body_str.encode()).hexdigest()
-
-    # ── Title ─────────────────────────────────────────────────────────────────
-    title = name
-    description = bundle_info.get("description") or ""
-    if description:
-        first_sentence = re.split(r"[.\n]", description.strip())[0].strip()
-        if len(first_sentence) > 80:
-            first_sentence = first_sentence[:77] + "..."
-        if first_sentence:
-            title = f"{name} \u2014 {first_sentence}"
-
-    # ── Full graph ────────────────────────────────────────────────────────────
-    out: list[str] = [
-        f"digraph {graph_id} {{",
-        "    rankdir=LR",
-        '    fontname="Helvetica"',
-        "    fontsize=12",
-        f"    label={_q(title)}",
-        "    labelloc=t",
-        "    labeljust=c",
-        "    compound=true",
-        "    nodesep=0.6",
-        "    ranksep=0.7",
-        '    bgcolor="white"',
-        f'    source_hash="{structural_hash}"',
-        "",
-        '    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]',
-        '    edge [fontname="Helvetica", fontsize=9]',
-        "",
-        body_str,
-    ]
-
-    if local_cluster_lines:
-        out.append("")
-        out.extend(local_cluster_lines)
-
-    out.extend(
-        [
-            "",
-            _build_legend(types_used),
-            "}",
-        ]
-    )
-
-    return "\n".join(out)
+# New B3 colors
+_COLOR_STANDALONE = "#80cbc4"
+_COLOR_EXPERIMENT = "#e1bee7"
+_COLOR_PROVIDER = "#e0e0e0"
+_COLOR_EXTERNAL_COST = "red"
+_COLOR_EXTERNAL_MUTED = "#f5f5f5"
+_MUTED_COLORS = {
+    "behavior": "#f5fafa",
+    "agent": "#e8f5e9",
+    "module": "#e3f2fd",
+    "provider": "#f5f5f5",
+    "context": "#f3e5f5",
+}
 
 
-def bundle_overview_dot(repo_root: str | Path) -> str:
-    """Generate an overview DOT diagram for all bundle/behavior files in a repo.
+# ── Public API ─────────────────────────────────────────────────────────────────
 
-    Discovers ``bundle.md`` at the repo root, all ``behaviors/*.yaml`` /
-    ``behaviors/*.yml`` files, and ``bundles/*.yaml`` / ``bundles/*.md``
-    standalone bundles.  Each file becomes a single node annotated with its
-    aggregate token cost.  Edges represent ``includes:`` relationships.
 
-    This is the "table of contents" view — a lightweight map of every
-    component and how they connect.
+def bundle_repo_dot(repo_root: str | Path) -> str:
+    """Generate a full B3-enhanced DOT diagram for a bundle repository.
+
+    Discovers all components across 7 cluster categories matching the
+    validate-bundle-repo Phase 1 discovery: behaviors, standalones, agents,
+    modules, providers, experiments, and context files.
+
+    Node labels are annotated with token cost estimates. External references
+    are visually distinguished by cost impact. Edges carry verb labels
+    (composes, owns, uses, extends, forks).
 
     Args:
         repo_root: Repository root to scan for bundle and behavior files.
@@ -362,151 +81,539 @@ def bundle_overview_dot(repo_root: str | Path) -> str:
         Complete, valid DOT string suitable for passing to ``dot -Tsvg``.
     """
     repo_root = Path(repo_root)
-
-    # ── Discover files ──────────────────────────────────────────────────────
-    # (role, path): role is "root", "behavior", or "bundle"
-    files: list[tuple[str, Path]] = []
-
     root_bundle = repo_root / "bundle.md"
+
+    # ── Discovery ──────────────────────────────────────────────────────────────
+
+    # 1. Behaviors: behaviors/*.yaml
+    behaviors: list[Path] = []
+    beh_dir = repo_root / "behaviors"
+    if beh_dir.is_dir():
+        for p in sorted(beh_dir.glob("*.yaml")):
+            behaviors.append(p)
+        for p in sorted(beh_dir.glob("*.yml")):
+            behaviors.append(p)
+
+    # 2. Standalones: bundles/*.yaml + bundles/*.md
+    standalones: list[Path] = []
+    bun_dir = repo_root / "bundles"
+    if bun_dir.is_dir():
+        for p in sorted(bun_dir.glob("*.yaml")) + sorted(bun_dir.glob("*.md")):
+            standalones.append(p)
+
+    # 3. Agents: agents/*.md only
+    agents: list[Path] = []
+    agt_dir = repo_root / "agents"
+    if agt_dir.is_dir():
+        for p in sorted(agt_dir.glob("*.md")):
+            agents.append(p)
+
+    # 4. Modules: modules/*/ dirs with amplifier_module_*/__init__.py
+    modules: list[Path] = []
+    mod_dir = repo_root / "modules"
+    if mod_dir.is_dir():
+        for d in sorted(mod_dir.iterdir()):
+            if d.is_dir() and list(d.glob("amplifier_module_*/__init__.py")):
+                modules.append(d)
+
+    # 5. Providers: providers/*.yaml
+    providers: list[Path] = []
+    prov_dir = repo_root / "providers"
+    if prov_dir.is_dir():
+        for p in sorted(prov_dir.glob("*.yaml")):
+            providers.append(p)
+
+    # 6. Experiments: experiments/*.yaml + experiments/*.md + experiments/*/bundle.md
+    experiments: list[Path] = []
+    exp_dir = repo_root / "experiments"
+    if exp_dir.is_dir():
+        for p in sorted(exp_dir.glob("*.yaml")) + sorted(exp_dir.glob("*.md")):
+            experiments.append(p)
+        for d in sorted(exp_dir.iterdir()):
+            if d.is_dir():
+                bundle_md = d / "bundle.md"
+                if bundle_md.exists():
+                    experiments.append(bundle_md)
+
+    # 7. Context files: from behaviors' context.include + root bundle @mentions
+    # resolved_path -> ref string for display
+    context_files: dict[Path, str] = {}
+    _collect_context_files_all(root_bundle, behaviors, repo_root, context_files)
+
+    # ── Parse root bundle ──────────────────────────────────────────────────────
+
+    root_name = "bundle"
+    root_version = ""
+    root_data: dict = {}
+    root_body = ""
     if root_bundle.exists():
-        files.append(("root", root_bundle))
-
-    behaviors_dir = repo_root / "behaviors"
-    if behaviors_dir.is_dir():
-        for p in sorted(behaviors_dir.glob("*.yaml")):
-            files.append(("behavior", p))
-        for p in sorted(behaviors_dir.glob("*.yml")):
-            files.append(("behavior", p))
-
-    bundles_dir = repo_root / "bundles"
-    if bundles_dir.is_dir():
-        for p in sorted(bundles_dir.glob("*.yaml")):
-            files.append(("bundle", p))
-        for p in sorted(bundles_dir.glob("*.md")):
-            files.append(("bundle", p))
-
-    # ── Build file → node-id mapping (use resolved paths as keys) ──────────
-    file_node_ids: dict[Path, str] = {}
-    file_names: dict[Path, str] = {}
-    file_roles: dict[Path, str] = {}
-
-    for role, path in files:
-        resolved = path.resolve()
         try:
-            data, _ = parse_frontmatter(path)
+            root_data, root_body = parse_frontmatter(root_bundle)
+            bundle_meta = root_data.get("bundle") or {}
+            root_name = bundle_meta.get("name") or "bundle"
+            root_version = str(bundle_meta.get("version") or "")
         except Exception:
-            data = {}
-        bundle_info: dict = data.get("bundle") or {}
-        name: str = bundle_info.get("name") or path.stem
-        node_id = _sanitize_id(f"file_{name}")
-        file_node_ids[resolved] = node_id
-        file_names[resolved] = name
-        file_roles[resolved] = role
+            pass
 
-    # ── Build nodes and edges ───────────────────────────────────────────────
-    # Pre-compute per-file own token counts for aggregate computation of "bundle" role files.
-    file_own_tokens: dict[Path, int] = {}
-    for _role, _path in files:
-        _resolved = _path.resolve()
-        _raw = _path.read_text(encoding="utf-8")
-        file_own_tokens[_resolved] = estimate_tokens(_raw)
+    root_tools_list = root_data.get("tools") or []
+    root_agents_list = (root_data.get("agents") or {}).get("include") or []
+    n_root_tools = len(root_tools_list)
+    n_root_agents = len(root_agents_list)
 
-    node_lines: list[str] = []
+    # Root aggregate: own tokens + agent descriptions + context @mentions in body
+    root_content = (
+        root_bundle.read_text(encoding="utf-8") if root_bundle.exists() else ""
+    )
+    root_own_tok = estimate_tokens(root_content)
+    root_agent_tok = sum(_estimate_agent_tokens(a, repo_root) for a in root_agents_list)
+    root_ctx_tok = 0
+    ctx_seen: set[Path] = set()
+    for mention in extract_mentions(root_body):
+        root_ctx_tok += _estimate_context_tokens_recursive(mention, repo_root, ctx_seen)
+    root_agg_tok = root_own_tok + root_agent_tok + root_ctx_tok
+
+    version_str = f" v{root_version}" if root_version else ""
+    root_label = (
+        f"{root_name}{version_str}\\n"
+        f"{n_root_tools} tools · {n_root_agents} agents\\n"
+        f"~{root_agg_tok} tok aggregate"
+    )
+    root_id = _sanitize_id(f"root_{root_name}")
+
+    # ── Build node and edge lines ──────────────────────────────────────────────
+
+    lines: list[str] = []
     edge_lines: list[str] = []
-    # ext_id → node definition line (deduplicated externals)
-    external_nodes: dict[str, str] = {}
 
-    for role, path in files:
-        resolved = path.resolve()
-        name = file_names[resolved]
-        node_id = file_node_ids[resolved]
+    # Root node (not in a cluster)
+    lines.append(
+        f"    {root_id} [label={_q(root_label)}, shape=box,"
+        f' fillcolor="{_COLOR_BUNDLE_ROOT}", style="filled,rounded,bold", penwidth=2]'
+    )
+    lines.append("")
 
-        own_tok = file_own_tokens[resolved]
+    # ── Cluster: behaviors ─────────────────────────────────────────────────────
 
-        # For standalone "bundle" files: aggregate = own tok + sum of same-repo local includes.
-        # Behaviors and root use only their own raw content tokens.
-        if role == "bundle":
-            aggregate_tok = own_tok
+    if behaviors:
+        lines.append("    subgraph cluster_behaviors {")
+        lines.append('        label="Behaviors"')
+        lines.append('        style="filled"')
+        lines.append(f'        fillcolor="{_COLOR_CLUSTER_FILL}"')
+        lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
+        lines.append("")
+
+        for beh_path in behaviors:
+            beh_data: dict = {}
+            beh_body = ""
             try:
-                inc_data, _ = parse_frontmatter(path)
+                beh_data, beh_body = parse_frontmatter(beh_path)
             except Exception:
-                inc_data = {}
-            for inc in inc_data.get("includes") or []:
-                ref = str(inc.get("bundle") or "")
-                if not ref:
-                    continue
-                local_path = _resolve_local_include(ref, repo_root)
-                if local_path is not None and local_path in file_own_tokens:
-                    aggregate_tok += file_own_tokens[local_path]
-            tok = aggregate_tok
-        else:
-            tok = own_tok
+                pass
 
-        # Base fill: root=deep teal, others=light teal
-        if role == "root":
-            base_color = _COLOR_BUNDLE_ROOT
-            style = '"filled,rounded,bold"'
-        else:
-            base_color = _COLOR_BEHAVIOR_LOCAL
-            style = '"filled,rounded"'
+            beh_meta = beh_data.get("bundle") or {}
+            beh_name = beh_meta.get("name") or beh_path.stem
 
-        # Token tier can override the fill when cost is elevated
-        tier_color = color_tier(tok, "bundle_body")
-        fill_color = tier_color if tier_color != "#c8e6c9" else base_color
+            beh_tools_list = beh_data.get("tools") or []
+            n_beh_tools = len(beh_tools_list)
 
-        label = _q(f"{name}\\n~{tok} tok")
-        node_lines.append(
-            f"    {node_id} [label={label}, shape=box,"
-            f' fillcolor="{fill_color}", style={style}]'
-        )
+            beh_hooks_list = beh_data.get("hooks") or []
+            n_beh_total_tools = n_beh_tools + len(beh_hooks_list)
 
-        # Parse includes and emit edges
+            beh_ctx_list = (beh_data.get("context") or {}).get("include") or []
+            n_beh_ctx = len(beh_ctx_list)
+
+            beh_agents_list = (beh_data.get("agents") or {}).get("include") or []
+
+            # Aggregate: own + context (recursive) + agent descriptions
+            beh_content = beh_path.read_text(encoding="utf-8")
+            beh_own_tok = estimate_tokens(beh_content)
+
+            beh_ctx_tok = 0
+            seen_beh: set[Path] = set()
+            for ctx_ref in beh_ctx_list:
+                beh_ctx_tok += _estimate_context_tokens_recursive(
+                    ctx_ref, repo_root, seen_beh
+                )
+            for mention in extract_mentions(beh_body):
+                beh_ctx_tok += _estimate_context_tokens_recursive(
+                    mention, repo_root, seen_beh
+                )
+
+            beh_agent_tok = sum(
+                _estimate_agent_tokens(a, repo_root) for a in beh_agents_list
+            )
+            beh_agg_tok = beh_own_tok + beh_ctx_tok + beh_agent_tok
+
+            # Build label
+            detail_parts = []
+            if n_beh_total_tools:
+                detail_parts.append(f"{n_beh_total_tools} tools")
+            if n_beh_ctx:
+                detail_parts.append(f"{n_beh_ctx} ctx")
+            detail = " · ".join(detail_parts)
+            if detail:
+                beh_label = f"{beh_name}\\n{detail}\\n~{beh_agg_tok} tok"
+            else:
+                beh_label = f"{beh_name}\\n~{beh_agg_tok} tok"
+
+            beh_id = _sanitize_id(f"beh_{beh_name}")
+            lines.append(
+                f"        {beh_id} [label={_q(beh_label)}, shape=box,"
+                f' fillcolor="{_COLOR_BEHAVIOR_LOCAL}", style="filled,rounded"]'
+            )
+
+        lines.append("    }")
+        lines.append("")
+
+    # ── Cluster: standalones ───────────────────────────────────────────────────
+
+    if standalones:
+        lines.append("    subgraph cluster_standalones {")
+        lines.append('        label="Standalone Bundles"')
+        lines.append('        style="filled"')
+        lines.append(f'        fillcolor="{_COLOR_CLUSTER_FILL}"')
+        lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
+        lines.append("")
+
+        for sta_path in standalones:
+            sta_data: dict = {}
+            try:
+                sta_data, _ = parse_frontmatter(sta_path)
+            except Exception:
+                pass
+            sta_name = (sta_data.get("bundle") or {}).get("name") or sta_path.stem
+            sta_id = _sanitize_id(f"sta_{sta_name}")
+            lines.append(
+                f"        {sta_id} [label={_q(sta_name)}, shape=box,"
+                f' fillcolor="{_COLOR_STANDALONE}", style="filled,rounded"]'
+            )
+
+        lines.append("    }")
+        lines.append("")
+
+    # ── Cluster: agents ────────────────────────────────────────────────────────
+
+    if agents:
+        lines.append("    subgraph cluster_agents {")
+        lines.append('        label="Agents"')
+        lines.append('        style="filled"')
+        lines.append(f'        fillcolor="{_COLOR_CLUSTER_FILL}"')
+        lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
+        lines.append("")
+
+        for agt_path in agents:
+            agt_data: dict = {}
+            try:
+                agt_data, _ = parse_frontmatter(agt_path)
+            except Exception:
+                pass
+            meta = agt_data.get("meta") or {}
+            agt_name = meta.get("name") or agt_path.stem
+            description = meta.get("description") or ""
+            agt_tok = estimate_tokens(description)
+            agt_id = _sanitize_id(f"agt_{agt_name}")
+            agt_label = f"{agt_name}\\n~{agt_tok} tok desc"
+            lines.append(
+                f"        {agt_id} [label={_q(agt_label)}, shape=box,"
+                f' fillcolor="{_COLOR_AGENT_BASE}", style="filled,rounded"]'
+            )
+
+        lines.append("    }")
+        lines.append("")
+
+    # ── Cluster: modules ───────────────────────────────────────────────────────
+
+    if modules:
+        lines.append("    subgraph cluster_modules {")
+        lines.append('        label="Modules"')
+        lines.append('        style="filled"')
+        lines.append(f'        fillcolor="{_COLOR_CLUSTER_FILL}"')
+        lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
+        lines.append("")
+
+        for mod_path in modules:
+            mod_name = mod_path.name
+            result = estimate_module_tool_tokens(mod_path)
+            mod_id = _sanitize_id(f"mod_{mod_name}")
+            if result:
+                n_tools = result["tool_count"]
+                tok = result["total_tokens"]
+                mod_label = f"{mod_name}\\n{n_tools} tool · ~{tok} tok"
+            else:
+                mod_label = mod_name
+            lines.append(
+                f"        {mod_id} [label={_q(mod_label)}, shape=box,"
+                f' fillcolor="{_COLOR_TOOL}", style="filled,rounded"]'
+            )
+
+        lines.append("    }")
+        lines.append("")
+
+    # ── Cluster: providers ─────────────────────────────────────────────────────
+
+    if providers:
+        lines.append("    subgraph cluster_providers {")
+        lines.append('        label="Providers"')
+        lines.append('        style="filled"')
+        lines.append(f'        fillcolor="{_COLOR_CLUSTER_FILL}"')
+        lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
+        lines.append("")
+
+        for prv_path in providers:
+            prv_name = prv_path.stem
+            prv_id = _sanitize_id(f"prv_{prv_name}")
+            lines.append(
+                f"        {prv_id} [label={_q(prv_name)}, shape=box,"
+                f' fillcolor="{_COLOR_PROVIDER}", style="filled,rounded"]'
+            )
+
+        lines.append("    }")
+        lines.append("")
+
+    # ── Cluster: experiments ───────────────────────────────────────────────────
+
+    if experiments:
+        lines.append("    subgraph cluster_experiments {")
+        lines.append('        label="Experiments"')
+        lines.append('        style="filled"')
+        lines.append(f'        fillcolor="{_COLOR_CLUSTER_FILL}"')
+        lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
+        lines.append("")
+
+        seen_exp_ids: set[str] = set()
+        for exp_path in experiments:
+            exp_data: dict = {}
+            try:
+                exp_data, _ = parse_frontmatter(exp_path)
+            except Exception:
+                pass
+            if exp_path.name == "bundle.md":
+                exp_name = exp_path.parent.name
+            else:
+                exp_name = (exp_data.get("bundle") or {}).get("name") or exp_path.stem
+            exp_id = _sanitize_id(f"exp_{exp_name}")
+            if exp_id not in seen_exp_ids:
+                seen_exp_ids.add(exp_id)
+                lines.append(
+                    f"        {exp_id} [label={_q(exp_name)}, shape=box,"
+                    f' fillcolor="{_COLOR_EXPERIMENT}", style="filled,rounded"]'
+                )
+
+        lines.append("    }")
+        lines.append("")
+
+    # ── Cluster: context ───────────────────────────────────────────────────────
+
+    if context_files:
+        lines.append("    subgraph cluster_context {")
+        lines.append('        label="Context Files"')
+        lines.append('        style="filled"')
+        lines.append(f'        fillcolor="{_COLOR_CLUSTER_FILL}"')
+        lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
+        lines.append("")
+
+        seen_ctx_ids: set[str] = set()
+        for ctx_path in context_files:
+            ctx_display = ctx_path.name
+            ctx_id = _sanitize_id(f"ctx_{ctx_display}")
+            if ctx_id in seen_ctx_ids:
+                continue
+            seen_ctx_ids.add(ctx_id)
+            try:
+                ctx_content = ctx_path.read_text(encoding="utf-8")
+                ctx_tok = estimate_tokens(ctx_content)
+            except OSError:
+                ctx_tok = 0
+            ctx_label = f"{ctx_display}\\n~{ctx_tok} tok"
+            lines.append(
+                f"        {ctx_id} [label={_q(ctx_label)}, shape=box,"
+                f' fillcolor="{_COLOR_CONTEXT}", style="filled,rounded"]'
+            )
+
+        lines.append("    }")
+        lines.append("")
+
+    # ── Legend cluster ─────────────────────────────────────────────────────────
+
+    lines.extend(_build_legend_lines())
+
+    # ── Disclaimer note node ───────────────────────────────────────────────────
+
+    disclaimer_text = (
+        "Token estimates: ~4 chars/token\\n"
+        "Solid border = local (counted)\\n"
+        "Dashed + red = external, hidden cost (not counted)\\n"
+        "Dashed + muted = external, no cost\\n"
+        "Excludes: sub-session costs, runtime-dynamic"
+    )
+    lines.append(
+        f"    disclaimer [label={_q(disclaimer_text)}, shape=note,"
+        f' fillcolor="{_COLOR_SUMMARY}", style="filled", fontsize=9]'
+    )
+    lines.append("")
+
+    # ── Edges ──────────────────────────────────────────────────────────────────
+
+    # Build agent stem → id lookup
+    agent_stem_to_id: dict[str, str] = {}
+    for agt_path in agents:
+        agt_data2: dict = {}
         try:
-            data, _ = parse_frontmatter(path)
+            agt_data2, _ = parse_frontmatter(agt_path)
         except Exception:
-            data = {}
-        includes: list[dict] = data.get("includes") or []
+            pass
+        meta2 = agt_data2.get("meta") or {}
+        agt_name2 = meta2.get("name") or agt_path.stem
+        agt_id2 = _sanitize_id(f"agt_{agt_name2}")
+        agent_stem_to_id[agt_path.stem] = agt_id2
+        # Also map by name from meta (in case they differ)
+        if agt_name2 != agt_path.stem:
+            agent_stem_to_id[agt_name2] = agt_id2
 
-        for inc in includes:
+    # Build module name → path lookup
+    module_name_to_path: dict[str, Path] = {m.name: m for m in modules}
+
+    # Root → includes
+    if root_bundle.exists():
+        try:
+            inc_data, _ = parse_frontmatter(root_bundle)
+        except Exception:
+            inc_data = {}
+        seen_ext_ids: set[str] = set()
+        for inc in inc_data.get("includes") or []:
             ref = str(inc.get("bundle") or "")
             if not ref:
                 continue
             local_path = _resolve_local_include(ref, repo_root)
-            if local_path is not None and local_path in file_node_ids:
-                target_id = file_node_ids[local_path]
-                edge_lines.append(f"    {node_id} -> {target_id}")
+            if local_path is not None:
+                # Find matching behavior
+                for beh_path in behaviors:
+                    if beh_path.resolve() == local_path:
+                        beh_d: dict = {}
+                        try:
+                            beh_d, _ = parse_frontmatter(beh_path)
+                        except Exception:
+                            pass
+                        beh_n = (beh_d.get("bundle") or {}).get("name") or beh_path.stem
+                        beh_i = _sanitize_id(f"beh_{beh_n}")
+                        edge_lines.append(
+                            f'    {root_id} -> {beh_i} [label="composes"]'
+                        )
+                        break
             else:
+                # External include — classify by cost impact
                 eid = f"ext_{_sanitize_id(ref)}"
-                if eid not in external_nodes:
+                if eid not in seen_ext_ids:
+                    seen_ext_ids.add(eid)
                     disp = _extract_external_name(ref)
-                    ext_label = _q(f"{disp}\\n(external)")
-                    external_nodes[eid] = (
-                        f"    {eid} [label={ext_label}, shape=box,"
-                        f' fillcolor="{_COLOR_EXTERNAL_INCLUDE}",'
-                        ' style="filled,rounded,dashed"]'
-                    )
-                edge_lines.append(f"    {node_id} -> {eid} [style=dashed]")
+                    is_high_cost = _is_external_high_cost(ref)
+                    if is_high_cost:
+                        ext_label = _q(f"{disp}\\n(external, cost)")
+                        ext_node = (
+                            f"    {eid} [label={ext_label}, shape=box,"
+                            f' fillcolor="{_COLOR_BUNDLE_ROOT}",'
+                            f' style="dashed", color="{_COLOR_EXTERNAL_COST}", penwidth=2]'
+                        )
+                    else:
+                        ext_label = _q(f"{disp}\\n(external)")
+                        ext_node = (
+                            f"    {eid} [label={ext_label}, shape=box,"
+                            f' fillcolor="{_COLOR_EXTERNAL_MUTED}",'
+                            f' style="dashed"]'
+                        )
+                    lines.append(ext_node)
+                edge_lines.append(f"    {root_id} -> {eid} [style=dashed]")
 
-    # Append external nodes after all file nodes
-    for ext_def in external_nodes.values():
-        node_lines.append(ext_def)
-
-    # ── Source hash ─────────────────────────────────────────────────────────
-    body_str = "\n".join(node_lines + [""] + edge_lines)
-    structural_hash = hashlib.sha256(body_str.encode()).hexdigest()
-
-    # ── Graph title ─────────────────────────────────────────────────────────
-    root_name = "bundle-overview"
-    if root_bundle.exists():
+    # Per-behavior edges
+    for beh_path in behaviors:
+        beh_d2: dict = {}
+        beh_b2 = ""
         try:
-            data, _ = parse_frontmatter(root_bundle)
-            root_name = (data.get("bundle") or {}).get("name") or "bundle-overview"
+            beh_d2, beh_b2 = parse_frontmatter(beh_path)
         except Exception:
             pass
-    graph_id = _sanitize_id(root_name)
-    title = f"{root_name} \u2014 bundle overview"
+        beh_meta2 = beh_d2.get("bundle") or {}
+        beh_name2 = beh_meta2.get("name") or beh_path.stem
+        beh_id2 = _sanitize_id(f"beh_{beh_name2}")
 
-    # ── Assemble full graph ─────────────────────────────────────────────────
+        # Behavior → agent (owns)
+        for agt_ref in (beh_d2.get("agents") or {}).get("include") or []:
+            agt_stem2 = agt_ref.split(":")[-1] if ":" in agt_ref else agt_ref
+            if agt_stem2 in agent_stem_to_id:
+                edge_lines.append(
+                    f'    {beh_id2} -> {agent_stem_to_id[agt_stem2]} [label="owns"]'
+                )
+
+        # Behavior → module (uses) — from tools: and hooks:
+        for tool_entry in (beh_d2.get("tools") or []) + (beh_d2.get("hooks") or []):
+            mod_name2 = tool_entry.get("module") or ""
+            if mod_name2 and mod_name2 in module_name_to_path:
+                mod_id2 = _sanitize_id(f"mod_{mod_name2}")
+                edge_lines.append(
+                    f'    {beh_id2} -> {mod_id2} [label="uses", penwidth=0.8]'
+                )
+
+        # Behavior → context (dotted purple)
+        beh_ctx_list2 = (beh_d2.get("context") or {}).get("include") or []
+        for ctx_ref in beh_ctx_list2:
+            local_ctx = _resolve_local_include(ctx_ref, repo_root)
+            if local_ctx is not None and local_ctx in context_files:
+                ctx_id2 = _sanitize_id(f"ctx_{local_ctx.name}")
+                edge_lines.append(
+                    f"    {beh_id2} -> {ctx_id2} [style=dotted, color=purple]"
+                )
+
+    # Root → context (from @mentions in bundle body)
+    for mention in extract_mentions(root_body):
+        local_ctx3 = resolve_local_mention(mention, repo_root)
+        if local_ctx3 is not None and local_ctx3 in context_files:
+            ctx_id3 = _sanitize_id(f"ctx_{local_ctx3.name}")
+            edge_lines.append(
+                f"    {root_id} -> {ctx_id3} [style=dotted, color=purple]"
+            )
+
+    # Standalone → root (extends, dashed)
+    for sta_path in standalones:
+        sta_d2: dict = {}
+        try:
+            sta_d2, _ = parse_frontmatter(sta_path)
+        except Exception:
+            pass
+        sta_name2 = (sta_d2.get("bundle") or {}).get("name") or sta_path.stem
+        sta_id2 = _sanitize_id(f"sta_{sta_name2}")
+        edge_lines.append(f'    {sta_id2} -> {root_id} [label="extends", style=dashed]')
+
+    # Experiment → root (forks, dashed)
+    seen_exp_edge_ids: set[str] = set()
+    for exp_path in experiments:
+        exp_d2: dict = {}
+        try:
+            exp_d2, _ = parse_frontmatter(exp_path)
+        except Exception:
+            pass
+        if exp_path.name == "bundle.md":
+            exp_name2 = exp_path.parent.name
+        else:
+            exp_name2 = (exp_d2.get("bundle") or {}).get("name") or exp_path.stem
+        exp_id2 = _sanitize_id(f"exp_{exp_name2}")
+        if exp_id2 not in seen_exp_edge_ids:
+            seen_exp_edge_ids.add(exp_id2)
+            edge_lines.append(
+                f'    {exp_id2} -> {root_id} [label="forks", style=dashed]'
+            )
+
+    # ── Source hash ────────────────────────────────────────────────────────────
+
+    body_str = "\n".join(lines + [""] + edge_lines)
+    structural_hash = hashlib.sha256(body_str.encode()).hexdigest()
+
+    # ── Graph title ────────────────────────────────────────────────────────────
+
+    title = f"{root_name}{version_str} \u2014 bundle repo"
+    graph_id = _sanitize_id(root_name)
+
+    # ── Assemble ───────────────────────────────────────────────────────────────
+
     out: list[str] = [
         f"digraph {graph_id} {{",
         "    rankdir=TB",
@@ -530,7 +637,140 @@ def bundle_overview_dot(repo_root: str | Path) -> str:
     return "\n".join(out)
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+# ── Internal helpers ───────────────────────────────────────────────────────────
+
+
+def _estimate_context_tokens_recursive(
+    ref: str, repo_root: Path, seen: set[Path]
+) -> int:
+    """Estimate total tokens for a context ref, recursively following @mentions.
+
+    Resolves *ref* to a local file, reads its content, estimates tokens,
+    then recursively follows any @mentions found inside.  Uses *seen* for
+    deduplication to prevent infinite loops.
+
+    Args:
+        ref: Context reference — either ``@namespace:path`` or
+            ``namespace:path`` form, or a ``git+`` URL.
+        repo_root: Repository root for path resolution.
+        seen: Set of already-visited resolved paths (mutated in place).
+
+    Returns:
+        Integer token estimate for this file and all recursively referenced
+        files not already in *seen*.  Returns 0 if the file cannot be
+        resolved or read.
+    """
+    local_path = _resolve_local_include(ref, repo_root)
+    if local_path is None:
+        return 0
+    if local_path in seen:
+        return 0
+    seen.add(local_path)
+
+    try:
+        content = local_path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+
+    total = estimate_tokens(content)
+
+    # Recursively follow @mentions in this file
+    for mention in extract_mentions(content):
+        total += _estimate_context_tokens_recursive(mention, repo_root, seen)
+
+    return total
+
+
+def _collect_context_files_all(
+    root_bundle: Path,
+    behaviors: list[Path],
+    repo_root: Path,
+    context_files: dict[Path, str],
+) -> None:
+    """Collect all unique context files referenced in behaviors and root bundle.
+
+    Populates *context_files* with ``{resolved_path: ref_string}`` entries
+    from ``context.include`` in each behavior and from @mentions in the root
+    bundle body.
+
+    Args:
+        root_bundle: Root bundle file (may not exist).
+        behaviors: List of behavior YAML file paths.
+        repo_root: Repository root for path resolution.
+        context_files: Dict to populate (mutated in place).
+    """
+    # From behaviors' context.include
+    for beh_path in behaviors:
+        try:
+            beh_data, _ = parse_frontmatter(beh_path)
+        except Exception:
+            continue
+        for ctx_ref in (beh_data.get("context") or {}).get("include") or []:
+            local_path = _resolve_local_include(ctx_ref, repo_root)
+            if local_path is not None and local_path not in context_files:
+                context_files[local_path] = ctx_ref
+
+    # From root bundle @mentions in body
+    if root_bundle.exists():
+        try:
+            _, body = parse_frontmatter(root_bundle)
+        except Exception:
+            return
+        for mention in extract_mentions(body):
+            local_path = resolve_local_mention(mention, repo_root)
+            if local_path is not None and local_path not in context_files:
+                context_files[local_path] = mention
+
+
+def _build_legend_lines() -> list[str]:
+    """Build the legend cluster lines for the DOT graph."""
+    return [
+        "    subgraph cluster_legend {",
+        '        label="Legend"',
+        '        style="filled"',
+        f'        fillcolor="{_COLOR_LEGEND_FILL}"',
+        f'        color="{_COLOR_LEGEND_BORDER}"',
+        "        fontsize=9",
+        "",
+        f'        leg_root [label="root bundle", shape=box, fillcolor="{_COLOR_BUNDLE_ROOT}", style="filled,rounded,bold", fontsize=9]',
+        f'        leg_behavior [label="behavior", shape=box, fillcolor="{_COLOR_BEHAVIOR_LOCAL}", style="filled,rounded", fontsize=9]',
+        f'        leg_agent [label="agent", shape=box, fillcolor="{_COLOR_AGENT_BASE}", style="filled,rounded", fontsize=9]',
+        f'        leg_module [label="module", shape=box, fillcolor="{_COLOR_TOOL}", style="filled,rounded", fontsize=9]',
+        f'        leg_provider [label="provider", shape=box, fillcolor="{_COLOR_PROVIDER}", style="filled,rounded", fontsize=9]',
+        f'        leg_context [label="context", shape=box, fillcolor="{_COLOR_CONTEXT}", style="filled,rounded", fontsize=9]',
+        f'        leg_standalone [label="standalone", shape=box, fillcolor="{_COLOR_STANDALONE}", style="filled,rounded", fontsize=9]',
+        f'        leg_experiment [label="experiment", shape=box, fillcolor="{_COLOR_EXPERIMENT}", style="filled,rounded", fontsize=9]',
+        f'        leg_ext_cost [label="ext+cost", shape=box, fillcolor="{_COLOR_BUNDLE_ROOT}", style="dashed", color="{_COLOR_EXTERNAL_COST}", penwidth=2, fontsize=9]',
+        f'        leg_ext_muted [label="ext+no-cost", shape=box, fillcolor="{_COLOR_EXTERNAL_MUTED}", style="dashed", fontsize=9]',
+        "    }",
+        "",
+    ]
+
+
+def _is_external_high_cost(ref: str) -> bool:
+    """Return True if an external include reference is likely to add hidden cost.
+
+    External references that point to behavior YAML files or full bundles
+    (which typically bring agents and context) are considered high-cost.
+    References to pure module or provider packages are low-cost.
+
+    Args:
+        ref: External include reference string (git+ URL).
+
+    Returns:
+        True when the reference is likely a behavior/bundle with hidden cost.
+    """
+    if "behaviors/" in ref:
+        return True
+    # Full-bundle refs (no subdirectory) are ambiguous but likely bring behaviors
+    if "subdirectory=" not in ref:
+        # Heuristic: if the URL has "bundle" in the repo name, likely high cost
+        if "-bundle-" in ref or "/amplifier-" in ref.lower():
+            return True
+    # Module-only references (subdirectory points to modules/)
+    if "modules/" in ref or "-module-" in ref:
+        return False
+    return True
 
 
 def _sanitize_id(raw: str) -> str:
@@ -756,29 +996,6 @@ def _extract_external_name(ref: str) -> str:
     return Path(clean).name or ref
 
 
-def _estimate_context_tokens(ref: str, repo_root: Path) -> int:
-    """Estimate token count for a context file reference.
-
-    Attempts to read the file and applies :func:`~dot_docs.token_cost.estimate_tokens`.
-    Returns 0 if the file cannot be found or read.
-
-    Args:
-        ref: A ``namespace:path`` or ``@namespace:path`` reference string.
-        repo_root: Repository root for path resolution.
-
-    Returns:
-        Integer token estimate, or 0 when the file is not locally available.
-    """
-    mention = ref if ref.startswith("@") else f"@{ref}"
-    local = resolve_local_mention(mention, repo_root)
-    if local and local.exists():
-        try:
-            return estimate_tokens(local.read_text(encoding="utf-8"))
-        except OSError:
-            return 0
-    return 0
-
-
 def _estimate_agent_tokens(agent_ref: str, repo_root: Path) -> int:
     """Estimate description token count for an agent reference.
 
@@ -808,375 +1025,3 @@ def _estimate_agent_tokens(agent_ref: str, repo_root: Path) -> int:
         except OSError:
             return 0
     return 0
-
-
-def _render_behavior_cluster(
-    path: Path,
-    repo_root: Path,
-    idx: int,
-) -> tuple[list[str], int, set[str]]:
-    """Render a behavior file as a DOT cluster subgraph.
-
-    Parses the behavior at *path* and emits a ``subgraph cluster_inc_<idx>``
-    block containing the behavior root node plus its tools, hooks, and agent
-    references (one level deep — nested includes are not recursed).
-
-    Args:
-        path: Absolute path to the included behavior file.
-        repo_root: Repository root for agent file lookups.
-        idx: Unique integer index used to namespace cluster/node IDs.
-
-    Returns:
-        A 3-tuple of ``(lines, total_tokens, types_used)``:
-
-        * *lines* — DOT fragment lines for the cluster subgraph.
-        * *total_tokens* — Aggregate token estimate for all elements.
-        * *types_used* — Set of element type keys seen (currently unused,
-          reserved for future legend integration).
-    """
-    try:
-        data, body = parse_frontmatter(path)
-    except Exception:
-        return [], 0, set()
-
-    bundle_info: dict = data.get("bundle") or {}
-    name: str = bundle_info.get("name") or path.stem
-
-    raw_content = path.read_text(encoding="utf-8")
-    body_source = body if body else raw_content
-    body_tokens = estimate_tokens(body_source)
-    total_tokens = body_tokens
-
-    cluster_id = f"cluster_inc_{idx}"
-    root_id = f"{cluster_id}_root"
-
-    lines: list[str] = []
-    lines.append(f"    subgraph {cluster_id} {{")
-    lines.append(f"        label={_q(name)}")
-    lines.append('        style="filled,rounded"')
-    lines.append(f'        fillcolor="{_COLOR_CLUSTER_FILL}"')
-    lines.append(f'        color="{_COLOR_CLUSTER_BORDER}"')
-    lines.append("")
-
-    # Included behaviors are pure YAML — no instruction body, no tok label
-    root_label = _q(name)
-    lines.append(
-        f"        {root_id} [label={root_label}, shape=box,"
-        f' fillcolor="{_COLOR_BUNDLE_ROOT}", style="filled,rounded"]'
-    )
-
-    # Tools
-    tools: list[dict] = data.get("tools") or []
-    for i, tool in enumerate(tools):
-        module = tool.get("module") or f"tool_{i}"
-        tid = f"{cluster_id}_tool_{_sanitize_id(module)}"
-        label = _q(module)
-        lines.append(
-            f"        {tid} [label={label}, shape=box,"
-            f' fillcolor="{_COLOR_TOOL}", style="filled,rounded"]'
-        )
-        lines.append(f"        {root_id} -> {tid}")
-
-    # Hooks — no token label (hooks contribute ~0 tokens to LLM requests)
-    hooks: list[dict] = data.get("hooks") or []
-    for i, hook in enumerate(hooks):
-        module = hook.get("module") or f"hook_{i}"
-        hid = f"{cluster_id}_hook_{_sanitize_id(module)}"
-        label = _q(module)
-        lines.append(
-            f"        {hid} [label={label}, shape=box,"
-            f' fillcolor="{_COLOR_HOOK}", style="filled,rounded"]'
-        )
-        lines.append(f"        {root_id} -> {hid}")
-
-    # Agent references — fixed green color
-    agents_info: dict = data.get("agents") or {}
-    agent_includes: list[str] = agents_info.get("include") or []
-    for ref in agent_includes:
-        aid = f"{cluster_id}_agent_{_sanitize_id(ref)}"
-        agent_tok = _estimate_agent_tokens(ref, repo_root)
-        total_tokens += agent_tok
-        label = _q(f"{ref}\\n~{agent_tok} tok")
-        lines.append(
-            f"        {aid} [label={label}, shape=box,"
-            f' fillcolor="{_COLOR_AGENT_BASE}", style="filled,rounded"]'
-        )
-        lines.append(f"        {root_id} -> {aid}")
-
-    lines.append("    }")
-    return lines, total_tokens, set()
-
-
-def _build_legend(types_used: set[str]) -> str:
-    """Build a DOT legend cluster for the element types actually present.
-
-    Only element types that appear in the diagram are included.  Entries are
-    emitted in a stable order, connected by invisible edges to encourage
-    horizontal layout.
-
-    Args:
-        types_used: Set of element type keys from the rendered body.  Known
-            values: ``"tool"``, ``"agent"``, ``"hook"``, ``"context"``,
-            ``"external_include"``, ``"local_include"``, ``"session"``.
-
-    Returns:
-        A DOT ``subgraph cluster_legend { ... }`` string.
-    """
-    # (node_id, label, shape, fillcolor, extra_style_fragment)
-    all_entries: list[tuple[str, str, str, str, str]] = [
-        ("leg_root", "Bundle Root", "box", _COLOR_BUNDLE_ROOT, ""),
-        ("leg_tool", "Tool", "box", _COLOR_TOOL, ""),
-        ("leg_agent", "Agent", "box", _COLOR_AGENT_BASE, ""),
-        ("leg_hook", "Hook", "box", _COLOR_HOOK, ""),
-        ("leg_ctx", "Context File", "note", _COLOR_CONTEXT, ""),
-        (
-            "leg_ext",
-            "External Include",
-            "box",
-            _COLOR_EXTERNAL_INCLUDE,
-            ', style="filled,rounded,dashed"',
-        ),
-        ("leg_local", "Local Include", "box", _COLOR_BEHAVIOR_LOCAL, ""),
-        (
-            "leg_sess",
-            "Session Config",
-            "box",
-            _COLOR_SESSION,
-            ', style="filled,rounded,dotted"',
-        ),
-    ]
-
-    type_check: dict[str, str] = {
-        "leg_root": "root",  # always shown
-        "leg_tool": "tool",
-        "leg_agent": "agent",
-        "leg_hook": "hook",
-        "leg_ctx": "context",
-        "leg_ext": "external_include",
-        "leg_local": "local_include",
-        "leg_sess": "session",
-    }
-
-    entries = [
-        e
-        for e in all_entries
-        if type_check[e[0]] == "root" or type_check[e[0]] in types_used
-    ]
-
-    lines: list[str] = [
-        "    subgraph cluster_legend {",
-        '        label="Legend"',
-        '        style="filled,rounded"',
-        f'        fillcolor="{_COLOR_LEGEND_FILL}"',
-        f'        color="{_COLOR_LEGEND_BORDER}"',
-        "        fontsize=10",
-        "        node [shape=box, fontsize=9, width=1.6]",
-    ]
-
-    node_ids: list[str] = []
-    for nid, label, shape, fillcolor, extra in entries:
-        default_style = ', style="filled,rounded"' if not extra else extra
-        lines.append(
-            f"        {nid} [label={_q(label)}, shape={shape},"
-            f' fillcolor="{fillcolor}"{default_style}]'
-        )
-        node_ids.append(nid)
-
-    if len(node_ids) > 1:
-        chain = " -> ".join(node_ids)
-        lines.append(f"        {chain} [style=invis]")
-
-    lines.append("    }")
-    return "\n".join(lines)
-
-
-def bundle_detail_md(yaml_path: str | Path, *, repo_root: Path | None = None) -> str:
-    """Single entry point → markdown detail tables showing composition and token costs.
-
-    Reads the file at *yaml_path* and emits a structured markdown document with
-    per-section tables (Tools, Context Files, Agents, Hooks, Skills) annotated
-    with per-request main-session token cost estimates.
-
-    Token counting model:
-    * **Tools** — schema cost is injected at runtime; shown as ``—`` (not countable
-      from YAML alone).
-    * **Agents** — ``meta.description`` length divided by 4 (matches what the
-      delegate tool injects per request).
-    * **Context files** — full file content length divided by 4.
-    * **Markdown body** — length divided by 4 (instruction cost for ``.md`` bundles).
-    * **Hooks** — listed by name only; contribute ~0 tokens.
-
-    Args:
-        yaml_path: Path to a ``.yaml`` behavior file or ``.md`` bundle file with
-            YAML frontmatter.
-        repo_root: Repository root used to resolve ``namespace:path`` mentions and
-            local context-file references.  When omitted the function walks up from
-            *yaml_path* looking for a ``.git`` directory or ``bundle.md``; if
-            neither is found it falls back to *yaml_path*'s parent.
-
-    Returns:
-        Complete markdown string with section tables and a footer containing the
-        ``source_hash`` (SHA-256 of the raw file content).
-
-    Raises:
-        FileNotFoundError: If *yaml_path* does not exist.
-    """
-    yaml_path = Path(yaml_path)
-    if not yaml_path.exists():
-        raise FileNotFoundError(f"Bundle file not found: {yaml_path}")
-
-    # ── Infer repo_root ────────────────────────────────────────────────────────
-    if repo_root is None:
-        candidate = yaml_path.parent
-        while candidate != candidate.parent:
-            if (candidate / ".git").exists() or (candidate / "bundle.md").exists():
-                repo_root = candidate
-                break
-            candidate = candidate.parent
-        else:
-            repo_root = yaml_path.parent
-
-    # ── Parse file ─────────────────────────────────────────────────────────────
-    data, body = parse_frontmatter(yaml_path)
-    bundle_info: dict = data.get("bundle") or {}
-    name: str = bundle_info.get("name") or yaml_path.stem
-
-    # Markdown body = instruction tokens (only for .md bundles)
-    body_tokens = estimate_tokens(body) if body else 0
-
-    # ── Extract elements ───────────────────────────────────────────────────────
-    tools: list[dict] = data.get("tools") or []
-    hooks: list[dict] = data.get("hooks") or []
-    agents_info: dict = data.get("agents") or {}
-    agent_includes: list[str] = agents_info.get("include") or []
-    ctx_info: dict = data.get("context") or {}
-    ctx_includes: list[str] = ctx_info.get("include") or []
-    skills: list = data.get("skills") or []
-
-    # @mentions from markdown body
-    body_mentions: list[str] = extract_mentions(body) if body else []
-
-    # ── Agents ─────────────────────────────────────────────────────────────────
-    agent_rows: list[tuple[str, int]] = []
-    for ref in agent_includes:
-        tok = _estimate_agent_tokens(ref, repo_root)
-        agent_name = ref.split(":", 1)[1] if ":" in ref else ref
-        agent_rows.append((agent_name, tok))
-    agents_total = sum(t for _, t in agent_rows)
-
-    # ── Context files (context.include + body @mentions, deduplicated) ─────────
-    # Each row: (display_name, tokens_or_None, source_label)
-    ctx_rows: list[tuple[str, int | None, str]] = []
-    seen_ctx_keys: set[str] = set()
-
-    def _add_ctx_row(ref: str, source: str) -> None:
-        # Normalise for deduplication: strip leading @ so bare and @-prefixed refs match
-        bare = ref.lstrip("@")
-        key = _sanitize_id(bare)
-        if key in seen_ctx_keys:
-            return
-        seen_ctx_keys.add(key)
-
-        short = _short_path(ref)
-        mention = ref if ref.startswith("@") else f"@{ref}"
-        local = resolve_local_mention(mention, repo_root)
-
-        if local and local.exists():
-            try:
-                content = local.read_text(encoding="utf-8")
-                ctx_rows.append((short, estimate_tokens(content), source))
-            except OSError:
-                ctx_rows.append((short, None, source))
-        else:
-            ctx_rows.append((short, None, source))
-
-    for ref in ctx_includes:
-        _add_ctx_row(ref, "context.include")
-    for mention in body_mentions:
-        _add_ctx_row(mention, "@mention in body")
-
-    ctx_total = sum(t for _, t, _ in ctx_rows if t is not None)
-
-    # ── Per-request cost ───────────────────────────────────────────────────────
-    total_tokens = body_tokens + agents_total + ctx_total
-
-    # ── Source hash ────────────────────────────────────────────────────────────
-    raw_content = yaml_path.read_text(encoding="utf-8")
-    source_hash = hashlib.sha256(raw_content.encode()).hexdigest()
-
-    # ── Render markdown ────────────────────────────────────────────────────────
-    lines: list[str] = []
-
-    # Header
-    lines.append(f"# {name} — Composition Detail")
-    lines.append("")
-    lines.append(f"**Per-request main-session token cost: ~{total_tokens} tok**")
-    lines.append("")
-
-    # Tools section
-    lines.append(f"## Tools ({len(tools)})")
-    if not tools:
-        lines.append("(No direct tools)")
-    else:
-        lines.append("| Tool | Tokens |")
-        lines.append("|------|--------|")
-        for tool in tools:
-            module = tool.get("module") or "(unknown)"
-            lines.append(f"| {module} | — |")
-        lines.append("| **Total** | **—** |")
-    lines.append("")
-
-    # Context Files section
-    lines.append(f"## Context Files ({len(ctx_rows)})")
-    if not ctx_rows:
-        lines.append("(No direct context files)")
-    else:
-        lines.append("| File | Tokens | Source |")
-        lines.append("|------|--------|--------|")
-        for short, tok, source in ctx_rows:
-            tok_str = f"~{tok} tok" if tok is not None else "(not found)"
-            lines.append(f"| {short} | {tok_str} | {source} |")
-        lines.append(f"| **Total** | **~{ctx_total} tok** | |")
-    lines.append("")
-
-    # Agents section
-    lines.append(f"## Agents ({len(agent_rows)})")
-    if not agent_rows:
-        lines.append("(No direct agents)")
-    else:
-        lines.append("| Agent | Description Tokens |")
-        lines.append("|-------|--------------------|")
-        for agent_name, tok in agent_rows:
-            lines.append(f"| {agent_name} | ~{tok} tok |")
-        lines.append(f"| **Total** | **~{agents_total} tok** |")
-    lines.append("")
-
-    # Hooks section
-    lines.append(f"## Hooks ({len(hooks)})")
-    if not hooks:
-        lines.append("(No direct hooks)")
-    else:
-        lines.append("| Hook |")
-        lines.append("|------|")
-        for hook in hooks:
-            module = hook.get("module") or "(unknown)"
-            lines.append(f"| {module} |")
-    lines.append("")
-
-    # Skills section
-    lines.append(f"## Skills ({len(skills)})")
-    if not skills:
-        lines.append("(No direct skills)")
-    else:
-        lines.append("| Skill |")
-        lines.append("|-------|")
-        for skill in skills if isinstance(skills, list) else []:
-            skill_name = skill if isinstance(skill, str) else str(skill)
-            lines.append(f"| {skill_name} |")
-    lines.append("")
-
-    # Footer
-    lines.append("---")
-    lines.append(f"*Generated by dot_docs · source_hash: {source_hash}*")
-
-    return "\n".join(lines)

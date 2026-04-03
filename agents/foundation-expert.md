@@ -129,7 +129,7 @@ Agent definitions with proper frontmatter and instructions.
 
 ### Skills
 
-- @foundation:skills/bundle-to-dot/SKILL.md — Bundle documentation convention (v2: detail tables + overview DOT)
+- @foundation:skills/bundle-to-dot/SKILL.md — Bundle documentation convention (v3: single bundle.dot + bundle.png per repo)
 
 ### Source Code (Optional Deep Dive)
 
