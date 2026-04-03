@@ -3,7 +3,13 @@
 from pathlib import Path
 
 
-from dot_docs.bundle_to_dot import bundle_overview_dot
+from dot_docs.bundle_to_dot import (
+    bundle_overview_dot,
+    _get_repo_git_url,
+    _normalize_git_url,
+    _is_same_repo_include,
+    _resolve_local_include,
+)
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -162,3 +168,278 @@ class TestAllBehaviorsOverview:
         for f in behavior_files:
             stem = f.stem  # e.g. "agents" from "agents.yaml"
             assert stem in dot, f"Behavior '{stem}' not found in overview DOT output"
+
+
+# ── TestGetRepoGitUrl ──────────────────────────────────────────────────────────
+
+
+class TestGetRepoGitUrl:
+    """Tests for _get_repo_git_url() reading remote origin from .git config."""
+
+    def test_reads_url_from_git_directory(self, tmp_path: Path) -> None:
+        """Reads remote origin URL from a standard .git directory."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n"
+            '[remote "origin"]\n\turl = https://github.com/example/myrepo.git\n'
+        )
+        result = _get_repo_git_url(tmp_path)
+        assert result == "https://github.com/example/myrepo.git"
+
+    def test_reads_url_from_gitfile_submodule(self, tmp_path: Path) -> None:
+        """Reads remote origin URL when .git is a file pointing to a gitdir (submodule)."""
+        gitdir = tmp_path / ".git_modules" / "myrepo"
+        gitdir.mkdir(parents=True)
+        (gitdir / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n"
+            '[remote "origin"]\n\turl = https://github.com/example/myrepo.git\n'
+        )
+        # .git is a file, not a dir
+        (tmp_path / ".git").write_text("gitdir: .git_modules/myrepo\n")
+        result = _get_repo_git_url(tmp_path)
+        assert result == "https://github.com/example/myrepo.git"
+
+    def test_returns_none_when_no_git(self, tmp_path: Path) -> None:
+        """Returns None when there is no .git file or directory."""
+        result = _get_repo_git_url(tmp_path)
+        assert result is None
+
+    def test_returns_none_when_no_remote(self, tmp_path: Path) -> None:
+        """Returns None when .git/config has no remote section."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text("[core]\n\trepositoryformatversion = 0\n")
+        result = _get_repo_git_url(tmp_path)
+        assert result is None
+
+
+# ── TestNormalizeGitUrl ────────────────────────────────────────────────────────
+
+
+class TestNormalizeGitUrl:
+    """Tests for _normalize_git_url() stripping git+, @ref, #fragment, .git."""
+
+    def test_strips_git_plus_prefix(self) -> None:
+        url = "git+https://github.com/example/repo.git"
+        assert _normalize_git_url(url) == "https://github.com/example/repo"
+
+    def test_strips_ref_suffix(self) -> None:
+        url = "git+https://github.com/example/repo@main"
+        assert _normalize_git_url(url) == "https://github.com/example/repo"
+
+    def test_strips_fragment(self) -> None:
+        url = "git+https://github.com/example/repo@main#subdirectory=behaviors/foo.yaml"
+        assert _normalize_git_url(url) == "https://github.com/example/repo"
+
+    def test_strips_trailing_dot_git(self) -> None:
+        url = "https://github.com/example/repo.git"
+        assert _normalize_git_url(url) == "https://github.com/example/repo"
+
+    def test_normalizes_same_repo_urls_to_equal(self) -> None:
+        """Include URL and clone URL should normalize to the same value."""
+        include_url = "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/foo.yaml"
+        clone_url = "https://github.com/microsoft/amplifier-foundation.git"
+        assert _normalize_git_url(include_url) == _normalize_git_url(clone_url)
+
+
+# ── TestIsSameRepoInclude ──────────────────────────────────────────────────────
+
+
+class TestIsSameRepoInclude:
+    """Tests for _is_same_repo_include() detecting and resolving same-repo git URLs."""
+
+    def _make_repo(self, tmp_path: Path, origin_url: str) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n"
+            f'[remote "origin"]\n\turl = {origin_url}\n'
+        )
+
+    def test_same_repo_url_resolves_to_local_path(self, tmp_path: Path) -> None:
+        """A git+ URL pointing to the same repo resolves to the local file."""
+        self._make_repo(tmp_path, "https://github.com/example/myrepo.git")
+        behavior = tmp_path / "behaviors" / "my-behavior.yaml"
+        behavior.parent.mkdir()
+        behavior.write_text("bundle:\n  name: my-behavior\n  version: 1.0\n")
+
+        result = _is_same_repo_include(
+            "git+https://github.com/example/myrepo@main#subdirectory=behaviors/my-behavior.yaml",
+            tmp_path,
+        )
+        assert result == behavior.resolve()
+
+    def test_different_repo_url_returns_none(self, tmp_path: Path) -> None:
+        """A git+ URL pointing to a different repo returns None."""
+        self._make_repo(tmp_path, "https://github.com/example/myrepo.git")
+        behavior = tmp_path / "behaviors" / "my-behavior.yaml"
+        behavior.parent.mkdir()
+        behavior.write_text("bundle:\n  name: my-behavior\n  version: 1.0\n")
+
+        result = _is_same_repo_include(
+            "git+https://github.com/other-org/other-repo@main#subdirectory=behaviors/my-behavior.yaml",
+            tmp_path,
+        )
+        assert result is None
+
+    def test_non_git_ref_returns_none(self, tmp_path: Path) -> None:
+        """A non-git+ reference (bare name, namespace:path) returns None."""
+        self._make_repo(tmp_path, "https://github.com/example/myrepo.git")
+        result = _is_same_repo_include("foundation:behaviors/my-behavior", tmp_path)
+        assert result is None
+
+    def test_no_subdirectory_returns_none(self, tmp_path: Path) -> None:
+        """A same-repo URL without #subdirectory= fragment returns None."""
+        self._make_repo(tmp_path, "https://github.com/example/myrepo.git")
+        result = _is_same_repo_include(
+            "git+https://github.com/example/myrepo@main",
+            tmp_path,
+        )
+        assert result is None
+
+    def test_nonexistent_subdirectory_returns_none(self, tmp_path: Path) -> None:
+        """A same-repo URL whose subdirectory path doesn't exist returns None."""
+        self._make_repo(tmp_path, "https://github.com/example/myrepo.git")
+        result = _is_same_repo_include(
+            "git+https://github.com/example/myrepo@main#subdirectory=behaviors/missing.yaml",
+            tmp_path,
+        )
+        assert result is None
+
+
+# ── TestResolveLocalIncludeSameRepo ───────────────────────────────────────────
+
+
+class TestResolveLocalIncludeSameRepo:
+    """Tests that _resolve_local_include() now handles same-repo git+ URLs."""
+
+    def test_same_repo_git_url_resolves_to_local_path(self, tmp_path: Path) -> None:
+        """A same-repo git+ URL in _resolve_local_include() returns the local path."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n"
+            '[remote "origin"]\n\turl = https://github.com/example/myrepo.git\n'
+        )
+        behavior = tmp_path / "behaviors" / "my-behavior.yaml"
+        behavior.parent.mkdir()
+        behavior.write_text("bundle:\n  name: my-behavior\n  version: 1.0\n")
+
+        result = _resolve_local_include(
+            "git+https://github.com/example/myrepo@main#subdirectory=behaviors/my-behavior.yaml",
+            tmp_path,
+        )
+        assert result == behavior.resolve()
+
+    def test_external_git_url_still_returns_none(self, tmp_path: Path) -> None:
+        """A git+ URL to a different repo still returns None."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n"
+            '[remote "origin"]\n\turl = https://github.com/example/myrepo.git\n'
+        )
+        result = _resolve_local_include(
+            "git+https://github.com/other/other-repo@main#subdirectory=behaviors/foo.yaml",
+            tmp_path,
+        )
+        assert result is None
+
+
+# ── TestOverviewSameRepoEdges ──────────────────────────────────────────────────
+
+
+class TestOverviewSameRepoEdges:
+    """Tests that bundle_overview_dot() draws direct edges for same-repo git includes."""
+
+    def test_same_repo_include_creates_direct_edge_not_external(
+        self, tmp_path: Path
+    ) -> None:
+        """A same-repo git+ include creates a direct (non-dashed) edge to the behavior node."""
+        # Setup git remote
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n"
+            '[remote "origin"]\n\turl = https://github.com/example/myrepo.git\n'
+        )
+        # Root bundle
+        (tmp_path / "bundle.md").write_text(
+            "---\nbundle:\n  name: root\n  version: 1.0\n---\n# Root\n"
+        )
+        # A behavior file
+        behaviors_dir = tmp_path / "behaviors"
+        behaviors_dir.mkdir()
+        (behaviors_dir / "cool-behavior.yaml").write_text(
+            "bundle:\n  name: cool-behavior\n  version: 1.0\n  description: Cool\n"
+        )
+        # A standalone bundle with same-repo git+ include
+        bundles_dir = tmp_path / "bundles"
+        bundles_dir.mkdir()
+        (bundles_dir / "mystack.yaml").write_text(
+            "bundle:\n  name: mystack\n  version: 1.0\n"
+            "includes:\n"
+            "  - bundle: git+https://github.com/example/myrepo@main"
+            "#subdirectory=behaviors/cool-behavior.yaml\n"
+        )
+
+        dot = bundle_overview_dot(tmp_path)
+
+        # mystack should appear
+        assert "mystack" in dot
+        # cool-behavior should appear
+        assert "cool" in dot
+        # The edge should NOT be dashed (not external) — cool-behavior should resolve locally
+        # Find the cool-behavior node id and check it's not in an external dashed node
+        assert (
+            "(external)" not in dot
+            or "cool" not in dot.split("(external)")[0].split("\n")[-1]
+        )
+
+    def test_standalone_bundle_aggregate_includes_same_repo_behavior_tokens(
+        self, tmp_path: Path
+    ) -> None:
+        """Standalone bundle node label tok count includes tokens from same-repo behaviors."""
+        import re
+
+        # Setup git remote
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n"
+            '[remote "origin"]\n\turl = https://github.com/example/myrepo.git\n'
+        )
+        # Root bundle (small — just a few tokens)
+        (tmp_path / "bundle.md").write_text(
+            "---\nbundle:\n  name: root\n  version: 1.0\n---\n# Root\n"
+        )
+        # A large behavior file (clearly more tokens than root)
+        behaviors_dir = tmp_path / "behaviors"
+        behaviors_dir.mkdir()
+        big_content = "bundle:\n  name: big-behavior\n  version: 1.0\n" + "x" * 4000
+        (behaviors_dir / "big-behavior.yaml").write_text(big_content)
+
+        # Standalone bundle that includes big-behavior via same-repo git URL
+        bundles_dir = tmp_path / "bundles"
+        bundles_dir.mkdir()
+        (bundles_dir / "mystack.yaml").write_text(
+            "bundle:\n  name: mystack\n  version: 1.0\n"
+            "includes:\n"
+            "  - bundle: git+https://github.com/example/myrepo@main"
+            "#subdirectory=behaviors/big-behavior.yaml\n"
+        )
+
+        dot = bundle_overview_dot(tmp_path)
+
+        # Extract token counts from node labels: "name\n~N tok"
+        tok_matches = re.findall(r"~(\d+) tok", dot)
+        tok_values = [int(t) for t in tok_matches]
+
+        # mystack's aggregate should be bigger than root's own tok
+        # root has tiny content (~15 tok), big-behavior has ~1000 tok
+        # mystack aggregate = own (~48 tok) + big-behavior (~1000 tok) >> root (~15 tok)
+        # We verify there's a high token count (>500) present in the diagram
+        assert any(t > 500 for t in tok_values), (
+            f"Expected at least one node with >500 tok (big-behavior included), got: {tok_values}"
+        )

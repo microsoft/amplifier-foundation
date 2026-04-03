@@ -404,6 +404,13 @@ def bundle_overview_dot(repo_root: str | Path) -> str:
         file_roles[resolved] = role
 
     # ── Build nodes and edges ───────────────────────────────────────────────
+    # Pre-compute per-file own token counts for aggregate computation of "bundle" role files.
+    file_own_tokens: dict[Path, int] = {}
+    for _role, _path in files:
+        _resolved = _path.resolve()
+        _raw = _path.read_text(encoding="utf-8")
+        file_own_tokens[_resolved] = estimate_tokens(_raw)
+
     node_lines: list[str] = []
     edge_lines: list[str] = []
     # ext_id → node definition line (deduplicated externals)
@@ -414,9 +421,26 @@ def bundle_overview_dot(repo_root: str | Path) -> str:
         name = file_names[resolved]
         node_id = file_node_ids[resolved]
 
-        # Aggregate token cost from raw file content
-        raw_content = path.read_text(encoding="utf-8")
-        tok = estimate_tokens(raw_content)
+        own_tok = file_own_tokens[resolved]
+
+        # For standalone "bundle" files: aggregate = own tok + sum of same-repo local includes.
+        # Behaviors and root use only their own raw content tokens.
+        if role == "bundle":
+            aggregate_tok = own_tok
+            try:
+                inc_data, _ = parse_frontmatter(path)
+            except Exception:
+                inc_data = {}
+            for inc in inc_data.get("includes") or []:
+                ref = str(inc.get("bundle") or "")
+                if not ref:
+                    continue
+                local_path = _resolve_local_include(ref, repo_root)
+                if local_path is not None and local_path in file_own_tokens:
+                    aggregate_tok += file_own_tokens[local_path]
+            tok = aggregate_tok
+        else:
+            tok = own_tok
 
         # Base fill: root=deep teal, others=light teal
         if role == "root":
@@ -568,11 +592,125 @@ def _short_path(ref: str) -> str:
     return Path(path_part).name or ref
 
 
+def _get_repo_git_url(repo_root: Path) -> str | None:
+    """Read the git remote origin URL for same-repo detection.
+
+    Handles both normal ``.git`` directories and submodule ``.git`` files that
+    point to a ``gitdir:`` location.
+
+    Args:
+        repo_root: Repository root to inspect.
+
+    Returns:
+        The remote origin URL string, or ``None`` if not found.
+    """
+    import configparser
+
+    git_path = repo_root / ".git"
+    if git_path.is_file():
+        # Submodule: .git is a file containing "gitdir: <relative-path>"
+        content = git_path.read_text(encoding="utf-8").strip()
+        if content.startswith("gitdir:"):
+            gitdir_rel = content[len("gitdir:") :].strip()
+            gitdir = Path(gitdir_rel)
+            if not gitdir.is_absolute():
+                gitdir = (repo_root / gitdir).resolve()
+        else:
+            return None
+    elif git_path.is_dir():
+        gitdir = git_path
+    else:
+        return None
+
+    git_config = gitdir / "config"
+    if not git_config.exists():
+        return None
+
+    config = configparser.ConfigParser()
+    config.read(git_config)
+    for section in config.sections():
+        if section.startswith('remote "') and "url" in config[section]:
+            return config[section]["url"]
+    return None
+
+
+def _normalize_git_url(url: str) -> str:
+    """Normalize a git URL for comparison.
+
+    Strips the ``git+`` prefix, ``@ref`` suffix, ``#fragment``, and trailing
+    ``.git`` so that an include URL and a clone URL for the same repo compare
+    equal.
+
+    Examples::
+
+        _normalize_git_url(
+            "git+https://github.com/microsoft/amplifier-foundation@main"
+            "#subdirectory=behaviors/foo.yaml"
+        )
+        # "https://github.com/microsoft/amplifier-foundation"
+
+        _normalize_git_url("https://github.com/microsoft/amplifier-foundation.git")
+        # "https://github.com/microsoft/amplifier-foundation"
+
+    Args:
+        url: Raw git URL string.
+
+    Returns:
+        Normalized URL string suitable for equality comparison.
+    """
+    url = url.removeprefix("git+")
+    url = url.split("#")[0]
+    if "://" in url:
+        # Strip @ref suffix that appears after the path (e.g. @main, @v1.0)
+        url = re.sub(r"@[^/]+$", "", url)
+    url = url.removesuffix(".git")
+    return url.rstrip("/")
+
+
+def _is_same_repo_include(ref: str, repo_root: Path) -> Path | None:
+    """Detect and resolve a same-repo ``git+`` include URL to a local path.
+
+    Returns the local :class:`~pathlib.Path` when *ref* is a ``git+`` URL
+    whose base matches this repository's remote origin **and** the
+    ``#subdirectory=`` fragment points to an existing local file.  Returns
+    ``None`` in all other cases (different repo, no subdirectory, file absent).
+
+    Args:
+        ref: Bundle include reference string (may be a ``git+`` URL or any
+            other form).
+        repo_root: Repository root used to read ``.git/config`` and resolve
+            local paths.
+
+    Returns:
+        Resolved absolute :class:`~pathlib.Path`, or ``None``.
+    """
+    if not ref.startswith("git+"):
+        return None
+    repo_url = _get_repo_git_url(repo_root)
+    if not repo_url:
+        return None
+    if _normalize_git_url(ref) != _normalize_git_url(repo_url):
+        return None
+    if "#subdirectory=" not in ref:
+        return None
+    subdir = ref.split("#subdirectory=", 1)[1].split("&")[0]
+    candidate = repo_root / subdir
+    if candidate.exists():
+        return candidate.resolve()
+    # Try with common extensions in case the ref omits the suffix
+    for ext in (".yaml", ".yml", ".md"):
+        with_ext = repo_root / f"{subdir}{ext}"
+        if with_ext.exists():
+            return with_ext.resolve()
+    return None
+
+
 def _resolve_local_include(ref: str, repo_root: Path) -> Path | None:
     """Resolve a ``namespace:path`` include ref (without ``@``) to a local file.
 
     Handles both bare ``namespace:path`` forms (from ``includes:`` lists) and
-    ``@namespace:path`` forms.  Returns ``None`` for external ``git+`` URLs.
+    ``@namespace:path`` forms.  For ``git+`` URLs, attempts same-repo
+    detection via :func:`_is_same_repo_include` before returning ``None``.
 
     Args:
         ref: Include reference string such as ``"foundation:behaviors/logging"``
@@ -582,8 +720,10 @@ def _resolve_local_include(ref: str, repo_root: Path) -> Path | None:
     Returns:
         Resolved absolute :class:`~pathlib.Path`, or ``None``.
     """
-    if not ref or ref.startswith("git+") or ref.startswith("http"):
+    if not ref:
         return None
+    if ref.startswith("git+") or ref.startswith("http"):
+        return _is_same_repo_include(ref, repo_root)
     mention = ref if ref.startswith("@") else f"@{ref}"
     return resolve_local_mention(mention, repo_root)
 
