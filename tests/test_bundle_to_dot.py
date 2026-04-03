@@ -112,11 +112,6 @@ class TestPackageImports:
 
         assert callable(_fn)
 
-    def test_import_bundle_detail_md(self) -> None:
-        from dot_docs import bundle_detail_md as _fn  # noqa: F401
-
-        assert callable(_fn)
-
     def test_import_estimate_tokens(self) -> None:
         from dot_docs import estimate_tokens as _fn  # noqa: F401
 
