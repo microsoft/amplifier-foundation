@@ -64,6 +64,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
             "delegate:agent_spawned",  # When agent sub-session spawned
             "delegate:agent_resumed",  # When agent sub-session resumed
             "delegate:agent_completed",  # When agent sub-session completed
+            "delegate:agent_cancelled",  # When parent session is cancelled during delegation
             "delegate:error",  # When delegation fails
         ]
     )
@@ -1034,6 +1035,23 @@ Agent usage notes:
                 },
             )
 
+        except asyncio.CancelledError:
+            # Parent session cancelled — emit diagnostic event then re-raise.
+            # CancelledError inherits from BaseException, not Exception,
+            # so existing handlers never catch it. This makes cancellation
+            # visible to hooks/observers.
+            if hooks:
+                await hooks.emit(
+                    "delegate:agent_cancelled",
+                    {
+                        "agent": agent_name,
+                        "sub_session_id": sub_session_id,
+                        "parent_session_id": parent_session_id,
+                        "tool_call_id": tool_call_id,
+                    },
+                )
+            raise
+
         except TimeoutError:
             # asyncio.timeout raises TimeoutError (which may propagate as
             # CancelledError internally).  Surface the source clearly so the
@@ -1207,6 +1225,22 @@ Agent usage notes:
                     "message": f"Agent session '{session_id}' not found. May have expired or never existed."
                 },
             )
+
+        except asyncio.CancelledError:
+            # Parent session cancelled — emit diagnostic event then re-raise.
+            # CancelledError inherits from BaseException, not Exception,
+            # so existing handlers never catch it. This makes cancellation
+            # visible to hooks/observers.
+            if hooks:
+                await hooks.emit(
+                    "delegate:agent_cancelled",
+                    {
+                        "session_id": session_id,
+                        "parent_session_id": parent_session_id,
+                        "tool_call_id": tool_call_id,
+                    },
+                )
+            raise
 
         except TimeoutError:
             # Extract agent name for the message
