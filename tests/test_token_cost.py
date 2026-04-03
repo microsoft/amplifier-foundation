@@ -2,7 +2,7 @@
 
 import pytest
 
-from dot_docs.token_cost import (
+from amplifier_foundation.bundle_docs.token_cost import (
     COLOR_GREEN,
     COLOR_ORANGE,
     COLOR_RED,

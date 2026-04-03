@@ -2,12 +2,12 @@
 
 from pathlib import Path
 
-from dot_docs.frontmatter import (
+from amplifier_foundation.bundle_docs.frontmatter import (
     extract_delegation_targets,
     extract_mentions,
     parse_frontmatter,
 )
-from dot_docs.frontmatter import resolve_local_mention
+from amplifier_foundation.bundle_docs.frontmatter import resolve_local_mention
 
 
 class TestParseFrontmatter:

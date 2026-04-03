@@ -2726,7 +2726,7 @@ steps:
   # PHASE 6: Bundle Doc Freshness Check (v3)
   # Checks that bundle.dot exists at repo root and is fresh.
   # Uses source_hash embedded in bundle.dot attribute.
-  # Gracefully degrades if dot_docs is not importable from tools/.
+  # Gracefully degrades if amplifier_foundation.bundle_docs is not importable.
   # Produces BUNDLE_DOT_MISSING (SUGGESTION) and BUNDLE_DOT_STALE (WARNING).
   # ============================================================================
 
@@ -2743,11 +2743,10 @@ steps:
       discovery = json.loads(_discovery_raw)
       repo_path = Path(discovery.get("repo_path", "")).resolve()
 
-      # Check if dot_docs is available via tools/ in the target repo
+      # Check if amplifier_foundation.bundle_docs is available (installed package)
       dot_available = False
       try:
-          sys.path.insert(0, str(repo_path / "tools"))
-          from dot_docs import bundle_repo_dot
+          from amplifier_foundation.bundle_docs import bundle_repo_dot
           dot_available = True
       except ImportError:
           pass
@@ -2767,8 +2766,8 @@ steps:
               "code": "DOT_TOOL_UNAVAILABLE",
               "severity": "INFO",
               "message": (
-                  "dot_docs not available — skipping bundle doc freshness checks. "
-                  "Ensure tools/dot_docs/ exists in the target repo."
+                  "amplifier_foundation.bundle_docs not available — skipping bundle doc freshness checks. "
+                  "Install amplifier-foundation for freshness checking."
               ),
               "detail": "",
           })

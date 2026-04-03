@@ -42,12 +42,11 @@ steps:
           }))
           sys.exit(0)
 
-      sys.path.insert(0, str(repo_path / "tools"))
       try:
-          from dot_docs import bundle_repo_dot
+          from amplifier_foundation.bundle_docs import bundle_repo_dot
       except ImportError:
           print(json.dumps({
-              "error": "dot_docs not available — ensure tools/dot_docs/ exists in the target repo",
+              "error": "amplifier_foundation not installed — pip install amplifier-foundation",
               "bundle_dot": "",
               "needs_regen": False,
           }))

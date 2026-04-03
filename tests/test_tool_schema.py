@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-from dot_docs.tool_schema import estimate_module_tool_tokens
+from amplifier_foundation.bundle_docs.tool_schema import estimate_module_tool_tokens
 
 MODULES_DIR = Path(__file__).resolve().parent.parent / "modules"
 TOOL_DELEGATE_DIR = MODULES_DIR / "tool-delegate"

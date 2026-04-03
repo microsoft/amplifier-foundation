@@ -6,7 +6,7 @@ relationships, and nodes annotated with per-request token cost estimates.
 
 Usage::
 
-    from dot_docs.bundle_to_dot import bundle_repo_dot
+    from amplifier_foundation.bundle_docs.bundle_to_dot import bundle_repo_dot
     dot_str = bundle_repo_dot(repo_root=Path("."))
 
 No LLM calls — pure deterministic function.  Only requires PyYAML and the
@@ -19,15 +19,15 @@ import hashlib
 import re
 from pathlib import Path
 
-from dot_docs.frontmatter import (
+from .frontmatter import (
     extract_mentions,
     parse_frontmatter,
     resolve_local_mention,
 )
-from dot_docs.token_cost import (
+from .token_cost import (
     estimate_tokens,
 )
-from dot_docs.tool_schema import estimate_module_tool_tokens
+from .tool_schema import estimate_module_tool_tokens
 
 # ── Visual constants ───────────────────────────────────────────────────────────
 
