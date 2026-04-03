@@ -259,7 +259,7 @@ With the list form, the system tries `vision` first. If no installed provider ma
 | `fast` | Quick utility tasks — parsing, classification, file ops, bulk work |
 | `general` | Versatile catch-all, no specialization needed |
 
-> **Choosing the right role?** See the routing-matrix bundle's `context/role-definitions.md` for detailed guidance on each role, including "when to use / when NOT to use" recommendations.
+> **Choosing the right role?** Use `load_skill(skill_name='role-definitions')` for detailed guidance on each role, including decision flowchart, "when to use / when NOT to use" recommendations, model tier grid, and fallback chain best practices.
 
 Every routing matrix must define `general` and `fast`. Other roles are optional — if a role isn't defined in the active matrix, the fallback chain skips it.
 
