@@ -408,8 +408,36 @@ class ModuleActivator:
 
         # Check if already installed with matching fingerprint
         if not force and self._install_state.is_installed(module_path):
-            logger.debug(f"Skipping install for {module_path.name} (already installed)")
-            return
+            # Cross-check: verify the package is still actually importable.
+            # `uv tool upgrade` runs `uv sync` which can remove editable installs
+            # without changing the Python symlink mtime, leaving a stale cache
+            # entry that causes _install_dependencies() to skip reinstallation.
+            _stale = False
+            _pyproject = module_path / "pyproject.toml"
+            if _pyproject.exists():
+                try:
+                    import tomllib
+
+                    with open(_pyproject, "rb") as f:
+                        _data = tomllib.load(f)
+                    _pkg_name = _data.get("project", {}).get("name", "")
+                    if _pkg_name:
+                        _normalized = _pkg_name.replace("-", "_")
+                        if find_spec(_normalized) is None:
+                            logger.debug(
+                                f"Package '{_pkg_name}' no longer importable "
+                                f"(removed by uv sync?), invalidating cache "
+                                f"for {module_path.name}"
+                            )
+                            self._install_state.invalidate(module_path)
+                            _stale = True
+                except Exception:
+                    pass
+            if not _stale:
+                logger.debug(
+                    f"Skipping install for {module_path.name} (already installed)"
+                )
+                return
 
         if progress_callback and module_name:
             progress_callback("installing", module_name)
