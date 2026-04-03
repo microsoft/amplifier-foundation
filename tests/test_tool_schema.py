@@ -139,3 +139,49 @@ class TestEstimateModuleToolTokens:
         )
         result = estimate_module_tool_tokens(tmp_path)
         assert result is None
+
+    # ── 9. @property name extraction ─────────────────────────────────────────
+
+    def test_property_name_extraction(self, tmp_path: Path) -> None:
+        """Tool with name as @property returning a string literal is extracted correctly."""
+
+        mod = tmp_path / "amplifier_module_my_tool"
+        mod.mkdir()
+        (mod / "__init__.py").write_text(
+            "class MyTool:\n"
+            "    @property\n"
+            "    def name(self) -> str:\n"
+            '        return "my-tool"\n'
+            "\n"
+            '    description = "A test tool"\n'
+            "\n"
+            "    @property\n"
+            "    def input_schema(self) -> dict:\n"
+            "        return {\n"
+            '            "type": "object",\n'
+            '            "properties": {\n'
+            '                "x": {"type": "string", "description": "A param"}\n'
+            "            },\n"
+            "        }\n"
+        )
+        result = estimate_module_tool_tokens(tmp_path)
+        assert result is not None
+        assert result["tool_count"] == 1
+        assert result["tools"][0]["name"] == "my-tool"
+
+    # ── 10. Real tool-recipes module (@property name) ─────────────────────────
+
+    def test_real_recipes_tool_module(self) -> None:
+        """Real tool-recipes module (uses @property name) should produce results."""
+        import pytest  # noqa: PLC0415
+
+        recipes_mod = Path(
+            "/home/bkrabach/dev/recipe-dot-docs"
+            "/amplifier-bundle-recipes/modules/tool-recipes"
+        )
+        if not recipes_mod.exists():
+            pytest.skip("recipes repo not available")
+        result = estimate_module_tool_tokens(recipes_mod)
+        assert result is not None
+        assert result["tool_count"] >= 1
+        assert any("recipes" in t["name"] for t in result["tools"])

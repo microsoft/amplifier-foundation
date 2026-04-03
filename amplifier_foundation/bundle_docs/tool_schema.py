@@ -229,7 +229,15 @@ def estimate_module_tool_tokens(module_dir: Path) -> dict | None:
             continue
 
         # Extract tool name attribute
+        # Try 1: class attribute  name = "literal"
         name_match = re.search(r"\bname\s*=\s*[\"']([^\"']+)[\"']", class_source)
+        if not name_match:
+            # Try 2: @property def name(self) returning a string literal
+            name_match = re.search(
+                r"def name\(self\).*?return\s*[\"']([^\"']+)[\"']",
+                class_source,
+                re.DOTALL,
+            )
         if not name_match:
             continue
         tool_name = name_match.group(1)
