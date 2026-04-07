@@ -2009,7 +2009,7 @@ steps:
 
   - id: "validate-recipes"
     type: "recipe"
-    recipe: "recipes:recipes/validate-recipes.yaml"
+    recipe: "@recipes:recipes/validate-recipes.yaml"
     condition: "{{validation_flags.validate_recipes}} == 'true'"
     context:
       repo_path: "{{repo_path}}"
