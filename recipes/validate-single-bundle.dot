@@ -1,0 +1,38 @@
+digraph "validate-single-bundle" {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="validate-single-bundle v2.0.0\nValidates a single Amplifier bundle by tracing its ACTUAL includes."
+    labelloc=t
+    labeljust=c
+    nodesep=0.5
+    ranksep=0.6
+    bgcolor="white"
+    source_hash="52ea78d44e16b067"
+
+    node [fontname="Helvetica", fontsize=10, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=8]
+
+    _start [label="START", shape=circle, fillcolor="#80cbc4", width=0.6, fixedsize=true]
+    trace_dependencies [label="trace-dependencies\n(bash)", shape=box, fillcolor="#bbdefb"]
+    context_analysis [label="context-analysis\n(bash)", shape=box, fillcolor="#bbdefb"]
+    generate_report [label="generate-report\n(agent: foundation:zen-architect\n[ANALYZE])", shape=box, fillcolor="#c8e6c9"]
+    _end [label="END", shape=doublecircle, fillcolor="#ef9a9a", width=0.6, fixedsize=true]
+
+    trace_dependencies -> context_analysis
+    context_analysis -> generate_report
+    _start -> trace_dependencies
+    generate_report -> _end
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=9
+        leg_bash [label="bash step", shape=box, fillcolor="#bbdefb", style="filled,rounded", fontsize=8]
+        leg_agent [label="agent step", shape=box, fillcolor="#c8e6c9", style="filled,rounded", fontsize=8]
+        leg_recipe [label="sub-recipe", shape=component, fillcolor="#e1bee7", style="filled,rounded", fontsize=8]
+        leg_foreach [label="foreach loop", shape=parallelogram, fillcolor="#fff9c4", style="filled,rounded", fontsize=8]
+    }
+}

@@ -1,0 +1,107 @@
+digraph "validate-bundle-repo" {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="validate-bundle-repo v3.3.0\nValidates an entire Amplifier bundle repository including:"
+    labelloc=t
+    labeljust=c
+    nodesep=0.5
+    ranksep=0.6
+    bgcolor="white"
+    source_hash="e99cef1788a67db3"
+
+    node [fontname="Helvetica", fontsize=10, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=8]
+
+    _start [label="START", shape=circle, fillcolor="#80cbc4", width=0.6, fixedsize=true]
+    environment_check [label="environment-check\n(bash)", shape=box, fillcolor="#bbdefb"]
+    validate_all_flags [label="validate-all-flags\n(bash)", shape=box, fillcolor="#bbdefb"]
+    packaging_check [label="packaging-check\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    build_check [label="build-check\n(bash)\n[conditional]", shape=box, fillcolor="#bbdefb"]
+    set_default_build_check [label="set-default-build-check\n(bash)\n[conditional]", shape=box, fillcolor="#bbdefb"]
+    repo_discovery [label="repo-discovery\n(bash)", shape=box, fillcolor="#bbdefb"]
+    validate_all_bundles [label="validate-all-bundles\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    behavior_hygiene_validation [label="behavior-hygiene-validation\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    standalone_completeness_validation [label="standalone-completeness-validation\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    experiments_validation [label="experiments-validation\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    context_sink_compliance [label="context-sink-compliance\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    tool_placement_analysis [label="tool-placement-analysis\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    validate_recipes [label="validate-recipes\n(sub-recipe)\n[conditional]\n(on_error: continue)", shape=component, fillcolor="#e1bee7"]
+    set_default_recipe_validation [label="set-default-recipe-validation\n(bash)\n[conditional]", shape=box, fillcolor="#bbdefb"]
+    quality_classification [label="quality-classification\n(bash)", shape=box, fillcolor="#bbdefb"]
+    initialize_optional_outputs [label="initialize-optional-outputs\n(bash)", shape=box, fillcolor="#bbdefb"]
+    set_default_approval_summary [label="set-default-approval-summary\n(bash)", shape=box, fillcolor="#bbdefb"]
+    set_default_composition_analysis [label="set-default-composition-analysis\n(bash)", shape=box, fillcolor="#bbdefb"]
+    set_default_repo_conventions [label="set-default-repo-conventions\n(bash)", shape=box, fillcolor="#bbdefb"]
+    quick_approval [label="quick-approval\n(agent: foundation:zen-architect\n[REVIEW])\n[conditional]\n(on_error: continue)", shape=box, fillcolor="#c8e6c9"]
+    composition_analysis [label="composition-analysis\n(agent: foundation:zen-architect\n[ANALYZE])\n[conditional]\n(on_error: continue)", shape=box, fillcolor="#c8e6c9"]
+    repo_conventions [label="repo-conventions\n(agent: foundation:zen-architect\n[REVIEW])\n[conditional]\n(on_error: continue)", shape=box, fillcolor="#c8e6c9"]
+    bundle_doc_freshness_check [label="bundle-doc-freshness-check\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    bundle_doc_regen_detail [label="bundle-doc-regen-detail\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    bundle_overview_regen_structural [label="bundle-overview-regen-structural\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    bundle_overview_regen_enhance [label="bundle-overview-regen-enhance\n(agent: foundation:zen-architect\n[ARCHITECT])\n[conditional]\n(on_error: continue)", shape=box, fillcolor="#c8e6c9"]
+    bundle_overview_regen_write [label="bundle-overview-regen-write\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    synthesize_report [label="synthesize-report\n(agent: foundation:zen-architect\n[ANALYZE])", shape=box, fillcolor="#c8e6c9"]
+    _end [label="END", shape=doublecircle, fillcolor="#ef9a9a", width=0.6, fixedsize=true]
+
+    environment_check -> validate_all_flags
+    environment_check -> packaging_check
+    packaging_check -> build_check
+    packaging_check -> set_default_build_check
+    packaging_check -> repo_discovery
+    build_check -> repo_discovery
+    set_default_build_check -> repo_discovery
+    repo_discovery -> validate_all_bundles
+    validate_all_bundles -> behavior_hygiene_validation
+    validate_all_bundles -> standalone_completeness_validation
+    validate_all_bundles -> experiments_validation
+    validate_all_bundles -> context_sink_compliance
+    validate_all_bundles -> tool_placement_analysis
+    repo_discovery -> validate_recipes
+    validate_all_flags -> validate_recipes
+    validate_all_flags -> set_default_recipe_validation
+    validate_all_bundles -> quality_classification
+    behavior_hygiene_validation -> quality_classification
+    standalone_completeness_validation -> quality_classification
+    experiments_validation -> quality_classification
+    context_sink_compliance -> quality_classification
+    tool_placement_analysis -> quality_classification
+    validate_recipes -> quality_classification
+    set_default_recipe_validation -> quality_classification
+    quality_classification -> initialize_optional_outputs
+    initialize_optional_outputs -> set_default_approval_summary
+    initialize_optional_outputs -> set_default_composition_analysis
+    initialize_optional_outputs -> set_default_repo_conventions
+    set_default_approval_summary -> quick_approval
+    quality_classification -> composition_analysis
+    composition_analysis -> repo_conventions
+    repo_discovery -> bundle_doc_freshness_check
+    bundle_doc_freshness_check -> bundle_doc_regen_detail
+    bundle_doc_freshness_check -> bundle_overview_regen_structural
+    bundle_overview_regen_structural -> bundle_overview_regen_enhance
+    bundle_overview_regen_enhance -> bundle_overview_regen_write
+    quality_classification -> synthesize_report
+    quick_approval -> synthesize_report
+    composition_analysis -> synthesize_report
+    repo_conventions -> synthesize_report
+    set_default_approval_summary -> synthesize_report
+    set_default_composition_analysis -> synthesize_report
+    set_default_repo_conventions -> synthesize_report
+    set_default_recipe_validation -> synthesize_report
+    bundle_doc_regen_detail -> synthesize_report
+    bundle_overview_regen_write -> synthesize_report
+    _start -> environment_check
+    synthesize_report -> _end
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=9
+        leg_bash [label="bash step", shape=box, fillcolor="#bbdefb", style="filled,rounded", fontsize=8]
+        leg_agent [label="agent step", shape=box, fillcolor="#c8e6c9", style="filled,rounded", fontsize=8]
+        leg_recipe [label="sub-recipe", shape=component, fillcolor="#e1bee7", style="filled,rounded", fontsize=8]
+        leg_foreach [label="foreach loop", shape=parallelogram, fillcolor="#fff9c4", style="filled,rounded", fontsize=8]
+    }
+}

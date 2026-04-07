@@ -1,0 +1,62 @@
+digraph "validate-agents" {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="validate-agents v1.2.4\nValidates Amplifier agent definitions in a bundle repository against:"
+    labelloc=t
+    labeljust=c
+    nodesep=0.5
+    ranksep=0.6
+    bgcolor="white"
+    source_hash="c5c9138d7accaac9"
+
+    node [fontname="Helvetica", fontsize=10, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=8]
+
+    _start [label="START", shape=circle, fillcolor="#80cbc4", width=0.6, fixedsize=true]
+    environment_check [label="environment-check\n(bash)", shape=box, fillcolor="#bbdefb"]
+    agent_discovery [label="agent-discovery\n(bash)", shape=box, fillcolor="#bbdefb"]
+    structural_validation [label="structural-validation\n(bash)\n(on_error: continue)", shape=box, fillcolor="#bbdefb"]
+    quality_classification [label="quality-classification\n(bash)", shape=box, fillcolor="#bbdefb"]
+    initialize_optional_outputs [label="initialize-optional-outputs\n(bash)", shape=box, fillcolor="#bbdefb"]
+    set_default_approval_summary [label="set-default-approval-summary\n(bash)", shape=box, fillcolor="#bbdefb"]
+    set_default_quality_results [label="set-default-quality-results\n(bash)", shape=box, fillcolor="#bbdefb"]
+    set_default_tool_analysis [label="set-default-tool-analysis\n(bash)", shape=box, fillcolor="#bbdefb"]
+    quick_approval [label="quick-approval\n(agent: foundation:zen-architect\n[REVIEW])\n[conditional]\n(on_error: continue)", shape=box, fillcolor="#c8e6c9"]
+    description_quality_check [label="description-quality-check\n(agent: foundation:zen-architect\n[REVIEW])\n[conditional]\n(on_error: continue)", shape=box, fillcolor="#c8e6c9"]
+    tool_access_analysis [label="tool-access-analysis\n(agent: foundation:zen-architect\n[ANALYZE])\n[conditional]\n(on_error: continue)", shape=box, fillcolor="#c8e6c9"]
+    synthesize_report [label="synthesize-report\n(agent: foundation:zen-architect\n[ANALYZE])", shape=box, fillcolor="#c8e6c9"]
+    _end [label="END", shape=doublecircle, fillcolor="#ef9a9a", width=0.6, fixedsize=true]
+
+    environment_check -> agent_discovery
+    agent_discovery -> structural_validation
+    structural_validation -> quality_classification
+    quality_classification -> initialize_optional_outputs
+    initialize_optional_outputs -> set_default_approval_summary
+    initialize_optional_outputs -> set_default_quality_results
+    initialize_optional_outputs -> set_default_tool_analysis
+    set_default_approval_summary -> quick_approval
+    quality_classification -> description_quality_check
+    description_quality_check -> tool_access_analysis
+    quality_classification -> synthesize_report
+    quick_approval -> synthesize_report
+    description_quality_check -> synthesize_report
+    tool_access_analysis -> synthesize_report
+    set_default_approval_summary -> synthesize_report
+    set_default_quality_results -> synthesize_report
+    set_default_tool_analysis -> synthesize_report
+    _start -> environment_check
+    synthesize_report -> _end
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=9
+        leg_bash [label="bash step", shape=box, fillcolor="#bbdefb", style="filled,rounded", fontsize=8]
+        leg_agent [label="agent step", shape=box, fillcolor="#c8e6c9", style="filled,rounded", fontsize=8]
+        leg_recipe [label="sub-recipe", shape=component, fillcolor="#e1bee7", style="filled,rounded", fontsize=8]
+        leg_foreach [label="foreach loop", shape=parallelogram, fillcolor="#fff9c4", style="filled,rounded", fontsize=8]
+    }
+}
