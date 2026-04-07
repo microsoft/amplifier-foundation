@@ -1,0 +1,76 @@
+// Checks that your agent definition files are properly structured, well-described, and correctly configured.
+digraph validate_agents {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Agent Health Check\nFinds agent files, checks their structure, and reviews quality"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="b85fecca6091493e56fefd26ac3c6616ba3435a67301049994a25f37153ecf6c"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done!", shape=oval, fillcolor="#e0e0e0"]
+
+    step_environment_check [label="Check Setup\n\"Is everything ready?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import sys from pathlib import Path  results = {     'phase': 'environm"]
+    step_agent_discovery [label="Find Agent Files\n\"What agents exist here?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json from pathlib import Path  def discover_agents(repo_path: str) -> dict: "]
+    step_structural_validation [label="Validate Structure\n\"Are the files well-formed?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re from pathlib import Path  try:     import yaml except ImportE"]
+    step_quality_classification [label="Sort by Quality\n\"Which agents need work?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  # Parse structural_results as JSON (uses true/false, not True/False) s"]
+    step_initialize_optional_outputs [label="Prepare Defaults\n\"Set fallback values\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  # Initialize default values for conditional phase outputs # These will"]
+    step_set_default_approval_summary [label="Default:\nNo Quick Review Needed", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Quick approval not performed - detailed LLM analysis was run instead._' "]
+    step_set_default_quality_results [label="Default:\nDescriptions Look Fine", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Description quality analysis not performed - all agents met quality thresholds via determinis"]
+    step_set_default_tool_analysis [label="Default:\nTools Look Fine", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Tool access analysis not performed - all agents have explicit tool declarations._' "]
+    cond_step_quick_approval [label="All agents\npassed?", shape=diamond, fillcolor="#fff9c4"]
+    step_quick_approval [label="Quick Approval\n\"Everything looks good!\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_description_quality_check [label="Descriptions\nneed work?", shape=diamond, fillcolor="#fff9c4"]
+    step_description_quality_check [label="Review Descriptions\n\"Are they clear enough?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_tool_access_analysis [label="Tools need\nreview?", shape=diamond, fillcolor="#fff9c4"]
+    step_tool_access_analysis [label="Review Tool Access\n\"Right tools assigned?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_synthesize_report [label="Write Final Report\n\"Put it all together\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_environment_check
+    step_environment_check -> step_agent_discovery
+    step_agent_discovery -> step_structural_validation
+    step_structural_validation -> step_quality_classification
+    step_quality_classification -> step_initialize_optional_outputs
+    step_initialize_optional_outputs -> step_set_default_approval_summary
+    step_initialize_optional_outputs -> step_set_default_quality_results
+    step_initialize_optional_outputs -> step_set_default_tool_analysis
+    step_set_default_approval_summary -> cond_step_quick_approval
+    cond_step_quick_approval -> step_quick_approval [label="quality_classification.re"]
+    step_quality_classification -> cond_step_description_quality_check
+    cond_step_description_quality_check -> step_description_quality_check [label="quality_classification.re"]
+    step_description_quality_check -> cond_step_tool_access_analysis
+    cond_step_tool_access_analysis -> step_tool_access_analysis [label="quality_classification.re"]
+    step_quality_classification -> step_synthesize_report
+    step_quick_approval -> step_synthesize_report
+    step_description_quality_check -> step_synthesize_report
+    step_tool_access_analysis -> step_synthesize_report
+    step_set_default_approval_summary -> step_synthesize_report
+    step_set_default_quality_results -> step_synthesize_report
+    step_set_default_tool_analysis -> step_synthesize_report
+    cond_step_quick_approval -> step_synthesize_report [label="skip", style=dashed]
+    cond_step_description_quality_check -> step_synthesize_report [label="skip", style=dashed]
+    cond_step_tool_access_analysis -> step_synthesize_report [label="skip", style=dashed]
+    step_synthesize_report -> done
+
+    subgraph cluster_legend {
+        label="Legend\n\"What do the shapes mean?\""
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_bash [label="Script Step", shape=box, fillcolor="#bbdefb"]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_cond [label="Condition", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_bash -> leg_agent -> leg_cond -> leg_start [style=invis]
+    }
+}
