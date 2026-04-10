@@ -1,0 +1,31 @@
+---
+bundle:
+  name: lean-amplifier-dev-behavior
+  version: 1.0.0
+  description: |
+    Dev-focused agents and Python tooling layer.
+    Expects lean-foundation (or equivalent) to provide session config and core tools.
+    
+    Agents: bug-hunter, explorer, file-ops, git-ops, modular-builder, zen-architect, post-task-cleanup
+    Tools: python_check (ruff/pyright), LSP (pyright), apply-patch (V4A diff)
+    
+    Excludes: browser-tester, terminal-tester, design-intelligence, stories,
+    dot-graph, superpowers, recipes, shadow, MCP, skills, routing-matrix,
+    amplifier-expert, core-expert, foundation-expert.
+
+includes:
+  # Python tooling: LSP (pyright) + quality (ruff/pyright check + auto-check hook)
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-python-dev@main
+  # V4A diff editing (apply_patch tool + editing guidance context)
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-filesystem@main#subdirectory=behaviors/apply-patch.yaml
+
+# Dev agents
+agents:
+  include:
+    - foundation:experiments/exp-lean/bug-hunter
+    - foundation:experiments/exp-lean/explorer
+    - foundation:experiments/exp-lean/file-ops
+    - foundation:experiments/exp-lean/git-ops
+    - foundation:experiments/exp-lean/modular-builder
+    - foundation:experiments/exp-lean/zen-architect
+    - foundation:experiments/exp-lean/post-task-cleanup
