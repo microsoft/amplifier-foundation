@@ -19,13 +19,13 @@ includes:
   # V4A diff editing (apply_patch tool + editing guidance context)
   - bundle: git+https://github.com/microsoft/amplifier-bundle-filesystem@main#subdirectory=behaviors/apply-patch.yaml
 
-# Dev agents
+# Dev agents (from foundation — no local copies needed)
 agents:
   include:
-    - foundation:experiments/exp-lean/bug-hunter
-    - foundation:experiments/exp-lean/explorer
-    - foundation:experiments/exp-lean/file-ops
-    - foundation:experiments/exp-lean/git-ops
-    - foundation:experiments/exp-lean/modular-builder
-    - foundation:experiments/exp-lean/zen-architect
-    - foundation:experiments/exp-lean/post-task-cleanup
+    - foundation:bug-hunter
+    - foundation:explorer
+    - foundation:file-ops
+    - foundation:git-ops
+    - foundation:modular-builder
+    - foundation:zen-architect
+    - foundation:post-task-cleanup
