@@ -13,7 +13,7 @@ You can delegate tasks to specialist agents using the `delegate` tool.
 ## Basic Usage
 
 ```python
-delegate(agent="foundation:experiments/exp-lean/explorer", instruction="Survey the auth module")
+delegate(agent="foundation:explorer", instruction="Survey the auth module")
 ```
 
 ## Context Control
@@ -32,6 +32,6 @@ delegate(agent="foundation:experiments/exp-lean/explorer", instruction="Survey t
 Launch multiple agents simultaneously for independent work:
 
 ```python
-delegate(agent="foundation:experiments/exp-lean/explorer", instruction="Check frontend", context_depth="none")
-delegate(agent="foundation:experiments/exp-lean/explorer", instruction="Check backend", context_depth="none")
+delegate(agent="foundation:explorer", instruction="Check frontend", context_depth="none")
+delegate(agent="foundation:explorer", instruction="Check backend", context_depth="none")
 ```
