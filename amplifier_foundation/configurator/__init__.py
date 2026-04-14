@@ -186,3 +186,35 @@ class SessionConfigurator:
 
         instance = self._stash["tools"].pop(name)
         await self._coordinator.mount("tools", name, instance)
+
+    # ------------------------------------------------------------------
+    # Provider enable / disable (async)
+    # ------------------------------------------------------------------
+
+    async def provider_disable(self, name: str) -> None:
+        """Unmount a provider from the coordinator and stash the instance (disable it).
+
+        Args:
+            name: The provider name to disable.
+        """
+        # Idempotent: already disabled (in stash) — nothing to do.
+        if name in self._stash["providers"]:
+            return
+
+        instance = await self._coordinator.unmount("providers", name)
+        self._stash["providers"][name] = instance
+
+    async def provider_enable(self, name: str) -> None:
+        """Remount a previously disabled provider from the stash (enable it).
+
+        Args:
+            name: The provider name to enable.
+
+        Raises:
+            ValueError: If the name is not in the stash (with a 'not in stash' message).
+        """
+        if name not in self._stash["providers"]:
+            raise ValueError(f"Provider {name!r} not in stash. Cannot enable.")
+
+        instance = self._stash["providers"].pop(name)
+        await self._coordinator.mount("providers", name, instance)

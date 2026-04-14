@@ -317,3 +317,41 @@ class TestToolToggle:
         """Enabling a tool without prior disable raises ValueError with 'not in stash'."""
         with pytest.raises(ValueError, match="not in stash"):
             await async_configurator.tool_enable("tool-bash")
+
+
+class TestProviderToggle:
+    """Tests for async provider_disable and provider_enable methods."""
+
+    @pytest.mark.asyncio
+    async def test_disable_calls_unmount(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """Disabling a provider calls coordinator.unmount('providers', name)."""
+        await async_configurator.provider_disable("provider-anthropic")
+
+        async_coordinator.unmount.assert_called_once_with(
+            "providers", "provider-anthropic"
+        )
+
+    @pytest.mark.asyncio
+    async def test_enable_remounts_from_stash(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """Enabling a disabled provider calls coordinator.mount with the stashed instance and clears stash."""
+        await async_configurator.provider_disable("provider-anthropic")
+        stashed_instance = async_configurator._stash["providers"]["provider-anthropic"]
+
+        await async_configurator.provider_enable("provider-anthropic")
+
+        async_coordinator.mount.assert_called_once_with(
+            "providers", "provider-anthropic", stashed_instance
+        )
+        assert "provider-anthropic" not in async_configurator._stash["providers"]
+
+    @pytest.mark.asyncio
+    async def test_enable_without_stash_raises_value_error(
+        self, async_configurator: SessionConfigurator
+    ) -> None:
+        """Enabling a provider without prior disable raises ValueError with 'not in stash'."""
+        with pytest.raises(ValueError, match="not in stash"):
+            await async_configurator.provider_enable("provider-anthropic")
