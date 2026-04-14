@@ -79,6 +79,63 @@ def configurator(
     )
 
 
+class TestContextToggle:
+    """Tests for context_disable and context_enable methods."""
+
+    def test_disable_removes_from_bundle_context(
+        self, configurator: SessionConfigurator, mock_bundle: Bundle
+    ) -> None:
+        """Disabling context removes it from bundle.context and stashes it."""
+        assert "readme" in mock_bundle.context
+        original_path = mock_bundle.context["readme"]
+
+        configurator.context_disable("readme")
+
+        assert "readme" not in mock_bundle.context
+        assert configurator._stash["context"]["readme"] == original_path
+
+    def test_enable_restores_from_stash(
+        self, configurator: SessionConfigurator, mock_bundle: Bundle
+    ) -> None:
+        """Enabling a disabled context restores it from stash to bundle.context."""
+        original_path = mock_bundle.context["readme"]
+        configurator.context_disable("readme")
+
+        assert "readme" not in mock_bundle.context
+
+        configurator.context_enable("readme")
+
+        assert "readme" in mock_bundle.context
+        assert mock_bundle.context["readme"] == original_path
+        assert "readme" not in configurator._stash["context"]
+
+    def test_disable_unknown_raises_value_error(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """Disabling an unknown context name raises ValueError with 'not found' message."""
+        with pytest.raises(ValueError, match="not found"):
+            configurator.context_disable("nonexistent")
+
+    def test_disable_is_idempotent(
+        self, configurator: SessionConfigurator, mock_bundle: Bundle
+    ) -> None:
+        """Disabling an already-disabled context is a no-op (idempotent)."""
+        configurator.context_disable("readme")
+        # Second call should not raise or change state
+        configurator.context_disable("readme")
+        assert "readme" not in mock_bundle.context
+
+    def test_enable_already_enabled_is_noop(
+        self, configurator: SessionConfigurator, mock_bundle: Bundle
+    ) -> None:
+        """Enabling an already-enabled context is a no-op."""
+        original_path = mock_bundle.context["readme"]
+        # Should not raise — readme is already in bundle.context
+        configurator.context_enable("readme")
+        assert "readme" in mock_bundle.context
+        assert mock_bundle.context["readme"] == original_path
+
+
 class TestSessionConfiguratorConstructor:
     """Tests for SessionConfigurator constructor."""
 

@@ -65,3 +65,48 @@ class SessionConfigurator:
     def take_snapshot(self) -> None:
         """Capture a snapshot and store it as the original reference."""
         self._original_snapshot = self.snapshot()
+
+    # ------------------------------------------------------------------
+    # Context enable / disable
+    # ------------------------------------------------------------------
+
+    def context_disable(self, name: str) -> None:
+        """Move a context entry from the bundle into the stash (disable it).
+
+        Args:
+            name: The context key to disable.
+
+        Raises:
+            ValueError: If the name is not found in bundle.context and is not
+                already stashed (with a message listing available keys).
+        """
+        # Idempotent: already disabled (in stash) — nothing to do.
+        if name in self._stash["context"]:
+            return
+
+        if name not in self._bundle.context:
+            available = list(self._bundle.context.keys())
+            raise ValueError(
+                f"Context key {name!r} not found. Available keys: {available}"
+            )
+
+        self._stash["context"][name] = self._bundle.context.pop(name)
+
+    def context_enable(self, name: str) -> None:
+        """Move a context entry from the stash back into the bundle (enable it).
+
+        Args:
+            name: The context key to enable.
+
+        Raises:
+            ValueError: If the name is not in the stash (with a 'not in stash'
+                message).
+        """
+        # Idempotent: already enabled (in bundle.context) — nothing to do.
+        if name in self._bundle.context:
+            return
+
+        if name not in self._stash["context"]:
+            raise ValueError(f"Context key {name!r} not in stash. Cannot enable.")
+
+        self._bundle.context[name] = self._stash["context"].pop(name)
