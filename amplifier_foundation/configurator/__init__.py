@@ -335,6 +335,104 @@ class SessionConfigurator:
         await self._coordinator.mount("providers", name, instance)
 
     # ------------------------------------------------------------------
+    # Behavior group toggle (async)
+    # ------------------------------------------------------------------
+
+    async def behavior_disable(self, name: str) -> dict[str, Any]:
+        """Disable all contributions from a named behavior across all categories.
+
+        Reads bundle._provenance to find all items contributed by the behavior,
+        then disables each one by calling the appropriate category disable method.
+        Partial failures are collected as warnings and do not stop processing.
+
+        Args:
+            name: The behavior name to disable.
+
+        Returns:
+            dict with keys:
+                'disabled': list of provenance keys that were successfully disabled.
+                'warnings': list of error message strings for items that failed.
+
+        Raises:
+            ValueError: If the behavior name is not found in provenance.
+        """
+        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        matching_keys = [k for k, v in provenance.items() if v == name]
+
+        if not matching_keys:
+            raise ValueError(f"Behavior {name!r} not found in provenance")
+
+        disabled: list[str] = []
+        warnings: list[str] = []
+
+        for prov_key in matching_keys:
+            category, item_name = prov_key.split(":", 1)
+            try:
+                if category == "context":
+                    self.context_disable(item_name)
+                elif category == "tools":
+                    await self.tool_disable(item_name)
+                elif category == "hooks":
+                    self.hook_disable(item_name)
+                elif category == "providers":
+                    await self.provider_disable(item_name)
+                elif category == "agents":
+                    self.agent_disable(item_name)
+                disabled.append(prov_key)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(str(exc))
+
+        self._disabled_behaviors.add(name)
+        return {"disabled": disabled, "warnings": warnings}
+
+    async def behavior_enable(self, name: str) -> dict[str, Any]:
+        """Enable all contributions from a previously disabled named behavior.
+
+        Reads bundle._provenance to find all items contributed by the behavior,
+        then enables each one by calling the appropriate category enable method.
+        Partial failures are collected as warnings and do not stop processing.
+
+        Args:
+            name: The behavior name to enable.
+
+        Returns:
+            dict with keys:
+                'enabled': list of provenance keys that were successfully enabled.
+                'warnings': list of error message strings for items that failed.
+
+        Raises:
+            ValueError: If the behavior name is not found in provenance.
+        """
+        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        matching_keys = [k for k, v in provenance.items() if v == name]
+
+        if not matching_keys:
+            raise ValueError(f"Behavior {name!r} not found in provenance")
+
+        enabled: list[str] = []
+        warnings: list[str] = []
+
+        for prov_key in matching_keys:
+            category, item_name = prov_key.split(":", 1)
+            try:
+                if category == "context":
+                    self.context_enable(item_name)
+                elif category == "tools":
+                    await self.tool_enable(item_name)
+                elif category == "hooks":
+                    self.hook_enable(item_name)
+                elif category == "providers":
+                    await self.provider_enable(item_name)
+                elif category == "agents":
+                    self.agent_enable(item_name)
+                enabled.append(prov_key)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(str(exc))
+
+        self._disabled_behaviors.discard(name)
+        return {"enabled": enabled, "warnings": warnings}
+
+    # ------------------------------------------------------------------
     # Config get / set
     # ------------------------------------------------------------------
 

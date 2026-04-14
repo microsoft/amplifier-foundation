@@ -531,3 +531,186 @@ class TestSnapshotAndDiff:
         configurator._original_snapshot = None  # type: ignore[assignment]
         diff = configurator.diff_from_original()
         assert diff == []
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for behavior toggle tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def behavior_bundle() -> Bundle:
+    """Bundle with multiple provenance entries for a single behavior."""
+    bundle = Bundle(
+        name="behavior-bundle",
+        context={"readme": Path("/tmp/readme.md")},
+        tools=[{"module": "tool-bash"}],
+        hooks=[{"module": "hooks-logging"}],
+        providers=[{"module": "provider-anthropic"}],
+        agents={"my-agent": {"description": "Test agent"}},
+    )
+    bundle._provenance = {  # type: ignore[misc]
+        "context:readme": "my-behavior",
+        "tools:tool-bash": "my-behavior",
+        "hooks:on_before_tool": "my-behavior",
+        "agents:my-agent": "my-behavior",
+    }
+    return bundle
+
+
+@pytest.fixture
+def behavior_coordinator(behavior_bundle: Bundle) -> MagicMock:
+    """Async coordinator for behavior tests with all required mocks."""
+    coordinator = MagicMock()
+    coordinator.config = {"agents": {"my-agent": {}}}
+
+    handler_func = MagicMock()
+    coordinator.hooks._handlers = {
+        "on_before_tool": {
+            "event": "before_tool",
+            "handler": handler_func,
+            "priority": 10,
+        },
+    }
+
+    tool_instance = MagicMock(name="tool-instance")
+    coordinator.mount = AsyncMock()
+    coordinator.unmount = AsyncMock(return_value=tool_instance)
+
+    return coordinator
+
+
+@pytest.fixture
+def behavior_session(behavior_coordinator: MagicMock) -> MagicMock:
+    """MagicMock session wrapping behavior_coordinator."""
+    session = MagicMock()
+    session.coordinator = behavior_coordinator
+    return session
+
+
+@pytest.fixture
+def behavior_prepared_bundle(behavior_bundle: Bundle) -> MagicMock:
+    """MagicMock prepared bundle wrapping behavior_bundle."""
+    prepared = MagicMock()
+    prepared.bundle = behavior_bundle
+    return prepared
+
+
+@pytest.fixture
+def behavior_configurator(
+    behavior_session: MagicMock, behavior_prepared_bundle: MagicMock
+) -> SessionConfigurator:
+    """SessionConfigurator instance for behavior toggle tests."""
+    return SessionConfigurator(
+        session=behavior_session, prepared_bundle=behavior_prepared_bundle
+    )
+
+
+class TestBehaviorToggle:
+    """Tests for behavior_disable and behavior_enable methods."""
+
+    @pytest.mark.asyncio
+    async def test_behavior_disable_disables_all_contributions(
+        self,
+        behavior_configurator: SessionConfigurator,
+        behavior_bundle: Bundle,
+        behavior_coordinator: MagicMock,
+    ) -> None:
+        """behavior_disable disables all items contributed by the named behavior."""
+        result = await behavior_configurator.behavior_disable("my-behavior")
+
+        # All provenance keys for the behavior should be in the disabled list
+        assert set(result["disabled"]) == {
+            "context:readme",
+            "tools:tool-bash",
+            "hooks:on_before_tool",
+            "agents:my-agent",
+        }
+        assert result["warnings"] == []
+
+        # Context item removed from bundle
+        assert "readme" not in behavior_bundle.context
+
+        # Tool unmounted
+        behavior_coordinator.unmount.assert_any_call("tools", "tool-bash")
+
+        # Hook unregistered
+        behavior_coordinator.hooks.unregister.assert_any_call("on_before_tool")
+
+        # Agent removed from coordinator.config
+        assert "my-agent" not in behavior_coordinator.config["agents"]
+
+    @pytest.mark.asyncio
+    async def test_behavior_enable_restores_all(
+        self,
+        behavior_configurator: SessionConfigurator,
+        behavior_bundle: Bundle,
+        behavior_coordinator: MagicMock,
+    ) -> None:
+        """behavior_enable restores all contributions after behavior_disable."""
+        await behavior_configurator.behavior_disable("my-behavior")
+
+        result = await behavior_configurator.behavior_enable("my-behavior")
+
+        # All provenance keys should be in the enabled list
+        assert set(result["enabled"]) == {
+            "context:readme",
+            "tools:tool-bash",
+            "hooks:on_before_tool",
+            "agents:my-agent",
+        }
+
+        # Context item restored to bundle
+        assert "readme" in behavior_bundle.context
+
+        # Tool stash cleared (was remounted)
+        assert "tool-bash" not in behavior_configurator._stash["tools"]
+
+        # Hook stash cleared (was re-registered)
+        assert "on_before_tool" not in behavior_configurator._stash["hooks"]
+
+        # Agent restored to coordinator.config
+        assert "my-agent" in behavior_coordinator.config["agents"]
+
+    @pytest.mark.asyncio
+    async def test_behavior_disable_unknown_raises_value_error(
+        self,
+        behavior_configurator: SessionConfigurator,
+    ) -> None:
+        """behavior_disable raises ValueError with 'not found in provenance' for unknown name."""
+        with pytest.raises(ValueError, match="not found in provenance"):
+            await behavior_configurator.behavior_disable("unknown-behavior")
+
+    @pytest.mark.asyncio
+    async def test_behavior_disable_partial_failure_continues_with_warnings(
+        self,
+        behavior_configurator: SessionConfigurator,
+        behavior_bundle: Bundle,
+    ) -> None:
+        """Partial failure during behavior_disable continues and collects warnings."""
+        # Add a provenance entry for a context key that does NOT exist in the bundle
+        behavior_bundle._provenance["context:nonexistent"] = "my-behavior"  # type: ignore[index]
+
+        result = await behavior_configurator.behavior_disable("my-behavior")
+
+        # The failing item produces a warning
+        assert len(result["warnings"]) > 0
+
+        # The successful items are still in the disabled list
+        assert "context:readme" in result["disabled"]
+        assert "agents:my-agent" in result["disabled"]
+
+        # The failed item is NOT in disabled
+        assert "context:nonexistent" not in result["disabled"]
+
+    @pytest.mark.asyncio
+    async def test_behavior_disable_tracks_behavior_name(
+        self,
+        behavior_configurator: SessionConfigurator,
+    ) -> None:
+        """behavior_disable adds the behavior name to _disabled_behaviors set."""
+        assert "my-behavior" not in behavior_configurator._disabled_behaviors
+
+        await behavior_configurator.behavior_disable("my-behavior")
+
+        assert "my-behavior" in behavior_configurator._disabled_behaviors
