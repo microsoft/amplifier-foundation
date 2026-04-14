@@ -355,3 +355,48 @@ class TestProviderToggle:
         """Enabling a provider without prior disable raises ValueError with 'not in stash'."""
         with pytest.raises(ValueError, match="not in stash"):
             await async_configurator.provider_enable("provider-anthropic")
+
+
+class TestHookToggle:
+    """Tests for hook_disable and hook_enable methods."""
+
+    def test_disable_calls_unregister(
+        self, configurator: SessionConfigurator, mock_coordinator: MagicMock
+    ) -> None:
+        """Disabling a hook calls coordinator.hooks.unregister(name) and stashes marker."""
+        configurator.hook_disable("on_before_tool")
+
+        mock_coordinator.hooks.unregister.assert_called_once_with("on_before_tool")
+        assert configurator._stash["hooks"]["on_before_tool"] is True
+
+    def test_enable_reregisters_from_snapshot(
+        self, configurator: SessionConfigurator, mock_coordinator: MagicMock
+    ) -> None:
+        """Enabling a disabled hook calls coordinator.hooks.register with event, handler, priority, and name from snapshot."""
+        configurator.hook_disable("on_before_tool")
+        mock_coordinator.hooks.register.reset_mock()
+
+        configurator.hook_enable("on_before_tool")
+
+        snapshot_info = configurator._hook_snapshot["on_before_tool"]
+        mock_coordinator.hooks.register.assert_called_once_with(
+            snapshot_info["event"],
+            snapshot_info["handler"],
+            priority=snapshot_info["priority"],
+            name="on_before_tool",
+        )
+        assert "on_before_tool" not in configurator._stash["hooks"]
+
+    def test_disable_unknown_raises_value_error(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """Disabling a hook not in snapshot raises ValueError with 'not found in snapshot'."""
+        with pytest.raises(ValueError, match="not found in snapshot"):
+            configurator.hook_disable("nonexistent_hook")
+
+    def test_enable_without_stash_raises_value_error(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """Enabling a hook without prior disable raises ValueError with 'not in stash'."""
+        with pytest.raises(ValueError, match="not in stash"):
+            configurator.hook_enable("on_before_tool")

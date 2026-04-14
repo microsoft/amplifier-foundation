@@ -51,6 +51,46 @@ class SessionConfigurator:
         for name, entry in handlers.items():
             self._hook_snapshot[name] = dict(entry)
 
+    def hook_disable(self, name: str) -> None:
+        """Unregister a hook from the coordinator and stash a marker (disable it).
+
+        Args:
+            name: The hook name to disable.
+
+        Raises:
+            ValueError: If the name is not found in the hook snapshot.
+        """
+        # Idempotent: already disabled (in stash) — nothing to do.
+        if name in self._stash["hooks"]:
+            return
+
+        if name not in self._hook_snapshot:
+            raise ValueError(f"Hook {name!r} not found in snapshot.")
+
+        self._coordinator.hooks.unregister(name)
+        self._stash["hooks"][name] = True
+
+    def hook_enable(self, name: str) -> None:
+        """Re-register a previously disabled hook from the snapshot (enable it).
+
+        Args:
+            name: The hook name to enable.
+
+        Raises:
+            ValueError: If the name is not in the stash (with a 'not in stash' message).
+        """
+        if name not in self._stash["hooks"]:
+            raise ValueError(f"Hook {name!r} not in stash. Cannot enable.")
+
+        info = self._hook_snapshot[name]
+        self._coordinator.hooks.register(
+            info["event"],
+            info["handler"],
+            priority=info.get("priority", 50),
+            name=name,
+        )
+        del self._stash["hooks"][name]
+
     # ------------------------------------------------------------------
     # Snapshot
     # ------------------------------------------------------------------
