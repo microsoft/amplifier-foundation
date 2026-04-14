@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 
+import yaml
+
 from amplifier_foundation.dicts.navigation import get_nested, set_nested
+
+_log = logging.getLogger(__name__)
 
 
 class SessionConfigurator:
@@ -461,3 +467,121 @@ class SessionConfigurator:
         keys = path.split(".")
         set_nested(self._coordinator.config, keys, value)
         self._config_overrides[path] = value
+
+    # ------------------------------------------------------------------
+    # Persistence: save and apply
+    # ------------------------------------------------------------------
+
+    def save(self, scope: str = "global") -> str:
+        """Persist the current configurator state to a settings.yaml file.
+
+        Args:
+            scope: 'global' writes to ~/.amplifier/settings.yaml;
+                   'project' writes to .amplifier/settings.yaml (relative to cwd).
+
+        Returns:
+            The string path of the written settings file.
+
+        Raises:
+            ValueError: If scope is not 'global' or 'project'.
+        """
+        if scope == "global":
+            settings_path = Path.home() / ".amplifier" / "settings.yaml"
+        elif scope == "project":
+            settings_path = Path(".amplifier") / "settings.yaml"
+        else:
+            raise ValueError(f"Invalid scope: {scope!r}")
+
+        configurator_data: dict[str, Any] = {
+            "disabled": {
+                "behaviors": sorted(self._disabled_behaviors),
+                "context": list(self._stash["context"].keys()),
+                "tools": list(self._stash["tools"].keys()),
+                "hooks": list(self._stash["hooks"].keys()),
+                "providers": list(self._stash["providers"].keys()),
+                "agents": list(self._stash["agents"].keys()),
+            },
+            "config_overrides": dict(self._config_overrides),
+        }
+
+        # Read existing settings to preserve non-configurator sections
+        existing: dict[str, Any] = {}
+        if settings_path.exists():
+            with settings_path.open() as f:
+                existing = yaml.safe_load(f) or {}
+
+        existing["configurator"] = configurator_data
+
+        # Ensure parent directory exists before writing
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with settings_path.open("w") as f:
+            yaml.dump(existing, f, default_flow_style=False)
+
+        return str(settings_path)
+
+    async def apply_saved_settings(self, settings: dict[str, Any]) -> list[str]:
+        """Apply a saved configurator settings dict to the current session.
+
+        Disables behaviors first, then individual items per category, and
+        finally applies config_overrides. Stale references (items no longer
+        present in the bundle or config) are silently skipped with a debug log.
+
+        Args:
+            settings: The 'configurator' section from a settings.yaml file,
+                containing 'disabled' and 'config_overrides' keys.
+
+        Returns:
+            List of warning messages (e.g. partial failures within behavior_disable).
+        """
+        warnings: list[str] = []
+        disabled = settings.get("disabled", {})
+
+        # Disable whole behaviors first
+        for behavior_name in disabled.get("behaviors", []):
+            try:
+                result = await self.behavior_disable(behavior_name)
+                warnings.extend(result.get("warnings", []))
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("Skipping stale behavior %r: %s", behavior_name, exc)
+
+        # Disable individual context items
+        for name in disabled.get("context", []):
+            try:
+                self.context_disable(name)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("Skipping stale context item %r: %s", name, exc)
+
+        # Disable individual tools (async)
+        for name in disabled.get("tools", []):
+            try:
+                await self.tool_disable(name)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("Skipping stale tool %r: %s", name, exc)
+
+        # Disable individual hooks
+        for name in disabled.get("hooks", []):
+            try:
+                self.hook_disable(name)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("Skipping stale hook %r: %s", name, exc)
+
+        # Disable individual providers (async)
+        for name in disabled.get("providers", []):
+            try:
+                await self.provider_disable(name)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("Skipping stale provider %r: %s", name, exc)
+
+        # Disable individual agents
+        for name in disabled.get("agents", []):
+            try:
+                self.agent_disable(name)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("Skipping stale agent %r: %s", name, exc)
+
+        # Apply config overrides
+        for path, value in settings.get("config_overrides", {}).items():
+            self.config_set(path, value)
+
+        return warnings

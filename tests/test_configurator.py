@@ -714,3 +714,114 @@ class TestBehaviorToggle:
         await behavior_configurator.behavior_disable("my-behavior")
 
         assert "my-behavior" in behavior_configurator._disabled_behaviors
+
+
+class TestSaveAndApply:
+    """Tests for save() and apply_saved_settings() methods."""
+
+    def test_save_writes_settings_yaml(
+        self,
+        configurator: SessionConfigurator,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """save() writes a valid YAML file with 'configurator' section containing
+        disabled items and config_overrides."""
+        import yaml
+
+        # Disable a context item and set a config override
+        configurator.context_disable("readme")
+        configurator.config_set("model.name", "claude-3")
+
+        # Use project scope so we can control where the file is written
+        monkeypatch.chdir(tmp_path)
+
+        result = configurator.save(scope="project")
+
+        # Check return value is the path string
+        expected_path = tmp_path / ".amplifier" / "settings.yaml"
+        assert expected_path.exists()
+
+        # Read the written YAML
+        with expected_path.open() as f:
+            data = yaml.safe_load(f)
+
+        assert "configurator" in data
+        conf = data["configurator"]
+        assert "disabled" in conf
+        assert "config_overrides" in conf
+
+        # disabled.context should contain the stashed "readme"
+        assert conf["disabled"]["context"] == ["readme"]
+
+        # disabled.behaviors should be empty (no behaviors disabled)
+        assert conf["disabled"]["behaviors"] == []
+
+        # config_overrides should include our override
+        assert conf["config_overrides"] == {"model.name": "claude-3"}
+
+        # result should be a string path
+        assert isinstance(result, str)
+
+    def test_save_invalid_scope_raises(self, configurator: SessionConfigurator) -> None:
+        """save() raises ValueError with 'Invalid scope' for unknown scope."""
+        with pytest.raises(ValueError, match="Invalid scope"):
+            configurator.save(scope="invalid")
+
+    @pytest.mark.asyncio
+    async def test_apply_saved_settings_works(
+        self,
+        async_configurator: SessionConfigurator,
+        async_coordinator: MagicMock,
+    ) -> None:
+        """apply_saved_settings disables specified items and applies config overrides."""
+        settings = {
+            "disabled": {
+                "behaviors": [],
+                "context": ["readme"],
+                "tools": [],
+                "hooks": ["on_before_tool"],
+                "providers": [],
+                "agents": [],
+            },
+            "config_overrides": {"model.name": "claude-3"},
+        }
+
+        warnings = await async_configurator.apply_saved_settings(settings)
+
+        # Context "readme" should be disabled (removed from bundle.context)
+        assert "readme" not in async_configurator._bundle.context
+
+        # Hook "on_before_tool" should be in the stash (disabled)
+        assert "on_before_tool" in async_configurator._stash["hooks"]
+
+        # Config override should be applied
+        assert async_configurator._config_overrides["model.name"] == "claude-3"
+
+        # Should return a list of warnings (empty in this case)
+        assert isinstance(warnings, list)
+        assert warnings == []
+
+    @pytest.mark.asyncio
+    async def test_apply_with_stale_refs_doesnt_raise(
+        self,
+        async_configurator: SessionConfigurator,
+    ) -> None:
+        """apply_saved_settings silently skips stale references (items no longer present)."""
+        settings = {
+            "disabled": {
+                "behaviors": ["nonexistent-behavior"],
+                "context": ["nonexistent-context"],
+                "tools": ["nonexistent-tool"],
+                "hooks": ["nonexistent-hook"],
+                "providers": ["nonexistent-provider"],
+                "agents": ["nonexistent-agent"],
+            },
+            "config_overrides": {},
+        }
+
+        # Should not raise despite all references being stale
+        warnings = await async_configurator.apply_saved_settings(settings)
+
+        # Returns a list (stale refs are silently skipped)
+        assert isinstance(warnings, list)
