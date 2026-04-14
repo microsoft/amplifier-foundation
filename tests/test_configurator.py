@@ -438,3 +438,96 @@ class TestHookToggle:
         """Enabling a hook without prior disable raises ValueError with 'not in stash'."""
         with pytest.raises(ValueError, match="not in stash"):
             configurator.hook_enable("on_before_tool")
+
+
+class TestSnapshotAndDiff:
+    """Tests for snapshot() and diff_from_original() methods."""
+
+    def test_snapshot_captures_initial_state(
+        self,
+        configurator: SessionConfigurator,
+        mock_bundle: Bundle,
+        mock_coordinator: MagicMock,
+    ) -> None:
+        """snapshot() returns enabled/disabled lists for all 5 categories."""
+        snap = configurator.snapshot()
+
+        assert set(snap.keys()) == {"context", "tools", "hooks", "providers", "agents"}
+
+        # context: "readme" is enabled, none disabled
+        assert "readme" in snap["context"]["enabled"]
+        assert snap["context"]["disabled"] == []
+
+        # agents: "my-agent" is enabled, none disabled
+        assert "my-agent" in snap["agents"]["enabled"]
+        assert snap["agents"]["disabled"] == []
+
+        # tools: "tool-bash" is enabled, none disabled
+        assert "tool-bash" in snap["tools"]["enabled"]
+        assert snap["tools"]["disabled"] == []
+
+        # providers: "provider-anthropic" is enabled, none disabled
+        assert "provider-anthropic" in snap["providers"]["enabled"]
+        assert snap["providers"]["disabled"] == []
+
+        # hooks: "on_before_tool" and "on_after_tool" are enabled, none disabled
+        assert "on_before_tool" in snap["hooks"]["enabled"]
+        assert "on_after_tool" in snap["hooks"]["enabled"]
+        assert snap["hooks"]["disabled"] == []
+
+    def test_snapshot_reflects_disables(
+        self,
+        configurator: SessionConfigurator,
+    ) -> None:
+        """After disabling items, snapshot shows them as disabled."""
+        configurator.context_disable("readme")
+        configurator.agent_disable("my-agent")
+        configurator.hook_disable("on_before_tool")
+
+        snap = configurator.snapshot()
+
+        assert "readme" in snap["context"]["disabled"]
+        assert "readme" not in snap["context"]["enabled"]
+
+        assert "my-agent" in snap["agents"]["disabled"]
+        assert "my-agent" not in snap["agents"]["enabled"]
+
+        assert "on_before_tool" in snap["hooks"]["disabled"]
+        assert "on_before_tool" not in snap["hooks"]["enabled"]
+
+    def test_diff_identifies_changes(
+        self,
+        configurator: SessionConfigurator,
+    ) -> None:
+        """diff_from_original() returns changes compared to the original snapshot."""
+        # Original snapshot is captured in __init__; now disable some items
+        configurator.context_disable("readme")
+        configurator.agent_disable("my-agent")
+        configurator.hook_disable("on_before_tool")
+
+        diff = configurator.diff_from_original()
+
+        disabled_by_name = {d["name"]: d for d in diff if d["action"] == "disabled"}
+        assert "readme" in disabled_by_name
+        assert disabled_by_name["readme"]["category"] == "context"
+        assert "my-agent" in disabled_by_name
+        assert disabled_by_name["my-agent"]["category"] == "agents"
+        assert "on_before_tool" in disabled_by_name
+        assert disabled_by_name["on_before_tool"]["category"] == "hooks"
+
+    def test_diff_empty_when_no_changes(
+        self,
+        configurator: SessionConfigurator,
+    ) -> None:
+        """diff_from_original() returns empty list when nothing has changed."""
+        diff = configurator.diff_from_original()
+        assert diff == []
+
+    def test_diff_without_snapshot_returns_empty(
+        self,
+        configurator: SessionConfigurator,
+    ) -> None:
+        """diff_from_original() returns empty list when _original_snapshot is None."""
+        configurator._original_snapshot = None  # type: ignore[assignment]
+        diff = configurator.diff_from_original()
+        assert diff == []

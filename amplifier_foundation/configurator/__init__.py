@@ -100,9 +100,82 @@ class SessionConfigurator:
     def snapshot(self) -> dict[str, Any]:
         """Return a snapshot of the current session state.
 
-        Placeholder implementation — returns an empty dict.
+        Returns a dict with keys: 'context', 'tools', 'hooks', 'providers', 'agents'.
+        Each value is {'enabled': [...], 'disabled': [...]}.
         """
-        return {}
+        stash = self._stash
+
+        # Context: enabled = live keys in bundle.context, disabled = keys in stash
+        context_enabled = list(self._bundle.context.keys())
+        context_disabled = list(stash["context"].keys())
+
+        # Agents: enabled = live keys in coordinator.config['agents'], disabled = stash keys
+        agents_enabled = list(self._coordinator.config.get("agents", {}).keys())
+        agents_disabled = list(stash["agents"].keys())
+
+        # Tools: enabled = module IDs from bundle.tools not in stash, disabled = stash keys
+        tools_enabled = [
+            mid
+            for mod in self._bundle.tools
+            if (mid := mod.get("id") or mod.get("module")) and mid not in stash["tools"]
+        ]
+        tools_disabled = list(stash["tools"].keys())
+
+        # Providers: enabled = module IDs from bundle.providers not in stash, disabled = stash keys
+        providers_enabled = [
+            mid
+            for mod in self._bundle.providers
+            if (mid := mod.get("id") or mod.get("module"))
+            and mid not in stash["providers"]
+        ]
+        providers_disabled = list(stash["providers"].keys())
+
+        # Hooks: enabled = names from hook_snapshot not in stash, disabled = stash keys
+        hooks_enabled = [
+            name for name in self._hook_snapshot if name not in stash["hooks"]
+        ]
+        hooks_disabled = list(stash["hooks"].keys())
+
+        return {
+            "context": {"enabled": context_enabled, "disabled": context_disabled},
+            "tools": {"enabled": tools_enabled, "disabled": tools_disabled},
+            "hooks": {"enabled": hooks_enabled, "disabled": hooks_disabled},
+            "providers": {"enabled": providers_enabled, "disabled": providers_disabled},
+            "agents": {"enabled": agents_enabled, "disabled": agents_disabled},
+        }
+
+    def diff_from_original(self) -> list[dict[str, Any]]:
+        """Return a list of changes compared to the original snapshot.
+
+        Returns list of {'category': str, 'name': str, 'action': str} dicts.
+        action is 'disabled' (was enabled, now disabled) or 'enabled' (newly enabled).
+        Returns empty list if no original snapshot has been taken.
+        """
+        if self._original_snapshot is None:
+            return []
+
+        current = self.snapshot()
+        changes: list[dict[str, Any]] = []
+
+        for category in ("context", "tools", "hooks", "providers", "agents"):
+            orig_enabled = set(
+                self._original_snapshot.get(category, {}).get("enabled", [])
+            )
+            curr_enabled = set(current.get(category, {}).get("enabled", []))
+
+            # Items present in original but gone now → disabled
+            for name in orig_enabled - curr_enabled:
+                changes.append(
+                    {"category": category, "name": name, "action": "disabled"}
+                )
+
+            # Items present now but not in original → enabled
+            for name in curr_enabled - orig_enabled:
+                changes.append(
+                    {"category": category, "name": name, "action": "enabled"}
+                )
+
+        return changes
 
     def take_snapshot(self) -> None:
         """Capture a snapshot and store it as the original reference."""
