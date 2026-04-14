@@ -1,7 +1,7 @@
 """Tests for SessionConfigurator core constructor and stash."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -219,3 +219,101 @@ class TestAgentToggle:
         """Disabling an unknown agent raises ValueError with 'not found' message."""
         with pytest.raises(ValueError, match="not found"):
             configurator.agent_disable("nonexistent-agent")
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for async tool toggle tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def async_coordinator(mock_bundle: Bundle) -> MagicMock:
+    """MagicMock coordinator with AsyncMock for mount/unmount (required for tool tests)."""
+    coordinator = MagicMock()
+    coordinator.config = {"agents": {"my-agent": {}}}
+
+    handler_func = MagicMock()
+    coordinator.hooks._handlers = {
+        "on_before_tool": {
+            "event": "before_tool",
+            "handler": handler_func,
+            "priority": 10,
+        },
+        "on_after_tool": {
+            "event": "after_tool",
+            "handler": handler_func,
+            "priority": 5,
+        },
+    }
+
+    # Async mount/unmount — must be AsyncMock so they can be awaited.
+    tool_instance = MagicMock(name="tool-instance")
+    coordinator.mount = AsyncMock()
+    coordinator.unmount = AsyncMock(return_value=tool_instance)
+
+    return coordinator
+
+
+@pytest.fixture
+def async_session(async_coordinator: MagicMock) -> MagicMock:
+    """MagicMock session wrapping async_coordinator."""
+    session = MagicMock()
+    session.coordinator = async_coordinator
+    return session
+
+
+@pytest.fixture
+def async_configurator(
+    async_session: MagicMock, mock_prepared_bundle: MagicMock
+) -> SessionConfigurator:
+    """SessionConfigurator instance with async-capable coordinator."""
+    return SessionConfigurator(
+        session=async_session, prepared_bundle=mock_prepared_bundle
+    )
+
+
+class TestToolToggle:
+    """Tests for async tool_disable and tool_enable methods."""
+
+    @pytest.mark.asyncio
+    async def test_disable_calls_unmount(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """Disabling a tool calls coordinator.unmount('tools', name)."""
+        await async_configurator.tool_disable("tool-bash")
+
+        async_coordinator.unmount.assert_called_once_with("tools", "tool-bash")
+
+    @pytest.mark.asyncio
+    async def test_disable_stashes_instance(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """Disabling a tool stashes the instance returned by unmount."""
+        expected_instance = async_coordinator.unmount.return_value
+
+        await async_configurator.tool_disable("tool-bash")
+
+        assert async_configurator._stash["tools"]["tool-bash"] is expected_instance
+
+    @pytest.mark.asyncio
+    async def test_enable_remounts_from_stash(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """Enabling a disabled tool calls coordinator.mount with the stashed instance and clears stash."""
+        await async_configurator.tool_disable("tool-bash")
+        stashed_instance = async_configurator._stash["tools"]["tool-bash"]
+
+        await async_configurator.tool_enable("tool-bash")
+
+        async_coordinator.mount.assert_called_once_with(
+            "tools", "tool-bash", stashed_instance
+        )
+        assert "tool-bash" not in async_configurator._stash["tools"]
+
+    @pytest.mark.asyncio
+    async def test_enable_without_stash_raises_value_error(
+        self, async_configurator: SessionConfigurator
+    ) -> None:
+        """Enabling a tool without prior disable raises ValueError with 'not in stash'."""
+        with pytest.raises(ValueError, match="not in stash"):
+            await async_configurator.tool_enable("tool-bash")

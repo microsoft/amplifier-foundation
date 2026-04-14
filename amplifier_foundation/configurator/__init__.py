@@ -154,3 +154,35 @@ class SessionConfigurator:
             raise ValueError(f"Agent {name!r} not in stash. Cannot enable.")
 
         agents[name] = self._stash["agents"].pop(name)
+
+    # ------------------------------------------------------------------
+    # Tool enable / disable (async)
+    # ------------------------------------------------------------------
+
+    async def tool_disable(self, name: str) -> None:
+        """Unmount a tool from the coordinator and stash the instance (disable it).
+
+        Args:
+            name: The tool name to disable.
+        """
+        # Idempotent: already disabled (in stash) — nothing to do.
+        if name in self._stash["tools"]:
+            return
+
+        instance = await self._coordinator.unmount("tools", name)
+        self._stash["tools"][name] = instance
+
+    async def tool_enable(self, name: str) -> None:
+        """Remount a previously disabled tool from the stash (enable it).
+
+        Args:
+            name: The tool name to enable.
+
+        Raises:
+            ValueError: If the name is not in the stash (with a 'not in stash' message).
+        """
+        if name not in self._stash["tools"]:
+            raise ValueError(f"Tool {name!r} not in stash. Cannot enable.")
+
+        instance = self._stash["tools"].pop(name)
+        await self._coordinator.mount("tools", name, instance)
