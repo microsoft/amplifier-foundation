@@ -357,6 +357,44 @@ class TestProviderToggle:
             await async_configurator.provider_enable("provider-anthropic")
 
 
+class TestConfigGetSet:
+    """Tests for config_get and config_set methods."""
+
+    def test_config_get_reads_nested_value(
+        self, configurator: SessionConfigurator, mock_coordinator: MagicMock
+    ) -> None:
+        """config_get returns the nested value from coordinator.config using dot-path."""
+        mock_coordinator.config["settings"] = {"model": {"name": "claude-3"}}
+
+        result = configurator.config_get("settings.model.name")
+
+        assert result == "claude-3"
+
+    def test_config_get_returns_none_for_missing_path(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """config_get returns None when the path does not exist."""
+        result = configurator.config_get("nonexistent.nested.key")
+
+        assert result is None
+
+    def test_config_set_mutates_coordinator_config(
+        self, configurator: SessionConfigurator, mock_coordinator: MagicMock
+    ) -> None:
+        """config_set mutates the actual coordinator.config dict at the given path."""
+        configurator.config_set("settings.timeout", 30)
+
+        assert mock_coordinator.config["settings"]["timeout"] == 30
+
+    def test_config_set_tracks_override_in_config_overrides(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """config_set records the override path and value in _config_overrides."""
+        configurator.config_set("settings.timeout", 30)
+
+        assert configurator._config_overrides["settings.timeout"] == 30
+
+
 class TestHookToggle:
     """Tests for hook_disable and hook_enable methods."""
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from amplifier_foundation.dicts.navigation import get_nested, set_nested
+
 
 class SessionConfigurator:
     """Manages per-session bundle configuration: stashing, restoring, and overriding
@@ -258,3 +260,33 @@ class SessionConfigurator:
 
         instance = self._stash["providers"].pop(name)
         await self._coordinator.mount("providers", name, instance)
+
+    # ------------------------------------------------------------------
+    # Config get / set
+    # ------------------------------------------------------------------
+
+    def config_get(self, path: str) -> Any:
+        """Return the value at a dot-separated path in coordinator.config.
+
+        Args:
+            path: Dot-separated key path (e.g. 'model.name').
+
+        Returns:
+            The value at the path, or None if not found.
+        """
+        keys = path.split(".")
+        return get_nested(self._coordinator.config, keys)
+
+    def config_set(self, path: str, value: Any) -> None:
+        """Set a value at a dot-separated path in coordinator.config.
+
+        Mutates coordinator.config in-place and records the override for
+        later persistence via save().
+
+        Args:
+            path: Dot-separated key path (e.g. 'model.name').
+            value: Value to set at the path.
+        """
+        keys = path.split(".")
+        set_nested(self._coordinator.config, keys, value)
+        self._config_overrides[path] = value
