@@ -181,3 +181,41 @@ class TestSessionConfiguratorConstructor:
         assert configurator._coordinator is mock_coordinator
         assert configurator._bundle is mock_bundle
         assert configurator._prepared_bundle is mock_prepared_bundle
+
+
+class TestAgentToggle:
+    """Tests for agent_disable and agent_enable methods."""
+
+    def test_disable_removes_from_config(
+        self, configurator: SessionConfigurator, mock_coordinator: MagicMock
+    ) -> None:
+        """Disabling agent removes it from coordinator.config['agents'] and stashes it."""
+        assert "my-agent" in mock_coordinator.config["agents"]
+        original_config = mock_coordinator.config["agents"]["my-agent"]
+
+        configurator.agent_disable("my-agent")
+
+        assert "my-agent" not in mock_coordinator.config["agents"]
+        assert configurator._stash["agents"]["my-agent"] == original_config
+
+    def test_enable_restores_from_stash(
+        self, configurator: SessionConfigurator, mock_coordinator: MagicMock
+    ) -> None:
+        """Enabling a disabled agent restores it from stash to coordinator.config['agents']."""
+        original_config = mock_coordinator.config["agents"]["my-agent"]
+        configurator.agent_disable("my-agent")
+
+        assert "my-agent" not in mock_coordinator.config["agents"]
+
+        configurator.agent_enable("my-agent")
+
+        assert "my-agent" in mock_coordinator.config["agents"]
+        assert mock_coordinator.config["agents"]["my-agent"] == original_config
+        assert "my-agent" not in configurator._stash["agents"]
+
+    def test_disable_unknown_raises_value_error(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """Disabling an unknown agent raises ValueError with 'not found' message."""
+        with pytest.raises(ValueError, match="not found"):
+            configurator.agent_disable("nonexistent-agent")

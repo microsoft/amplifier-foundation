@@ -110,3 +110,47 @@ class SessionConfigurator:
             raise ValueError(f"Context key {name!r} not in stash. Cannot enable.")
 
         self._bundle.context[name] = self._stash["context"].pop(name)
+
+    # ------------------------------------------------------------------
+    # Agent enable / disable
+    # ------------------------------------------------------------------
+
+    def agent_disable(self, name: str) -> None:
+        """Move an agent entry from coordinator.config['agents'] into the stash (disable it).
+
+        Args:
+            name: The agent name to disable.
+
+        Raises:
+            ValueError: If the name is not found in coordinator.config['agents'] (with a
+                message containing 'not found').
+        """
+        # Idempotent: already disabled (in stash) — nothing to do.
+        if name in self._stash["agents"]:
+            return
+
+        agents = self._coordinator.config.get("agents", {})
+        if name not in agents:
+            raise ValueError(f"Agent {name!r} not found.")
+
+        self._stash["agents"][name] = agents.pop(name)
+
+    def agent_enable(self, name: str) -> None:
+        """Move an agent entry from the stash back into coordinator.config['agents'] (enable it).
+
+        Args:
+            name: The agent name to enable.
+
+        Raises:
+            ValueError: If the name is not in the stash (with a 'not in stash' message).
+        """
+        agents = self._coordinator.config.get("agents", {})
+
+        # Idempotent: already enabled (in agents dict) — nothing to do.
+        if name in agents:
+            return
+
+        if name not in self._stash["agents"]:
+            raise ValueError(f"Agent {name!r} not in stash. Cannot enable.")
+
+        agents[name] = self._stash["agents"].pop(name)
