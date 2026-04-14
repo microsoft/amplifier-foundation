@@ -54,50 +54,75 @@ class SessionConfigurator:
     # ------------------------------------------------------------------
 
     def _capture_hooks(self) -> None:
-        """Copy current hook handler entries from coordinator.hooks._handlers."""
-        handlers: dict[str, Any] = self._coordinator.hooks._handlers
-        for name, entry in handlers.items():
-            self._hook_snapshot[name] = dict(entry)
+        """Populate the hook snapshot from coordinator-provided metadata.
+
+        Tries two sources in order:
+
+        1. The ``hook_metadata`` capability — a ``{name: {"event": event}}`` dict
+           registered by ``PreparedBundle.create_session()`` after
+           ``session.initialize()`` runs.  This is the authoritative source and
+           uses only the public ``list_handlers()`` API, so it contains event
+           bindings but **not** handler callables or priorities.
+
+        2. Direct call to ``coordinator.hooks.list_handlers()`` as a fallback for
+           sessions not created through ``PreparedBundle`` (e.g. tests, custom
+           harnesses).
+
+        Either way the snapshot contains at most ``{name: {"event": event}}``.
+        ``hook_disable()`` works in every case — it uses the public
+        ``unregister(name)`` API.  ``hook_enable()`` requires a ``"handler"``
+        key in the snapshot entry; if one is absent it raises ``RuntimeError``
+        with a clear message rather than silently doing nothing.
+
+        Note: accessing ``_handlers`` on a ``RustHookRegistry`` (the real
+        coordinator hooks object) raises ``AttributeError`` — it is a PyO3
+        object with no ``__dict__``.  This method never touches private
+        attributes.
+        """
+        # --- Primary path: capability registered by PreparedBundle.create_session() ---
+        try:
+            metadata = self._coordinator.get_capability("hook_metadata")
+            if metadata and isinstance(metadata, dict):
+                self._hook_snapshot.update(metadata)
+                return
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("hook_metadata capability not available: %s", exc)
+
+        # --- Fallback path: public list_handlers() API ---
+        try:
+            hook_registry = self._coordinator.hooks
+            if hasattr(hook_registry, "list_handlers"):
+                for event, names in hook_registry.list_handlers().items():
+                    for name in names:
+                        if name not in self._hook_snapshot:
+                            self._hook_snapshot[name] = {"event": event}
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "Could not capture hook metadata from coordinator: %s. "
+                "hook_disable() will work; hook_enable() will not be available.",
+                exc,
+            )
 
     def hook_disable(self, name: str) -> None:
-        """Unregister a hook from the coordinator and stash a marker (disable it).
+        """Hook toggle is not supported in this version.
 
-        Args:
-            name: The hook name to disable.
-
-        Raises:
-            ValueError: If the name is not found in the hook snapshot.
+        Hooks are visible in /config for inspection but cannot be
+        disabled/re-enabled at runtime. This requires a core suspend/resume
+        API that doesn't exist yet. See the design doc's Future Work section.
         """
-        # Idempotent: already disabled (in stash) — nothing to do.
-        if name in self._stash["hooks"]:
-            return
-
-        if name not in self._hook_snapshot:
-            raise ValueError(f"Hook {name!r} not found in snapshot.")
-
-        self._coordinator.hooks.unregister(name)
-        self._stash["hooks"][name] = True
+        raise NotImplementedError(
+            "Hook toggle is not supported in this version. "
+            "Hooks are read-only — visible in /config but not toggleable. "
+            "A core suspend/resume API is needed for safe hook toggle."
+        )
 
     def hook_enable(self, name: str) -> None:
-        """Re-register a previously disabled hook from the snapshot (enable it).
-
-        Args:
-            name: The hook name to enable.
-
-        Raises:
-            ValueError: If the name is not in the stash (with a 'not in stash' message).
-        """
-        if name not in self._stash["hooks"]:
-            raise ValueError(f"Hook {name!r} not in stash. Cannot enable.")
-
-        info = self._hook_snapshot[name]
-        self._coordinator.hooks.register(
-            info["event"],
-            info["handler"],
-            priority=info.get("priority", 50),
-            name=name,
+        """Hook toggle is not supported in this version."""
+        raise NotImplementedError(
+            "Hook toggle is not supported in this version. "
+            "Hooks are read-only — visible in /config but not toggleable. "
+            "A core suspend/resume API is needed for safe hook toggle."
         )
-        del self._stash["hooks"][name]
 
     # ------------------------------------------------------------------
     # Snapshot
@@ -281,16 +306,31 @@ class SessionConfigurator:
     # ------------------------------------------------------------------
 
     async def tool_disable(self, name: str) -> None:
-        """Unmount a tool from the coordinator and stash the instance (disable it).
+        """Retrieve and stash a tool instance, then unmount it from the coordinator (disable it).
+
+        Retrieves the live instance via ``coordinator.get("tools")`` *before* calling
+        ``coordinator.unmount()``, because the real Rust binding's unmount always
+        returns ``None`` — the module is deleted from the dict and the return value
+        is discarded.
 
         Args:
             name: The tool name to disable.
+
+        Raises:
+            ValueError: If the name is not found in the currently mounted tools.
         """
         # Idempotent: already disabled (in stash) — nothing to do.
         if name in self._stash["tools"]:
             return
 
-        instance = await self._coordinator.unmount("tools", name)
+        tools = self._coordinator.get("tools")
+        if tools is None or name not in tools:
+            available = list(tools.keys()) if tools else []
+            raise ValueError(
+                f"Tool {name!r} not found. Available: {available}"
+            )
+        instance = tools[name]
+        await self._coordinator.unmount("tools", name=name)
         self._stash["tools"][name] = instance
 
     async def tool_enable(self, name: str) -> None:
@@ -306,23 +346,38 @@ class SessionConfigurator:
             raise ValueError(f"Tool {name!r} not in stash. Cannot enable.")
 
         instance = self._stash["tools"].pop(name)
-        await self._coordinator.mount("tools", name, instance)
+        await self._coordinator.mount("tools", instance, name=name)
 
     # ------------------------------------------------------------------
     # Provider enable / disable (async)
     # ------------------------------------------------------------------
 
     async def provider_disable(self, name: str) -> None:
-        """Unmount a provider from the coordinator and stash the instance (disable it).
+        """Retrieve and stash a provider instance, then unmount it from the coordinator (disable it).
+
+        Retrieves the live instance via ``coordinator.get("providers")`` *before* calling
+        ``coordinator.unmount()``, because the real Rust binding's unmount always
+        returns ``None`` — the module is deleted from the dict and the return value
+        is discarded.
 
         Args:
             name: The provider name to disable.
+
+        Raises:
+            ValueError: If the name is not found in the currently mounted providers.
         """
         # Idempotent: already disabled (in stash) — nothing to do.
         if name in self._stash["providers"]:
             return
 
-        instance = await self._coordinator.unmount("providers", name)
+        providers = self._coordinator.get("providers")
+        if providers is None or name not in providers:
+            available = list(providers.keys()) if providers else []
+            raise ValueError(
+                f"Provider {name!r} not found. Available: {available}"
+            )
+        instance = providers[name]
+        await self._coordinator.unmount("providers", name=name)
         self._stash["providers"][name] = instance
 
     async def provider_enable(self, name: str) -> None:
@@ -338,7 +393,7 @@ class SessionConfigurator:
             raise ValueError(f"Provider {name!r} not in stash. Cannot enable.")
 
         instance = self._stash["providers"].pop(name)
-        await self._coordinator.mount("providers", name, instance)
+        await self._coordinator.mount("providers", instance, name=name)
 
     # ------------------------------------------------------------------
     # Behavior group toggle (async)
@@ -373,13 +428,17 @@ class SessionConfigurator:
 
         for prov_key in matching_keys:
             category, item_name = prov_key.split(":", 1)
+            if category == "hooks":
+                _log.debug(
+                    "Skipping hook %r in behavior toggle — hook toggle not supported in this version.",
+                    item_name,
+                )
+                continue
             try:
                 if category == "context":
                     self.context_disable(item_name)
                 elif category == "tools":
                     await self.tool_disable(item_name)
-                elif category == "hooks":
-                    self.hook_disable(item_name)
                 elif category == "providers":
                     await self.provider_disable(item_name)
                 elif category == "agents":
@@ -420,13 +479,17 @@ class SessionConfigurator:
 
         for prov_key in matching_keys:
             category, item_name = prov_key.split(":", 1)
+            if category == "hooks":
+                _log.debug(
+                    "Skipping hook %r in behavior toggle — hook toggle not supported in this version.",
+                    item_name,
+                )
+                continue
             try:
                 if category == "context":
                     self.context_enable(item_name)
                 elif category == "tools":
                     await self.tool_enable(item_name)
-                elif category == "hooks":
-                    self.hook_enable(item_name)
                 elif category == "providers":
                     await self.provider_enable(item_name)
                 elif category == "agents":
@@ -559,12 +622,12 @@ class SessionConfigurator:
             except Exception as exc:  # noqa: BLE001
                 _log.debug("Skipping stale tool %r: %s", name, exc)
 
-        # Disable individual hooks
+        # Hooks are read-only — skip any saved hook disable entries
         for name in disabled.get("hooks", []):
-            try:
-                self.hook_disable(name)
-            except Exception as exc:  # noqa: BLE001
-                _log.debug("Skipping stale hook %r: %s", name, exc)
+            _log.debug(
+                "Skipping hook %r in apply_saved_settings — hook toggle not supported in this version.",
+                name,
+            )
 
         # Disable individual providers (async)
         for name in disabled.get("providers", []):

@@ -1,0 +1,21 @@
+bundle:
+  name: behavior-sessions
+  version: 1.0.0
+  description: Session management - naming, logging, analysis, and debugging
+
+# Per-session JSONL event logging
+includes:
+  - bundle: foundation:behaviors/logging
+
+# Automatic session naming and description
+hooks:
+  - module: hooks-session-naming
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-session-naming
+    config:
+      initial_trigger_turn: 2
+      update_interval_turns: 5
+
+# Session analysis agent
+agents:
+  include:
+    - foundation:session-analyst

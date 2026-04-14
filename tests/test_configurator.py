@@ -27,23 +27,18 @@ def mock_bundle() -> Bundle:
 @pytest.fixture
 def mock_coordinator(mock_bundle: Bundle) -> MagicMock:
     """MagicMock coordinator with config dict containing agents, async mount/unmount,
-    and hooks registry with _handlers."""
+    and hooks registry using the public list_handlers() API (no private _handlers)."""
     coordinator = MagicMock()
     coordinator.config = {"agents": {"my-agent": {}}}
 
-    # Set up hooks registry with _handlers
-    handler_func = MagicMock()
-    coordinator.hooks._handlers = {
-        "on_before_tool": {
-            "event": "before_tool",
-            "handler": handler_func,
-            "priority": 10,
-        },
-        "on_after_tool": {
-            "event": "after_tool",
-            "handler": handler_func,
-            "priority": 5,
-        },
+    # Return None for hook_metadata capability so _capture_hooks() falls through
+    # to the list_handlers() fallback path.
+    coordinator.get_capability.return_value = None
+
+    # Public list_handlers() returns {event: [name, ...]} — no callables, no priorities.
+    coordinator.hooks.list_handlers.return_value = {
+        "before_tool": ["on_before_tool"],
+        "after_tool": ["on_after_tool"],
     }
 
     # Async mount/unmount
@@ -157,16 +152,22 @@ class TestSessionConfiguratorConstructor:
     def test_hook_snapshot_captures_handler_info(
         self, configurator: SessionConfigurator, mock_coordinator: MagicMock
     ) -> None:
-        """Hook snapshot captures handler info from coordinator."""
+        """Hook snapshot captures event bindings from the public list_handlers() API.
+
+        The public API returns {event: [names]} — no handler callables or priorities.
+        Both hook names must be present in the snapshot; each entry has an 'event'
+        key but no 'handler' key.
+        """
         assert hasattr(configurator, "_hook_snapshot")
-        # Should have copied both handlers
+        # Both hook names present
         assert "on_before_tool" in configurator._hook_snapshot
         assert "on_after_tool" in configurator._hook_snapshot
-        # Verify the entries match what was in _handlers
+        # Event is captured
         assert configurator._hook_snapshot["on_before_tool"]["event"] == "before_tool"
-        assert configurator._hook_snapshot["on_before_tool"]["priority"] == 10
         assert configurator._hook_snapshot["on_after_tool"]["event"] == "after_tool"
-        assert configurator._hook_snapshot["on_after_tool"]["priority"] == 5
+        # Handler callables are NOT exposed by the public API
+        assert "handler" not in configurator._hook_snapshot["on_before_tool"]
+        assert "handler" not in configurator._hook_snapshot["on_after_tool"]
 
     def test_stored_references(
         self,
@@ -232,24 +233,30 @@ def async_coordinator(mock_bundle: Bundle) -> MagicMock:
     coordinator = MagicMock()
     coordinator.config = {"agents": {"my-agent": {}}}
 
-    handler_func = MagicMock()
-    coordinator.hooks._handlers = {
-        "on_before_tool": {
-            "event": "before_tool",
-            "handler": handler_func,
-            "priority": 10,
-        },
-        "on_after_tool": {
-            "event": "after_tool",
-            "handler": handler_func,
-            "priority": 5,
-        },
+    # Return None for hook_metadata capability so _capture_hooks() falls through
+    # to the list_handlers() fallback path.
+    coordinator.get_capability.return_value = None
+
+    # Public list_handlers() returns {event: [name, ...]} — no callables, no priorities.
+    coordinator.hooks.list_handlers.return_value = {
+        "before_tool": ["on_before_tool"],
+        "after_tool": ["on_after_tool"],
     }
 
     # Async mount/unmount — must be AsyncMock so they can be awaited.
+    # unmount() always returns None in the real Rust binding (module is deleted,
+    # return value is discarded).  get() is synchronous and returns the mounted dict.
     tool_instance = MagicMock(name="tool-instance")
+    provider_instance = MagicMock(name="provider-instance")
     coordinator.mount = AsyncMock()
-    coordinator.unmount = AsyncMock(return_value=tool_instance)
+    coordinator.unmount = AsyncMock(return_value=None)
+
+    # get() returns the live mounted-module dict for a given mount-point.
+    _mounts: dict[str, dict] = {
+        "tools": {"tool-bash": tool_instance},
+        "providers": {"provider-anthropic": provider_instance},
+    }
+    coordinator.get = MagicMock(side_effect=lambda mp: _mounts.get(mp))
 
     return coordinator
 
@@ -279,20 +286,24 @@ class TestToolToggle:
     async def test_disable_calls_unmount(
         self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
     ) -> None:
-        """Disabling a tool calls coordinator.unmount('tools', name)."""
+        """Disabling a tool calls coordinator.unmount('tools', name=name)."""
         await async_configurator.tool_disable("tool-bash")
 
-        async_coordinator.unmount.assert_called_once_with("tools", "tool-bash")
+        async_coordinator.unmount.assert_called_once_with("tools", name="tool-bash")
 
     @pytest.mark.asyncio
     async def test_disable_stashes_instance(
         self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
     ) -> None:
-        """Disabling a tool stashes the instance returned by unmount."""
-        expected_instance = async_coordinator.unmount.return_value
+        """Disabling a tool stashes the instance retrieved from coordinator.get(), not unmount().
 
+        The real Rust binding's unmount() always returns None.  The instance must be
+        fetched via coordinator.get("tools") before unmounting.
+        """
         await async_configurator.tool_disable("tool-bash")
 
+        # Instance comes from coordinator.get("tools"), not from unmount() return value.
+        expected_instance = async_coordinator.get("tools")["tool-bash"]
         assert async_configurator._stash["tools"]["tool-bash"] is expected_instance
 
     @pytest.mark.asyncio
@@ -306,7 +317,7 @@ class TestToolToggle:
         await async_configurator.tool_enable("tool-bash")
 
         async_coordinator.mount.assert_called_once_with(
-            "tools", "tool-bash", stashed_instance
+            "tools", stashed_instance, name="tool-bash"
         )
         assert "tool-bash" not in async_configurator._stash["tools"]
 
@@ -326,11 +337,11 @@ class TestProviderToggle:
     async def test_disable_calls_unmount(
         self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
     ) -> None:
-        """Disabling a provider calls coordinator.unmount('providers', name)."""
+        """Disabling a provider calls coordinator.unmount('providers', name=name)."""
         await async_configurator.provider_disable("provider-anthropic")
 
         async_coordinator.unmount.assert_called_once_with(
-            "providers", "provider-anthropic"
+            "providers", name="provider-anthropic"
         )
 
     @pytest.mark.asyncio
@@ -344,7 +355,7 @@ class TestProviderToggle:
         await async_configurator.provider_enable("provider-anthropic")
 
         async_coordinator.mount.assert_called_once_with(
-            "providers", "provider-anthropic", stashed_instance
+            "providers", stashed_instance, name="provider-anthropic"
         )
         assert "provider-anthropic" not in async_configurator._stash["providers"]
 
@@ -396,48 +407,106 @@ class TestConfigGetSet:
 
 
 class TestHookToggle:
-    """Tests for hook_disable and hook_enable methods."""
+    """Tests for hook_disable and hook_enable methods.
 
-    def test_disable_calls_unregister(
-        self, configurator: SessionConfigurator, mock_coordinator: MagicMock
-    ) -> None:
-        """Disabling a hook calls coordinator.hooks.unregister(name) and stashes marker."""
-        configurator.hook_disable("on_before_tool")
+    Hooks are read-only in this version — toggle requires a core suspend/resume API
+    that doesn't exist yet. Both methods raise NotImplementedError unconditionally.
+    """
 
-        mock_coordinator.hooks.unregister.assert_called_once_with("on_before_tool")
-        assert configurator._stash["hooks"]["on_before_tool"] is True
-
-    def test_enable_reregisters_from_snapshot(
-        self, configurator: SessionConfigurator, mock_coordinator: MagicMock
-    ) -> None:
-        """Enabling a disabled hook calls coordinator.hooks.register with event, handler, priority, and name from snapshot."""
-        configurator.hook_disable("on_before_tool")
-        mock_coordinator.hooks.register.reset_mock()
-
-        configurator.hook_enable("on_before_tool")
-
-        snapshot_info = configurator._hook_snapshot["on_before_tool"]
-        mock_coordinator.hooks.register.assert_called_once_with(
-            snapshot_info["event"],
-            snapshot_info["handler"],
-            priority=snapshot_info["priority"],
-            name="on_before_tool",
-        )
-        assert "on_before_tool" not in configurator._stash["hooks"]
-
-    def test_disable_unknown_raises_value_error(
+    def test_disable_raises_not_implemented(
         self, configurator: SessionConfigurator
     ) -> None:
-        """Disabling a hook not in snapshot raises ValueError with 'not found in snapshot'."""
-        with pytest.raises(ValueError, match="not found in snapshot"):
+        """hook_disable raises NotImplementedError — hooks are read-only in this version."""
+        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
+            configurator.hook_disable("on_before_tool")
+
+    def test_enable_raises_not_implemented(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hook_enable raises NotImplementedError — hooks are read-only in this version."""
+        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
+            configurator.hook_enable("on_before_tool")
+
+    def test_disable_any_name_raises_not_implemented(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hook_disable raises NotImplementedError for any hook name — hooks are read-only."""
+        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
             configurator.hook_disable("nonexistent_hook")
 
-    def test_enable_without_stash_raises_value_error(
+    def test_enable_any_name_raises_not_implemented(
         self, configurator: SessionConfigurator
     ) -> None:
-        """Enabling a hook without prior disable raises ValueError with 'not in stash'."""
-        with pytest.raises(ValueError, match="not in stash"):
+        """hook_enable raises NotImplementedError for any hook name — hooks are read-only."""
+        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
+            configurator.hook_enable("nonexistent_hook")
+
+
+class TestHookCaptureGracefulFallback:
+    """Tests for graceful degradation when hook handler callables are not available.
+
+    In production the coordinator uses RustHookRegistry, whose public list_handlers()
+    API returns {event: [names]} — no callables, no priorities.  These tests verify
+    that hook_disable() still works in this scenario and that hook_enable() raises a
+    clear RuntimeError rather than crashing with AttributeError or silently no-oping.
+    """
+
+    def test_snapshot_contains_event_not_handler(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """Snapshot built from list_handlers() has event binding but no handler callable."""
+        entry = configurator._hook_snapshot.get("on_before_tool", {})
+        assert entry.get("event") == "before_tool", (
+            "Event should be captured from list_handlers()"
+        )
+        assert "handler" not in entry, (
+            "Handler callable must NOT be present — public API does not expose it"
+        )
+
+    def test_disable_raises_not_implemented_with_partial_metadata(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hook_disable raises NotImplementedError regardless of snapshot content.
+
+        Hooks are read-only — the public unregister() API is no longer called.
+        """
+        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
+            configurator.hook_disable("on_before_tool")
+
+    def test_enable_raises_not_implemented(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hook_enable raises NotImplementedError regardless of stash or snapshot state."""
+        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
             configurator.hook_enable("on_before_tool")
+
+    def test_empty_snapshot_when_coordinator_has_no_introspection(self) -> None:
+        """Configurator initialises without error when coordinator has no hook introspection API.
+
+        Guards against any coordinator implementation that lacks list_handlers() — the
+        configurator should degrade to an empty snapshot rather than raising at __init__.
+        """
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.config = {}
+        # spec=["unregister"] means hasattr(coordinator.hooks, "list_handlers") is False
+        coordinator.hooks = MagicMock(spec=["unregister"])
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = []
+        bundle_mock.providers = []
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+
+        # Should initialise cleanly with an empty hook snapshot.
+        assert cfg._hook_snapshot == {}
 
 
 class TestSnapshotAndDiff:
@@ -479,10 +548,13 @@ class TestSnapshotAndDiff:
         self,
         configurator: SessionConfigurator,
     ) -> None:
-        """After disabling items, snapshot shows them as disabled."""
+        """After disabling items, snapshot shows them as disabled.
+
+        Hooks are read-only and cannot be disabled, so only context and agents
+        are tested here. Hooks always appear as enabled in the snapshot.
+        """
         configurator.context_disable("readme")
         configurator.agent_disable("my-agent")
-        configurator.hook_disable("on_before_tool")
 
         snap = configurator.snapshot()
 
@@ -492,18 +564,22 @@ class TestSnapshotAndDiff:
         assert "my-agent" in snap["agents"]["disabled"]
         assert "my-agent" not in snap["agents"]["enabled"]
 
-        assert "on_before_tool" in snap["hooks"]["disabled"]
-        assert "on_before_tool" not in snap["hooks"]["enabled"]
+        # Hooks are always enabled (read-only) — stash is always empty
+        assert snap["hooks"]["disabled"] == []
+        assert "on_before_tool" in snap["hooks"]["enabled"]
 
     def test_diff_identifies_changes(
         self,
         configurator: SessionConfigurator,
     ) -> None:
-        """diff_from_original() returns changes compared to the original snapshot."""
+        """diff_from_original() returns changes compared to the original snapshot.
+
+        Hooks are read-only and cannot be disabled, so only context and agent
+        changes appear in the diff.
+        """
         # Original snapshot is captured in __init__; now disable some items
         configurator.context_disable("readme")
         configurator.agent_disable("my-agent")
-        configurator.hook_disable("on_before_tool")
 
         diff = configurator.diff_from_original()
 
@@ -512,8 +588,8 @@ class TestSnapshotAndDiff:
         assert disabled_by_name["readme"]["category"] == "context"
         assert "my-agent" in disabled_by_name
         assert disabled_by_name["my-agent"]["category"] == "agents"
-        assert "on_before_tool" in disabled_by_name
-        assert disabled_by_name["on_before_tool"]["category"] == "hooks"
+        # Hooks are always read-only — they never appear as "disabled" in the diff
+        assert "on_before_tool" not in disabled_by_name
 
     def test_diff_empty_when_no_changes(
         self,
@@ -564,18 +640,24 @@ def behavior_coordinator(behavior_bundle: Bundle) -> MagicMock:
     coordinator = MagicMock()
     coordinator.config = {"agents": {"my-agent": {}}}
 
-    handler_func = MagicMock()
-    coordinator.hooks._handlers = {
-        "on_before_tool": {
-            "event": "before_tool",
-            "handler": handler_func,
-            "priority": 10,
-        },
+    # Return None for hook_metadata capability so _capture_hooks() falls through
+    # to the list_handlers() fallback path.
+    coordinator.get_capability.return_value = None
+
+    # Public list_handlers() returns {event: [name, ...]} — no callables, no priorities.
+    coordinator.hooks.list_handlers.return_value = {
+        "before_tool": ["on_before_tool"],
     }
 
     tool_instance = MagicMock(name="tool-instance")
     coordinator.mount = AsyncMock()
-    coordinator.unmount = AsyncMock(return_value=tool_instance)
+    coordinator.unmount = AsyncMock(return_value=None)
+
+    # get() returns the live mounted-module dict for a given mount-point.
+    _mounts: dict[str, dict] = {
+        "tools": {"tool-bash": tool_instance},
+    }
+    coordinator.get = MagicMock(side_effect=lambda mp: _mounts.get(mp))
 
     return coordinator
 
@@ -616,14 +698,17 @@ class TestBehaviorToggle:
         behavior_bundle: Bundle,
         behavior_coordinator: MagicMock,
     ) -> None:
-        """behavior_disable disables all items contributed by the named behavior."""
+        """behavior_disable disables all non-hook contributions by the named behavior.
+
+        Hooks are silently skipped (read-only) — they do not appear in the disabled
+        list and no unregister call is made.
+        """
         result = await behavior_configurator.behavior_disable("my-behavior")
 
-        # All provenance keys for the behavior should be in the disabled list
+        # Hook entry is silently skipped — only non-hook contributions in the disabled list
         assert set(result["disabled"]) == {
             "context:readme",
             "tools:tool-bash",
-            "hooks:on_before_tool",
             "agents:my-agent",
         }
         assert result["warnings"] == []
@@ -632,10 +717,10 @@ class TestBehaviorToggle:
         assert "readme" not in behavior_bundle.context
 
         # Tool unmounted
-        behavior_coordinator.unmount.assert_any_call("tools", "tool-bash")
+        behavior_coordinator.unmount.assert_any_call("tools", name="tool-bash")
 
-        # Hook unregistered
-        behavior_coordinator.hooks.unregister.assert_any_call("on_before_tool")
+        # Hook NOT unregistered — hooks are read-only
+        behavior_coordinator.hooks.unregister.assert_not_called()
 
         # Agent removed from coordinator.config
         assert "my-agent" not in behavior_coordinator.config["agents"]
@@ -647,18 +732,22 @@ class TestBehaviorToggle:
         behavior_bundle: Bundle,
         behavior_coordinator: MagicMock,
     ) -> None:
-        """behavior_enable restores all contributions after behavior_disable."""
+        """behavior_enable restores all non-hook contributions after behavior_disable.
+
+        Hooks are silently skipped during both disable and enable — they are read-only
+        in this version and never appear in the disabled/enabled result lists.
+        """
         await behavior_configurator.behavior_disable("my-behavior")
 
         result = await behavior_configurator.behavior_enable("my-behavior")
 
-        # All provenance keys should be in the enabled list
+        # Hooks are silently skipped — only non-hook contributions in the enabled list
         assert set(result["enabled"]) == {
             "context:readme",
             "tools:tool-bash",
-            "hooks:on_before_tool",
             "agents:my-agent",
         }
+        assert result["warnings"] == []
 
         # Context item restored to bundle
         assert "readme" in behavior_bundle.context
@@ -666,7 +755,7 @@ class TestBehaviorToggle:
         # Tool stash cleared (was remounted)
         assert "tool-bash" not in behavior_configurator._stash["tools"]
 
-        # Hook stash cleared (was re-registered)
+        # Hook stash is empty — hooks are never toggled
         assert "on_before_tool" not in behavior_configurator._stash["hooks"]
 
         # Agent restored to coordinator.config
@@ -774,7 +863,11 @@ class TestSaveAndApply:
         async_configurator: SessionConfigurator,
         async_coordinator: MagicMock,
     ) -> None:
-        """apply_saved_settings disables specified items and applies config overrides."""
+        """apply_saved_settings disables specified items and applies config overrides.
+
+        Hooks listed in the saved settings are silently skipped — hooks are read-only
+        and cannot be disabled via apply_saved_settings.
+        """
         settings = {
             "disabled": {
                 "behaviors": [],
@@ -792,8 +885,8 @@ class TestSaveAndApply:
         # Context "readme" should be disabled (removed from bundle.context)
         assert "readme" not in async_configurator._bundle.context
 
-        # Hook "on_before_tool" should be in the stash (disabled)
-        assert "on_before_tool" in async_configurator._stash["hooks"]
+        # Hook "on_before_tool" is silently skipped — hooks are read-only
+        assert "on_before_tool" not in async_configurator._stash["hooks"]
 
         # Config override should be applied
         assert async_configurator._config_overrides["model.name"] == "claude-3"

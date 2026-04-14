@@ -1,0 +1,14 @@
+bundle:
+  name: behavior-redaction
+  version: 1.0.0
+  description: Redact secrets and PII from logs
+
+hooks:
+  - module: hooks-redaction
+    source: git+https://github.com/microsoft/amplifier-module-hooks-redaction@main
+    config:
+      allowlist:
+        - session_id
+        - turn_id
+        - span_id
+        - parent_span_id

@@ -1,0 +1,23 @@
+# Shadow Amplifier Behavior
+# Amplifier-specific overlay for shadow environments
+# INCLUDES the generic shadow bundle, so users only need to include this one behavior
+bundle:
+  name: behavior-shadow-amplifier
+  version: 1.0.0
+  description: |
+    Amplifier ecosystem-specific shadow environment support.
+    Includes the generic shadow bundle plus Amplifier-specific:
+    - shadow-smoke-test agent for Amplifier validation
+    - Amplifier testing patterns and examples
+    - Pre-configured workflows for testing amplifier-core, amplifier-foundation, etc.
+
+# Include the generic shadow bundle - this brings in shadow-operator and base shadow tool
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-shadow@main
+
+# Amplifier-specific agents
+# Context is loaded via @mentions in the agent files (context sink pattern)
+agents:
+  include:
+    # Agent file contains full description and tool configuration
+    - foundation:amplifier-smoke-test

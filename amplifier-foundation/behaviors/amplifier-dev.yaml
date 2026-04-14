@@ -1,0 +1,14 @@
+bundle:
+  name: behavior-amplifier-dev
+  version: 1.0.0
+  description: Amplifier ecosystem development behavior - multi-repo workflows, testing patterns, and ecosystem expertise
+
+agents:
+  include:
+    - foundation:ecosystem-expert
+
+context:
+  include:
+    - foundation:context/amplifier-dev/ecosystem-map.md
+    - foundation:context/amplifier-dev/dev-workflows.md
+    - foundation:context/amplifier-dev/testing-patterns.md

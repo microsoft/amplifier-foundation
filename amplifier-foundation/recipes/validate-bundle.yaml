@@ -1,0 +1,280 @@
+# validate-bundle.yaml
+# Multi-Bundle Validator Recipe with Accurate Dependency Tracing
+# Validates all bundles in a repo (root + /bundles/*) with proper dependency tracing.
+#
+# v2.0.0 MAJOR UPDATE: Now traces ACTUAL bundle dependencies via `includes:`
+# instead of scanning all behaviors in the repo. This ensures that:
+# - Token costs are correctly attributed to the bundles that actually use them
+# - Behaviors not included by a bundle don't affect its validation
+# - Multi-bundle repos (root + /bundles/*) are validated separately
+#
+# Usage:
+#   # Validate a specific bundle file:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=foundation:recipes/validate-bundle.yaml \
+#     context='{"bundle_path": "/path/to/bundle.md"}'
+#
+#   # Validate all bundles in a repo directory:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=foundation:recipes/validate-bundle.yaml \
+#     context='{"bundle_path": "/path/to/repo"}'
+
+name: validate-bundle
+description: |
+  Validates Amplifier bundles with accurate dependency tracing.
+  
+  v2.0.0 MAJOR UPDATE: 
+  - Discovers all bundles (root + /bundles/*)
+  - Traces ACTUAL `includes:` to build real dependency tree per bundle
+  - Only counts context from actually-included behaviors
+  - Reports results per-bundle with clear separation
+  
+  For example, if `shadow-amplifier` behavior is only included by 
+  `bundles/amplifier-dev.yaml` and NOT by the root `bundle.md`, the shadow
+  context files will only be counted when validating `amplifier-dev`.
+version: "2.0.0"
+author: "Amplifier Foundation Team"
+tags: ["bundle", "validation", "quality", "conventions", "context-health", "dependency-tracing"]
+
+context:
+  bundle_path: ""  # Required: Path to bundle file OR repo directory to validate
+
+steps:
+  # ============================================================================
+  # PHASE 1: Environment Check
+  # ============================================================================
+
+  - id: "environment-check"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+
+      results = {
+          "phase": "environment",
+          "foundation_available": False,
+          "foundation_version": None,
+          "python_version": sys.version,
+          "errors": []
+      }
+
+      try:
+          import amplifier_foundation
+          results["foundation_available"] = True
+          results["foundation_version"] = getattr(amplifier_foundation, "__version__", "unknown")
+      except ImportError as e:
+          results["errors"].append({
+              "type": "import_error",
+              "message": f"amplifier_foundation not importable: {e}"
+          })
+
+      # Try to auto-install if not available
+      if not results["foundation_available"]:
+          import subprocess
+          try:
+              subprocess.run(
+                  [sys.executable, "-m", "pip", "install", "-q", 
+                   "git+https://github.com/microsoft/amplifier-foundation@main"],
+                  check=True,
+                  capture_output=True
+              )
+              import amplifier_foundation
+              results["foundation_available"] = True
+              results["foundation_version"] = getattr(amplifier_foundation, "__version__", "unknown")
+              results["errors"] = []
+              results["auto_installed"] = True
+          except Exception as e:
+              results["errors"].append({"type": "install_error", "message": str(e)})
+
+      print(json.dumps(results))
+      EOF
+    output: "env_check"
+    parse_json: true
+    timeout: 180
+    on_error: "fail"
+
+  # ============================================================================
+  # PHASE 2: Bundle Discovery
+  # Find all bundles to validate (root + /bundles/*)
+  # ============================================================================
+
+  - id: "discover-bundles"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      from pathlib import Path
+
+      def discover_bundles(bundle_path: str) -> dict:
+          """Discover all bundles to validate in the given path.
+          
+          If bundle_path is a file, validate just that file.
+          If bundle_path is a directory, find root bundle + all bundles in /bundles/.
+          """
+          results = {
+              "phase": "discovery",
+              "input_path": bundle_path,
+              "bundles": [],
+              "is_single_file": False,
+              "is_repo": False,
+              "repo_root": None
+          }
+          
+          path = Path(bundle_path).resolve()
+          
+          if path.is_file():
+              # Single file mode
+              results["is_single_file"] = True
+              results["repo_root"] = str(path.parent)
+              results["bundles"].append({
+                  "bundle_path": str(path),
+                  "bundle_type": "single_file",
+                  "bundle_name": path.stem,
+                  "repo_root": str(path.parent)
+              })
+          
+          elif path.is_dir():
+              # Directory mode - find all bundles
+              results["is_repo"] = True
+              results["repo_root"] = str(path)
+              
+              # Check for root bundle
+              for bundle_name in ["bundle.md", "bundle.yaml"]:
+                  root_bundle = path / bundle_name
+                  if root_bundle.exists():
+                      results["bundles"].append({
+                          "bundle_path": str(root_bundle),
+                          "bundle_type": "root",
+                          "bundle_name": "root",
+                          "repo_root": str(path)
+                      })
+                      break
+              
+              # Check for standalone bundles in /bundles/
+              bundles_dir = path / "bundles"
+              if bundles_dir.exists() and bundles_dir.is_dir():
+                  for ext in ["*.yaml", "*.yml", "*.md"]:
+                      for bundle_file in bundles_dir.glob(ext):
+                          # Skip if it's just a README or similar
+                          if bundle_file.stem.lower() in ["readme", "changelog"]:
+                              continue
+                          results["bundles"].append({
+                              "bundle_path": str(bundle_file),
+                              "bundle_type": "standalone",
+                              "bundle_name": bundle_file.stem,
+                              "repo_root": str(path)
+                          })
+          
+          else:
+              results["error"] = f"Path does not exist: {bundle_path}"
+          
+          results["total_bundles"] = len(results["bundles"])
+          print(json.dumps(results))
+      
+      discover_bundles("{{bundle_path}}")
+      EOF
+    output: "discovery"
+    parse_json: true
+    timeout: 30
+    on_error: "fail"
+    depends_on: ["environment-check"]
+
+  # ============================================================================
+  # PHASE 3: Validate Each Bundle
+  # Use foreach to call validate-single-bundle.yaml for each discovered bundle
+  # ============================================================================
+
+  - id: "validate-bundles"
+    foreach: "{{discovery.bundles}}"
+    as: "bundle"
+    collect: "bundle_results"
+    parallel: false
+    type: "recipe"
+    recipe: "validate-single-bundle.yaml"
+    context:
+      bundle_path: "{{bundle.bundle_path}}"
+      bundle_name: "{{bundle.bundle_name}}"
+      bundle_type: "{{bundle.bundle_type}}"
+      repo_root: "{{bundle.repo_root}}"
+    timeout: 600
+    on_error: "continue"
+    depends_on: ["discover-bundles"]
+
+  # ============================================================================
+  # PHASE 4: Synthesize Final Report
+  # ============================================================================
+
+  - id: "synthesize-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Synthesize all bundle validation results into a comprehensive report.
+
+      **Repository:** {{bundle_path}}
+      
+      **Discovery Results:**
+      ```json
+      {{discovery}}
+      ```
+
+      **Environment Check:**
+      ```json
+      {{env_check}}
+      ```
+
+      **Per-Bundle Validation Results:**
+      
+      Each bundle was validated with dependency tracing. Here are the collected results:
+      
+      {{bundle_results}}
+
+      **Generate a comprehensive report:**
+
+      ## Bundle Validation Report
+
+      ### Executive Summary
+      - **Repository:** (path)
+      - **Bundles Validated:** X (list them)
+      - **Overall Status:** All PASS | Some WARNINGS | Some FAILURES
+      - **Key Finding:** Highlight the most important finding
+
+      ### Per-Bundle Results Table
+
+      | Bundle | Type | Verdict | Context Tokens | Issues |
+      |--------|------|---------|----------------|--------|
+      | (for each bundle...) |
+
+      ### Detailed Per-Bundle Findings
+
+      For each bundle that had issues:
+      - What errors/warnings were found
+      - Token breakdown (bundle markdown, context.include, cascading)
+      - Largest context files
+      - Recommended fixes
+
+      ### Dependency Tracing Insights
+
+      This validation used dependency tracing - only counting context from 
+      behaviors actually included via `includes:`. Highlight:
+      
+      - Which behaviors are unique to specific bundles
+      - Shared behaviors across bundles
+      - Any behaviors in the repo that aren't included by any bundle (potential dead code)
+
+      ### Recommendations
+
+      Prioritized list of actions:
+      1. **Must Fix** (errors across any bundle)
+      2. **Should Fix** (warnings, context optimization)
+      3. **Consider** (suggestions for improvement)
+
+      ### Metadata
+      - Validated: (current date/time)
+      - Recipe: validate-bundle v2.0.0
+      - Foundation available: (from env_check)
+      - Dependency tracing: enabled
+    output: "final_report"
+    timeout: 300
+    on_error: "fail"
+    depends_on: ["validate-bundles"]

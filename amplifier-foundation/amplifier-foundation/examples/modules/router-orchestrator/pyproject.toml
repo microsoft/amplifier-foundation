@@ -1,0 +1,36 @@
+[project]
+name = "amplifier-module-router-orchestrator"
+version = "1.0.0"
+description = "Example routing orchestrator for Amplifier (routes between models based on prompt)"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
+dependencies = []
+
+[project.entry-points."amplifier.modules"]
+router-orchestrator = "amplifier_module_router_orchestrator:mount"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["amplifier_module_router_orchestrator"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = [
+    "amplifier-core",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+]
+
+[tool.uv.sources]
+amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }

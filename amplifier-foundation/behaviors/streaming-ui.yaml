@@ -1,0 +1,13 @@
+bundle:
+  name: behavior-streaming-ui
+  version: 1.0.0
+  description: Streaming UI display for thinking blocks, tool calls, and token usage
+
+hooks:
+  - module: hooks-streaming-ui
+    source: git+https://github.com/microsoft/amplifier-module-hooks-streaming-ui@main
+    config:
+      ui:
+        show_thinking_stream: true
+        show_tool_lines: 5
+        show_token_usage: true

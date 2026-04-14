@@ -1,0 +1,26 @@
+bundle:
+  name: behavior-todo-reminder
+  version: 1.1.0
+  description: Todo tracking with automatic context reminders and visual progress display
+
+tools:
+  - module: tool-todo
+    source: git+https://github.com/microsoft/amplifier-module-tool-todo@main
+
+hooks:
+  - module: hooks-todo-reminder
+    source: git+https://github.com/microsoft/amplifier-module-hooks-todo-reminder@main
+    config:
+      inject_role: user
+      priority: 10
+
+  - module: hooks-todo-display
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-todo-display
+    config:
+      # Display modes: "full" (default), "condensed", "auto", "none"
+      # - full: Shows all items with progress bar (default)
+      # - condensed: Single-line progress summary
+      # - auto: Switches based on item count (compact_threshold)
+      # - none: Disables special rendering
+      show_progress_bar: true
+      show_border: true

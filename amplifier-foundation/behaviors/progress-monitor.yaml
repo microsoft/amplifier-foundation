@@ -1,0 +1,20 @@
+bundle:
+  name: behavior-progress-monitor
+  version: 1.0.0
+  description: Detects analysis paralysis patterns and injects corrective prompts
+
+# Detects analysis paralysis patterns and injects corrective prompts.
+# Include this behavior in bundles where agents may get stuck in research loops.
+#
+# Usage:
+#   includes:
+#     - bundle: foundation:behaviors/progress-monitor
+
+hooks:
+  - module: hooks-progress-monitor
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-progress-monitor
+    config:
+      enabled: true
+      read_threshold: 30      # Warn after 30 reads with 0 writes
+      same_file_threshold: 3  # Warn after reading same file 3 times
+      warning_interval: 15    # Re-warn every 15 additional reads

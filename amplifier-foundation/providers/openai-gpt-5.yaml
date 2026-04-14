@@ -1,0 +1,12 @@
+bundle:
+  name: provider-openai-gpt-5
+  version: 1.0.0
+  description: OpenAI GPT-5 provider
+
+providers:
+  - module: provider-openai
+    source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
+    config:
+      # Adjust to the exact model id available in your account
+      default_model: gpt-5.4
+      raw: true

@@ -1,0 +1,11 @@
+bundle:
+  name: behavior-status-context
+  version: 1.0.0
+  description: Inject environment and git status into agent context
+
+hooks:
+  - module: hooks-status-context
+    source: git+https://github.com/microsoft/amplifier-module-hooks-status-context@main
+    config:
+      include_datetime: true
+      datetime_include_timezone: false

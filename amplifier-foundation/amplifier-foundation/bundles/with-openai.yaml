@@ -1,0 +1,8 @@
+bundle:
+  name: foundation-openai
+  version: 1.0.0
+  description: Foundation bundle with OpenAI GPT-5.1 Codex provider
+
+includes:
+  - bundle: foundation
+  - bundle: foundation:providers/openai-gpt-codex
