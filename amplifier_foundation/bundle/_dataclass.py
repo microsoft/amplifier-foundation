@@ -74,6 +74,9 @@ class Bundle:
     _pending_context: dict[str, str] = field(
         default_factory=dict
     )  # Context refs needing namespace resolution
+    _provenance: dict[str, str] = field(
+        default_factory=dict
+    )  # Tracks which behavior contributed each item: 'category:name' -> 'behavior_name'
 
     def __post_init__(self) -> None:
         """Ensure collection fields are never None.
@@ -89,6 +92,8 @@ class Bundle:
             self.source_base_paths = {}
         if self._pending_context is None:
             self._pending_context = {}
+        if self._provenance is None:
+            self._provenance = {}
 
     def compose(self, *others: Bundle) -> Bundle:
         """Compose this bundle with others (later overrides earlier).
@@ -127,6 +132,28 @@ class Bundle:
             dict(self._pending_context) if self._pending_context else {}
         )
 
+        # Compute initial provenance: tag self's items with self.name, then overlay
+        # any existing _provenance from prior compositions for precise attribution.
+        initial_provenance: dict[str, str] = {}
+        for prefixed_key in initial_context:
+            initial_provenance[f"context:{prefixed_key}"] = self.name
+        for mod in self.tools:
+            module_id = mod.get("id") or mod.get("module")
+            if module_id:
+                initial_provenance[f"tool:{module_id}"] = self.name
+        for mod in self.providers:
+            module_id = mod.get("id") or mod.get("module")
+            if module_id:
+                initial_provenance[f"provider:{module_id}"] = self.name
+        for mod in self.hooks:
+            module_id = mod.get("id") or mod.get("module")
+            if module_id:
+                initial_provenance[f"hook:{module_id}"] = self.name
+        for agent_name in self.agents:
+            initial_provenance[f"agent:{agent_name}"] = self.name
+        # Overlay existing _provenance to preserve prior composition attributions
+        initial_provenance.update(self._provenance)
+
         result = Bundle(
             name=self.name,
             version=self.version,
@@ -140,6 +167,7 @@ class Bundle:
             agents=dict(self.agents),
             context=initial_context,
             _pending_context=initial_pending_context,
+            _provenance=initial_provenance,
             instruction=self.instruction,
             base_path=self.base_path,
             source_base_paths=initial_base_paths,
@@ -178,8 +206,26 @@ class Bundle:
             result.tools = merge_module_lists(result.tools, other.tools)
             result.hooks = merge_module_lists(result.hooks, other.hooks)
 
+            # Tag modules from other for tools, providers, and hooks
+            for mod in other.tools:
+                module_id = mod.get("id") or mod.get("module")
+                if module_id:
+                    result._provenance[f"tool:{module_id}"] = other.name
+            for mod in other.providers:
+                module_id = mod.get("id") or mod.get("module")
+                if module_id:
+                    result._provenance[f"provider:{module_id}"] = other.name
+            for mod in other.hooks:
+                module_id = mod.get("id") or mod.get("module")
+                if module_id:
+                    result._provenance[f"hook:{module_id}"] = other.name
+
             # Agents: later overrides
             result.agents.update(other.agents)
+
+            # Tag agents from other
+            for agent_name in other.agents:
+                result._provenance[f"agent:{agent_name}"] = other.name
 
             # Context: accumulate with bundle prefix to avoid collisions
             # This allows multiple bundles to each contribute context files
@@ -190,6 +236,8 @@ class Bundle:
                 else:
                     prefixed_key = key
                 result.context[prefixed_key] = path
+                # Tag context from other
+                result._provenance[f"context:{prefixed_key}"] = other.name
 
             # Pending context: accumulate (already has namespace prefixes)
             if other._pending_context:
@@ -204,6 +252,12 @@ class Bundle:
             # This ensures @AGENTS.md resolves relative to user's project, not cache
             if other.base_path:
                 result.base_path = other.base_path
+
+            # Overlay other's provenance to preserve precise sub-composition attributions.
+            # This ensures that items which originated deeper in the composition hierarchy
+            # (e.g., tool-x from bundle "a" that passed through bundle "b") retain their
+            # original contributor attribution rather than being attributed to "b".
+            result._provenance.update(other._provenance)
 
         return result
 
@@ -281,7 +335,10 @@ class Bundle:
                 return overrides.get(module_id) or source
             prepared = await bundle.prepare(source_resolver=resolve_with_overrides)
         """
-        from amplifier_foundation.bundle._prepared import BundleModuleResolver, PreparedBundle
+        from amplifier_foundation.bundle._prepared import (
+            BundleModuleResolver,
+            PreparedBundle,
+        )
         from amplifier_foundation.modules.activator import ModuleActivator
 
         # Get mount plan
