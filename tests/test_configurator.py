@@ -825,3 +825,28 @@ class TestSaveAndApply:
 
         # Returns a list (stale refs are silently skipped)
         assert isinstance(warnings, list)
+
+
+class TestTopLevelImport:
+    """Verify SessionConfigurator is importable from amplifier_foundation top-level."""
+
+    def test_session_configurator_importable_from_top_level(self) -> None:
+        """SessionConfigurator must be importable directly from amplifier_foundation."""
+        from amplifier_foundation import SessionConfigurator as SC  # noqa: F401
+
+        assert SC is not None
+
+    def test_session_configurator_in_dunder_all(self) -> None:
+        """SessionConfigurator must appear in amplifier_foundation.__all__."""
+        import amplifier_foundation
+
+        assert "SessionConfigurator" in amplifier_foundation.__all__, (
+            "'SessionConfigurator' is missing from amplifier_foundation.__all__"
+        )
+
+    def test_top_level_and_submodule_are_same_class(self) -> None:
+        """Top-level import and submodule import must resolve to the same class."""
+        from amplifier_foundation import SessionConfigurator as TopLevel
+        from amplifier_foundation.configurator import SessionConfigurator as SubModule
+
+        assert TopLevel is SubModule

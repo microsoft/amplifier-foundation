@@ -19,6 +19,7 @@ from __future__ import annotations
 
 # Core classes
 from amplifier_foundation.bundle import Bundle
+from amplifier_foundation.configurator import SessionConfigurator
 
 # Reference implementations
 from amplifier_foundation.cache.disk import DiskCache
@@ -110,6 +111,7 @@ from amplifier_foundation.validator import validate_bundle_or_raise
 __all__ = [
     # Core
     "Bundle",
+    "SessionConfigurator",
     "BundleRegistry",
     "BundleState",
     "UpdateInfo",
