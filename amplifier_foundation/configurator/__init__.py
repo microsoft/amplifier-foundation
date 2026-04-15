@@ -898,8 +898,8 @@ class SessionConfigurator:
                 'name': str — context key name.
                 'path': str — file path (as string).
                 'enabled': bool — True if live in bundle.context, False if stashed.
-                'behavior': list[str] | None — provenance behavior names (if any).
-                'source': list[str] | None — alias for 'behavior' (used by CLI rendering).
+                'behaviors': list[str] | None — provenance behavior names (if any).
+                'source': list[str] | None — alias for 'behaviors' (used by CLI rendering).
         """
         provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
         result: list[dict] = []
@@ -911,7 +911,7 @@ class SessionConfigurator:
                     "name": name,
                     "path": str(path),
                     "enabled": True,
-                    "behavior": behavior,
+                    "behaviors": behavior,
                     "source": behavior,
                 }
             )
@@ -923,7 +923,7 @@ class SessionConfigurator:
                     "name": name,
                     "path": str(path),
                     "enabled": False,
-                    "behavior": behavior,
+                    "behaviors": behavior,
                     "source": behavior,
                 }
             )
@@ -942,9 +942,9 @@ class SessionConfigurator:
                 'name': str — tool module ID.
                 'enabled': bool.
                 'config': dict — per-tool config from the mount plan (may be empty).
-                'behavior': list[str] | None — provenance behavior names.
-                'source': list[str] | None — alias for 'behavior'.
-                'module': str — module ID from the mount-plan tool-to-module mapping
+                'behaviors': list[str] | None — provenance behavior names.
+                'source': list[str] | None — alias for 'behaviors'.
+                'module_id': str — module ID from the mount-plan tool-to-module mapping
                     ('unknown' when not matched).
                 'source_uri': str | None — source URI from the mount plan spec
                     (e.g. 'git+https://example.com/tool-bash@main'); None when absent.
@@ -1000,9 +1000,9 @@ class SessionConfigurator:
                     "name": name,
                     "enabled": True,
                     "config": config_by_id.get(name, config_by_id.get(norm_name, {})),
-                    "behavior": behavior,
+                    "behaviors": behavior,
                     "source": behavior,
-                    "module": self._tool_to_module.get(name, "unknown"),
+                    "module_id": self._tool_to_module.get(name, "unknown"),
                     "source_uri": source_by_id.get(name, source_by_id.get(norm_name)),
                 }
             )
@@ -1016,9 +1016,9 @@ class SessionConfigurator:
                     "name": name,
                     "enabled": False,
                     "config": config_by_id.get(name, config_by_id.get(norm_name, {})),
-                    "behavior": behavior,
+                    "behaviors": behavior,
                     "source": behavior,
-                    "module": self._tool_to_module.get(name, "unknown"),
+                    "module_id": self._tool_to_module.get(name, "unknown"),
                     "source_uri": source_by_id.get(name, source_by_id.get(norm_name)),
                 }
             )
@@ -1038,8 +1038,8 @@ class SessionConfigurator:
                 'event': str — event the hook is bound to.
                 'priority': int — priority (0 if not available).
                 'enabled': bool — always True (hooks are read-only).
-                'behavior': list[str] | None — provenance behavior names.
-                'source': list[str] | None — alias for 'behavior'.
+                'behaviors': list[str] | None — provenance behavior names.
+                'source': list[str] | None — alias for 'behaviors'.
         """
         provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
         # Pre-build normalized provenance lookup for fuzzy name matching.
@@ -1056,7 +1056,7 @@ class SessionConfigurator:
                     "event": meta.get("event", ""),
                     "priority": meta.get("priority", 0),
                     "enabled": True,
-                    "behavior": behavior,
+                    "behaviors": behavior,
                     "source": behavior,
                 }
             )
@@ -1085,8 +1085,8 @@ class SessionConfigurator:
                 'name': str — provider module ID (short name with prefix stripped).
                 'enabled': bool.
                 'config': dict — per-provider config from the mount plan.
-                'behavior': list[str] | None — provenance behavior names.
-                'source': list[str] | None — alias for 'behavior'.
+                'behaviors': list[str] | None — provenance behavior names.
+                'source': list[str] | None — alias for 'behaviors'.
                 'source_uri': str | None — source URI from the mount plan spec
                     (e.g. 'git+https://example.com/provider-anthropic@main'); None when absent.
         """
@@ -1134,7 +1134,7 @@ class SessionConfigurator:
                         "config": config_by_id.get(
                             name, config_by_id.get(norm_name, {})
                         ),
-                        "behavior": behavior,
+                        "behaviors": behavior,
                         "source": behavior,
                         "source_uri": source_by_id.get(
                             name, source_by_id.get(norm_name)
@@ -1155,7 +1155,7 @@ class SessionConfigurator:
                         "config": config_by_id.get(
                             name, config_by_id.get(norm_name, {})
                         ),
-                        "behavior": behavior,
+                        "behaviors": behavior,
                         "source": behavior,
                         "source_uri": source_by_id.get(
                             name, source_by_id.get(norm_name)
@@ -1197,7 +1197,7 @@ class SessionConfigurator:
                         "config": config_by_id.get(
                             short_name, config_by_id.get(mid, {})
                         ),
-                        "behavior": behavior,
+                        "behaviors": behavior,
                         "source": behavior,
                         "source_uri": source_by_id.get(
                             short_name, source_by_id.get(mid)
@@ -1219,7 +1219,7 @@ class SessionConfigurator:
                             "config": config_by_id.get(
                                 name, config_by_id.get(norm_name, {})
                             ),
-                            "behavior": behavior,
+                            "behaviors": behavior,
                             "source": behavior,
                             "source_uri": source_by_id.get(
                                 name, source_by_id.get(norm_name)
@@ -1237,8 +1237,8 @@ class SessionConfigurator:
                 'name': str — agent name.
                 'enabled': bool.
                 'config': dict — agent config dict.
-                'behavior': list[str] | None — provenance behavior names.
-                'source': list[str] | None — alias for 'behavior'.
+                'behaviors': list[str] | None — provenance behavior names.
+                'source': list[str] | None — alias for 'behaviors'.
         """
         provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
         result: list[dict] = []
@@ -1251,7 +1251,7 @@ class SessionConfigurator:
                     "name": name,
                     "enabled": True,
                     "config": cfg if isinstance(cfg, dict) else {},
-                    "behavior": behavior,
+                    "behaviors": behavior,
                     "source": behavior,
                 }
             )
@@ -1264,7 +1264,7 @@ class SessionConfigurator:
                     "name": name,
                     "enabled": False,
                     "config": cfg if isinstance(cfg, dict) else {},
-                    "behavior": behavior,
+                    "behaviors": behavior,
                     "source": behavior,
                 }
             )

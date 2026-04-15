@@ -1136,10 +1136,10 @@ class TestListMethods:
     def test_context_list_carries_behavior_and_source(
         self, configurator: SessionConfigurator
     ) -> None:
-        """context_list includes behavior provenance in both 'behavior' and 'source' keys."""
+        """context_list includes behavior provenance in both 'behaviors' and 'source' keys."""
         items = configurator.context_list()
         # mock_bundle has _provenance = {"context:readme": ["test-behavior"]}
-        assert items[0]["behavior"] == ["test-behavior"]
+        assert items[0]["behaviors"] == ["test-behavior"]
         assert items[0]["source"] == ["test-behavior"]
 
     def test_tools_list_returns_enabled_and_disabled(
@@ -1312,7 +1312,7 @@ class TestListMethods:
 
         bash_item = next((i for i in items if i["name"] == "bash"), None)
         assert bash_item is not None, "Expected 'bash' in tools_list() result"
-        assert bash_item["behavior"] == ["my-behavior"], (
+        assert bash_item["behaviors"] == ["my-behavior"], (
             "tools_list() must resolve provenance via 'tool:tool-{name}' fallback"
         )
         assert bash_item["source"] == ["my-behavior"]
@@ -1367,7 +1367,7 @@ class TestListMethods:
         # Config should be populated from the mount plan spec
         assert item["config"].get("model") == "claude-3"
         # Provenance should resolve via mount plan module ID fallback
-        assert item["behavior"] == ["foundation"]
+        assert item["behaviors"] == ["foundation"]
         assert item["source"] == ["foundation"]
 
     def test_list_methods_return_empty_on_fresh_empty_bundle(self) -> None:
@@ -1622,7 +1622,7 @@ class TestNormalizedProvenanceLookupInListMethods:
         items = cfg.tools_list()
         assert len(items) == 1
         assert items[0]["name"] == "LSP"
-        assert items[0]["behavior"] == ["behavior-lsp"]
+        assert items[0]["behaviors"] == ["behavior-lsp"]
         assert items[0]["source"] == ["behavior-lsp"]
 
     def test_tools_list_resolves_python_check_by_normalization(self) -> None:
@@ -1633,7 +1633,7 @@ class TestNormalizedProvenanceLookupInListMethods:
         )
         items = cfg.tools_list()
         item = next(i for i in items if i["name"] == "python_check")
-        assert item["behavior"] == ["behavior-pycheck"]
+        assert item["behaviors"] == ["behavior-pycheck"]
 
     def test_tools_list_resolves_apply_patch_by_normalization(self) -> None:
         """'apply_patch' resolves to 'tool:tool-apply-patch' via normalization (strategy 3)."""
@@ -1643,7 +1643,7 @@ class TestNormalizedProvenanceLookupInListMethods:
         )
         items = cfg.tools_list()
         item = next(i for i in items if i["name"] == "apply_patch")
-        assert item["behavior"] == ["behavior-patch"]
+        assert item["behaviors"] == ["behavior-patch"]
 
     def test_tools_list_resolves_web_tools_by_prefix_match(self) -> None:
         """'web_search' and 'web_fetch' resolve to 'tool:tool-web' via prefix match (strategy 4)."""
@@ -1653,8 +1653,8 @@ class TestNormalizedProvenanceLookupInListMethods:
         )
         items = cfg.tools_list()
         by_name = {i["name"]: i for i in items}
-        assert by_name["web_search"]["behavior"] == ["behavior-web"]
-        assert by_name["web_fetch"]["behavior"] == ["behavior-web"]
+        assert by_name["web_search"]["behaviors"] == ["behavior-web"]
+        assert by_name["web_fetch"]["behaviors"] == ["behavior-web"]
 
     def test_tools_list_returns_none_for_semantic_mismatch(self) -> None:
         """'load_skill' returns behavior=None for 'tool:tool-skills' (no relationship)."""
@@ -1664,7 +1664,7 @@ class TestNormalizedProvenanceLookupInListMethods:
         )
         items = cfg.tools_list()
         item = next(i for i in items if i["name"] == "load_skill")
-        assert item["behavior"] is None
+        assert item["behaviors"] is None
 
     def test_tools_list_returns_none_for_filesystem_mismatch(self) -> None:
         """read_file/write_file/edit_file return behavior=None for 'tool:tool-filesystem'."""
@@ -1678,9 +1678,9 @@ class TestNormalizedProvenanceLookupInListMethods:
         )
         items = cfg.tools_list()
         by_name = {i["name"]: i for i in items}
-        assert by_name["read_file"]["behavior"] is None
-        assert by_name["write_file"]["behavior"] is None
-        assert by_name["edit_file"]["behavior"] is None
+        assert by_name["read_file"]["behaviors"] is None
+        assert by_name["write_file"]["behaviors"] is None
+        assert by_name["edit_file"]["behaviors"] is None
 
     def test_tools_list_config_lookup_by_normalized_name(self) -> None:
         """Config for 'tool-python-check' is found when tool is mounted as 'python_check'."""
@@ -1720,7 +1720,7 @@ class TestNormalizedProvenanceLookupInListMethods:
 
         hook = next((i for i in items if i["name"] == "python-check"), None)
         assert hook is not None, "'python-check' hook must appear in hooks_list()"
-        assert hook["behavior"] == ["behavior-pycheck"]
+        assert hook["behaviors"] == ["behavior-pycheck"]
 
     def test_providers_list_empty_when_app_level_injected(self) -> None:
         """providers_list() returns empty when all providers are app-level injected.
@@ -1772,7 +1772,7 @@ class TestMultiClaimantProvenance:
         items = cfg.context_list()
         assert len(items) == 1
         readme = items[0]
-        assert readme["behavior"] == ["behavior-a", "behavior-b"]
+        assert readme["behaviors"] == ["behavior-a", "behavior-b"]
         assert readme["source"] == ["behavior-a", "behavior-b"]
 
     def test_agents_list_returns_behavior_list(
@@ -1791,7 +1791,7 @@ class TestMultiClaimantProvenance:
         items = cfg.agents_list()
         agent_item = next((i for i in items if i["name"] == "my-agent"), None)
         assert agent_item is not None, "Expected 'my-agent' in agents_list()"
-        assert agent_item["behavior"] == ["behavior-a", "behavior-b"]
+        assert agent_item["behaviors"] == ["behavior-a", "behavior-b"]
         assert agent_item["source"] == ["behavior-a", "behavior-b"]
 
     def test_behaviors_list_counts_multi_claimant_items(
@@ -1907,7 +1907,7 @@ class TestModuleToToolMapping:
         assert cfg._tool_to_module["web_fetch"] == "tool-web"
 
     def test_tools_list_includes_module_field(self) -> None:
-        """tools_list() items include a 'module' field with the matched module ID.
+        """tools_list() items include a 'module_id' field with the matched module ID.
 
         Tool 'bash' matched from spec 'tool-bash' via prefix-strip strategy.
         """
@@ -1919,11 +1919,11 @@ class TestModuleToToolMapping:
         items = cfg.tools_list()
         assert len(items) == 1
         item = items[0]
-        assert "module" in item, "tools_list() items must have a 'module' field"
-        assert item["module"] == "tool-bash"
+        assert "module_id" in item, "tools_list() items must have a 'module_id' field"
+        assert item["module_id"] == "tool-bash"
 
     def test_tools_list_module_unknown_when_no_spec(self) -> None:
-        """tools_list() 'module' field is 'unknown' when no spec matches the tool.
+        """tools_list() 'module_id' field is 'unknown' when no spec matches the tool.
 
         Tool 'load_skill' from spec 'tool-skills' is a semantic mismatch (no match);
         tool 'orphan_tool' with no spec at all should both return 'unknown'.
@@ -1936,8 +1936,8 @@ class TestModuleToToolMapping:
         items = cfg.tools_list()
         assert len(items) == 1
         item = items[0]
-        assert "module" in item, "tools_list() items must have a 'module' field"
-        assert item["module"] == "unknown"
+        assert "module_id" in item, "tools_list() items must have a 'module_id' field"
+        assert item["module_id"] == "unknown"
 
 
 class TestModuleLevelToolDisable:
