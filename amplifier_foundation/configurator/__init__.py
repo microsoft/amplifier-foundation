@@ -190,6 +190,11 @@ class SessionConfigurator:
         self._tool_to_module: dict[str, str] = {}
         self._build_module_to_tools()
 
+        # Hook-handler-to-module mapping: resolves handler names to mount-plan module IDs.
+        # Built after _capture_hooks() so the snapshot is populated.
+        self._hook_handler_to_module: dict[str, str] = {}
+        self._build_hook_handler_mapping()
+
         # Track disabled behaviors and per-session config overrides.
         self._disabled_behaviors: set[str] = set()
         self._config_overrides: dict[str, Any] = {}
@@ -330,10 +335,102 @@ class SessionConfigurator:
                     claimed.add(tool_name)
                     continue
 
+                # Strategy 5: Python module path introspection.
+                # For tools registered with semantically unrelated names
+                # (e.g., tool-filesystem → read_file/write_file/edit_file,
+                #  tool-search → grep/glob, tool-skills → load_skill).
+                # The tool instance's Python package path typically contains the
+                # normalized module ID as a substring — e.g., "read_file" from
+                # package "amplifier_module_tool_filesystem" contains "tool_filesystem".
+                tool_instance = mounted.get(tool_name)
+                if tool_instance is not None:
+                    try:
+                        py_mod = type(tool_instance).__module__ or ""
+                        # Normalize hyphenated module ID to underscores for Python comparison.
+                        norm_mod_id = _normalize_module_name(module_id)
+                        if norm_mod_id and norm_mod_id in py_mod:
+                            matched_tools.append(tool_name)
+                            claimed.add(tool_name)
+                            continue
+                    except Exception:  # noqa: BLE001
+                        pass
+
             if matched_tools:
                 self._module_to_tools[module_id] = matched_tools
                 for tool_name in matched_tools:
                     self._tool_to_module[tool_name] = module_id
+
+    def _build_hook_handler_mapping(self) -> None:
+        """Build _hook_handler_to_module: handler_name → best-matching module ID.
+
+        Hook handlers registered by name (e.g. ``'hooks-todo-reminder-tracker'``)
+        often differ from the hook module ID (e.g. ``'hooks-todo-reminder'``) that
+        carries the provenance entry.  Some handlers are registered by TOOL modules
+        instead of hook modules (e.g. ``'skills-visibility'`` from ``'tool-skills'``).
+
+        Two strategies, longest-match wins:
+
+        1. **Hook module prefix** — normalize the hook module ID and check if the
+           handler name starts with it
+           (e.g. ``'hooks_todo_reminder'`` is a prefix of ``'hooks_todo_reminder_tracker'``).
+        2. **Tool module short-name prefix** — strip ``'tool-'`` from the tool module ID
+           and check if the handler name starts with that short name
+           (e.g. ``'skills'`` from ``'tool-skills'`` is a prefix of ``'skills_visibility'``).
+        """
+        hook_specs = self._coordinator.config.get("hooks", [])
+        tool_specs = self._coordinator.config.get("tools", [])
+
+        for handler_name in self._hook_snapshot:
+            norm_handler = _normalize_module_name(handler_name)
+
+            # Strategy 1: hook module ID is a prefix of the handler name.
+            # Longest-match wins to avoid spurious short-prefix matches.
+            best_module: str | None = None
+            best_length = 0
+            for spec in hook_specs:
+                if not isinstance(spec, dict):
+                    continue
+                module_id = spec.get("id") or spec.get("module", "")
+                if not module_id:
+                    continue
+                norm_module = _normalize_module_name(module_id)
+                if norm_handler == norm_module or norm_handler.startswith(norm_module + "_"):
+                    if len(norm_module) > best_length:
+                        best_module = module_id
+                        best_length = len(norm_module)
+
+            if best_module:
+                self._hook_handler_to_module[handler_name] = best_module
+                continue
+
+            # Strategy 2: tool module short name is a prefix of the handler name.
+            # Handles handlers registered by tool modules (e.g. 'skills-visibility'
+            # from 'tool-skills' → short name 'skills').
+            best_tool_module: str | None = None
+            best_length = 0
+            for spec in tool_specs:
+                if not isinstance(spec, dict):
+                    continue
+                module_id = spec.get("id") or spec.get("module", "")
+                if not module_id:
+                    continue
+                tool_prefix = "tool-"
+                short = (
+                    module_id[len(tool_prefix):]
+                    if module_id.startswith(tool_prefix)
+                    else module_id
+                )
+                norm_short = _normalize_module_name(short)
+                if norm_short and (
+                    norm_handler == norm_short
+                    or norm_handler.startswith(norm_short + "_")
+                ):
+                    if len(norm_short) > best_length:
+                        best_tool_module = module_id
+                        best_length = len(norm_short)
+
+            if best_tool_module:
+                self._hook_handler_to_module[handler_name] = best_tool_module
 
     def hook_disable(self, name: str) -> None:
         """Hook toggle is not supported in this version.
@@ -1032,6 +1129,17 @@ class SessionConfigurator:
         version (read-only).  Data is sourced from the _hook_snapshot captured
         at construction time.
 
+        Provenance resolution uses a three-step fallback:
+
+        1. Direct ``_lookup_prov_behavior`` against the ``hook`` category
+           (works for handlers whose name matches their module ID).
+        2. ``_hook_handler_to_module`` mapping (built at init) — resolves handlers
+           named as ``<module_id>-<suffix>`` (e.g. ``hooks-todo-reminder-tracker``
+           from module ``hooks-todo-reminder``) or handlers registered by tool
+           modules (e.g. ``skills-visibility`` from ``tool-skills``).
+        3. Provenance lookup using the resolved module ID in both ``hook`` and
+           ``tool`` categories.
+
         Returns:
             List of dicts with keys:
                 'name': str — hook handler name.
@@ -1042,14 +1150,33 @@ class SessionConfigurator:
                 'source': list[str] | None — alias for 'behaviors'.
         """
         provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
-        # Pre-build normalized provenance lookup for fuzzy name matching.
-        # Hook names registered in the hook registry may differ from module IDs
-        # in case or word separators (e.g. "python-check" from "hooks-python-check").
+        # Pre-build normalized provenance lookups for both hook and tool categories.
         norm_prov_map = _build_normalized_prov_lookup("hook", provenance)
+        norm_tool_prov_map = _build_normalized_prov_lookup("tool", provenance)
         result: list[dict] = []
 
         for name, meta in self._hook_snapshot.items():
+            # Step 1: standard hook provenance lookup by handler name.
             behavior = _lookup_prov_behavior(name, "hook", provenance, norm_prov_map)
+
+            if behavior is None:
+                # Step 2+3: use handler-to-module mapping to bridge the name gap.
+                module_id = self._hook_handler_to_module.get(name)
+                if module_id:
+                    # Try the resolved module ID as a hook provenance key first.
+                    behavior = provenance.get(f"hook:{module_id}")
+                    if behavior is None:
+                        # Handler may be from a tool module (e.g. 'skills-visibility'
+                        # registered by 'tool-skills').  Try tool provenance.
+                        behavior = provenance.get(f"tool:{module_id}")
+                    if behavior is None:
+                        # Last resort: fuzzy lookup in both categories.
+                        behavior = _lookup_prov_behavior(
+                            module_id, "hook", provenance, norm_prov_map
+                        ) or _lookup_prov_behavior(
+                            module_id, "tool", provenance, norm_tool_prov_map
+                        )
+
             result.append(
                 {
                     "name": name,

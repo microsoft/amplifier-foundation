@@ -29,6 +29,8 @@ def _prov_add(provenance: dict[str, list[str]], key: str, behavior: str) -> None
         key: Provenance key (e.g. 'tool:tool-bash').
         behavior: Bundle/behavior name to record as a claimant.
     """
+    if not behavior:  # Skip empty string or None claimants (nameless bundles)
+        return
     if key not in provenance:
         provenance[key] = []
     if behavior not in provenance[key]:
