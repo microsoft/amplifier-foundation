@@ -37,15 +37,15 @@ def _normalize_module_name(name: str) -> str:
 
 
 def _build_normalized_prov_lookup(
-    category: str, provenance: dict[str, str]
-) -> dict[str, str]:
-    """Build a map from normalized short module names to behavior values.
+    category: str, provenance: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """Build a map from normalized short module names to behavior value lists.
 
     For each provenance key of the form ``"{category}:{module_id}"``
     (e.g. ``"tool:tool-python-check"`` or ``"hook:hooks-logging"``), this
     extracts the short suffix by stripping the leading category prefix from the
     module ID, normalizes the result (lowercase, hyphens→underscores), and
-    stores the mapping ``"python_check" → behavior_name``.
+    stores the mapping ``"python_check" → [behavior_name, ...]``.
 
     Two prefix forms are tried in order:
 
@@ -63,17 +63,17 @@ def _build_normalized_prov_lookup(
 
     Args:
         category: The provenance category prefix, e.g. ``"tool"`` or ``"hook"``.
-        provenance: The full bundle provenance dict.
+        provenance: The full bundle provenance dict (dict[str, list[str]]).
 
     Returns:
-        Dict mapping normalized short name → behavior value.
+        Dict mapping normalized short name → list of behavior names.
     """
-    result: dict[str, str] = {}
+    result: dict[str, list[str]] = {}
     cat_key_prefix = f"{category}:"  # "tool:" or "hook:"
     singular_prefix = f"{category}-"  # "tool-"
     plural_prefix = f"{category}s-"  # "hooks-" (hook modules use plural)
 
-    for key, behavior in provenance.items():
+    for key, behavior_names in provenance.items():
         if not key.startswith(cat_key_prefix):
             continue
         module_id = key[
@@ -89,7 +89,7 @@ def _build_normalized_prov_lookup(
         else:
             short = module_id
         norm_short = _normalize_module_name(short)  # e.g. "python_check"
-        result[norm_short] = behavior
+        result[norm_short] = behavior_names
 
     return result
 
@@ -97,9 +97,9 @@ def _build_normalized_prov_lookup(
 def _lookup_prov_behavior(
     name: str,
     category: str,
-    provenance: dict[str, str],
-    norm_prov_map: dict[str, str],
-) -> str | None:
+    provenance: dict[str, list[str]],
+    norm_prov_map: dict[str, list[str]],
+) -> list[str] | None:
     """Resolve the behavior provenance for a mounted item using progressive matching.
 
     Tries four strategies in order, returning the first match:
@@ -123,12 +123,12 @@ def _lookup_prov_behavior(
     Args:
         name: The mounted item name (e.g. ``"python_check"``, ``"LSP"``).
         category: The provenance category (e.g. ``"tool"``, ``"hook"``).
-        provenance: The full bundle ``_provenance`` dict.
+        provenance: The full bundle ``_provenance`` dict (dict[str, list[str]]).
         norm_prov_map: Pre-built normalized lookup from
             :func:`_build_normalized_prov_lookup`.
 
     Returns:
-        Behavior name string, or ``None`` if no match is found.
+        List of behavior name strings, or ``None`` if no match is found.
     """
     # Strategy 1: exact raw key match
     behavior = provenance.get(f"{category}:{name}")
@@ -627,8 +627,8 @@ class SessionConfigurator:
         Raises:
             ValueError: If the behavior name is not found in provenance.
         """
-        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
-        matching_keys = [k for k, v in provenance.items() if v == name]
+        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
+        matching_keys = [k for k, v in provenance.items() if name in v]
 
         if not matching_keys:
             raise ValueError(f"Behavior {name!r} not found in provenance")
@@ -721,8 +721,8 @@ class SessionConfigurator:
         Raises:
             ValueError: If the behavior name is not found in provenance.
         """
-        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
-        matching_keys = [k for k, v in provenance.items() if v == name]
+        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
+        matching_keys = [k for k, v in provenance.items() if name in v]
 
         if not matching_keys:
             raise ValueError(f"Behavior {name!r} not found in provenance")
@@ -774,10 +774,10 @@ class SessionConfigurator:
                 'name': str — context key name.
                 'path': str — file path (as string).
                 'enabled': bool — True if live in bundle.context, False if stashed.
-                'behavior': str | None — provenance behavior name (if any).
-                'source': str | None — alias for 'behavior' (used by CLI rendering).
+                'behavior': list[str] | None — provenance behavior names (if any).
+                'source': list[str] | None — alias for 'behavior' (used by CLI rendering).
         """
-        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
         result: list[dict] = []
 
         for name, path in self._bundle.context.items():
@@ -818,10 +818,10 @@ class SessionConfigurator:
                 'name': str — tool module ID.
                 'enabled': bool.
                 'config': dict — per-tool config from the mount plan (may be empty).
-                'behavior': str | None — provenance behavior name.
-                'source': str | None — alias for 'behavior'.
+                'behavior': list[str] | None — provenance behavior names.
+                'source': list[str] | None — alias for 'behavior'.
         """
-        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
 
         # Pre-build normalized provenance lookup for fuzzy name matching.
         # This handles mismatches between module IDs and registered tool names
@@ -901,10 +901,10 @@ class SessionConfigurator:
                 'event': str — event the hook is bound to.
                 'priority': int — priority (0 if not available).
                 'enabled': bool — always True (hooks are read-only).
-                'behavior': str | None — provenance behavior name.
-                'source': str | None — alias for 'behavior'.
+                'behavior': list[str] | None — provenance behavior names.
+                'source': list[str] | None — alias for 'behavior'.
         """
-        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
         # Pre-build normalized provenance lookup for fuzzy name matching.
         # Hook names registered in the hook registry may differ from module IDs
         # in case or word separators (e.g. "python-check" from "hooks-python-check").
@@ -948,10 +948,10 @@ class SessionConfigurator:
                 'name': str — provider module ID (short name with prefix stripped).
                 'enabled': bool.
                 'config': dict — per-provider config from the mount plan.
-                'behavior': str | None — provenance behavior name.
-                'source': str | None — alias for 'behavior'.
+                'behavior': list[str] | None — provenance behavior names.
+                'source': list[str] | None — alias for 'behavior'.
         """
-        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
 
         # Pre-build normalized provenance lookup for fuzzy provider name matching.
         norm_prov_map = _build_normalized_prov_lookup("provider", provenance)
@@ -1081,10 +1081,10 @@ class SessionConfigurator:
                 'name': str — agent name.
                 'enabled': bool.
                 'config': dict — agent config dict.
-                'behavior': str | None — provenance behavior name.
-                'source': str | None — alias for 'behavior'.
+                'behavior': list[str] | None — provenance behavior names.
+                'source': list[str] | None — alias for 'behavior'.
         """
-        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
         result: list[dict] = []
 
         # Enabled: live in coordinator.config["agents"].
@@ -1128,32 +1128,36 @@ class SessionConfigurator:
                 'contributions': dict[str, int] — count per category
                     (context, tools, hooks, providers, agents).
         """
-        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
 
         # Group provenance keys by behavior name.
         # Provenance keys use SINGULAR category prefixes (tool:, hook:, provider:,
         # agent:, context:) which must be mapped to the PLURAL keys used in the
         # contributions output dict (tools, hooks, providers, agents, context).
+        # Each provenance value is a list of behavior names (multi-claimant).
         behaviors: dict[str, dict[str, list[str]]] = {}
-        for prov_key, behavior_name in provenance.items():
+        for prov_key, behavior_names in provenance.items():
             if ":" not in prov_key:
                 continue
-            # Skip entries with an empty behavior name (can occur when a bundle
+            # Skip entries with an empty behavior names list (can occur when a bundle
             # with no name is composed into the session bundle).
-            if not behavior_name:
+            if not behavior_names:
                 continue
             category, _ = prov_key.split(":", 1)
             plural_cat = _PROV_CATEGORY_MAP.get(category, category)
-            if behavior_name not in behaviors:
-                behaviors[behavior_name] = {
-                    "context": [],
-                    "tools": [],
-                    "hooks": [],
-                    "providers": [],
-                    "agents": [],
-                }
-            if plural_cat in behaviors[behavior_name]:
-                behaviors[behavior_name][plural_cat].append(prov_key)
+            for behavior_name in behavior_names:
+                if not behavior_name:
+                    continue
+                if behavior_name not in behaviors:
+                    behaviors[behavior_name] = {
+                        "context": [],
+                        "tools": [],
+                        "hooks": [],
+                        "providers": [],
+                        "agents": [],
+                    }
+                if plural_cat in behaviors[behavior_name]:
+                    behaviors[behavior_name][plural_cat].append(prov_key)
 
         result: list[dict] = []
         for name, contrib_lists in behaviors.items():
