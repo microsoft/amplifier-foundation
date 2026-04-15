@@ -593,7 +593,11 @@ class SessionConfigurator:
             mounted = {}
 
         for name in mounted:
-            behavior = provenance.get(f"tool:{name}")
+            # Provenance stores module IDs (e.g. "tool:tool-bash") but the coordinator
+            # mounts tools under short names (e.g. "bash").  Try both forms.
+            behavior = provenance.get(f"tool:{name}") or provenance.get(
+                f"tool:tool-{name}"
+            )
             result.append(
                 {
                     "name": name,
@@ -606,7 +610,9 @@ class SessionConfigurator:
 
         # Disabled: stashed tools.
         for name in self._stash["tools"]:
-            behavior = provenance.get(f"tool:{name}")
+            behavior = provenance.get(f"tool:{name}") or provenance.get(
+                f"tool:tool-{name}"
+            )
             result.append(
                 {
                     "name": name,
@@ -639,7 +645,12 @@ class SessionConfigurator:
         result: list[dict] = []
 
         for name, meta in self._hook_snapshot.items():
-            behavior = provenance.get(f"hook:{name}")
+            # Provenance stores module IDs (e.g. "hook:hooks-logging") but the hook
+            # registry may use handler names that differ (e.g. "hooks-logging").
+            # Try direct match first, then with "hooks-" prefix as a common fallback.
+            behavior = provenance.get(f"hook:{name}") or provenance.get(
+                f"hook:hooks-{name}"
+            )
             result.append(
                 {
                     "name": name,
@@ -686,29 +697,90 @@ class SessionConfigurator:
         except Exception:  # noqa: BLE001
             mounted = {}
 
-        for name in mounted:
-            behavior = provenance.get(f"provider:{name}")
-            result.append(
-                {
-                    "name": name,
-                    "enabled": True,
-                    "config": config_by_id.get(name, {}),
-                    "behavior": behavior,
-                    "source": behavior,
-                }
-            )
+        if mounted:
+            # Coordinator exposes live provider instances — use them as the source of truth.
+            for name in mounted:
+                # Provenance stores module IDs (e.g. "provider:provider-anthropic") but the
+                # coordinator may mount providers under short names (e.g. "anthropic").
+                # Try both forms so provenance is resolved regardless of naming convention.
+                behavior = provenance.get(f"provider:{name}") or provenance.get(
+                    f"provider:provider-{name}"
+                )
+                result.append(
+                    {
+                        "name": name,
+                        "enabled": True,
+                        "config": config_by_id.get(name, {}),
+                        "behavior": behavior,
+                        "source": behavior,
+                    }
+                )
 
-        for name in self._stash["providers"]:
-            behavior = provenance.get(f"provider:{name}")
-            result.append(
-                {
-                    "name": name,
-                    "enabled": False,
-                    "config": config_by_id.get(name, {}),
-                    "behavior": behavior,
-                    "source": behavior,
-                }
-            )
+            # Disabled providers live in the stash.
+            for name in self._stash["providers"]:
+                behavior = provenance.get(f"provider:{name}") or provenance.get(
+                    f"provider:provider-{name}"
+                )
+                result.append(
+                    {
+                        "name": name,
+                        "enabled": False,
+                        "config": config_by_id.get(name, {}),
+                        "behavior": behavior,
+                        "source": behavior,
+                    }
+                )
+        else:
+            # Fallback: coordinator.get("providers") is not supported by this coordinator
+            # implementation (e.g. the Rust binding does not expose a providers mount-point).
+            # Derive the provider list from the mount-plan specs in coordinator.config so
+            # the dashboard still shows something meaningful.
+            added: set[str] = set()
+            for spec in self._coordinator.config.get("providers", []):
+                if not isinstance(spec, dict):
+                    continue
+                mid = spec.get("id") or spec.get("module", "")
+                if not mid:
+                    continue
+                # Display with short name (strip "provider-" prefix if present).
+                short_name = mid[9:] if mid.startswith("provider-") else mid
+                if short_name in added:
+                    continue
+                added.add(short_name)
+                enabled = (
+                    short_name not in self._stash["providers"]
+                    and mid not in self._stash["providers"]
+                )
+                behavior = provenance.get(f"provider:{short_name}") or provenance.get(
+                    f"provider:{mid}"
+                )
+                result.append(
+                    {
+                        "name": short_name,
+                        "enabled": enabled,
+                        "config": config_by_id.get(
+                            short_name, config_by_id.get(mid, {})
+                        ),
+                        "behavior": behavior,
+                        "source": behavior,
+                    }
+                )
+
+            # Include any stashed providers not already covered by the mount plan.
+            for name in self._stash["providers"]:
+                if name not in added:
+                    behavior = provenance.get(f"provider:{name}") or provenance.get(
+                        f"provider:provider-{name}"
+                    )
+                    result.append(
+                        {
+                            "name": name,
+                            "enabled": False,
+                            "config": config_by_id.get(name, {}),
+                            "behavior": behavior,
+                            "source": behavior,
+                        }
+                    )
 
         return result
 

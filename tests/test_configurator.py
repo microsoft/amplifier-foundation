@@ -1098,6 +1098,87 @@ class TestListMethods:
         items = configurator.behaviors_list()
         assert items == []
 
+    def test_tools_list_resolves_provenance_by_full_module_id(
+        self,
+        async_configurator: SessionConfigurator,
+        async_coordinator: MagicMock,
+        mock_bundle: Bundle,
+    ) -> None:
+        """tools_list() resolves provenance when coordinator mounts tools under short names.
+
+        The real coordinator mounts tools under short names (e.g. "bash") but provenance
+        stores module IDs (e.g. "tool:tool-bash").  tools_list() must try both forms so
+        that the behavior source is resolved correctly for all mounted tools.
+        """
+        # Coordinator mounts under the short name "bash" (no "tool-" prefix).
+        async_coordinator.get = MagicMock(
+            side_effect=lambda mp: {"bash": MagicMock()} if mp == "tools" else {}
+        )
+        # Provenance uses the full module ID "tool:tool-bash".
+        mock_bundle._provenance = {"tool:tool-bash": "my-behavior"}  # type: ignore[misc]
+
+        items = async_configurator.tools_list()
+
+        bash_item = next((i for i in items if i["name"] == "bash"), None)
+        assert bash_item is not None, "Expected 'bash' in tools_list() result"
+        assert bash_item["behavior"] == "my-behavior", (
+            "tools_list() must resolve provenance via 'tool:tool-{name}' fallback"
+        )
+        assert bash_item["source"] == "my-behavior"
+
+    def test_providers_list_fallback_to_mount_plan_when_get_returns_empty(
+        self,
+        mock_session: MagicMock,
+        mock_bundle: Bundle,
+        mock_prepared_bundle: MagicMock,
+    ) -> None:
+        """providers_list() falls back to mount plan when coordinator.get('providers') is empty.
+
+        Some coordinator implementations (e.g. the Rust binding) do not expose providers
+        via coordinator.get('providers').  In that case providers_list() derives the list
+        from coordinator.config['providers'] mount-plan specs so the dashboard still shows
+        the correct provider names, config, and behavior attribution.
+        """
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        # coordinator.get("providers") returns empty — simulates the Rust coordinator
+        coordinator.get = MagicMock(return_value={})
+        coordinator.config = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "source": "amplifier://provider-anthropic",
+                    "config": {"model": "claude-3", "api_key": "sk-test"},
+                }
+            ],
+            "agents": {},
+        }
+
+        # Bundle provenance uses full module ID "provider:provider-anthropic"
+        mock_bundle._provenance = {  # type: ignore[misc]
+            "provider:provider-anthropic": "foundation"
+        }
+
+        session = MagicMock()
+        session.coordinator = coordinator
+        mock_prepared_bundle.bundle = mock_bundle
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=mock_prepared_bundle)
+        items = cfg.providers_list()
+
+        # Should produce one entry derived from the mount plan
+        assert len(items) == 1
+        item = items[0]
+        # Name should be the short form (prefix stripped)
+        assert item["name"] == "anthropic"
+        assert item["enabled"] is True
+        # Config should be populated from the mount plan spec
+        assert item["config"].get("model") == "claude-3"
+        # Provenance should resolve via mount plan module ID fallback
+        assert item["behavior"] == "foundation"
+        assert item["source"] == "foundation"
+
     def test_list_methods_return_empty_on_fresh_empty_bundle(self) -> None:
         """All list methods return empty lists when bundle has no resources."""
         coordinator = MagicMock()

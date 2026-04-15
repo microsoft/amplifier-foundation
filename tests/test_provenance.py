@@ -90,3 +90,52 @@ class TestProvenance:
         assert result._provenance["tool:tool-x"] == "a"
         # tool-y should be attributed to "b" (its direct contributor)
         assert result._provenance["tool:tool-y"] == "b"
+
+    def test_pending_context_provenance_self(self) -> None:
+        """compose() tags _pending_context entries from self with self.name.
+
+        Namespace-prefixed context refs (e.g. 'foundation:context/foo.md') are stored
+        as _pending_context during parsing and resolved later by resolve_pending_context().
+        Their provenance must be tagged during compose() so context_list() can find
+        the correct behavior source after resolution.
+        """
+        base = Bundle(
+            name="base",
+            _pending_context={"base:context/guide.md": "base:context/guide.md"},
+        )
+        result = base.compose()
+        assert result._provenance.get("context:base:context/guide.md") == "base"
+
+    def test_pending_context_provenance_other(self) -> None:
+        """compose() tags _pending_context entries from other bundles.
+
+        When a behavior bundle contributes context via namespace-prefixed refs
+        (stored as _pending_context), compose() must tag them in provenance so
+        behaviors_list() and context_list() correctly attribute the contribution.
+        """
+        base = Bundle(name="base")
+        child = Bundle(
+            name="child",
+            _pending_context={"child:context/notes.md": "child:context/notes.md"},
+        )
+        result = base.compose(child)
+        assert result._provenance.get("context:child:context/notes.md") == "child"
+
+    def test_pending_context_provenance_survives_resolution(self) -> None:
+        """Pending context provenance persists after resolve_pending_context() runs.
+
+        After compose() tags pending_context entries and resolve_pending_context()
+        moves them to context, the provenance keys must still be present so that
+        context_list() can look them up by the final context key.
+        """
+        base = Bundle(name="base")
+        child = Bundle(
+            name="child",
+            _pending_context={"child:context/notes.md": "child:context/notes.md"},
+        )
+        result = base.compose(child)
+        # Provenance must be set before resolution
+        assert result._provenance.get("context:child:context/notes.md") == "child"
+        # After resolution the key is unchanged (pending key == final context key),
+        # so the provenance lookup still works
+        assert "context:child:context/notes.md" in result._provenance

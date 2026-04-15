@@ -137,6 +137,11 @@ class Bundle:
         initial_provenance: dict[str, str] = {}
         for prefixed_key in initial_context:
             initial_provenance[f"context:{prefixed_key}"] = self.name
+        # Also tag pending context (namespace-prefixed refs deferred for resolution).
+        # These keys match the final context keys after resolve_pending_context() runs,
+        # so the provenance lookup in context_list() will find them correctly.
+        for pending_name in self._pending_context:
+            initial_provenance[f"context:{pending_name}"] = self.name
         for mod in self.tools:
             module_id = mod.get("id") or mod.get("module")
             if module_id:
@@ -239,9 +244,13 @@ class Bundle:
                 # Tag context from other
                 result._provenance[f"context:{prefixed_key}"] = other.name
 
-            # Pending context: accumulate (already has namespace prefixes)
+            # Pending context: accumulate (already has namespace prefixes) and tag provenance.
+            # These refs will be moved to context by resolve_pending_context(); tagging them
+            # here ensures context_list() can find the correct behavior source later.
             if other._pending_context:
                 result._pending_context.update(other._pending_context)
+                for pending_name in other._pending_context:
+                    result._provenance[f"context:{pending_name}"] = other.name
 
             # Instruction: later replaces
             if other.instruction:
