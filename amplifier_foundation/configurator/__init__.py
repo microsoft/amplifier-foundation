@@ -185,6 +185,11 @@ class SessionConfigurator:
         self._hook_snapshot: dict[str, Any] = {}
         self._capture_hooks()
 
+        # Module-to-tool and reverse mappings built from the mount-plan tool specs.
+        self._module_to_tools: dict[str, list[str]] = {}
+        self._tool_to_module: dict[str, str] = {}
+        self._build_module_to_tools()
+
         # Track disabled behaviors and per-session config overrides.
         self._disabled_behaviors: set[str] = set()
         self._config_overrides: dict[str, Any] = {}
@@ -245,6 +250,90 @@ class SessionConfigurator:
                 "hook_disable() will work; hook_enable() will not be available.",
                 exc,
             )
+
+    def _build_module_to_tools(self) -> None:
+        """Build _module_to_tools and _tool_to_module from the mount-plan tool specs.
+
+        Iterates tool specs from ``coordinator.config['tools']``, extracts the
+        module ID from each spec, then matches it against all currently-mounted
+        tool names using four strategies (in order):
+
+        1. **Direct match** — module ID equals the mounted tool name.
+        2. **Prefix strip** — strip the ``"tool-"`` prefix from the module ID
+           (e.g. ``"tool-bash"`` → ``"bash"``).
+        3. **Normalized match** — lowercase + hyphens→underscores on both sides
+           (e.g. ``"tool-python-check"`` → ``"python_check"``).
+        4. **Prefix containment** — the normalized short name is a word-boundary
+           prefix of the normalized mounted name
+           (e.g. ``"web"`` from ``"tool-web"`` matches ``"web_search"`` and
+           ``"web_fetch"``).
+
+        A ``claimed`` set prevents the same tool name from being assigned to
+        more than one module.  The results are stored in:
+
+        - ``self._module_to_tools``: ``{module_id: [tool_name, ...]}``
+        - ``self._tool_to_module``: ``{tool_name: module_id}`` (reverse)
+        """
+        try:
+            mounted: dict = self._coordinator.get("tools") or {}
+        except Exception:  # noqa: BLE001
+            mounted = {}
+
+        specs = self._coordinator.config.get("tools", [])
+        claimed: set[str] = set()
+
+        for spec in specs:
+            if not isinstance(spec, dict):
+                continue
+            module_id = spec.get("id") or spec.get("module", "")
+            if not module_id:
+                continue
+
+            matched_tools: list[str] = []
+
+            # Pre-compute normalized forms for matching.
+            prefix = "tool-"
+            short = (
+                module_id[len(prefix) :] if module_id.startswith(prefix) else module_id
+            )
+            norm_id = _normalize_module_name(module_id)
+            norm_short = _normalize_module_name(short)
+
+            for tool_name in mounted:
+                if tool_name in claimed:
+                    continue
+
+                norm_tool = _normalize_module_name(tool_name)
+
+                # Strategy 1: direct match
+                if tool_name == module_id:
+                    matched_tools.append(tool_name)
+                    claimed.add(tool_name)
+                    continue
+
+                # Strategy 2: strip 'tool-' prefix
+                if tool_name == short:
+                    matched_tools.append(tool_name)
+                    claimed.add(tool_name)
+                    continue
+
+                # Strategy 3: normalized match (case + hyphen/underscore insensitive)
+                if norm_tool == norm_id or norm_tool == norm_short:
+                    matched_tools.append(tool_name)
+                    claimed.add(tool_name)
+                    continue
+
+                # Strategy 4: prefix containment — module short name is a word-boundary
+                # prefix of the mounted tool name (e.g. "web" matches "web_search").
+                if norm_tool.startswith(norm_short + "_"):
+                    matched_tools.append(tool_name)
+                    claimed.add(tool_name)
+                    continue
+
+            if matched_tools:
+                self._module_to_tools[module_id] = matched_tools
+                for tool_name in matched_tools:
+                    self._tool_to_module[tool_name] = module_id
 
     def hook_disable(self, name: str) -> None:
         """Hook toggle is not supported in this version.
@@ -869,6 +958,7 @@ class SessionConfigurator:
                     "config": config_by_id.get(name, config_by_id.get(norm_name, {})),
                     "behavior": behavior,
                     "source": behavior,
+                    "module": self._tool_to_module.get(name, "unknown"),
                 }
             )
 
@@ -883,6 +973,7 @@ class SessionConfigurator:
                     "config": config_by_id.get(name, config_by_id.get(norm_name, {})),
                     "behavior": behavior,
                     "source": behavior,
+                    "module": self._tool_to_module.get(name, "unknown"),
                 }
             )
 

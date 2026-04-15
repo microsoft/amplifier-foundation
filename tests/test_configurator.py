@@ -1806,3 +1806,92 @@ class TestTopLevelImport:
         from amplifier_foundation.configurator import SessionConfigurator as SubModule
 
         assert TopLevel is SubModule
+
+
+class TestModuleToToolMapping:
+    """Tests for _module_to_tools and _tool_to_module mappings in SessionConfigurator."""
+
+    def _make_cfg(
+        self,
+        tool_specs: list,
+        mounted_tools: dict,
+    ) -> "SessionConfigurator":
+        """Helper: create a SessionConfigurator with given tool specs and mounted tools."""
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.get = MagicMock(
+            side_effect=lambda mp: mounted_tools if mp == "tools" else {}
+        )
+        coordinator.config = {
+            "agents": {},
+            "tools": tool_specs,
+        }
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = tool_specs
+        bundle_mock.providers = []
+        bundle_mock._provenance = {}
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        return SessionConfigurator(session=session, prepared_bundle=prepared)
+
+    def test_module_to_tools_built_at_init(self) -> None:
+        """_module_to_tools and _tool_to_module are populated at init from tool specs.
+
+        Module 'tool-web' should match 'web_search' and 'web_fetch' via prefix containment.
+        """
+        cfg = self._make_cfg(
+            tool_specs=[{"module": "tool-web"}],
+            mounted_tools={"web_search": MagicMock(), "web_fetch": MagicMock()},
+        )
+
+        # _module_to_tools maps module_id -> list of tool names
+        assert hasattr(cfg, "_module_to_tools")
+        assert hasattr(cfg, "_tool_to_module")
+        assert "tool-web" in cfg._module_to_tools
+        assert "web_search" in cfg._module_to_tools["tool-web"]
+        assert "web_fetch" in cfg._module_to_tools["tool-web"]
+
+        # _tool_to_module maps tool name -> module_id
+        assert cfg._tool_to_module["web_search"] == "tool-web"
+        assert cfg._tool_to_module["web_fetch"] == "tool-web"
+
+    def test_tools_list_includes_module_field(self) -> None:
+        """tools_list() items include a 'module' field with the matched module ID.
+
+        Tool 'bash' matched from spec 'tool-bash' via prefix-strip strategy.
+        """
+        cfg = self._make_cfg(
+            tool_specs=[{"module": "tool-bash"}],
+            mounted_tools={"bash": MagicMock()},
+        )
+
+        items = cfg.tools_list()
+        assert len(items) == 1
+        item = items[0]
+        assert "module" in item, "tools_list() items must have a 'module' field"
+        assert item["module"] == "tool-bash"
+
+    def test_tools_list_module_unknown_when_no_spec(self) -> None:
+        """tools_list() 'module' field is 'unknown' when no spec matches the tool.
+
+        Tool 'load_skill' from spec 'tool-skills' is a semantic mismatch (no match);
+        tool 'orphan_tool' with no spec at all should both return 'unknown'.
+        """
+        cfg = self._make_cfg(
+            tool_specs=[],  # No specs — no match possible
+            mounted_tools={"orphan_tool": MagicMock()},
+        )
+
+        items = cfg.tools_list()
+        assert len(items) == 1
+        item = items[0]
+        assert "module" in item, "tools_list() items must have a 'module' field"
+        assert item["module"] == "unknown"
