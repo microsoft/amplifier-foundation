@@ -920,6 +920,214 @@ class TestSaveAndApply:
         assert isinstance(warnings, list)
 
 
+class TestListMethods:
+    """Tests for *_list() methods that power the /config dashboard."""
+
+    def test_context_list_returns_enabled_and_disabled(
+        self, configurator: SessionConfigurator, mock_bundle: Bundle
+    ) -> None:
+        """context_list returns all context entries with correct enabled/disabled status."""
+        # Initially "readme" is enabled
+        items = configurator.context_list()
+        assert len(items) == 1
+        readme = items[0]
+        assert readme["name"] == "readme"
+        assert readme["enabled"] is True
+        assert readme["path"] == str(mock_bundle.context["readme"])
+
+        # After disabling, it appears as disabled
+        configurator.context_disable("readme")
+        items = configurator.context_list()
+        assert len(items) == 1
+        assert items[0]["name"] == "readme"
+        assert items[0]["enabled"] is False
+
+    def test_context_list_carries_behavior_and_source(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """context_list includes behavior provenance in both 'behavior' and 'source' keys."""
+        items = configurator.context_list()
+        # mock_bundle has _provenance = {"context:readme": "test-behavior"}
+        assert items[0]["behavior"] == "test-behavior"
+        assert items[0]["source"] == "test-behavior"
+
+    def test_tools_list_returns_enabled_and_disabled(
+        self,
+        async_configurator: SessionConfigurator,
+        async_coordinator: MagicMock,
+    ) -> None:
+        """tools_list returns mounted tools as enabled and stashed tools as disabled."""
+        # Initially tool-bash is enabled (present in coordinator.get("tools"))
+        items = async_configurator.tools_list()
+        enabled_names = {i["name"] for i in items if i["enabled"]}
+        assert "tool-bash" in enabled_names
+
+        # Simulate disabling: remove from mounted dict and add to stash
+        mounted = async_coordinator.get("tools")
+        instance = mounted.pop("tool-bash")
+        async_configurator._stash["tools"]["tool-bash"] = instance
+
+        items = async_configurator.tools_list()
+        enabled = [i for i in items if i["enabled"]]
+        disabled = [i for i in items if not i["enabled"]]
+        assert len(enabled) == 0
+        assert len(disabled) == 1
+        assert disabled[0]["name"] == "tool-bash"
+
+    def test_hooks_list_returns_all_as_enabled(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hooks_list returns all hooks with enabled=True (hooks are read-only)."""
+        items = configurator.hooks_list()
+        assert len(items) == 2  # on_before_tool + on_after_tool from fixture
+
+        names = {i["name"] for i in items}
+        assert "on_before_tool" in names
+        assert "on_after_tool" in names
+
+        # All hooks are always enabled
+        for item in items:
+            assert item["enabled"] is True
+            assert "event" in item
+            assert "priority" in item
+
+    def test_hooks_list_event_is_correct(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hooks_list items carry the correct event binding from the snapshot."""
+        by_name = {i["name"]: i for i in configurator.hooks_list()}
+        assert by_name["on_before_tool"]["event"] == "before_tool"
+        assert by_name["on_after_tool"]["event"] == "after_tool"
+
+    def test_providers_list_returns_enabled_and_disabled(
+        self,
+        async_configurator: SessionConfigurator,
+        async_coordinator: MagicMock,
+    ) -> None:
+        """providers_list returns mounted providers as enabled and stashed ones as disabled."""
+        items = async_configurator.providers_list()
+        enabled_names = {i["name"] for i in items if i["enabled"]}
+        assert "provider-anthropic" in enabled_names
+
+        # Simulate disabling
+        mounted = async_coordinator.get("providers")
+        instance = mounted.pop("provider-anthropic")
+        async_configurator._stash["providers"]["provider-anthropic"] = instance
+
+        items = async_configurator.providers_list()
+        disabled = [i for i in items if not i["enabled"]]
+        assert len(disabled) == 1
+        assert disabled[0]["name"] == "provider-anthropic"
+
+    def test_agents_list_returns_enabled_and_disabled(
+        self,
+        configurator: SessionConfigurator,
+        mock_coordinator: MagicMock,
+    ) -> None:
+        """agents_list returns live agents as enabled and stashed agents as disabled."""
+        items = configurator.agents_list()
+        enabled_names = {i["name"] for i in items if i["enabled"]}
+        assert "my-agent" in enabled_names
+
+        # Disable the agent
+        configurator.agent_disable("my-agent")
+
+        items = configurator.agents_list()
+        assert len(items) == 1
+        assert items[0]["name"] == "my-agent"
+        assert items[0]["enabled"] is False
+
+    def test_agents_list_config_included(
+        self,
+        configurator: SessionConfigurator,
+        mock_coordinator: MagicMock,
+    ) -> None:
+        """agents_list items include the agent config dict."""
+        items = configurator.agents_list()
+        assert isinstance(items[0]["config"], dict)
+
+    def test_behaviors_list_groups_by_provenance(
+        self, behavior_configurator: SessionConfigurator
+    ) -> None:
+        """behaviors_list groups all provenance entries by behavior name with counts."""
+        items = behavior_configurator.behaviors_list()
+        assert len(items) == 1
+        beh = items[0]
+        assert beh["name"] == "my-behavior"
+        assert beh["enabled"] is True
+
+        # behavior_bundle has context:readme, tools:tool-bash, hooks:on_before_tool, agents:my-agent
+        contributions = beh["contributions"]
+        assert contributions["context"] == 1
+        assert contributions["tools"] == 1
+        assert contributions["hooks"] == 1
+        assert contributions["agents"] == 1
+
+    def test_behaviors_list_disabled_behavior(
+        self, behavior_configurator: SessionConfigurator
+    ) -> None:
+        """behaviors_list shows enabled=False for behaviors in _disabled_behaviors."""
+        behavior_configurator._disabled_behaviors.add("my-behavior")
+
+        items = behavior_configurator.behaviors_list()
+        assert items[0]["enabled"] is False
+
+    def test_behaviors_list_sorted_by_name(
+        self,
+        mock_session: MagicMock,
+        mock_prepared_bundle: MagicMock,
+        mock_bundle: Bundle,
+    ) -> None:
+        """behaviors_list results are sorted alphabetically by name."""
+        mock_bundle._provenance = {  # type: ignore[misc]
+            "context:readme": "zebra",
+            "tools:tool-bash": "alpha",
+        }
+        cfg = SessionConfigurator(
+            session=mock_session, prepared_bundle=mock_prepared_bundle
+        )
+        items = cfg.behaviors_list()
+        names = [i["name"] for i in items]
+        assert names == sorted(names)
+
+    def test_behaviors_list_empty_when_no_provenance(
+        self, configurator: SessionConfigurator, mock_bundle: Bundle
+    ) -> None:
+        """behaviors_list returns empty list when bundle has no provenance."""
+        mock_bundle._provenance = {}  # type: ignore[misc]
+        items = configurator.behaviors_list()
+        assert items == []
+
+    def test_list_methods_return_empty_on_fresh_empty_bundle(self) -> None:
+        """All list methods return empty lists when bundle has no resources."""
+        coordinator = MagicMock()
+        coordinator.config = {}
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.get = MagicMock(return_value={})
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = []
+        bundle_mock.providers = []
+        bundle_mock._provenance = {}
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+
+        assert cfg.context_list() == []
+        assert cfg.tools_list() == []
+        assert cfg.hooks_list() == []
+        assert cfg.providers_list() == []
+        assert cfg.agents_list() == []
+        assert cfg.behaviors_list() == []
+
+
 class TestTopLevelImport:
     """Verify SessionConfigurator is importable from amplifier_foundation top-level."""
 

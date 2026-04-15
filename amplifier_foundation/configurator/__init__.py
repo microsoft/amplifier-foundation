@@ -326,9 +326,7 @@ class SessionConfigurator:
         tools = self._coordinator.get("tools")
         if tools is None or name not in tools:
             available = list(tools.keys()) if tools else []
-            raise ValueError(
-                f"Tool {name!r} not found. Available: {available}"
-            )
+            raise ValueError(f"Tool {name!r} not found. Available: {available}")
         instance = tools[name]
         await self._coordinator.unmount("tools", name=name)
         self._stash["tools"][name] = instance
@@ -373,9 +371,7 @@ class SessionConfigurator:
         providers = self._coordinator.get("providers")
         if providers is None or name not in providers:
             available = list(providers.keys()) if providers else []
-            raise ValueError(
-                f"Provider {name!r} not found. Available: {available}"
-            )
+            raise ValueError(f"Provider {name!r} not found. Available: {available}")
         instance = providers[name]
         await self._coordinator.unmount("providers", name=name)
         self._stash["providers"][name] = instance
@@ -500,6 +496,286 @@ class SessionConfigurator:
 
         self._disabled_behaviors.discard(name)
         return {"enabled": enabled, "warnings": warnings}
+
+    # ------------------------------------------------------------------
+    # List methods — dashboard views for each category
+    # ------------------------------------------------------------------
+
+    def context_list(self) -> list[dict]:
+        """Return a list of all context entries with their enabled/disabled status.
+
+        Returns:
+            List of dicts with keys:
+                'name': str — context key name.
+                'path': str — file path (as string).
+                'enabled': bool — True if live in bundle.context, False if stashed.
+                'behavior': str | None — provenance behavior name (if any).
+                'source': str | None — alias for 'behavior' (used by CLI rendering).
+        """
+        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        result: list[dict] = []
+
+        for name, path in self._bundle.context.items():
+            behavior = provenance.get(f"context:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "path": str(path),
+                    "enabled": True,
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        for name, path in self._stash["context"].items():
+            behavior = provenance.get(f"context:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "path": str(path),
+                    "enabled": False,
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        return result
+
+    def tools_list(self) -> list[dict]:
+        """Return a list of all tools with their enabled/disabled status.
+
+        Enabled tools are read from coordinator.get("tools") — the live mounted dict.
+        Disabled tools are read from the stash.  Config is read from
+        coordinator.config["tools"] mount-plan specs (matched by module ID).
+
+        Returns:
+            List of dicts with keys:
+                'name': str — tool module ID.
+                'enabled': bool.
+                'config': dict — per-tool config from the mount plan (may be empty).
+                'behavior': str | None — provenance behavior name.
+                'source': str | None — alias for 'behavior'.
+        """
+        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+
+        # Build config lookup by module ID from the coordinator's mount plan.
+        config_by_id: dict[str, dict] = {}
+        for spec in self._coordinator.config.get("tools", []):
+            if isinstance(spec, dict):
+                mid = spec.get("id") or spec.get("module", "")
+                if mid:
+                    config_by_id[mid] = spec.get("config") or {}
+
+        result: list[dict] = []
+
+        # Enabled: live mounted tools.
+        try:
+            mounted: dict = self._coordinator.get("tools") or {}
+        except Exception:  # noqa: BLE001
+            mounted = {}
+
+        for name in mounted:
+            behavior = provenance.get(f"tools:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "enabled": True,
+                    "config": config_by_id.get(name, {}),
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        # Disabled: stashed tools.
+        for name in self._stash["tools"]:
+            behavior = provenance.get(f"tools:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "enabled": False,
+                    "config": config_by_id.get(name, {}),
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        return result
+
+    def hooks_list(self) -> list[dict]:
+        """Return a list of all hooks.
+
+        Hooks are always shown as enabled — hook toggle is not supported in this
+        version (read-only).  Data is sourced from the _hook_snapshot captured
+        at construction time.
+
+        Returns:
+            List of dicts with keys:
+                'name': str — hook handler name.
+                'event': str — event the hook is bound to.
+                'priority': int — priority (0 if not available).
+                'enabled': bool — always True (hooks are read-only).
+                'behavior': str | None — provenance behavior name.
+                'source': str | None — alias for 'behavior'.
+        """
+        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        result: list[dict] = []
+
+        for name, meta in self._hook_snapshot.items():
+            behavior = provenance.get(f"hooks:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "event": meta.get("event", ""),
+                    "priority": meta.get("priority", 0),
+                    "enabled": True,
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        return result
+
+    def providers_list(self) -> list[dict]:
+        """Return a list of all providers with their enabled/disabled status.
+
+        Same pattern as tools_list but for providers.
+
+        Returns:
+            List of dicts with keys:
+                'name': str — provider module ID.
+                'enabled': bool.
+                'config': dict — per-provider config from the mount plan.
+                'behavior': str | None — provenance behavior name.
+                'source': str | None — alias for 'behavior'.
+        """
+        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+
+        config_by_id: dict[str, dict] = {}
+        for spec in self._coordinator.config.get("providers", []):
+            if isinstance(spec, dict):
+                mid = spec.get("id") or spec.get("module", "")
+                if mid:
+                    config_by_id[mid] = spec.get("config") or {}
+
+        result: list[dict] = []
+
+        try:
+            mounted: dict = self._coordinator.get("providers") or {}
+        except Exception:  # noqa: BLE001
+            mounted = {}
+
+        for name in mounted:
+            behavior = provenance.get(f"providers:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "enabled": True,
+                    "config": config_by_id.get(name, {}),
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        for name in self._stash["providers"]:
+            behavior = provenance.get(f"providers:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "enabled": False,
+                    "config": config_by_id.get(name, {}),
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        return result
+
+    def agents_list(self) -> list[dict]:
+        """Return a list of all agents with their enabled/disabled status.
+
+        Returns:
+            List of dicts with keys:
+                'name': str — agent name.
+                'enabled': bool.
+                'config': dict — agent config dict.
+                'behavior': str | None — provenance behavior name.
+                'source': str | None — alias for 'behavior'.
+        """
+        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        result: list[dict] = []
+
+        # Enabled: live in coordinator.config["agents"].
+        for name, cfg in self._coordinator.config.get("agents", {}).items():
+            behavior = provenance.get(f"agents:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "enabled": True,
+                    "config": cfg if isinstance(cfg, dict) else {},
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        # Disabled: stashed.
+        for name, cfg in self._stash["agents"].items():
+            behavior = provenance.get(f"agents:{name}")
+            result.append(
+                {
+                    "name": name,
+                    "enabled": False,
+                    "config": cfg if isinstance(cfg, dict) else {},
+                    "behavior": behavior,
+                    "source": behavior,
+                }
+            )
+
+        return result
+
+    def behaviors_list(self) -> list[dict]:
+        """Return a list of all behaviors derived from bundle provenance.
+
+        Groups all provenance entries by behavior name (value) and counts
+        contributions per category.
+
+        Returns:
+            Sorted list of dicts with keys:
+                'name': str — behavior name.
+                'enabled': bool — False if in _disabled_behaviors, else True.
+                'contributions': dict[str, int] — count per category
+                    (context, tools, hooks, providers, agents).
+        """
+        provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+
+        # Group provenance keys by behavior name.
+        behaviors: dict[str, dict[str, list[str]]] = {}
+        for prov_key, behavior_name in provenance.items():
+            if ":" not in prov_key:
+                continue
+            category, _ = prov_key.split(":", 1)
+            if behavior_name not in behaviors:
+                behaviors[behavior_name] = {
+                    "context": [],
+                    "tools": [],
+                    "hooks": [],
+                    "providers": [],
+                    "agents": [],
+                }
+            if category in behaviors[behavior_name]:
+                behaviors[behavior_name][category].append(prov_key)
+
+        result: list[dict] = []
+        for name, contrib_lists in behaviors.items():
+            contributions = {cat: len(items) for cat, items in contrib_lists.items()}
+            result.append(
+                {
+                    "name": name,
+                    "enabled": name not in self._disabled_behaviors,
+                    "contributions": contributions,
+                }
+            )
+
+        return sorted(result, key=lambda x: x["name"])
 
     # ------------------------------------------------------------------
     # Config get / set
