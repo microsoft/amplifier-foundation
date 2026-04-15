@@ -1020,6 +1020,257 @@ class TestBehaviorToggleToolResolution:
         # No tool warnings — ownership was determinable.
         assert not any("tool-bash" in w for w in result["warnings"])
 
+    @pytest.mark.asyncio
+    async def test_behavior_disable_skips_shared_context(self) -> None:
+        """behavior_disable skips a context item claimed by another active behavior.
+
+        When 'context:modes:context/modes-instructions.md' is claimed by both
+        'superpowers-methodology-behavior' and 'behavior-modes', disabling
+        'superpowers-methodology-behavior' must NOT stash the context item —
+        'behavior-modes' is still active and still needs it.
+        No warning is emitted (silent skip — not an error).
+        """
+        bundle = Bundle(
+            name="test-bundle",
+            context={"modes:context/modes-instructions.md": Path("/tmp/modes.md")},
+            tools=[],
+            hooks=[],
+            providers=[],
+            agents={},
+        )
+        bundle._provenance = {  # type: ignore[misc]
+            "context:modes:context/modes-instructions.md": [
+                "superpowers-methodology-behavior",
+                "behavior-modes",
+            ],
+        }
+
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.mount = AsyncMock()
+        coordinator.unmount = AsyncMock(return_value=None)
+        coordinator.config = {"agents": {}}
+        coordinator.get = MagicMock(return_value={})
+
+        prepared = MagicMock()
+        prepared.bundle = bundle
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        result = await cfg.behavior_disable("superpowers-methodology-behavior")
+
+        # Context must NOT be stashed — still claimed by behavior-modes.
+        assert "modes:context/modes-instructions.md" in bundle.context
+        assert "modes:context/modes-instructions.md" not in cfg._stash["context"]
+
+        # Prov key must NOT appear in disabled.
+        assert "context:modes:context/modes-instructions.md" not in result["disabled"]
+
+        # No warning — silent skip is correct behavior.
+        assert result["warnings"] == []
+
+    @pytest.mark.asyncio
+    async def test_behavior_disable_removes_unshared_context(self) -> None:
+        """behavior_disable removes a context item when the behavior is its sole claimant.
+
+        When a context item is claimed only by the behavior being disabled,
+        it IS moved to the stash.
+        """
+        bundle = Bundle(
+            name="test-bundle",
+            context={"superpowers:context/philosophy.md": Path("/tmp/philosophy.md")},
+            tools=[],
+            hooks=[],
+            providers=[],
+            agents={},
+        )
+        bundle._provenance = {  # type: ignore[misc]
+            "context:superpowers:context/philosophy.md": [
+                "superpowers-methodology-behavior",
+            ],
+        }
+
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.mount = AsyncMock()
+        coordinator.unmount = AsyncMock(return_value=None)
+        coordinator.config = {"agents": {}}
+        coordinator.get = MagicMock(return_value={})
+
+        prepared = MagicMock()
+        prepared.bundle = bundle
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        result = await cfg.behavior_disable("superpowers-methodology-behavior")
+
+        # Context IS stashed — sole active claimant.
+        assert "superpowers:context/philosophy.md" not in bundle.context
+        assert "superpowers:context/philosophy.md" in cfg._stash["context"]
+
+        # Prov key appears in disabled.
+        assert "context:superpowers:context/philosophy.md" in result["disabled"]
+        assert result["warnings"] == []
+
+    @pytest.mark.asyncio
+    async def test_behavior_disable_skips_shared_agents(self) -> None:
+        """behavior_disable skips an agent claimed by another active behavior.
+
+        When an agent is claimed by both the behavior being disabled and another
+        active behavior, the agent is NOT stashed — the other behavior still needs it.
+        """
+        bundle = Bundle(
+            name="test-bundle",
+            context={},
+            tools=[],
+            hooks=[],
+            providers=[],
+            agents={"shared-agent": {"description": "Shared by two behaviors"}},
+        )
+        bundle._provenance = {  # type: ignore[misc]
+            "agent:shared-agent": ["behavior-a", "behavior-b"],
+        }
+
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.mount = AsyncMock()
+        coordinator.unmount = AsyncMock(return_value=None)
+        coordinator.config = {"agents": {"shared-agent": {"description": "Shared"}}}
+        coordinator.get = MagicMock(return_value={})
+
+        prepared = MagicMock()
+        prepared.bundle = bundle
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        result = await cfg.behavior_disable("behavior-a")
+
+        # Agent must NOT be stashed — behavior-b still active.
+        assert "shared-agent" in coordinator.config["agents"]
+        assert "shared-agent" not in cfg._stash["agents"]
+
+        # Prov key must NOT appear in disabled.
+        assert "agent:shared-agent" not in result["disabled"]
+
+        # No warning — silent skip is correct.
+        assert result["warnings"] == []
+
+    @pytest.mark.asyncio
+    async def test_behavior_enable_restores_context_that_was_stashed(self) -> None:
+        """behavior_enable restores a context item that was actually stashed.
+
+        When the behavior is the sole claimant and was disabled (stashing the
+        context), re-enabling it moves the item back into bundle.context.
+        """
+        bundle = Bundle(
+            name="test-bundle",
+            context={},
+            tools=[],
+            hooks=[],
+            providers=[],
+            agents={},
+        )
+        bundle._provenance = {  # type: ignore[misc]
+            "context:superpowers:context/philosophy.md": [
+                "superpowers-methodology-behavior",
+            ],
+        }
+
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.mount = AsyncMock()
+        coordinator.unmount = AsyncMock(return_value=None)
+        coordinator.config = {
+            "agents": {},
+            "tools": {},
+        }
+        coordinator.get = MagicMock(return_value={})
+
+        prepared = MagicMock()
+        prepared.bundle = bundle
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+
+        # Manually stash the context (simulating a prior behavior_disable).
+        cfg._stash["context"]["superpowers:context/philosophy.md"] = Path(
+            "/tmp/philosophy.md"
+        )
+        cfg._disabled_behaviors.add("superpowers-methodology-behavior")
+
+        result = await cfg.behavior_enable("superpowers-methodology-behavior")
+
+        # Context is back in the bundle.
+        assert "superpowers:context/philosophy.md" in bundle.context
+
+        # Prov key appears in enabled.
+        assert "context:superpowers:context/philosophy.md" in result["enabled"]
+        assert result["warnings"] == []
+
+    @pytest.mark.asyncio
+    async def test_behavior_enable_noop_for_context_kept_alive_by_other_behavior(
+        self,
+    ) -> None:
+        """behavior_enable does nothing for context that was never stashed.
+
+        When a context item was kept alive by another behavior during
+        behavior_disable (shared ownership), it was never stashed.
+        behavior_enable must not error — context_enable's idempotent guard
+        handles this gracefully.
+        """
+        bundle = Bundle(
+            name="test-bundle",
+            # Context is already active (was never stashed).
+            context={
+                "modes:context/modes-instructions.md": Path("/tmp/modes.md"),
+            },
+            tools=[],
+            hooks=[],
+            providers=[],
+            agents={},
+        )
+        bundle._provenance = {  # type: ignore[misc]
+            "context:modes:context/modes-instructions.md": [
+                "superpowers-methodology-behavior",
+                "behavior-modes",
+            ],
+        }
+
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.mount = AsyncMock()
+        coordinator.unmount = AsyncMock(return_value=None)
+        coordinator.config = {"agents": {}, "tools": {}}
+        coordinator.get = MagicMock(return_value={})
+
+        prepared = MagicMock()
+        prepared.bundle = bundle
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        # Simulate superpowers was disabled (but context was kept alive by modes).
+        cfg._disabled_behaviors.add("superpowers-methodology-behavior")
+
+        # Must not raise — idempotent path handles already-active context.
+        result = await cfg.behavior_enable("superpowers-methodology-behavior")
+
+        # Context remains active in bundle.
+        assert "modes:context/modes-instructions.md" in bundle.context
+        assert "modes:context/modes-instructions.md" not in cfg._stash["context"]
+
+        # No warnings — this is expected behavior.
+        assert result["warnings"] == []
+
 
 class TestSaveAndApply:
     """Tests for save() and apply_saved_settings() methods."""

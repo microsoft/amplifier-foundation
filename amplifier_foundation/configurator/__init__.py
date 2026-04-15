@@ -823,10 +823,10 @@ class SessionConfigurator:
         Reads bundle._provenance to find all items contributed by the behavior,
         then disables each one by calling the appropriate category disable method.
 
-        **Tools and providers** use multi-claimant provenance to determine safety:
-        if other active behaviors also claim the item, it is silently skipped
-        (still needed).  If this behavior is the sole remaining claimant, the
-        tool/provider is disabled.  When the mounted name cannot be resolved,
+        **Tools, providers, context, and agents** use multi-claimant provenance to
+        determine safety: if other active behaviors also claim the item, it is silently
+        skipped (still needed).  If this behavior is the sole remaining claimant, the
+        item is disabled.  For tools, when the mounted name cannot be resolved,
         a warning is emitted.
 
         Hooks are skipped (read-only in this version).
@@ -936,6 +936,21 @@ class SessionConfigurator:
                         f"It may already be disabled or use a custom registered name."
                     )
                 continue
+            # Context and agents: same multi-claimant logic as tools and providers.
+            # If other active behaviors also own this item, skip — it's still needed.
+            claimants = provenance.get(prov_key, [])
+            other_active = [
+                c for c in claimants
+                if c != name and c not in self._disabled_behaviors
+            ]
+            if other_active:
+                _log.debug(
+                    "Skipping %s %r — still claimed by active behavior(s): %s",
+                    category,
+                    item_name,
+                    other_active,
+                )
+                continue
             try:
                 if category == "context":
                     self.context_disable(item_name)
@@ -960,6 +975,11 @@ class SessionConfigurator:
 
         **Providers** that were stashed by :meth:`behavior_disable` are re-enabled
         via prefix-stripped name lookup in the stash.
+
+        **Context and agents** are re-enabled from the stash.  Items that were
+        never stashed (because another active behavior kept them alive during
+        :meth:`behavior_disable`) are handled idempotently — they are already
+        present in the bundle and no action is required.
 
         Hooks are skipped (read-only in this version).
 
