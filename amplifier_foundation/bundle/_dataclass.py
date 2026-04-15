@@ -21,6 +21,20 @@ from amplifier_foundation.paths.construction import construct_context_path
 logger = logging.getLogger(__name__)
 
 
+def _prov_add(provenance: dict[str, list[str]], key: str, behavior: str) -> None:
+    """Append *behavior* to the provenance list for *key*, deduplicating.
+
+    Args:
+        provenance: The provenance dict to mutate.
+        key: Provenance key (e.g. 'tool:tool-bash').
+        behavior: Bundle/behavior name to record as a claimant.
+    """
+    if key not in provenance:
+        provenance[key] = []
+    if behavior not in provenance[key]:
+        provenance[key].append(behavior)
+
+
 @dataclass
 class Bundle:
     """Composable unit containing mount plan config and resources.
@@ -74,9 +88,9 @@ class Bundle:
     _pending_context: dict[str, str] = field(
         default_factory=dict
     )  # Context refs needing namespace resolution
-    _provenance: dict[str, str] = field(
+    _provenance: dict[str, list[str]] = field(
         default_factory=dict
-    )  # Tracks which behavior contributed each item: 'category:name' -> 'behavior_name'
+    )  # Tracks which behaviors contributed each item: 'category:name' -> ['behavior_name', ...]
 
     def __post_init__(self) -> None:
         """Ensure collection fields are never None.
@@ -134,30 +148,32 @@ class Bundle:
 
         # Compute initial provenance: tag self's items with self.name, then overlay
         # any existing _provenance from prior compositions for precise attribution.
-        initial_provenance: dict[str, str] = {}
+        initial_provenance: dict[str, list[str]] = {}
         for prefixed_key in initial_context:
-            initial_provenance[f"context:{prefixed_key}"] = self.name
+            _prov_add(initial_provenance, f"context:{prefixed_key}", self.name)
         # Also tag pending context (namespace-prefixed refs deferred for resolution).
         # These keys match the final context keys after resolve_pending_context() runs,
         # so the provenance lookup in context_list() will find them correctly.
         for pending_name in self._pending_context:
-            initial_provenance[f"context:{pending_name}"] = self.name
+            _prov_add(initial_provenance, f"context:{pending_name}", self.name)
         for mod in self.tools:
             module_id = mod.get("id") or mod.get("module")
             if module_id:
-                initial_provenance[f"tool:{module_id}"] = self.name
+                _prov_add(initial_provenance, f"tool:{module_id}", self.name)
         for mod in self.providers:
             module_id = mod.get("id") or mod.get("module")
             if module_id:
-                initial_provenance[f"provider:{module_id}"] = self.name
+                _prov_add(initial_provenance, f"provider:{module_id}", self.name)
         for mod in self.hooks:
             module_id = mod.get("id") or mod.get("module")
             if module_id:
-                initial_provenance[f"hook:{module_id}"] = self.name
+                _prov_add(initial_provenance, f"hook:{module_id}", self.name)
         for agent_name in self.agents:
-            initial_provenance[f"agent:{agent_name}"] = self.name
-        # Overlay existing _provenance to preserve prior composition attributions
-        initial_provenance.update(self._provenance)
+            _prov_add(initial_provenance, f"agent:{agent_name}", self.name)
+        # Merge existing _provenance to preserve prior composition attributions
+        for prov_key, claimants in self._provenance.items():
+            for claimant in claimants:
+                _prov_add(initial_provenance, prov_key, claimant)
 
         result = Bundle(
             name=self.name,
@@ -215,22 +231,22 @@ class Bundle:
             for mod in other.tools:
                 module_id = mod.get("id") or mod.get("module")
                 if module_id:
-                    result._provenance[f"tool:{module_id}"] = other.name
+                    _prov_add(result._provenance, f"tool:{module_id}", other.name)
             for mod in other.providers:
                 module_id = mod.get("id") or mod.get("module")
                 if module_id:
-                    result._provenance[f"provider:{module_id}"] = other.name
+                    _prov_add(result._provenance, f"provider:{module_id}", other.name)
             for mod in other.hooks:
                 module_id = mod.get("id") or mod.get("module")
                 if module_id:
-                    result._provenance[f"hook:{module_id}"] = other.name
+                    _prov_add(result._provenance, f"hook:{module_id}", other.name)
 
             # Agents: later overrides
             result.agents.update(other.agents)
 
             # Tag agents from other
             for agent_name in other.agents:
-                result._provenance[f"agent:{agent_name}"] = other.name
+                _prov_add(result._provenance, f"agent:{agent_name}", other.name)
 
             # Context: accumulate with bundle prefix to avoid collisions
             # This allows multiple bundles to each contribute context files
@@ -242,7 +258,7 @@ class Bundle:
                     prefixed_key = key
                 result.context[prefixed_key] = path
                 # Tag context from other
-                result._provenance[f"context:{prefixed_key}"] = other.name
+                _prov_add(result._provenance, f"context:{prefixed_key}", other.name)
 
             # Pending context: accumulate (already has namespace prefixes) and tag provenance.
             # These refs will be moved to context by resolve_pending_context(); tagging them
@@ -250,7 +266,7 @@ class Bundle:
             if other._pending_context:
                 result._pending_context.update(other._pending_context)
                 for pending_name in other._pending_context:
-                    result._provenance[f"context:{pending_name}"] = other.name
+                    _prov_add(result._provenance, f"context:{pending_name}", other.name)
 
             # Instruction: later replaces
             if other.instruction:
@@ -262,11 +278,14 @@ class Bundle:
             if other.base_path:
                 result.base_path = other.base_path
 
-            # Overlay other's provenance to preserve precise sub-composition attributions.
+            # Merge other's provenance to preserve precise sub-composition attributions,
+            # extending lists so that all original contributors are tracked.
             # This ensures that items which originated deeper in the composition hierarchy
             # (e.g., tool-x from bundle "a" that passed through bundle "b") retain their
-            # original contributor attribution rather than being attributed to "b".
-            result._provenance.update(other._provenance)
+            # original contributor attribution rather than being attributed only to "b".
+            for prov_key, claimants in other._provenance.items():
+                for claimant in claimants:
+                    _prov_add(result._provenance, prov_key, claimant)
 
         return result
 
