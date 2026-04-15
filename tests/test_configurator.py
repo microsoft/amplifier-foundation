@@ -627,9 +627,9 @@ def behavior_bundle() -> Bundle:
     )
     bundle._provenance = {  # type: ignore[misc]
         "context:readme": "my-behavior",
-        "tools:tool-bash": "my-behavior",
-        "hooks:on_before_tool": "my-behavior",
-        "agents:my-agent": "my-behavior",
+        "tool:tool-bash": "my-behavior",
+        "hook:on_before_tool": "my-behavior",
+        "agent:my-agent": "my-behavior",
     }
     return bundle
 
@@ -708,8 +708,8 @@ class TestBehaviorToggle:
         # Hook entry is silently skipped — only non-hook contributions in the disabled list
         assert set(result["disabled"]) == {
             "context:readme",
-            "tools:tool-bash",
-            "agents:my-agent",
+            "tool:tool-bash",
+            "agent:my-agent",
         }
         assert result["warnings"] == []
 
@@ -744,8 +744,8 @@ class TestBehaviorToggle:
         # Hooks are silently skipped — only non-hook contributions in the enabled list
         assert set(result["enabled"]) == {
             "context:readme",
-            "tools:tool-bash",
-            "agents:my-agent",
+            "tool:tool-bash",
+            "agent:my-agent",
         }
         assert result["warnings"] == []
 
@@ -787,7 +787,7 @@ class TestBehaviorToggle:
 
         # The successful items are still in the disabled list
         assert "context:readme" in result["disabled"]
-        assert "agents:my-agent" in result["disabled"]
+        assert "agent:my-agent" in result["disabled"]
 
         # The failed item is NOT in disabled
         assert "context:nonexistent" not in result["disabled"]
@@ -1056,7 +1056,7 @@ class TestListMethods:
         assert beh["name"] == "my-behavior"
         assert beh["enabled"] is True
 
-        # behavior_bundle has context:readme, tools:tool-bash, hooks:on_before_tool, agents:my-agent
+        # behavior_bundle has context:readme, tool:tool-bash, hook:on_before_tool, agent:my-agent
         contributions = beh["contributions"]
         assert contributions["context"] == 1
         assert contributions["tools"] == 1
@@ -1081,7 +1081,7 @@ class TestListMethods:
         """behaviors_list results are sorted alphabetically by name."""
         mock_bundle._provenance = {  # type: ignore[misc]
             "context:readme": "zebra",
-            "tools:tool-bash": "alpha",
+            "tool:tool-bash": "alpha",
         }
         cfg = SessionConfigurator(
             session=mock_session, prepared_bundle=mock_prepared_bundle

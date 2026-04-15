@@ -12,6 +12,16 @@ from amplifier_foundation.dicts.navigation import get_nested, set_nested
 
 _log = logging.getLogger(__name__)
 
+# Maps singular provenance category keys (as stored in Bundle._provenance) to the
+# plural contribution dict keys used in behaviors_list() output.
+_PROV_CATEGORY_MAP: dict[str, str] = {
+    "tool": "tools",
+    "hook": "hooks",
+    "provider": "providers",
+    "agent": "agents",
+    "context": "context",  # "context" is already the plural form used in contributions
+}
+
 
 class SessionConfigurator:
     """Manages per-session bundle configuration: stashing, restoring, and overriding
@@ -424,7 +434,8 @@ class SessionConfigurator:
 
         for prov_key in matching_keys:
             category, item_name = prov_key.split(":", 1)
-            if category == "hooks":
+            # Hooks are read-only in this version — skip silently.
+            if category == "hook":
                 _log.debug(
                     "Skipping hook %r in behavior toggle — hook toggle not supported in this version.",
                     item_name,
@@ -433,11 +444,11 @@ class SessionConfigurator:
             try:
                 if category == "context":
                     self.context_disable(item_name)
-                elif category == "tools":
+                elif category == "tool":
                     await self.tool_disable(item_name)
-                elif category == "providers":
+                elif category == "provider":
                     await self.provider_disable(item_name)
-                elif category == "agents":
+                elif category == "agent":
                     self.agent_disable(item_name)
                 disabled.append(prov_key)
             except Exception as exc:  # noqa: BLE001
@@ -475,7 +486,8 @@ class SessionConfigurator:
 
         for prov_key in matching_keys:
             category, item_name = prov_key.split(":", 1)
-            if category == "hooks":
+            # Hooks are read-only in this version — skip silently.
+            if category == "hook":
                 _log.debug(
                     "Skipping hook %r in behavior toggle — hook toggle not supported in this version.",
                     item_name,
@@ -484,11 +496,11 @@ class SessionConfigurator:
             try:
                 if category == "context":
                     self.context_enable(item_name)
-                elif category == "tools":
+                elif category == "tool":
                     await self.tool_enable(item_name)
-                elif category == "providers":
+                elif category == "provider":
                     await self.provider_enable(item_name)
-                elif category == "agents":
+                elif category == "agent":
                     self.agent_enable(item_name)
                 enabled.append(prov_key)
             except Exception as exc:  # noqa: BLE001
@@ -559,12 +571,18 @@ class SessionConfigurator:
         provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
 
         # Build config lookup by module ID from the coordinator's mount plan.
+        # Index by both the full module ID (e.g. "tool-bash") and the short name
+        # (e.g. "bash") so that both coordinator.get("tools") key formats match.
         config_by_id: dict[str, dict] = {}
         for spec in self._coordinator.config.get("tools", []):
             if isinstance(spec, dict):
                 mid = spec.get("id") or spec.get("module", "")
+                cfg = spec.get("config") or {}
                 if mid:
-                    config_by_id[mid] = spec.get("config") or {}
+                    config_by_id[mid] = cfg
+                    # Also map the short name (strip "tool-" prefix) for lookup.
+                    if mid.startswith("tool-"):
+                        config_by_id[mid[5:]] = cfg
 
         result: list[dict] = []
 
@@ -575,7 +593,7 @@ class SessionConfigurator:
             mounted = {}
 
         for name in mounted:
-            behavior = provenance.get(f"tools:{name}")
+            behavior = provenance.get(f"tool:{name}")
             result.append(
                 {
                     "name": name,
@@ -588,7 +606,7 @@ class SessionConfigurator:
 
         # Disabled: stashed tools.
         for name in self._stash["tools"]:
-            behavior = provenance.get(f"tools:{name}")
+            behavior = provenance.get(f"tool:{name}")
             result.append(
                 {
                     "name": name,
@@ -621,7 +639,7 @@ class SessionConfigurator:
         result: list[dict] = []
 
         for name, meta in self._hook_snapshot.items():
-            behavior = provenance.get(f"hooks:{name}")
+            behavior = provenance.get(f"hook:{name}")
             result.append(
                 {
                     "name": name,
@@ -654,8 +672,12 @@ class SessionConfigurator:
         for spec in self._coordinator.config.get("providers", []):
             if isinstance(spec, dict):
                 mid = spec.get("id") or spec.get("module", "")
+                cfg = spec.get("config") or {}
                 if mid:
-                    config_by_id[mid] = spec.get("config") or {}
+                    config_by_id[mid] = cfg
+                    # Also map the short name (strip "provider-" prefix) for lookup.
+                    if mid.startswith("provider-"):
+                        config_by_id[mid[9:]] = cfg
 
         result: list[dict] = []
 
@@ -665,7 +687,7 @@ class SessionConfigurator:
             mounted = {}
 
         for name in mounted:
-            behavior = provenance.get(f"providers:{name}")
+            behavior = provenance.get(f"provider:{name}")
             result.append(
                 {
                     "name": name,
@@ -677,7 +699,7 @@ class SessionConfigurator:
             )
 
         for name in self._stash["providers"]:
-            behavior = provenance.get(f"providers:{name}")
+            behavior = provenance.get(f"provider:{name}")
             result.append(
                 {
                     "name": name,
@@ -706,7 +728,7 @@ class SessionConfigurator:
 
         # Enabled: live in coordinator.config["agents"].
         for name, cfg in self._coordinator.config.get("agents", {}).items():
-            behavior = provenance.get(f"agents:{name}")
+            behavior = provenance.get(f"agent:{name}")
             result.append(
                 {
                     "name": name,
@@ -719,7 +741,7 @@ class SessionConfigurator:
 
         # Disabled: stashed.
         for name, cfg in self._stash["agents"].items():
-            behavior = provenance.get(f"agents:{name}")
+            behavior = provenance.get(f"agent:{name}")
             result.append(
                 {
                     "name": name,
@@ -748,11 +770,19 @@ class SessionConfigurator:
         provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
 
         # Group provenance keys by behavior name.
+        # Provenance keys use SINGULAR category prefixes (tool:, hook:, provider:,
+        # agent:, context:) which must be mapped to the PLURAL keys used in the
+        # contributions output dict (tools, hooks, providers, agents, context).
         behaviors: dict[str, dict[str, list[str]]] = {}
         for prov_key, behavior_name in provenance.items():
             if ":" not in prov_key:
                 continue
+            # Skip entries with an empty behavior name (can occur when a bundle
+            # with no name is composed into the session bundle).
+            if not behavior_name:
+                continue
             category, _ = prov_key.split(":", 1)
+            plural_cat = _PROV_CATEGORY_MAP.get(category, category)
             if behavior_name not in behaviors:
                 behaviors[behavior_name] = {
                     "context": [],
@@ -761,8 +791,8 @@ class SessionConfigurator:
                     "providers": [],
                     "agents": [],
                 }
-            if category in behaviors[behavior_name]:
-                behaviors[behavior_name][category].append(prov_key)
+            if plural_cat in behaviors[behavior_name]:
+                behaviors[behavior_name][plural_cat].append(prov_key)
 
         result: list[dict] = []
         for name, contrib_lists in behaviors.items():
