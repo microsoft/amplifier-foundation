@@ -944,6 +944,10 @@ class SessionConfigurator:
                 'config': dict — per-tool config from the mount plan (may be empty).
                 'behavior': list[str] | None — provenance behavior names.
                 'source': list[str] | None — alias for 'behavior'.
+                'module': str — module ID from the mount-plan tool-to-module mapping
+                    ('unknown' when not matched).
+                'source_uri': str | None — source URI from the mount plan spec
+                    (e.g. 'git+https://example.com/tool-bash@main'); None when absent.
         """
         provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
 
@@ -1083,6 +1087,8 @@ class SessionConfigurator:
                 'config': dict — per-provider config from the mount plan.
                 'behavior': list[str] | None — provenance behavior names.
                 'source': list[str] | None — alias for 'behavior'.
+                'source_uri': str | None — source URI from the mount plan spec
+                    (e.g. 'git+https://example.com/provider-anthropic@main'); None when absent.
         """
         provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
 

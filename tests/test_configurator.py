@@ -2110,3 +2110,4 @@ class TestSourceUriInListMethods:
         item = items[0]
         assert "source_uri" in item, "providers_list() items must include 'source_uri' field"
         assert item["source_uri"] is not None
+        assert "example.com" in item["source_uri"]
