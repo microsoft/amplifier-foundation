@@ -538,12 +538,82 @@ class SessionConfigurator:
     # Behavior group toggle (async)
     # ------------------------------------------------------------------
 
+    def _resolve_module_id_to_mounted_name(
+        self, module_id: str, mount_point: str
+    ) -> str | None:
+        """Resolve a provenance module ID to its coordinator-mounted name.
+
+        Provenance stores module IDs (e.g. ``"tool-bash"``, ``"tool-skills"``)
+        but the coordinator mounts tools under potentially different names
+        (e.g. ``"bash"``, ``"load_skill"``).  This method performs a
+        best-effort three-strategy lookup to find the mounted name:
+
+        1. **Direct match** — module ID equals the mounted name.
+        2. **Prefix strip** — strip the category prefix
+           (``"tool-"`` / ``"provider-"``) from the module ID.
+        3. **Normalized match** — case + hyphen/underscore insensitive
+           comparison against every mounted name.
+
+        If no strategy matches (e.g. ``"tool-skills"`` vs ``"load_skill"``),
+        ``None`` is returned.  Such semantic mismatches are expected and correct;
+        they simply cannot be resolved without out-of-band metadata.
+
+        Args:
+            module_id: The module ID extracted from a provenance key
+                (e.g. ``"tool-bash"`` from ``"tool:tool-bash"``).
+            mount_point: The coordinator mount-point name,
+                either ``"tools"`` or ``"providers"``.
+
+        Returns:
+            The mounted name string, or ``None`` if no match is found.
+        """
+        try:
+            mounted: dict = self._coordinator.get(mount_point) or {}
+        except Exception:  # noqa: BLE001
+            mounted = {}
+
+        if not mounted:
+            return None
+
+        # Strategy 1: direct match (module ID is exactly the mounted name).
+        if module_id in mounted:
+            return module_id
+
+        # Strategy 2: strip the category prefix.
+        # "tools" → "tool-", "providers" → "provider-".
+        prefix = mount_point.rstrip("s") + "-"
+        short = module_id[len(prefix) :] if module_id.startswith(prefix) else module_id
+        if short in mounted:
+            return short
+
+        # Strategy 3: normalized match (lowercase + hyphens→underscores).
+        norm_id = _normalize_module_name(module_id)
+        short_norm = _normalize_module_name(short)
+        for mounted_name in mounted:
+            norm_mounted = _normalize_module_name(mounted_name)
+            if norm_mounted == norm_id or norm_mounted == short_norm:
+                return mounted_name
+
+        return None
+
     async def behavior_disable(self, name: str) -> dict[str, Any]:
         """Disable all contributions from a named behavior across all categories.
 
         Reads bundle._provenance to find all items contributed by the behavior,
         then disables each one by calling the appropriate category disable method.
-        Partial failures are collected as warnings and do not stop processing.
+
+        **Tool and provider items are intentionally skipped** — they are never
+        unmounted during a behavior disable because shared ownership cannot be
+        determined from provenance alone (provenance is last-writer-wins, so a
+        tool contributed by two behaviors is only attributed to one).  A warning
+        is emitted for each skipped tool/provider so the caller can surface it
+        to the user.  To disable a tool explicitly, call
+        ``/config tools disable <name>`` directly.
+
+        Hooks are also skipped (read-only in this version).
+
+        Partial failures (e.g. a context key no longer in the bundle) are
+        collected as warnings and do not stop processing.
 
         Args:
             name: The behavior name to disable.
@@ -551,7 +621,8 @@ class SessionConfigurator:
         Returns:
             dict with keys:
                 'disabled': list of provenance keys that were successfully disabled.
-                'warnings': list of error message strings for items that failed.
+                'warnings': list of warning message strings for skipped or
+                    failed items.
 
         Raises:
             ValueError: If the behavior name is not found in provenance.
@@ -574,13 +645,45 @@ class SessionConfigurator:
                     item_name,
                 )
                 continue
+            # Tools and providers: skip unmount — shared ownership cannot be
+            # determined from provenance alone.  Emit a warning with the
+            # correct mounted name (if resolvable) so the user knows what to
+            # pass to '/config tools disable' or '/config providers disable'.
+            if category == "tool":
+                mounted_name = self._resolve_module_id_to_mounted_name(
+                    item_name, "tools"
+                )
+                if mounted_name:
+                    warnings.append(
+                        f"Skipping tool '{mounted_name}' (module '{item_name}') — "
+                        f"shared ownership cannot be determined from provenance alone. "
+                        f"Use '/config tools disable {mounted_name}' to explicitly disable it."
+                    )
+                else:
+                    warnings.append(
+                        f"Tool module '{item_name}' not found in mounted tools. "
+                        f"It may already be disabled or use a custom registered name."
+                    )
+                continue
+            if category == "provider":
+                mounted_name = self._resolve_module_id_to_mounted_name(
+                    item_name, "providers"
+                )
+                if mounted_name:
+                    warnings.append(
+                        f"Skipping provider '{mounted_name}' (module '{item_name}') — "
+                        f"shared ownership cannot be determined from provenance alone. "
+                        f"Use '/config providers disable {mounted_name}' to explicitly disable it."
+                    )
+                else:
+                    warnings.append(
+                        f"Provider module '{item_name}' not found in mounted providers. "
+                        f"It may already be disabled or use a custom registered name."
+                    )
+                continue
             try:
                 if category == "context":
                     self.context_disable(item_name)
-                elif category == "tool":
-                    await self.tool_disable(item_name)
-                elif category == "provider":
-                    await self.provider_disable(item_name)
                 elif category == "agent":
                     self.agent_disable(item_name)
                 disabled.append(prov_key)
@@ -595,7 +698,17 @@ class SessionConfigurator:
 
         Reads bundle._provenance to find all items contributed by the behavior,
         then enables each one by calling the appropriate category enable method.
-        Partial failures are collected as warnings and do not stop processing.
+
+        **Tool and provider items are silently skipped** — they were never
+        unmounted by :meth:`behavior_disable` (shared ownership cannot be
+        determined from provenance alone), so there is nothing to re-enable
+        here.  To re-enable a manually-disabled tool, use
+        ``/config tools enable <name>`` directly.
+
+        Hooks are also skipped (read-only in this version).
+
+        Partial failures (e.g. a stashed context key no longer valid) are
+        collected as warnings and do not stop processing.
 
         Args:
             name: The behavior name to enable.
@@ -626,13 +739,20 @@ class SessionConfigurator:
                     item_name,
                 )
                 continue
+            # Tools and providers were not stashed by behavior_disable (shared
+            # ownership cannot be determined from provenance alone), so there is
+            # nothing to re-enable here.  Skip silently.
+            if category in ("tool", "provider"):
+                _log.debug(
+                    "Skipping %s %r in behavior enable — %ss are not managed by behavior toggle.",
+                    category,
+                    item_name,
+                    category,
+                )
+                continue
             try:
                 if category == "context":
                     self.context_enable(item_name)
-                elif category == "tool":
-                    await self.tool_enable(item_name)
-                elif category == "provider":
-                    await self.provider_enable(item_name)
                 elif category == "agent":
                     self.agent_enable(item_name)
                 enabled.append(prov_key)
