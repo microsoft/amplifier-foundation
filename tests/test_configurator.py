@@ -7,6 +7,11 @@ import pytest
 
 from amplifier_foundation.bundle import Bundle
 from amplifier_foundation.configurator import SessionConfigurator
+from amplifier_foundation.configurator import (
+    _build_normalized_prov_lookup,
+    _lookup_prov_behavior,
+    _normalize_module_name,
+)
 
 
 @pytest.fixture
@@ -1207,6 +1212,315 @@ class TestListMethods:
         assert cfg.providers_list() == []
         assert cfg.agents_list() == []
         assert cfg.behaviors_list() == []
+
+
+class TestProvenanceLookupHelpers:
+    """Tests for module-level provenance lookup helper functions."""
+
+    def test_normalize_module_name_lowercase(self) -> None:
+        """_normalize_module_name lowercases the input."""
+        assert _normalize_module_name("LSP") == "lsp"
+        assert _normalize_module_name("BASH") == "bash"
+
+    def test_normalize_module_name_hyphens_to_underscores(self) -> None:
+        """_normalize_module_name converts hyphens to underscores."""
+        assert _normalize_module_name("python-check") == "python_check"
+        assert _normalize_module_name("apply-patch") == "apply_patch"
+
+    def test_normalize_module_name_combined(self) -> None:
+        """_normalize_module_name handles both hyphen conversion and lowercasing."""
+        assert _normalize_module_name("Python-Check") == "python_check"
+
+    def test_build_normalized_prov_lookup_strips_category_prefix(self) -> None:
+        """_build_normalized_prov_lookup maps normalized short names to behaviors."""
+        prov = {
+            "tool:tool-python-check": "behavior-python",
+            "tool:tool-bash": "behavior-bash",
+            "tool:tool-lsp": "behavior-lsp",
+        }
+        result = _build_normalized_prov_lookup("tool", prov)
+        assert result["python_check"] == "behavior-python"
+        assert result["bash"] == "behavior-bash"
+        assert result["lsp"] == "behavior-lsp"
+
+    def test_build_normalized_prov_lookup_ignores_other_categories(self) -> None:
+        """_build_normalized_prov_lookup only includes entries for the given category."""
+        prov = {
+            "tool:tool-bash": "behavior-bash",
+            "hook:hooks-logging": "behavior-logging",
+            "context:readme": "behavior-docs",
+        }
+        result = _build_normalized_prov_lookup("tool", prov)
+        assert "bash" in result
+        assert "logging" not in result  # hook entry excluded
+
+    def test_build_normalized_prov_lookup_no_redundant_prefix(self) -> None:
+        """_build_normalized_prov_lookup handles module IDs without the category prefix."""
+        prov = {"hook:custom-hook": "behavior-custom"}
+        result = _build_normalized_prov_lookup("hook", prov)
+        # "custom-hook" does not start with "hook-" so the full normalized id is used
+        assert result.get("custom_hook") == "behavior-custom"
+
+    def test_lookup_prov_behavior_strategy1_exact_match(self) -> None:
+        """Strategy 1: exact key '{category}:{name}'."""
+        prov = {"tool:bash": "behavior-bash"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        assert _lookup_prov_behavior("bash", "tool", prov, norm_map) == "behavior-bash"
+
+    def test_lookup_prov_behavior_strategy2_module_prefixed(self) -> None:
+        """Strategy 2: '{category}:{category}-{name}' (module ID with category prefix)."""
+        prov = {"tool:tool-bash": "behavior-bash"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        assert _lookup_prov_behavior("bash", "tool", prov, norm_map) == "behavior-bash"
+
+    def test_lookup_prov_behavior_strategy3_normalized_case(self) -> None:
+        """Strategy 3: normalized exact match handles case differences (LSP→lsp)."""
+        prov = {"tool:tool-lsp": "behavior-lsp"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        assert _lookup_prov_behavior("LSP", "tool", prov, norm_map) == "behavior-lsp"
+
+    def test_lookup_prov_behavior_strategy3_normalized_hyphens(self) -> None:
+        """Strategy 3: normalized exact match handles hyphen/underscore difference."""
+        prov = {"tool:tool-python-check": "behavior-python"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        assert (
+            _lookup_prov_behavior("python_check", "tool", prov, norm_map)
+            == "behavior-python"
+        )
+
+    def test_lookup_prov_behavior_strategy3_apply_patch(self) -> None:
+        """Strategy 3: 'apply_patch' matches 'tool:tool-apply-patch'."""
+        prov = {"tool:tool-apply-patch": "behavior-patch"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        assert (
+            _lookup_prov_behavior("apply_patch", "tool", prov, norm_map)
+            == "behavior-patch"
+        )
+
+    def test_lookup_prov_behavior_strategy4_prefix_containment(self) -> None:
+        """Strategy 4: module short name is a word-boundary prefix of mounted name."""
+        prov = {"tool:tool-web": "behavior-web"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        # "web" is a prefix of "web_search" (underscore boundary)
+        assert (
+            _lookup_prov_behavior("web_search", "tool", prov, norm_map)
+            == "behavior-web"
+        )
+        assert (
+            _lookup_prov_behavior("web_fetch", "tool", prov, norm_map) == "behavior-web"
+        )
+
+    def test_lookup_prov_behavior_strategy4_requires_underscore_boundary(self) -> None:
+        """Strategy 4 requires word-boundary (underscore) — 'web' does not match 'webfoo'."""
+        prov = {"tool:tool-web": "behavior-web"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        # "webfoo" does NOT start with "web_" so strategy 4 must not fire
+        assert _lookup_prov_behavior("webfoo", "tool", prov, norm_map) is None
+
+    def test_lookup_prov_behavior_semantic_mismatch_returns_none(self) -> None:
+        """Semantically unrelated names (load_skill from tool-skills) return None."""
+        prov = {"tool:tool-skills": "behavior-skills"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        # 'skills' is not a prefix of 'load_skill', and exact/normalized match fails
+        assert _lookup_prov_behavior("load_skill", "tool", prov, norm_map) is None
+
+    def test_lookup_prov_behavior_filesystem_mismatch_returns_none(self) -> None:
+        """Tools from multi-tool modules (filesystem→read_file) return None."""
+        prov = {"tool:tool-filesystem": "behavior-fs"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        assert _lookup_prov_behavior("read_file", "tool", prov, norm_map) is None
+        assert _lookup_prov_behavior("write_file", "tool", prov, norm_map) is None
+        assert _lookup_prov_behavior("edit_file", "tool", prov, norm_map) is None
+
+    def test_lookup_prov_behavior_search_mismatch_returns_none(self) -> None:
+        """Tools from multi-tool module (search→grep/glob) return None."""
+        prov = {"tool:tool-search": "behavior-search"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        assert _lookup_prov_behavior("grep", "tool", prov, norm_map) is None
+        assert _lookup_prov_behavior("glob", "tool", prov, norm_map) is None
+
+    def test_lookup_prov_behavior_no_match_returns_none(self) -> None:
+        """Returns None when no strategy matches."""
+        prov = {"tool:tool-bash": "behavior-bash"}
+        norm_map = _build_normalized_prov_lookup("tool", prov)
+        assert (
+            _lookup_prov_behavior("totally_unrelated", "tool", prov, norm_map) is None
+        )
+
+
+class TestNormalizedProvenanceLookupInListMethods:
+    """Integration tests for normalized provenance matching in tools_list() and hooks_list()."""
+
+    def _make_cfg(
+        self,
+        provenance: dict,
+        mounted_tools: dict,
+        tool_specs: list | None = None,
+    ) -> SessionConfigurator:
+        """Helper: create a SessionConfigurator with given provenance and mounted tools."""
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.get = MagicMock(
+            side_effect=lambda mp: mounted_tools if mp == "tools" else {}
+        )
+        coordinator.config = {
+            "agents": {},
+            "tools": tool_specs or [],
+        }
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = tool_specs or []
+        bundle_mock.providers = []
+        bundle_mock._provenance = provenance
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        return SessionConfigurator(session=session, prepared_bundle=prepared)
+
+    def test_tools_list_resolves_lsp_by_normalization(self) -> None:
+        """'LSP' resolves to 'tool:tool-lsp' via case normalization (strategy 3)."""
+        cfg = self._make_cfg(
+            provenance={"tool:tool-lsp": "behavior-lsp"},
+            mounted_tools={"LSP": MagicMock()},
+        )
+        items = cfg.tools_list()
+        assert len(items) == 1
+        assert items[0]["name"] == "LSP"
+        assert items[0]["behavior"] == "behavior-lsp"
+        assert items[0]["source"] == "behavior-lsp"
+
+    def test_tools_list_resolves_python_check_by_normalization(self) -> None:
+        """'python_check' resolves to 'tool:tool-python-check' via normalization (strategy 3)."""
+        cfg = self._make_cfg(
+            provenance={"tool:tool-python-check": "behavior-pycheck"},
+            mounted_tools={"python_check": MagicMock()},
+        )
+        items = cfg.tools_list()
+        item = next(i for i in items if i["name"] == "python_check")
+        assert item["behavior"] == "behavior-pycheck"
+
+    def test_tools_list_resolves_apply_patch_by_normalization(self) -> None:
+        """'apply_patch' resolves to 'tool:tool-apply-patch' via normalization (strategy 3)."""
+        cfg = self._make_cfg(
+            provenance={"tool:tool-apply-patch": "behavior-patch"},
+            mounted_tools={"apply_patch": MagicMock()},
+        )
+        items = cfg.tools_list()
+        item = next(i for i in items if i["name"] == "apply_patch")
+        assert item["behavior"] == "behavior-patch"
+
+    def test_tools_list_resolves_web_tools_by_prefix_match(self) -> None:
+        """'web_search' and 'web_fetch' resolve to 'tool:tool-web' via prefix match (strategy 4)."""
+        cfg = self._make_cfg(
+            provenance={"tool:tool-web": "behavior-web"},
+            mounted_tools={"web_search": MagicMock(), "web_fetch": MagicMock()},
+        )
+        items = cfg.tools_list()
+        by_name = {i["name"]: i for i in items}
+        assert by_name["web_search"]["behavior"] == "behavior-web"
+        assert by_name["web_fetch"]["behavior"] == "behavior-web"
+
+    def test_tools_list_returns_none_for_semantic_mismatch(self) -> None:
+        """'load_skill' returns behavior=None for 'tool:tool-skills' (no relationship)."""
+        cfg = self._make_cfg(
+            provenance={"tool:tool-skills": "behavior-skills"},
+            mounted_tools={"load_skill": MagicMock()},
+        )
+        items = cfg.tools_list()
+        item = next(i for i in items if i["name"] == "load_skill")
+        assert item["behavior"] is None
+
+    def test_tools_list_returns_none_for_filesystem_mismatch(self) -> None:
+        """read_file/write_file/edit_file return behavior=None for 'tool:tool-filesystem'."""
+        cfg = self._make_cfg(
+            provenance={"tool:tool-filesystem": "behavior-fs"},
+            mounted_tools={
+                "read_file": MagicMock(),
+                "write_file": MagicMock(),
+                "edit_file": MagicMock(),
+            },
+        )
+        items = cfg.tools_list()
+        by_name = {i["name"]: i for i in items}
+        assert by_name["read_file"]["behavior"] is None
+        assert by_name["write_file"]["behavior"] is None
+        assert by_name["edit_file"]["behavior"] is None
+
+    def test_tools_list_config_lookup_by_normalized_name(self) -> None:
+        """Config for 'tool-python-check' is found when tool is mounted as 'python_check'."""
+        cfg = self._make_cfg(
+            provenance={},
+            mounted_tools={"python_check": MagicMock()},
+            tool_specs=[{"module": "tool-python-check", "config": {"timeout": 30}}],
+        )
+        items = cfg.tools_list()
+        item = next(i for i in items if i["name"] == "python_check")
+        assert item["config"].get("timeout") == 30
+
+    def test_hooks_list_resolves_by_normalization(self) -> None:
+        """Hook names with case/hyphen differences are resolved via normalization."""
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        # Hook registered as "python-check", module ID is "hooks-python-check"
+        coordinator.hooks.list_handlers.return_value = {
+            "tool:post": ["python-check"],
+        }
+        coordinator.get = MagicMock(return_value={})
+        coordinator.config = {"agents": {}}
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = []
+        bundle_mock.providers = []
+        bundle_mock._provenance = {"hook:hooks-python-check": "behavior-pycheck"}
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        items = cfg.hooks_list()
+
+        hook = next((i for i in items if i["name"] == "python-check"), None)
+        assert hook is not None, "'python-check' hook must appear in hooks_list()"
+        assert hook["behavior"] == "behavior-pycheck"
+
+    def test_providers_list_empty_when_app_level_injected(self) -> None:
+        """providers_list() returns empty when all providers are app-level injected.
+
+        Providers auto-configured by the app-cli from environment variables are
+        not tracked by the configurator.  coordinator.get('providers') returns {}
+        and coordinator.config has no provider specs.  The result must be empty.
+        """
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        # Both paths return nothing — simulates the real app session
+        coordinator.get = MagicMock(return_value={})
+        coordinator.config = {"agents": {}}  # no "providers" key
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = []
+        bundle_mock.providers = []
+        bundle_mock._provenance = {}
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        items = cfg.providers_list()
+        # App-level providers are not visible here — this is the expected, correct result
+        assert items == []
 
 
 class TestTopLevelImport:

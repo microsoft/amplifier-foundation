@@ -23,6 +23,139 @@ _PROV_CATEGORY_MAP: dict[str, str] = {
 }
 
 
+def _normalize_module_name(name: str) -> str:
+    """Normalize a name for fuzzy matching: lowercase and hyphens to underscores.
+
+    Examples::
+
+        >>> _normalize_module_name("python-check")
+        'python_check'
+        >>> _normalize_module_name("LSP")
+        'lsp'
+    """
+    return name.lower().replace("-", "_")
+
+
+def _build_normalized_prov_lookup(
+    category: str, provenance: dict[str, str]
+) -> dict[str, str]:
+    """Build a map from normalized short module names to behavior values.
+
+    For each provenance key of the form ``"{category}:{module_id}"``
+    (e.g. ``"tool:tool-python-check"`` or ``"hook:hooks-logging"``), this
+    extracts the short suffix by stripping the leading category prefix from the
+    module ID, normalizes the result (lowercase, hyphens→underscores), and
+    stores the mapping ``"python_check" → behavior_name``.
+
+    Two prefix forms are tried in order:
+
+    1. **Singular prefix** — ``"{category}-"`` (e.g. ``"tool-"`` for
+       ``"tool:tool-bash"``).
+    2. **Plural prefix** — ``"{category}s-"`` (e.g. ``"hooks-"`` for
+       ``"hook:hooks-logging"``).  Hook modules follow the plural convention
+       (``hooks-logging``, ``hooks-python-check``) while tool/provider/agent
+       modules use singular.
+
+    This allows ``tools_list()`` and ``hooks_list()`` to match mounted names
+    against provenance entries even when they differ in case or separators
+    (e.g. ``LSP`` from ``tool-lsp``, ``apply_patch`` from
+    ``tool-apply-patch``, ``python-check`` from ``hooks-python-check``).
+
+    Args:
+        category: The provenance category prefix, e.g. ``"tool"`` or ``"hook"``.
+        provenance: The full bundle provenance dict.
+
+    Returns:
+        Dict mapping normalized short name → behavior value.
+    """
+    result: dict[str, str] = {}
+    cat_key_prefix = f"{category}:"  # "tool:" or "hook:"
+    singular_prefix = f"{category}-"  # "tool-"
+    plural_prefix = f"{category}s-"  # "hooks-" (hook modules use plural)
+
+    for key, behavior in provenance.items():
+        if not key.startswith(cat_key_prefix):
+            continue
+        module_id = key[
+            len(cat_key_prefix) :
+        ]  # e.g. "tool-python-check", "hooks-logging"
+        # Strip the redundant category prefix from the module ID.
+        # Try singular first (e.g. "tool-bash" → "bash"), then plural
+        # (e.g. "hooks-logging" → "logging").
+        if module_id.startswith(singular_prefix):
+            short = module_id[len(singular_prefix) :]  # e.g. "python-check"
+        elif module_id.startswith(plural_prefix):
+            short = module_id[len(plural_prefix) :]  # e.g. "logging"
+        else:
+            short = module_id
+        norm_short = _normalize_module_name(short)  # e.g. "python_check"
+        result[norm_short] = behavior
+
+    return result
+
+
+def _lookup_prov_behavior(
+    name: str,
+    category: str,
+    provenance: dict[str, str],
+    norm_prov_map: dict[str, str],
+) -> str | None:
+    """Resolve the behavior provenance for a mounted item using progressive matching.
+
+    Tries four strategies in order, returning the first match:
+
+    1. **Exact key** — ``"{category}:{name}"`` (e.g. ``"tool:bash"``)
+    2. **Module-prefixed key** — ``"{category}:{category}-{name}"``
+       (e.g. ``"tool:tool-bash"``)
+    3. **Normalized exact** — lowercase + hyphens→underscores on both sides
+       (e.g. ``"LSP"`` → ``"lsp"`` matching ``"tool:tool-lsp"``)
+    4. **Normalized prefix containment** — the module's normalized short name
+       is a word-boundary prefix of the normalized mounted name
+       (e.g. ``"web"`` from ``"tool:tool-web"`` matches ``"web_search"`` /
+       ``"web_fetch"``)
+
+    Semantically unrelated names (e.g. ``"load_skill"`` from ``tool-skills``,
+    ``"grep"`` / ``"glob"`` from ``tool-search``, or ``"read_file"`` from
+    ``tool-filesystem``) will not match any strategy and return ``None``.
+    This is correct and expected — those mappings require out-of-band metadata
+    that is not available at runtime.
+
+    Args:
+        name: The mounted item name (e.g. ``"python_check"``, ``"LSP"``).
+        category: The provenance category (e.g. ``"tool"``, ``"hook"``).
+        provenance: The full bundle ``_provenance`` dict.
+        norm_prov_map: Pre-built normalized lookup from
+            :func:`_build_normalized_prov_lookup`.
+
+    Returns:
+        Behavior name string, or ``None`` if no match is found.
+    """
+    # Strategy 1: exact raw key match
+    behavior = provenance.get(f"{category}:{name}")
+    if behavior:
+        return behavior
+
+    # Strategy 2: exact key with category-prefix on module ID
+    behavior = provenance.get(f"{category}:{category}-{name}")
+    if behavior:
+        return behavior
+
+    # Strategy 3: normalized exact match (case + hyphen/underscore insensitive)
+    norm_name = _normalize_module_name(name)
+    behavior = norm_prov_map.get(norm_name)
+    if behavior:
+        return behavior
+
+    # Strategy 4: normalized prefix containment — module name is a word-boundary
+    # prefix of the mounted name.  E.g. "web" is a prefix of "web_search".
+    # Require an underscore boundary so "bash" doesn't match "bash_extras".
+    for module_norm, beh in norm_prov_map.items():
+        if norm_name.startswith(module_norm + "_"):
+            return beh
+
+    return None
+
+
 class SessionConfigurator:
     """Manages per-session bundle configuration: stashing, restoring, and overriding
     context, tools, hooks, providers, and agents from a prepared bundle."""
@@ -570,9 +703,20 @@ class SessionConfigurator:
         """
         provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
 
+        # Pre-build normalized provenance lookup for fuzzy name matching.
+        # This handles mismatches between module IDs and registered tool names
+        # that differ in case or word separators:
+        #   tool-apply-patch  → apply_patch  (hyphen→underscore normalization)
+        #   tool-lsp          → LSP          (case normalization)
+        #   tool-python-check → python_check (both)
+        # One-module-many-tools cases (tool-filesystem → read_file/write_file/edit_file)
+        # and semantically renamed tools (tool-skills → load_skill) will not match
+        # any strategy and correctly return None.
+        norm_prov_map = _build_normalized_prov_lookup("tool", provenance)
+
         # Build config lookup by module ID from the coordinator's mount plan.
-        # Index by both the full module ID (e.g. "tool-bash") and the short name
-        # (e.g. "bash") so that both coordinator.get("tools") key formats match.
+        # Index by: full module ID, raw short name, and normalized short name so
+        # that tool names like "python_check" find the config for "tool-python-check".
         config_by_id: dict[str, dict] = {}
         for spec in self._coordinator.config.get("tools", []):
             if isinstance(spec, dict):
@@ -580,9 +724,12 @@ class SessionConfigurator:
                 cfg = spec.get("config") or {}
                 if mid:
                     config_by_id[mid] = cfg
-                    # Also map the short name (strip "tool-" prefix) for lookup.
-                    if mid.startswith("tool-"):
-                        config_by_id[mid[5:]] = cfg
+                    # Short name: strip "tool-" prefix (e.g. "tool-bash" → "bash").
+                    short = mid[5:] if mid.startswith("tool-") else mid
+                    config_by_id[short] = cfg
+                    # Normalized short name: lowercase + hyphens→underscores
+                    # (e.g. "tool-python-check" → "python_check").
+                    config_by_id[_normalize_module_name(short)] = cfg
 
         result: list[dict] = []
 
@@ -593,16 +740,13 @@ class SessionConfigurator:
             mounted = {}
 
         for name in mounted:
-            # Provenance stores module IDs (e.g. "tool:tool-bash") but the coordinator
-            # mounts tools under short names (e.g. "bash").  Try both forms.
-            behavior = provenance.get(f"tool:{name}") or provenance.get(
-                f"tool:tool-{name}"
-            )
+            behavior = _lookup_prov_behavior(name, "tool", provenance, norm_prov_map)
+            norm_name = _normalize_module_name(name)
             result.append(
                 {
                     "name": name,
                     "enabled": True,
-                    "config": config_by_id.get(name, {}),
+                    "config": config_by_id.get(name, config_by_id.get(norm_name, {})),
                     "behavior": behavior,
                     "source": behavior,
                 }
@@ -610,14 +754,13 @@ class SessionConfigurator:
 
         # Disabled: stashed tools.
         for name in self._stash["tools"]:
-            behavior = provenance.get(f"tool:{name}") or provenance.get(
-                f"tool:tool-{name}"
-            )
+            behavior = _lookup_prov_behavior(name, "tool", provenance, norm_prov_map)
+            norm_name = _normalize_module_name(name)
             result.append(
                 {
                     "name": name,
                     "enabled": False,
-                    "config": config_by_id.get(name, {}),
+                    "config": config_by_id.get(name, config_by_id.get(norm_name, {})),
                     "behavior": behavior,
                     "source": behavior,
                 }
@@ -642,15 +785,14 @@ class SessionConfigurator:
                 'source': str | None — alias for 'behavior'.
         """
         provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+        # Pre-build normalized provenance lookup for fuzzy name matching.
+        # Hook names registered in the hook registry may differ from module IDs
+        # in case or word separators (e.g. "python-check" from "hooks-python-check").
+        norm_prov_map = _build_normalized_prov_lookup("hook", provenance)
         result: list[dict] = []
 
         for name, meta in self._hook_snapshot.items():
-            # Provenance stores module IDs (e.g. "hook:hooks-logging") but the hook
-            # registry may use handler names that differ (e.g. "hooks-logging").
-            # Try direct match first, then with "hooks-" prefix as a common fallback.
-            behavior = provenance.get(f"hook:{name}") or provenance.get(
-                f"hook:hooks-{name}"
-            )
+            behavior = _lookup_prov_behavior(name, "hook", provenance, norm_prov_map)
             result.append(
                 {
                     "name": name,
@@ -669,15 +811,30 @@ class SessionConfigurator:
 
         Same pattern as tools_list but for providers.
 
+        .. note::
+            Providers that are **auto-configured by the application layer**
+            (e.g. resolved from an ``ANTHROPIC_API_KEY`` environment variable by
+            the app-cli's ``resolve_bundle_config()`` function) are **not tracked**
+            by this configurator.  They bypass bundle composition entirely and
+            therefore have no provenance entry and do not appear in
+            ``coordinator.get("providers")`` or ``coordinator.config["providers"]``.
+            The list returned here reflects only providers that were explicitly
+            declared in the bundle's mount plan.  This is a known limitation: a
+            future "provider introspection" API on the coordinator would be needed
+            to surface app-level providers here.
+
         Returns:
             List of dicts with keys:
-                'name': str — provider module ID.
+                'name': str — provider module ID (short name with prefix stripped).
                 'enabled': bool.
                 'config': dict — per-provider config from the mount plan.
                 'behavior': str | None — provenance behavior name.
                 'source': str | None — alias for 'behavior'.
         """
         provenance: dict[str, str] = getattr(self._bundle, "_provenance", {})
+
+        # Pre-build normalized provenance lookup for fuzzy provider name matching.
+        norm_prov_map = _build_normalized_prov_lookup("provider", provenance)
 
         config_by_id: dict[str, dict] = {}
         for spec in self._coordinator.config.get("providers", []):
@@ -686,9 +843,11 @@ class SessionConfigurator:
                 cfg = spec.get("config") or {}
                 if mid:
                     config_by_id[mid] = cfg
-                    # Also map the short name (strip "provider-" prefix) for lookup.
-                    if mid.startswith("provider-"):
-                        config_by_id[mid[9:]] = cfg
+                    # Short name (strip "provider-" prefix).
+                    short = mid[9:] if mid.startswith("provider-") else mid
+                    config_by_id[short] = cfg
+                    # Normalized short name (lowercase + hyphens→underscores).
+                    config_by_id[_normalize_module_name(short)] = cfg
 
         result: list[dict] = []
 
@@ -700,17 +859,17 @@ class SessionConfigurator:
         if mounted:
             # Coordinator exposes live provider instances — use them as the source of truth.
             for name in mounted:
-                # Provenance stores module IDs (e.g. "provider:provider-anthropic") but the
-                # coordinator may mount providers under short names (e.g. "anthropic").
-                # Try both forms so provenance is resolved regardless of naming convention.
-                behavior = provenance.get(f"provider:{name}") or provenance.get(
-                    f"provider:provider-{name}"
+                behavior = _lookup_prov_behavior(
+                    name, "provider", provenance, norm_prov_map
                 )
+                norm_name = _normalize_module_name(name)
                 result.append(
                     {
                         "name": name,
                         "enabled": True,
-                        "config": config_by_id.get(name, {}),
+                        "config": config_by_id.get(
+                            name, config_by_id.get(norm_name, {})
+                        ),
                         "behavior": behavior,
                         "source": behavior,
                     }
@@ -718,14 +877,17 @@ class SessionConfigurator:
 
             # Disabled providers live in the stash.
             for name in self._stash["providers"]:
-                behavior = provenance.get(f"provider:{name}") or provenance.get(
-                    f"provider:provider-{name}"
+                behavior = _lookup_prov_behavior(
+                    name, "provider", provenance, norm_prov_map
                 )
+                norm_name = _normalize_module_name(name)
                 result.append(
                     {
                         "name": name,
                         "enabled": False,
-                        "config": config_by_id.get(name, {}),
+                        "config": config_by_id.get(
+                            name, config_by_id.get(norm_name, {})
+                        ),
                         "behavior": behavior,
                         "source": behavior,
                     }
@@ -735,6 +897,10 @@ class SessionConfigurator:
             # implementation (e.g. the Rust binding does not expose a providers mount-point).
             # Derive the provider list from the mount-plan specs in coordinator.config so
             # the dashboard still shows something meaningful.
+            #
+            # NOTE: If coordinator.config also has no providers (e.g. when all providers
+            # are auto-configured by the app-cli layer from environment variables), the
+            # result will be empty.  That is the correct, honest answer — see the docstring.
             added: set[str] = set()
             for spec in self._coordinator.config.get("providers", []):
                 if not isinstance(spec, dict):
@@ -751,9 +917,9 @@ class SessionConfigurator:
                     short_name not in self._stash["providers"]
                     and mid not in self._stash["providers"]
                 )
-                behavior = provenance.get(f"provider:{short_name}") or provenance.get(
-                    f"provider:{mid}"
-                )
+                behavior = _lookup_prov_behavior(
+                    short_name, "provider", provenance, norm_prov_map
+                ) or _lookup_prov_behavior(mid, "provider", provenance, norm_prov_map)
                 result.append(
                     {
                         "name": short_name,
@@ -769,14 +935,17 @@ class SessionConfigurator:
             # Include any stashed providers not already covered by the mount plan.
             for name in self._stash["providers"]:
                 if name not in added:
-                    behavior = provenance.get(f"provider:{name}") or provenance.get(
-                        f"provider:provider-{name}"
+                    behavior = _lookup_prov_behavior(
+                        name, "provider", provenance, norm_prov_map
                     )
+                    norm_name = _normalize_module_name(name)
                     result.append(
                         {
                             "name": name,
                             "enabled": False,
-                            "config": config_by_id.get(name, {}),
+                            "config": config_by_id.get(
+                                name, config_by_id.get(norm_name, {})
+                            ),
                             "behavior": behavior,
                             "source": behavior,
                         }
