@@ -2295,6 +2295,67 @@ class TestModuleLevelToolDisable:
         with pytest.raises(ValueError, match="not found"):
             await cfg.tool_disable_module("tool-unknown")
 
+    @pytest.mark.asyncio
+    async def test_tool_disable_accepts_module_id(self) -> None:
+        """tool_disable() with a module ID stashes all tools registered under that module.
+
+        Passing 'tool-filesystem' (a module ID, not a mounted tool name) to
+        tool_disable() must unmount and stash both read_file and write_file.
+        """
+        cfg = self._make_cfg_with_filesystem()
+
+        # Use the public tool_disable interface with a module ID.
+        await cfg.tool_disable("tool-filesystem")
+
+        # Both tools must be stashed.
+        assert "read_file" in cfg._stash["tools"]
+        assert "write_file" in cfg._stash["tools"]
+
+    @pytest.mark.asyncio
+    async def test_tool_enable_accepts_module_id(self) -> None:
+        """tool_enable() with a module ID re-enables all stashed tools for that module.
+
+        After stashing read_file and write_file, passing 'tool-filesystem' to
+        tool_enable() must remount both tools and clear them from the stash.
+        """
+        cfg = self._make_cfg_with_filesystem()
+
+        # Disable first so there's something in the stash.
+        await cfg.tool_disable("tool-filesystem")
+        assert "read_file" in cfg._stash["tools"]
+        assert "write_file" in cfg._stash["tools"]
+
+        # Re-enable by module ID.
+        await cfg.tool_enable("tool-filesystem")
+
+        # Both tools must be cleared from the stash.
+        assert "read_file" not in cfg._stash["tools"]
+        assert "write_file" not in cfg._stash["tools"]
+
+        # mount() must have been called for both tools.
+        coordinator = cfg._coordinator
+        mount_calls = [call.args[0] for call in coordinator.mount.call_args_list]
+        assert "tools" in mount_calls, "coordinator.mount('tools', ...) must have been called"
+
+    @pytest.mark.asyncio
+    async def test_tool_disable_module_id_error_shows_both_tools_and_modules(self) -> None:
+        """tool_disable() error for unknown name lists both tool names and module IDs.
+
+        When the name is neither a mounted tool name nor a known module ID, the
+        ValueError message must include both the available tool names and the
+        available module IDs so the user knows what options they have.
+        """
+        cfg = self._make_cfg_with_filesystem()
+
+        with pytest.raises(ValueError) as exc_info:
+            await cfg.tool_disable("completely-unknown")
+
+        message = str(exc_info.value)
+        # Must mention available tools.
+        assert "read_file" in message or "write_file" in message or "Available tools" in message
+        # Must mention available modules.
+        assert "tool-filesystem" in message or "Available modules" in message
+
 
 class TestSourceUriInListMethods:
     """Tests that tools_list() and providers_list() include source_uri from mount plan specs."""

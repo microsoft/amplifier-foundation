@@ -637,43 +637,71 @@ class SessionConfigurator:
     async def tool_disable(self, name: str) -> None:
         """Retrieve and stash a tool instance, then unmount it from the coordinator (disable it).
 
+        Accepts either a mounted tool name (e.g. ``'mode'``) or a module ID
+        (e.g. ``'tool-mode'``).  When a module ID is given, all tools registered
+        under that module are disabled in one call via :meth:`tool_disable_module`.
+
         Retrieves the live instance via ``coordinator.get("tools")`` *before* calling
         ``coordinator.unmount()``, because the real Rust binding's unmount always
         returns ``None`` — the module is deleted from the dict and the return value
         is discarded.
 
         Args:
-            name: The tool name to disable.
+            name: A mounted tool name **or** a module ID to disable.
 
         Raises:
-            ValueError: If the name is not found in the currently mounted tools.
+            ValueError: If the name is not found as a tool name or module ID, with a
+                message listing both available tool names and module IDs.
         """
         # Idempotent: already disabled (in stash) — nothing to do.
         if name in self._stash["tools"]:
             return
 
         tools = self._coordinator.get("tools")
-        if tools is None or name not in tools:
-            available = list(tools.keys()) if tools else []
-            raise ValueError(f"Tool {name!r} not found. Available: {available}")
-        instance = tools[name]
-        await self._coordinator.unmount("tools", name=name)
-        self._stash["tools"][name] = instance
+        if tools is not None and name in tools:
+            # Direct tool name — disable just this one tool.
+            instance = tools[name]
+            await self._coordinator.unmount("tools", name=name)
+            self._stash["tools"][name] = instance
+            return
+
+        # Module ID — disable all tools registered under that module.
+        if name in self._module_to_tools:
+            await self.tool_disable_module(name)
+            return
+
+        available_tools = list(tools.keys()) if tools else []
+        available_modules = list(self._module_to_tools.keys())
+        raise ValueError(
+            f"Tool or module {name!r} not found. "
+            f"Available tools: {available_tools}. "
+            f"Available modules: {available_modules}"
+        )
 
     async def tool_enable(self, name: str) -> None:
         """Remount a previously disabled tool from the stash (enable it).
 
+        Accepts either a mounted tool name (e.g. ``'mode'``) or a module ID
+        (e.g. ``'tool-mode'``).  When a module ID is given, all stashed tools
+        registered under that module are re-enabled via :meth:`tool_enable_module`.
+
         Args:
-            name: The tool name to enable.
+            name: A mounted tool name **or** a module ID to enable.
 
         Raises:
-            ValueError: If the name is not in the stash (with a 'not in stash' message).
+            ValueError: If the name is not in the stash and not a known module ID.
         """
-        if name not in self._stash["tools"]:
-            raise ValueError(f"Tool {name!r} not in stash. Cannot enable.")
+        if name in self._stash["tools"]:
+            instance = self._stash["tools"].pop(name)
+            await self._coordinator.mount("tools", instance, name=name)
+            return
 
-        instance = self._stash["tools"].pop(name)
-        await self._coordinator.mount("tools", instance, name=name)
+        # Module ID — re-enable all stashed tools registered under that module.
+        if name in self._module_to_tools:
+            await self.tool_enable_module(name)
+            return
+
+        raise ValueError(f"Tool or module {name!r} not in stash. Cannot enable.")
 
     async def tool_disable_module(self, module_id: str) -> list[str]:
         """Disable all tools belonging to a module by stashing each one.
@@ -709,6 +737,43 @@ class SessionConfigurator:
                 pass
 
         return disabled
+
+    async def tool_enable_module(self, module_id: str) -> list[str]:
+        """Re-enable all stashed tools belonging to a module.
+
+        Iterates the tool names in ``_module_to_tools[module_id]`` and calls
+        ``tool_enable`` for each, silently skipping tools that are not currently
+        in the stash (i.e. already enabled).
+
+        Args:
+            module_id: The module ID (e.g. ``'tool-filesystem'``).
+
+        Returns:
+            List of tool names that were re-enabled by this call.
+
+        Raises:
+            ValueError: If ``module_id`` is not in ``_module_to_tools``, with
+                a message listing available module IDs.
+        """
+        if module_id not in self._module_to_tools:
+            available = list(self._module_to_tools.keys())
+            raise ValueError(
+                f"Module {module_id!r} not found in module-to-tool mapping. "
+                f"Available modules: {available}"
+            )
+
+        enabled: list[str] = []
+        for tool_name in self._module_to_tools[module_id]:
+            if tool_name in self._stash["tools"]:
+                try:
+                    instance = self._stash["tools"].pop(tool_name)
+                    await self._coordinator.mount("tools", instance, name=tool_name)
+                    enabled.append(tool_name)
+                except Exception:  # noqa: BLE001
+                    # Re-stash on failure so state is consistent.
+                    self._stash["tools"].setdefault(tool_name, instance)
+
+        return enabled
 
     # ------------------------------------------------------------------
     # Provider enable / disable (async)
