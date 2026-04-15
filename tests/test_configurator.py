@@ -2018,3 +2018,95 @@ class TestModuleLevelToolDisable:
 
         with pytest.raises(ValueError, match="not found"):
             await cfg.tool_disable_module("tool-unknown")
+
+
+class TestSourceUriInListMethods:
+    """Tests that tools_list() and providers_list() include source_uri from mount plan specs."""
+
+    def test_tools_list_includes_source_uri(self) -> None:
+        """tools_list() items include source_uri from the spec's 'source' field.
+
+        When coordinator.config['tools'] contains a spec with
+        'source': 'git+https://example.com/tool-bash@main',
+        tools_list() must return items with source_uri containing 'example.com'.
+        """
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.config = {
+            "agents": {},
+            "tools": [
+                {
+                    "module": "tool-bash",
+                    "source": "git+https://example.com/tool-bash@main",
+                }
+            ],
+        }
+        # Tool mounted as short name "bash"
+        coordinator.get = MagicMock(
+            side_effect=lambda mp: {"bash": MagicMock()} if mp == "tools" else {}
+        )
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = coordinator.config["tools"]
+        bundle_mock.providers = []
+        bundle_mock._provenance = {}
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        items = cfg.tools_list()
+
+        assert len(items) == 1
+        item = items[0]
+        assert "source_uri" in item, "tools_list() items must include 'source_uri' field"
+        assert item["source_uri"] is not None
+        assert "example.com" in item["source_uri"]
+
+    def test_providers_list_includes_source_uri(self) -> None:
+        """providers_list() items include source_uri from the spec's 'source' field.
+
+        When coordinator.config['providers'] contains a spec with a 'source' field,
+        providers_list() must return items with non-None source_uri.
+        """
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.config = {
+            "agents": {},
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "source": "git+https://example.com/provider-anthropic@main",
+                }
+            ],
+        }
+        # Provider mounted as short name "anthropic"
+        coordinator.get = MagicMock(
+            side_effect=lambda mp: {"anthropic": MagicMock()} if mp == "providers" else {}
+        )
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = []
+        bundle_mock.providers = coordinator.config["providers"]
+        bundle_mock._provenance = {}
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        items = cfg.providers_list()
+
+        assert len(items) == 1
+        item = items[0]
+        assert "source_uri" in item, "providers_list() items must include 'source_uri' field"
+        assert item["source_uri"] is not None

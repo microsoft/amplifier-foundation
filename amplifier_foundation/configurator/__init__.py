@@ -958,22 +958,27 @@ class SessionConfigurator:
         # any strategy and correctly return None.
         norm_prov_map = _build_normalized_prov_lookup("tool", provenance)
 
-        # Build config lookup by module ID from the coordinator's mount plan.
+        # Build config and source_uri lookups by module ID from the coordinator's mount plan.
         # Index by: full module ID, raw short name, and normalized short name so
         # that tool names like "python_check" find the config for "tool-python-check".
         config_by_id: dict[str, dict] = {}
+        source_by_id: dict[str, str | None] = {}
         for spec in self._coordinator.config.get("tools", []):
             if isinstance(spec, dict):
                 mid = spec.get("id") or spec.get("module", "")
                 cfg = spec.get("config") or {}
+                src = spec.get("source")
                 if mid:
                     config_by_id[mid] = cfg
+                    source_by_id[mid] = src
                     # Short name: strip "tool-" prefix (e.g. "tool-bash" → "bash").
                     short = mid[5:] if mid.startswith("tool-") else mid
                     config_by_id[short] = cfg
+                    source_by_id[short] = src
                     # Normalized short name: lowercase + hyphens→underscores
                     # (e.g. "tool-python-check" → "python_check").
                     config_by_id[_normalize_module_name(short)] = cfg
+                    source_by_id[_normalize_module_name(short)] = src
 
         result: list[dict] = []
 
@@ -994,6 +999,7 @@ class SessionConfigurator:
                     "behavior": behavior,
                     "source": behavior,
                     "module": self._tool_to_module.get(name, "unknown"),
+                    "source_uri": source_by_id.get(name, source_by_id.get(norm_name)),
                 }
             )
 
@@ -1009,6 +1015,7 @@ class SessionConfigurator:
                     "behavior": behavior,
                     "source": behavior,
                     "module": self._tool_to_module.get(name, "unknown"),
+                    "source_uri": source_by_id.get(name, source_by_id.get(norm_name)),
                 }
             )
 
@@ -1083,17 +1090,22 @@ class SessionConfigurator:
         norm_prov_map = _build_normalized_prov_lookup("provider", provenance)
 
         config_by_id: dict[str, dict] = {}
+        source_by_id: dict[str, str | None] = {}
         for spec in self._coordinator.config.get("providers", []):
             if isinstance(spec, dict):
                 mid = spec.get("id") or spec.get("module", "")
                 cfg = spec.get("config") or {}
+                src = spec.get("source")
                 if mid:
                     config_by_id[mid] = cfg
+                    source_by_id[mid] = src
                     # Short name (strip "provider-" prefix).
                     short = mid[9:] if mid.startswith("provider-") else mid
                     config_by_id[short] = cfg
+                    source_by_id[short] = src
                     # Normalized short name (lowercase + hyphens→underscores).
                     config_by_id[_normalize_module_name(short)] = cfg
+                    source_by_id[_normalize_module_name(short)] = src
 
         result: list[dict] = []
 
@@ -1118,6 +1130,9 @@ class SessionConfigurator:
                         ),
                         "behavior": behavior,
                         "source": behavior,
+                        "source_uri": source_by_id.get(
+                            name, source_by_id.get(norm_name)
+                        ),
                     }
                 )
 
@@ -1136,6 +1151,9 @@ class SessionConfigurator:
                         ),
                         "behavior": behavior,
                         "source": behavior,
+                        "source_uri": source_by_id.get(
+                            name, source_by_id.get(norm_name)
+                        ),
                     }
                 )
         else:
@@ -1175,6 +1193,9 @@ class SessionConfigurator:
                         ),
                         "behavior": behavior,
                         "source": behavior,
+                        "source_uri": source_by_id.get(
+                            short_name, source_by_id.get(mid)
+                        ),
                     }
                 )
 
@@ -1194,6 +1215,9 @@ class SessionConfigurator:
                             ),
                             "behavior": behavior,
                             "source": behavior,
+                            "source_uri": source_by_id.get(
+                                name, source_by_id.get(norm_name)
+                            ),
                         }
                     )
 
