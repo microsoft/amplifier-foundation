@@ -712,20 +712,22 @@ class TestBehaviorToggle:
         """
         result = await behavior_configurator.behavior_disable("my-behavior")
 
-        # Only context and agent contributions in the disabled list.
-        # Hooks are silently skipped; tools are skipped with a warning.
-        assert set(result["disabled"]) == {"context:readme", "agent:my-agent"}
+        # Context, agent, and sole-owner tool contributions all disabled.
+        # Hooks are silently skipped (read-only).
+        assert set(result["disabled"]) == {
+            "context:readme",
+            "agent:my-agent",
+            "tool:tool-bash",
+        }
 
-        # Tool warning is present — "tool-bash" is mounted as "tool-bash" (direct match)
-        # so the warning includes the mounted name.
-        assert len(result["warnings"]) == 1
-        assert "tool-bash" in result["warnings"][0]
+        # No warnings — sole ownership resolved cleanly.
+        assert result["warnings"] == []
 
         # Context item removed from bundle
         assert "readme" not in behavior_bundle.context
 
-        # Tool NOT unmounted — skipped for shared-ownership safety
-        behavior_coordinator.unmount.assert_not_called()
+        # Tool IS unmounted — sole active claimant, safe to disable
+        behavior_coordinator.unmount.assert_called()
 
         # Hook NOT unregistered — hooks are read-only
         behavior_coordinator.hooks.unregister.assert_not_called()
@@ -740,26 +742,29 @@ class TestBehaviorToggle:
         behavior_bundle: Bundle,
         behavior_coordinator: MagicMock,
     ) -> None:
-        """behavior_enable restores context and agent contributions after behavior_disable.
+        """behavior_enable restores context, agent, and sole-owner tool contributions.
 
         Hooks are silently skipped during both disable and enable — they are read-only
-        in this version.  Tools are also silently skipped during enable — they were never
-        stashed by behavior_disable (shared ownership cannot be determined from provenance
-        alone), so there is nothing to re-enable here.
+        in this version.  Tools that were stashed by behavior_disable (sole owner) are
+        re-enabled and re-mounted here.
         """
         await behavior_configurator.behavior_disable("my-behavior")
 
         result = await behavior_configurator.behavior_enable("my-behavior")
 
-        # Only context and agent contributions are restored.
-        # Hooks and tools are silently skipped.
-        assert set(result["enabled"]) == {"context:readme", "agent:my-agent"}
+        # Context, agent, and tool contributions are all restored.
+        # Hooks are silently skipped (read-only).
+        assert set(result["enabled"]) == {
+            "context:readme",
+            "agent:my-agent",
+            "tool:tool-bash",
+        }
         assert result["warnings"] == []
 
         # Context item restored to bundle
         assert "readme" in behavior_bundle.context
 
-        # Tool stash is empty — tools are never stashed by behavior toggle
+        # Tool stash is empty — tool was re-mounted from stash
         assert "tool-bash" not in behavior_configurator._stash["tools"]
 
         # Hook stash is empty — hooks are never toggled
@@ -861,20 +866,17 @@ class TestBehaviorToggleToolResolution:
         return SessionConfigurator(session=session, prepared_bundle=prepared)
 
     @pytest.mark.asyncio
-    async def test_behavior_disable_resolves_tool_module_id_to_mounted_name(
+    async def test_behavior_disable_sole_owner_resolves_module_id_to_mounted_name(
         self,
     ) -> None:
-        """behavior_disable warning uses the MOUNTED name, not the raw module ID.
+        """behavior_disable resolves module ID to mounted name when disabling sole-owner tool.
 
         When provenance stores 'tool:tool-bash' but the coordinator mounts the
-        tool as 'bash', the warning in the result should mention 'bash' (the
-        correct name for '/config tools disable') rather than 'tool-bash' (the
-        raw module ID that does not match any mounted tool).
+        tool as 'bash', behavior_disable must call tool_disable('bash') (the
+        correct mounted name), not 'tool-bash' (the raw module ID).
 
-        Bug 1: behavior_disable was passing the module ID directly to
-        tool_disable(), which failed because the mounted name differs.
-        Fix: _resolve_module_id_to_mounted_name() maps 'tool-bash' → 'bash'
-        via prefix-strip strategy, and the warning includes 'bash'.
+        The multi-claimant provenance check shows 'my-behavior' is the sole
+        active claimant, so the tool IS disabled — no warning, no skip.
         """
         tool_instance = MagicMock(name="bash-instance")
         cfg = self._make_behavior_cfg(
@@ -885,18 +887,12 @@ class TestBehaviorToggleToolResolution:
 
         result = await cfg.behavior_disable("my-behavior")
 
-        # Tool is in warnings, not in disabled.
-        assert "tool:tool-bash" not in result["disabled"]
-        assert len(result["warnings"]) == 1
+        # Tool IS in disabled — sole active claimant, resolved to 'bash'.
+        assert "tool:tool-bash" in result["disabled"]
+        assert result["warnings"] == []
 
-        # Warning must reference the MOUNTED name 'bash', not the raw module ID.
-        warning = result["warnings"][0]
-        assert "bash" in warning, (
-            f"Expected mounted name 'bash' in warning, got: {warning!r}"
-        )
-
-        # unmount must NOT be called — tool was never disabled.
-        cfg._coordinator.unmount.assert_not_called()
+        # unmount WAS called — tool was disabled.
+        cfg._coordinator.unmount.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_behavior_disable_skips_shared_tools_with_warning(
@@ -989,11 +985,11 @@ class TestBehaviorToggleToolResolution:
         assert "readme" not in bundle.context
         assert "my-agent" not in coordinator.config["agents"]
 
-        # Tool is in warnings, NOT disabled, and unmount is NOT called.
-        assert "tool:tool-bash" not in result["disabled"]
-        assert coordinator.unmount.assert_not_called
-        tool_warnings = [w for w in result["warnings"] if "tool-bash" in w]
-        assert len(tool_warnings) == 1
+        # Tool IS disabled — sole active claimant, unmount was called.
+        assert "tool:tool-bash" in result["disabled"]
+        coordinator.unmount.assert_called()
+        # No tool warnings — ownership was determinable.
+        assert not any("tool-bash" in w for w in result["warnings"])
 
 
 class TestSaveAndApply:

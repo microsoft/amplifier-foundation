@@ -823,15 +823,13 @@ class SessionConfigurator:
         Reads bundle._provenance to find all items contributed by the behavior,
         then disables each one by calling the appropriate category disable method.
 
-        **Tool and provider items are intentionally skipped** — they are never
-        unmounted during a behavior disable because shared ownership cannot be
-        determined from provenance alone (provenance is last-writer-wins, so a
-        tool contributed by two behaviors is only attributed to one).  A warning
-        is emitted for each skipped tool/provider so the caller can surface it
-        to the user.  To disable a tool explicitly, call
-        ``/config tools disable <name>`` directly.
+        **Tools and providers** use multi-claimant provenance to determine safety:
+        if other active behaviors also claim the item, it is silently skipped
+        (still needed).  If this behavior is the sole remaining claimant, the
+        tool/provider is disabled.  When the mounted name cannot be resolved,
+        a warning is emitted.
 
-        Hooks are also skipped (read-only in this version).
+        Hooks are skipped (read-only in this version).
 
         Partial failures (e.g. a context key no longer in the bundle) are
         collected as warnings and do not stop processing.
@@ -842,7 +840,7 @@ class SessionConfigurator:
         Returns:
             dict with keys:
                 'disabled': list of provenance keys that were successfully disabled.
-                'warnings': list of warning message strings for skipped or
+                'warnings': list of warning message strings for unresolvable or
                     failed items.
 
         Raises:
@@ -866,36 +864,72 @@ class SessionConfigurator:
                     item_name,
                 )
                 continue
-            # Tools and providers: skip unmount — shared ownership cannot be
-            # determined from provenance alone.  Emit a warning with the
-            # correct mounted name (if resolvable) so the user knows what to
-            # pass to '/config tools disable' or '/config providers disable'.
+            # Tools: use multi-claimant provenance to decide.
+            # If other active behaviors also own this tool, skip — it's still needed.
+            # If this behavior is the sole remaining claimant, disable the tool(s).
             if category == "tool":
-                mounted_name = self._resolve_module_id_to_mounted_name(
-                    item_name, "tools"
-                )
-                if mounted_name:
-                    warnings.append(
-                        f"Skipping tool '{mounted_name}' (module '{item_name}') — "
-                        f"shared ownership cannot be determined from provenance alone. "
-                        f"Use '/config tools disable {mounted_name}' to explicitly disable it."
+                claimants = provenance.get(prov_key, [])
+                other_active = [
+                    c for c in claimants
+                    if c != name and c not in self._disabled_behaviors
+                ]
+                if other_active:
+                    _log.debug(
+                        "Skipping tool %r — still claimed by active behavior(s): %s",
+                        item_name,
+                        other_active,
                     )
+                    continue
+                # Sole active claimant — resolve and disable.
+                tool_names = list(self._module_to_tools.get(item_name, []))
+                if not tool_names:
+                    mn = self._resolve_module_id_to_mounted_name(item_name, "tools")
+                    if mn:
+                        tool_names = [mn]
+                if tool_names:
+                    any_disabled = False
+                    for tool_name in tool_names:
+                        try:
+                            await self.tool_disable(tool_name)
+                            any_disabled = True
+                        except Exception as exc:  # noqa: BLE001
+                            warnings.append(
+                                f"Failed to disable tool '{tool_name}': {exc}"
+                            )
+                    if any_disabled:
+                        disabled.append(prov_key)
                 else:
                     warnings.append(
                         f"Tool module '{item_name}' not found in mounted tools. "
                         f"It may already be disabled or use a custom registered name."
                     )
                 continue
+            # Providers: same multi-claimant logic as tools.
             if category == "provider":
+                claimants = provenance.get(prov_key, [])
+                other_active = [
+                    c for c in claimants
+                    if c != name and c not in self._disabled_behaviors
+                ]
+                if other_active:
+                    _log.debug(
+                        "Skipping provider %r — still claimed by active behavior(s): %s",
+                        item_name,
+                        other_active,
+                    )
+                    continue
+                # Sole active claimant — resolve and disable.
                 mounted_name = self._resolve_module_id_to_mounted_name(
                     item_name, "providers"
                 )
                 if mounted_name:
-                    warnings.append(
-                        f"Skipping provider '{mounted_name}' (module '{item_name}') — "
-                        f"shared ownership cannot be determined from provenance alone. "
-                        f"Use '/config providers disable {mounted_name}' to explicitly disable it."
-                    )
+                    try:
+                        await self.provider_disable(mounted_name)
+                        disabled.append(prov_key)
+                    except Exception as exc:  # noqa: BLE001
+                        warnings.append(
+                            f"Failed to disable provider '{mounted_name}': {exc}"
+                        )
                 else:
                     warnings.append(
                         f"Provider module '{item_name}' not found in mounted providers. "
@@ -920,13 +954,14 @@ class SessionConfigurator:
         Reads bundle._provenance to find all items contributed by the behavior,
         then enables each one by calling the appropriate category enable method.
 
-        **Tool and provider items are silently skipped** — they were never
-        unmounted by :meth:`behavior_disable` (shared ownership cannot be
-        determined from provenance alone), so there is nothing to re-enable
-        here.  To re-enable a manually-disabled tool, use
-        ``/config tools enable <name>`` directly.
+        **Tools** that were stashed by :meth:`behavior_disable` are re-enabled by
+        looking them up in the stash via the module-to-tools mapping, direct stash
+        key lookup, or prefix-stripped name fallback.
 
-        Hooks are also skipped (read-only in this version).
+        **Providers** that were stashed by :meth:`behavior_disable` are re-enabled
+        via prefix-stripped name lookup in the stash.
+
+        Hooks are skipped (read-only in this version).
 
         Partial failures (e.g. a stashed context key no longer valid) are
         collected as warnings and do not stop processing.
@@ -960,16 +995,73 @@ class SessionConfigurator:
                     item_name,
                 )
                 continue
-            # Tools and providers were not stashed by behavior_disable (shared
-            # ownership cannot be determined from provenance alone), so there is
-            # nothing to re-enable here.  Skip silently.
-            if category in ("tool", "provider"):
-                _log.debug(
-                    "Skipping %s %r in behavior enable — %ss are not managed by behavior toggle.",
-                    category,
-                    item_name,
-                    category,
+            # Tools: re-enable any tools that were stashed by behavior_disable.
+            # Use multiple fallback strategies to find stash candidates.
+            if category == "tool":
+                stash_candidates: list[str] = []
+                # Method 1: module_to_tools mapping (reliable when tool specs available).
+                for tname in self._module_to_tools.get(item_name, []):
+                    if tname in self._stash["tools"] and tname not in stash_candidates:
+                        stash_candidates.append(tname)
+                if not stash_candidates:
+                    # Method 2: module ID is directly the stash key.
+                    if item_name in self._stash["tools"]:
+                        stash_candidates = [item_name]
+                if not stash_candidates:
+                    # Method 3: prefix-stripped short name.
+                    prefix = "tool-"
+                    short = (
+                        item_name[len(prefix):]
+                        if item_name.startswith(prefix)
+                        else item_name
+                    )
+                    if short in self._stash["tools"]:
+                        stash_candidates = [short]
+                if not stash_candidates:
+                    # Method 4: _tool_to_module reverse mapping.
+                    for tname in list(self._stash["tools"]):
+                        if self._tool_to_module.get(tname) == item_name:
+                            stash_candidates.append(tname)
+                any_enabled = False
+                for tname in stash_candidates:
+                    try:
+                        await self.tool_enable(tname)
+                        any_enabled = True
+                    except Exception as exc:  # noqa: BLE001
+                        warnings.append(f"Failed to re-enable tool '{tname}': {exc}")
+                if any_enabled:
+                    enabled.append(prov_key)
+                continue
+            # Providers: re-enable any providers that were stashed by behavior_disable.
+            if category == "provider":
+                prefix = "provider-"
+                short = (
+                    item_name[len(prefix):]
+                    if item_name.startswith(prefix)
+                    else item_name
                 )
+                prov_candidates: list[str] = []
+                for candidate in [
+                    item_name,
+                    short,
+                    _normalize_module_name(short),
+                ]:
+                    if (
+                        candidate in self._stash["providers"]
+                        and candidate not in prov_candidates
+                    ):
+                        prov_candidates.append(candidate)
+                any_enabled = False
+                for pname in prov_candidates:
+                    try:
+                        await self.provider_enable(pname)
+                        any_enabled = True
+                    except Exception as exc:  # noqa: BLE001
+                        warnings.append(
+                            f"Failed to re-enable provider '{pname}': {exc}"
+                        )
+                if any_enabled:
+                    enabled.append(prov_key)
                 continue
             try:
                 if category == "context":
@@ -1398,6 +1490,43 @@ class SessionConfigurator:
 
         return result
 
+    def _get_behavior_root_namespace(self, behavior_name: str) -> str | None:
+        """Find the root bundle namespace for a behavior using source_base_paths.
+
+        Looks up all namespaces that share the same source path as the behavior,
+        then returns the shortest one that does not look like a behavior name
+        (i.e., not starting with ``"behavior-"`` or ending with ``"-behavior"``).
+
+        This allows the CLI to strip the namespace prefix from a behavior's
+        own items (e.g. ``"superpowers:implementer"`` → ``"implementer"`` for
+        ``superpowers-methodology-behavior``) while keeping foreign namespace
+        prefixes intact (e.g. ``"modes:context/modes-instructions.md"``).
+
+        Args:
+            behavior_name: The behavior name to look up.
+
+        Returns:
+            The root namespace string, or ``None`` if not determinable.
+        """
+        sbp = getattr(self._bundle, "source_base_paths", {})
+        if not sbp:
+            return None
+        behavior_path = sbp.get(behavior_name)
+        if behavior_path is None:
+            return None
+        behavior_path_str = str(behavior_path)
+        siblings = [ns for ns, p in sbp.items() if str(p) == behavior_path_str]
+        candidates = [
+            ns
+            for ns in siblings
+            if ns != behavior_name
+            and not ns.startswith("behavior-")
+            and not ns.endswith("-behavior")
+        ]
+        if candidates:
+            return min(candidates, key=len)
+        return None
+
     def behaviors_list(self) -> list[dict]:
         """Return a list of all behaviors derived from bundle provenance.
 
@@ -1411,6 +1540,9 @@ class SessionConfigurator:
                 'contributions': dict[str, list[str]] — list of provenance keys
                     per category (context, tools, hooks, providers, agents).
                     E.g. {'context': ['context:readme'], 'tools': ['tool:tool-bash'], ...}
+                'root_namespace': str | None — the root bundle namespace for the behavior
+                    (e.g. 'superpowers' for 'superpowers-methodology-behavior'), used by
+                    the CLI to strip redundant namespace prefixes from item names.
         """
         provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
 
@@ -1451,6 +1583,7 @@ class SessionConfigurator:
                     "name": name,
                     "enabled": name not in self._disabled_behaviors,
                     "contributions": contributions,
+                    "root_namespace": self._get_behavior_root_namespace(name),
                 }
             )
 
