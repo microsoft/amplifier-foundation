@@ -1895,3 +1895,83 @@ class TestModuleToToolMapping:
         item = items[0]
         assert "module" in item, "tools_list() items must have a 'module' field"
         assert item["module"] == "unknown"
+
+
+class TestModuleLevelToolDisable:
+    """Tests for tool_disable_module async method."""
+
+    def _make_cfg_with_filesystem(self) -> SessionConfigurator:
+        """Helper: configurator with tool-filesystem -> [read_file, write_file].
+
+        tool-filesystem -> read_file/write_file is a semantic rename that cannot
+        be auto-detected by _build_module_to_tools, so _module_to_tools is
+        populated manually (simulating out-of-band metadata).
+        """
+        read_file_instance = MagicMock(name="read_file-instance")
+        write_file_instance = MagicMock(name="write_file-instance")
+
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.mount = AsyncMock()
+        coordinator.unmount = AsyncMock(return_value=None)
+        coordinator.config = {
+            "agents": {},
+            "tools": [{"module": "tool-filesystem"}],
+        }
+
+        _mounts: dict = {
+            "tools": {
+                "read_file": read_file_instance,
+                "write_file": write_file_instance,
+            }
+        }
+        coordinator.get = MagicMock(side_effect=lambda mp: _mounts.get(mp))
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = [{"module": "tool-filesystem"}]
+        bundle_mock.providers = []
+        bundle_mock._provenance = {}
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+
+        # Manually populate the module-to-tool mapping since semantic renames
+        # (tool-filesystem -> read_file/write_file) cannot be auto-detected.
+        cfg._module_to_tools["tool-filesystem"] = ["read_file", "write_file"]
+        cfg._tool_to_module["read_file"] = "tool-filesystem"
+        cfg._tool_to_module["write_file"] = "tool-filesystem"
+
+        return cfg
+
+    @pytest.mark.asyncio
+    async def test_module_disable_unmounts_all_tools(self) -> None:
+        """tool_disable_module stashes all tools belonging to the module.
+
+        Calling tool_disable_module('tool-filesystem') must stash both
+        read_file and write_file and return them in the result list.
+        """
+        cfg = self._make_cfg_with_filesystem()
+
+        disabled = await cfg.tool_disable_module("tool-filesystem")
+
+        # Both tools must be stashed
+        assert "read_file" in cfg._stash["tools"]
+        assert "write_file" in cfg._stash["tools"]
+
+        # Return value must list both disabled tool names
+        assert sorted(disabled) == ["read_file", "write_file"]
+
+    @pytest.mark.asyncio
+    async def test_module_disable_unknown_module_raises(self) -> None:
+        """tool_disable_module raises ValueError with 'not found' for unknown module IDs."""
+        cfg = self._make_cfg_with_filesystem()
+
+        with pytest.raises(ValueError, match="not found"):
+            await cfg.tool_disable_module("tool-unknown")

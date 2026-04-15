@@ -578,6 +578,41 @@ class SessionConfigurator:
         instance = self._stash["tools"].pop(name)
         await self._coordinator.mount("tools", instance, name=name)
 
+    async def tool_disable_module(self, module_id: str) -> list[str]:
+        """Disable all tools belonging to a module by stashing each one.
+
+        Iterates the tool names in ``_module_to_tools[module_id]`` and calls
+        ``tool_disable`` for each, silently skipping tools that are already
+        disabled (catching ``ValueError`` from idempotent ``tool_disable``).
+
+        Args:
+            module_id: The module ID (e.g. ``'tool-filesystem'``).
+
+        Returns:
+            List of tool names that were disabled by this call.
+
+        Raises:
+            ValueError: If ``module_id`` is not in ``_module_to_tools``, with
+                a message listing available module IDs.
+        """
+        if module_id not in self._module_to_tools:
+            available = list(self._module_to_tools.keys())
+            raise ValueError(
+                f"Module {module_id!r} not found in module-to-tool mapping. "
+                f"Available modules: {available}"
+            )
+
+        disabled: list[str] = []
+        for tool_name in self._module_to_tools[module_id]:
+            try:
+                await self.tool_disable(tool_name)
+                disabled.append(tool_name)
+            except ValueError:
+                # Tool already disabled — skip silently
+                pass
+
+        return disabled
+
     # ------------------------------------------------------------------
     # Provider enable / disable (async)
     # ------------------------------------------------------------------
