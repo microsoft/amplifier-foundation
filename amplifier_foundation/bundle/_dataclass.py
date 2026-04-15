@@ -146,34 +146,57 @@ class Bundle:
             dict(self._pending_context) if self._pending_context else {}
         )
 
-        # Compute initial provenance: tag self's items with self.name, then overlay
-        # any existing _provenance from prior compositions for precise attribution.
+        # Compute initial provenance: start from self._provenance (prior attributions),
+        # then attribute any UNTRACKED items to self.name as a fallback.
+        #
+        # We overlay self._provenance FIRST so that prior-composition attributions
+        # take precedence. Then, for items in self's lists that have no provenance
+        # yet (typically constructor-built bundles where _provenance starts empty),
+        # we tag self.name as the default claimant.
+        #
+        # Critically, we do NOT re-tag items that already appear in self._provenance —
+        # those were properly attributed by earlier compose() calls and re-tagging them
+        # to self.name (which may be a transitive bundle, not the original introducer)
+        # would cause over-attribution identical to the inherited-tool bug in the loop.
         initial_provenance: dict[str, list[str]] = {}
+        # Step 1: preserve all prior attributions from self
+        for prov_key, claimants in self._provenance.items():
+            for claimant in claimants:
+                _prov_add(initial_provenance, prov_key, claimant)
+        # Step 2: tag only UNTRACKED items in self's lists (constructor-built bundles)
         for prefixed_key in initial_context:
-            _prov_add(initial_provenance, f"context:{prefixed_key}", self.name)
+            prov_key = f"context:{prefixed_key}"
+            if prov_key not in initial_provenance:
+                _prov_add(initial_provenance, prov_key, self.name)
         # Also tag pending context (namespace-prefixed refs deferred for resolution).
         # These keys match the final context keys after resolve_pending_context() runs,
         # so the provenance lookup in context_list() will find them correctly.
         for pending_name in self._pending_context:
-            _prov_add(initial_provenance, f"context:{pending_name}", self.name)
+            prov_key = f"context:{pending_name}"
+            if prov_key not in initial_provenance:
+                _prov_add(initial_provenance, prov_key, self.name)
         for mod in self.tools:
             module_id = mod.get("id") or mod.get("module")
             if module_id:
-                _prov_add(initial_provenance, f"tool:{module_id}", self.name)
+                prov_key = f"tool:{module_id}"
+                if prov_key not in initial_provenance:
+                    _prov_add(initial_provenance, prov_key, self.name)
         for mod in self.providers:
             module_id = mod.get("id") or mod.get("module")
             if module_id:
-                _prov_add(initial_provenance, f"provider:{module_id}", self.name)
+                prov_key = f"provider:{module_id}"
+                if prov_key not in initial_provenance:
+                    _prov_add(initial_provenance, prov_key, self.name)
         for mod in self.hooks:
             module_id = mod.get("id") or mod.get("module")
             if module_id:
-                _prov_add(initial_provenance, f"hook:{module_id}", self.name)
+                prov_key = f"hook:{module_id}"
+                if prov_key not in initial_provenance:
+                    _prov_add(initial_provenance, prov_key, self.name)
         for agent_name in self.agents:
-            _prov_add(initial_provenance, f"agent:{agent_name}", self.name)
-        # Merge existing _provenance to preserve prior composition attributions
-        for prov_key, claimants in self._provenance.items():
-            for claimant in claimants:
-                _prov_add(initial_provenance, prov_key, claimant)
+            prov_key = f"agent:{agent_name}"
+            if prov_key not in initial_provenance:
+                _prov_add(initial_provenance, prov_key, self.name)
 
         result = Bundle(
             name=self.name,
@@ -222,34 +245,59 @@ class Bundle:
             # Spawn config: deep merge (later overrides)
             result.spawn = deep_merge(result.spawn, other.spawn)
 
+            # Capture what result already has BEFORE merging other.
+            # Only NEW contributions (not yet in result) should be attributed to other.name.
+            # This prevents over-attribution when other is a resolved bundle that inherited
+            # items from its own includes — inherited items are already in result and should
+            # not be re-attributed to the inheriting bundle.
+            existing_tool_ids = {
+                m.get("id") or m.get("module")
+                for m in result.tools
+                if isinstance(m, dict)
+            }
+            existing_hook_ids = {
+                m.get("id") or m.get("module")
+                for m in result.hooks
+                if isinstance(m, dict)
+            }
+            existing_provider_ids = {
+                m.get("id") or m.get("module")
+                for m in result.providers
+                if isinstance(m, dict)
+            }
+            existing_agent_names = set(result.agents.keys())
+            existing_context_keys = set(result.context.keys())
+            existing_pending_keys = set(result._pending_context.keys())
+
             # Module lists: merge by module ID
             result.providers = merge_module_lists(result.providers, other.providers)
             result.tools = merge_module_lists(result.tools, other.tools)
             result.hooks = merge_module_lists(result.hooks, other.hooks)
 
-            # Tag modules from other for tools, providers, and hooks
+            # Tag ONLY newly introduced modules from other for tools, providers, and hooks.
+            # Items already present in result before this merge are inherited (not declared
+            # by other) and must not be attributed to other.name.
             for mod in other.tools:
                 module_id = mod.get("id") or mod.get("module")
-                if module_id:
+                if module_id and module_id not in existing_tool_ids:
                     _prov_add(result._provenance, f"tool:{module_id}", other.name)
             for mod in other.providers:
                 module_id = mod.get("id") or mod.get("module")
-                if module_id:
+                if module_id and module_id not in existing_provider_ids:
                     _prov_add(result._provenance, f"provider:{module_id}", other.name)
             for mod in other.hooks:
                 module_id = mod.get("id") or mod.get("module")
-                if module_id:
+                if module_id and module_id not in existing_hook_ids:
                     _prov_add(result._provenance, f"hook:{module_id}", other.name)
 
-            # Agents: later overrides
+            # Agents: later overrides — tag only NEW agent names
+            for agent_name in other.agents:
+                if agent_name not in existing_agent_names:
+                    _prov_add(result._provenance, f"agent:{agent_name}", other.name)
             result.agents.update(other.agents)
 
-            # Tag agents from other
-            for agent_name in other.agents:
-                _prov_add(result._provenance, f"agent:{agent_name}", other.name)
-
-            # Context: accumulate with bundle prefix to avoid collisions
-            # This allows multiple bundles to each contribute context files
+            # Context: accumulate with bundle prefix to avoid collisions.
+            # Tag only NEW context keys (not already present from prior compositions).
             for key, path in other.context.items():
                 # Add bundle prefix if not already present
                 if other.name and ":" not in key:
@@ -257,16 +305,20 @@ class Bundle:
                 else:
                     prefixed_key = key
                 result.context[prefixed_key] = path
-                # Tag context from other
-                _prov_add(result._provenance, f"context:{prefixed_key}", other.name)
+                # Tag context from other only if genuinely new
+                if prefixed_key not in existing_context_keys:
+                    _prov_add(result._provenance, f"context:{prefixed_key}", other.name)
 
-            # Pending context: accumulate (already has namespace prefixes) and tag provenance.
+            # Pending context: accumulate and tag only NEW entries.
             # These refs will be moved to context by resolve_pending_context(); tagging them
             # here ensures context_list() can find the correct behavior source later.
             if other._pending_context:
-                result._pending_context.update(other._pending_context)
-                for pending_name in other._pending_context:
-                    _prov_add(result._provenance, f"context:{pending_name}", other.name)
+                for pending_name, pending_ref in other._pending_context.items():
+                    result._pending_context[pending_name] = pending_ref
+                    if pending_name not in existing_pending_keys:
+                        _prov_add(
+                            result._provenance, f"context:{pending_name}", other.name
+                        )
 
             # Instruction: later replaces
             if other.instruction:
@@ -278,14 +330,40 @@ class Bundle:
             if other.base_path:
                 result.base_path = other.base_path
 
-            # Merge other's provenance to preserve precise sub-composition attributions,
-            # extending lists so that all original contributors are tracked.
-            # This ensures that items which originated deeper in the composition hierarchy
-            # (e.g., tool-x from bundle "a" that passed through bundle "b") retain their
-            # original contributor attribution rather than being attributed only to "b".
+            # Overlay other's provenance ONLY for items that were NEW from other.
+            # This preserves the original contributor chain for genuinely new items
+            # (e.g., tool-x was introduced by "a" inside bundle "b"; when "b" is now
+            # composed into "c", we propagate "a" as tool-x's original contributor).
+            # We do NOT overlay provenance for items already in result before this
+            # merge — doing so would propagate over-attributed provenance chains from
+            # bundles that themselves inherited those items transitively.
             for prov_key, claimants in other._provenance.items():
-                for claimant in claimants:
-                    _prov_add(result._provenance, prov_key, claimant)
+                # Determine whether this provenance key refers to a new item
+                if ":" in prov_key:
+                    category, item_key = prov_key.split(":", 1)
+                else:
+                    category, item_key = "", prov_key
+
+                is_new = False
+                if category == "tool":
+                    is_new = item_key not in existing_tool_ids
+                elif category == "hook":
+                    is_new = item_key not in existing_hook_ids
+                elif category == "provider":
+                    is_new = item_key not in existing_provider_ids
+                elif category == "agent":
+                    is_new = item_key not in existing_agent_names
+                elif category == "context":
+                    is_new = (
+                        item_key not in existing_context_keys
+                        and item_key not in existing_pending_keys
+                    )
+                else:
+                    is_new = True  # Unknown category: preserve all provenance
+
+                if is_new:
+                    for claimant in claimants:
+                        _prov_add(result._provenance, prov_key, claimant)
 
         return result
 
