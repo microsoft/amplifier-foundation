@@ -895,20 +895,19 @@ class TestBehaviorToggleToolResolution:
         cfg._coordinator.unmount.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_behavior_disable_skips_shared_tools_with_warning(
+    async def test_behavior_disable_warns_when_tool_name_unresolvable(
         self,
     ) -> None:
-        """behavior_disable does not unmount tools — emits a warning instead.
+        """behavior_disable emits a warning when tool mounted name cannot be resolved.
 
         When provenance attributes 'tool:tool-skills' to 'superpowers-behavior'
-        but the tool is mounted as 'load_skill' (semantically unrelated name),
-        behavior_disable must NOT attempt to unmount the tool.  A warning is
-        emitted regardless of whether the mounted name could be resolved.
+        (sole claimant) but the tool is mounted as 'load_skill' (semantically
+        unrelated name that no resolution strategy can derive from 'tool-skills'),
+        behavior_disable cannot determine the mounted name and emits a warning
+        instead of silently skipping.
 
-        Bug 2: behavior_disable was blindly calling tool_disable(module_id),
-        which produced a confusing 'Tool not found' error when the module ID
-        didn't match any mounted name.  The fix skips all tools with a warning
-        because shared ownership cannot be determined from provenance alone.
+        This covers the case where strategy 5 (Python module path introspection)
+        is also unavailable because no tool specs are configured in coordinator.config.
         """
         tool_instance = MagicMock(name="load-skill-instance")
         cfg = self._make_behavior_cfg(
@@ -921,7 +920,7 @@ class TestBehaviorToggleToolResolution:
 
         result = await cfg.behavior_disable("superpowers-behavior")
 
-        # Tool must NOT be unmounted.
+        # Tool must NOT be unmounted — name couldn't be resolved.
         cfg._coordinator.unmount.assert_not_called()
 
         # Tool must NOT appear in disabled (nothing was actually disabled).
@@ -934,6 +933,36 @@ class TestBehaviorToggleToolResolution:
         assert "tool-skills" in warning, (
             f"Expected 'tool-skills' in warning, got: {warning!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_behavior_disable_skips_tool_with_other_active_claimant(
+        self,
+    ) -> None:
+        """behavior_disable skips a tool that is also claimed by another active behavior.
+
+        When 'tool:tool-mode' is claimed by both 'superpowers-behavior' and
+        'behavior-modes', disabling 'superpowers-behavior' must NOT unmount
+        the tool — 'behavior-modes' is still active and still needs it.
+        No warning is emitted (silent skip — not an error).
+        """
+        tool_instance = MagicMock(name="mode-instance")
+        cfg = self._make_behavior_cfg(
+            provenance={
+                "tool:tool-mode": ["superpowers-behavior", "behavior-modes"],
+            },
+            mounted_tools={"mode": tool_instance},
+        )
+
+        result = await cfg.behavior_disable("superpowers-behavior")
+
+        # Tool must NOT be unmounted — still claimed by behavior-modes.
+        cfg._coordinator.unmount.assert_not_called()
+
+        # Tool must NOT appear in disabled.
+        assert "tool:tool-mode" not in result["disabled"]
+
+        # No warning — this is expected behavior, not an error.
+        assert result["warnings"] == []
 
     @pytest.mark.asyncio
     async def test_behavior_disable_still_removes_context_and_agents(
