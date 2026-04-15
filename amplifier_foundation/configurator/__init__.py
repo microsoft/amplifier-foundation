@@ -1244,15 +1244,16 @@ class SessionConfigurator:
     def behaviors_list(self) -> list[dict]:
         """Return a list of all behaviors derived from bundle provenance.
 
-        Groups all provenance entries by behavior name (value) and counts
-        contributions per category.
+        Groups all provenance entries by behavior name (value) and lists
+        the provenance keys that contribute per category.
 
         Returns:
             Sorted list of dicts with keys:
                 'name': str — behavior name.
                 'enabled': bool — False if in _disabled_behaviors, else True.
-                'contributions': dict[str, int] — count per category
-                    (context, tools, hooks, providers, agents).
+                'contributions': dict[str, list[str]] — list of provenance keys
+                    per category (context, tools, hooks, providers, agents).
+                    E.g. {'context': ['context:readme'], 'tools': ['tool:tool-bash'], ...}
         """
         provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
 
@@ -1287,7 +1288,7 @@ class SessionConfigurator:
 
         result: list[dict] = []
         for name, contrib_lists in behaviors.items():
-            contributions = {cat: len(items) for cat, items in contrib_lists.items()}
+            contributions = {cat: list(items) for cat, items in contrib_lists.items()}
             result.append(
                 {
                     "name": name,

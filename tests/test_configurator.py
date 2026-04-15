@@ -1240,7 +1240,7 @@ class TestListMethods:
     def test_behaviors_list_groups_by_provenance(
         self, behavior_configurator: SessionConfigurator
     ) -> None:
-        """behaviors_list groups all provenance entries by behavior name with counts."""
+        """behaviors_list groups all provenance entries by behavior name with item name lists."""
         items = behavior_configurator.behaviors_list()
         assert len(items) == 1
         beh = items[0]
@@ -1249,10 +1249,10 @@ class TestListMethods:
 
         # behavior_bundle has context:readme, tool:tool-bash, hook:on_before_tool, agent:my-agent
         contributions = beh["contributions"]
-        assert contributions["context"] == 1
-        assert contributions["tools"] == 1
-        assert contributions["hooks"] == 1
-        assert contributions["agents"] == 1
+        assert len(contributions["context"]) == 1
+        assert len(contributions["tools"]) == 1
+        assert len(contributions["hooks"]) == 1
+        assert len(contributions["agents"]) == 1
 
     def test_behaviors_list_disabled_behavior(
         self, behavior_configurator: SessionConfigurator
@@ -1398,6 +1398,49 @@ class TestListMethods:
         assert cfg.providers_list() == []
         assert cfg.agents_list() == []
         assert cfg.behaviors_list() == []
+
+
+class TestBehaviorsListItemNames:
+    """Tests that behaviors_list() contributions values are lists of provenance key strings."""
+
+    def test_behaviors_list_contributions_are_name_lists(
+        self, behavior_configurator: SessionConfigurator
+    ) -> None:
+        """behaviors_list() contributions values are lists of provenance key strings, not int counts.
+
+        behavior_bundle provenance:
+            context:readme -> my-behavior
+            tool:tool-bash -> my-behavior
+            hook:on_before_tool -> my-behavior
+            agent:my-agent -> my-behavior
+
+        After the fix, contributions['context'] should be ['context:readme'],
+        not the integer 1.
+        """
+        items = behavior_configurator.behaviors_list()
+        assert len(items) == 1
+        beh = items[0]
+        contributions = beh["contributions"]
+
+        # Values must be lists of provenance key strings, not int counts.
+        assert isinstance(contributions["context"], list), (
+            f"Expected list for 'context', got {type(contributions['context'])}"
+        )
+        assert isinstance(contributions["tools"], list), (
+            f"Expected list for 'tools', got {type(contributions['tools'])}"
+        )
+        assert isinstance(contributions["hooks"], list), (
+            f"Expected list for 'hooks', got {type(contributions['hooks'])}"
+        )
+        assert isinstance(contributions["agents"], list), (
+            f"Expected list for 'agents', got {type(contributions['agents'])}"
+        )
+
+        # Provenance keys appear in the lists.
+        assert "context:readme" in contributions["context"]
+        assert "agent:my-agent" in contributions["agents"]
+        assert "tool:tool-bash" in contributions["tools"]
+        assert "hook:on_before_tool" in contributions["hooks"]
 
 
 class TestProvenanceLookupHelpers:
@@ -1777,10 +1820,10 @@ class TestMultiClaimantProvenance:
         assert "behavior-a" in by_name
         assert "behavior-b" in by_name
 
-        assert by_name["behavior-a"]["contributions"]["tools"] == 1
-        assert by_name["behavior-a"]["contributions"]["context"] == 1
-        assert by_name["behavior-b"]["contributions"]["tools"] == 1
-        assert by_name["behavior-b"]["contributions"]["context"] == 0
+        assert len(by_name["behavior-a"]["contributions"]["tools"]) == 1
+        assert len(by_name["behavior-a"]["contributions"]["context"]) == 1
+        assert len(by_name["behavior-b"]["contributions"]["tools"]) == 1
+        assert len(by_name["behavior-b"]["contributions"]["context"]) == 0
 
 
 class TestTopLevelImport:
