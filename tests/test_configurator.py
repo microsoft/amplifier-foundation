@@ -2335,10 +2335,14 @@ class TestModuleLevelToolDisable:
         # mount() must have been called for both tools.
         coordinator = cfg._coordinator
         mount_calls = [call.args[0] for call in coordinator.mount.call_args_list]
-        assert "tools" in mount_calls, "coordinator.mount('tools', ...) must have been called"
+        assert "tools" in mount_calls, (
+            "coordinator.mount('tools', ...) must have been called"
+        )
 
     @pytest.mark.asyncio
-    async def test_tool_disable_module_id_error_shows_both_tools_and_modules(self) -> None:
+    async def test_tool_disable_module_id_error_shows_both_tools_and_modules(
+        self,
+    ) -> None:
         """tool_disable() error for unknown name lists both tool names and module IDs.
 
         When the name is neither a mounted tool name nor a known module ID, the
@@ -2352,7 +2356,11 @@ class TestModuleLevelToolDisable:
 
         message = str(exc_info.value)
         # Must mention available tools.
-        assert "read_file" in message or "write_file" in message or "Available tools" in message
+        assert (
+            "read_file" in message
+            or "write_file" in message
+            or "Available tools" in message
+        )
         # Must mention available modules.
         assert "tool-filesystem" in message or "Available modules" in message
 
@@ -2401,7 +2409,9 @@ class TestSourceUriInListMethods:
 
         assert len(items) == 1
         item = items[0]
-        assert "source_uri" in item, "tools_list() items must include 'source_uri' field"
+        assert "source_uri" in item, (
+            "tools_list() items must include 'source_uri' field"
+        )
         assert item["source_uri"] is not None
         assert "example.com" in item["source_uri"]
 
@@ -2425,7 +2435,9 @@ class TestSourceUriInListMethods:
         }
         # Provider mounted as short name "anthropic"
         coordinator.get = MagicMock(
-            side_effect=lambda mp: {"anthropic": MagicMock()} if mp == "providers" else {}
+            side_effect=lambda mp: (
+                {"anthropic": MagicMock()} if mp == "providers" else {}
+            )
         )
 
         bundle_mock = MagicMock()
@@ -2445,6 +2457,152 @@ class TestSourceUriInListMethods:
 
         assert len(items) == 1
         item = items[0]
-        assert "source_uri" in item, "providers_list() items must include 'source_uri' field"
+        assert "source_uri" in item, (
+            "providers_list() items must include 'source_uri' field"
+        )
         assert item["source_uri"] is not None
         assert "example.com" in item["source_uri"]
+
+
+class TestGetBehaviorRootNamespace:
+    """Tests for _get_behavior_root_namespace — namespace detection for behaviors."""
+
+    def _make_configurator_with_sbp(
+        self, sbp: dict, provenance: dict | None = None
+    ) -> SessionConfigurator:
+        """Create a minimal SessionConfigurator with a controlled source_base_paths."""
+        coordinator = MagicMock()
+        coordinator.config = {"agents": {}}
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.get = MagicMock(return_value={})
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = []
+        bundle_mock.providers = []
+        bundle_mock._provenance = provenance or {}
+        bundle_mock.source_base_paths = sbp
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        return SessionConfigurator(session=session, prepared_bundle=prepared)
+
+    def test_returns_sibling_namespace_when_present(self) -> None:
+        """Returns the shortest non-behavior sibling namespace (existing behaviour)."""
+        sbp = {
+            "skills-behavior": "/path/to/skills",
+            "skills": "/path/to/skills",
+        }
+        cfg = self._make_configurator_with_sbp(sbp)
+        result = cfg._get_behavior_root_namespace("skills-behavior")
+        assert result == "skills"
+
+    def test_returns_behavior_name_when_no_sibling_exists(self) -> None:
+        """When no non-behavior sibling exists, returns behavior_name itself.
+
+        This handles behaviors like 'shadow', 'foundation', 'python-dev', and
+        'routing-matrix' which ARE the root namespace — their agents are named
+        '{behavior_name}:{agent-name}' or '{behavior_name}-{agent-name}'.
+        """
+        sbp = {
+            "shadow": "/path/to/shadow",
+            "shadow-behavior": "/path/to/shadow",
+        }
+        cfg = self._make_configurator_with_sbp(sbp)
+        result = cfg._get_behavior_root_namespace("shadow")
+        assert result == "shadow", (
+            "_get_behavior_root_namespace should return 'shadow' when it has no "
+            "non-behavior sibling at the same path (shadow IS its own namespace)"
+        )
+
+    def test_returns_behavior_name_for_foundation_style(self) -> None:
+        """foundation behavior with no sibling namespace returns 'foundation'."""
+        sbp = {
+            "foundation": "/path/to/foundation",
+            "behavior-foundation": "/path/to/foundation",
+        }
+        cfg = self._make_configurator_with_sbp(sbp)
+        result = cfg._get_behavior_root_namespace("foundation")
+        assert result == "foundation"
+
+    def test_returns_behavior_name_for_python_dev_style(self) -> None:
+        """python-dev behavior with no sibling namespace returns 'python-dev'."""
+        sbp = {
+            "python-dev": "/path/to/python-dev",
+        }
+        cfg = self._make_configurator_with_sbp(sbp)
+        result = cfg._get_behavior_root_namespace("python-dev")
+        assert result == "python-dev"
+
+    def test_returns_none_when_behavior_not_in_sbp(self) -> None:
+        """Returns None when the behavior name is not in source_base_paths."""
+        sbp = {
+            "other-behavior": "/path/to/other",
+        }
+        cfg = self._make_configurator_with_sbp(sbp)
+        result = cfg._get_behavior_root_namespace("unknown-behavior")
+        assert result is None
+
+    def test_returns_none_when_sbp_empty(self) -> None:
+        """Returns None when source_base_paths is empty (bundle has no path info)."""
+        cfg = self._make_configurator_with_sbp({})
+        result = cfg._get_behavior_root_namespace("foundation")
+        assert result is None
+
+    def test_prefers_shortest_sibling_over_behavior_name(self) -> None:
+        """Shortest non-behavior sibling wins over behavior_name fallback."""
+        # superpowers-methodology-behavior has "superpowers" as sibling → that wins
+        sbp = {
+            "superpowers-methodology-behavior": "/path/to/superpowers",
+            "superpowers": "/path/to/superpowers",
+            "superpowers-extra": "/path/to/superpowers",
+        }
+        cfg = self._make_configurator_with_sbp(sbp)
+        result = cfg._get_behavior_root_namespace("superpowers-methodology-behavior")
+        assert result == "superpowers", (
+            "Should return the shortest non-behavior sibling 'superpowers', "
+            "not the behavior name 'superpowers-methodology-behavior'"
+        )
+
+    def test_behaviors_list_sets_self_root_namespace(self) -> None:
+        """behaviors_list() uses self-as-namespace root_namespace for behaviors like 'shadow'."""
+        from pathlib import Path
+
+        coordinator = MagicMock()
+        coordinator.config = {"agents": {}}
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.get = MagicMock(return_value={})
+
+        bundle_mock = MagicMock()
+        bundle_mock.context = {}
+        bundle_mock.tools = []
+        bundle_mock.providers = []
+        bundle_mock._provenance = {
+            "agent:shadow-operator": ["shadow"],
+            "agent:shadow-smoke-test": ["shadow"],
+        }
+        # shadow is its own namespace: only "shadow" in sbp at this path
+        bundle_mock.source_base_paths = {
+            "shadow": Path("/path/to/shadow"),
+        }
+
+        prepared = MagicMock()
+        prepared.bundle = bundle_mock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
+        items = cfg.behaviors_list()
+
+        shadow_item = next((i for i in items if i["name"] == "shadow"), None)
+        assert shadow_item is not None, "shadow should appear in behaviors_list()"
+        assert shadow_item["root_namespace"] == "shadow", (
+            "shadow behavior's root_namespace should be 'shadow' (self-as-namespace fallback)"
+        )

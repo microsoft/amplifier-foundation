@@ -394,7 +394,9 @@ class SessionConfigurator:
                 if not module_id:
                     continue
                 norm_module = _normalize_module_name(module_id)
-                if norm_handler == norm_module or norm_handler.startswith(norm_module + "_"):
+                if norm_handler == norm_module or norm_handler.startswith(
+                    norm_module + "_"
+                ):
                     if len(norm_module) > best_length:
                         best_module = module_id
                         best_length = len(norm_module)
@@ -416,7 +418,7 @@ class SessionConfigurator:
                     continue
                 tool_prefix = "tool-"
                 short = (
-                    module_id[len(tool_prefix):]
+                    module_id[len(tool_prefix) :]
                     if module_id.startswith(tool_prefix)
                     else module_id
                 )
@@ -935,7 +937,8 @@ class SessionConfigurator:
             if category == "tool":
                 claimants = provenance.get(prov_key, [])
                 other_active = [
-                    c for c in claimants
+                    c
+                    for c in claimants
                     if c != name and c not in self._disabled_behaviors
                 ]
                 if other_active:
@@ -973,7 +976,8 @@ class SessionConfigurator:
             if category == "provider":
                 claimants = provenance.get(prov_key, [])
                 other_active = [
-                    c for c in claimants
+                    c
+                    for c in claimants
                     if c != name and c not in self._disabled_behaviors
                 ]
                 if other_active:
@@ -1005,8 +1009,7 @@ class SessionConfigurator:
             # If other active behaviors also own this item, skip — it's still needed.
             claimants = provenance.get(prov_key, [])
             other_active = [
-                c for c in claimants
-                if c != name and c not in self._disabled_behaviors
+                c for c in claimants if c != name and c not in self._disabled_behaviors
             ]
             if other_active:
                 _log.debug(
@@ -1096,7 +1099,7 @@ class SessionConfigurator:
                     # Method 3: prefix-stripped short name.
                     prefix = "tool-"
                     short = (
-                        item_name[len(prefix):]
+                        item_name[len(prefix) :]
                         if item_name.startswith(prefix)
                         else item_name
                     )
@@ -1121,7 +1124,7 @@ class SessionConfigurator:
             if category == "provider":
                 prefix = "provider-"
                 short = (
-                    item_name[len(prefix):]
+                    item_name[len(prefix) :]
                     if item_name.startswith(prefix)
                     else item_name
                 )
@@ -1610,6 +1613,18 @@ class SessionConfigurator:
         ]
         if candidates:
             return min(candidates, key=len)
+
+        # Fallback: the behavior name itself is the root namespace.
+        # This handles behaviors like "shadow", "foundation", "python-dev",
+        # and "routing-matrix" that have no separate sibling non-behavior namespace
+        # at the same source path — they ARE the namespace.  Their contributed items
+        # use the behavior name as the namespace prefix
+        # (e.g. "foundation:bug-hunter", "shadow-operator").
+        # Returning behavior_name is safe: if it isn't actually a namespace prefix
+        # for any contributed items, the strip in the CLI simply won't fire.
+        if behavior_name in sbp:
+            return behavior_name
+
         return None
 
     def behaviors_list(self) -> list[dict]:
