@@ -199,6 +199,11 @@ class SessionConfigurator:
         self._disabled_behaviors: set[str] = set()
         self._config_overrides: dict[str, Any] = {}
 
+        # Initialize original snapshot to None BEFORE calling take_snapshot().
+        # If take_snapshot() raises, diff_from_original()'s None-guard works
+        # instead of raising AttributeError.
+        self._original_snapshot: dict[str, Any] | None = None
+
         # Capture original session snapshot.
         self.take_snapshot()
 
@@ -437,22 +442,27 @@ class SessionConfigurator:
     def hook_disable(self, name: str) -> None:
         """Hook toggle is not supported in this version.
 
-        Hooks are visible in /config for inspection but cannot be
-        disabled/re-enabled at runtime. This requires a core suspend/resume
-        API that doesn't exist yet. See the design doc's Future Work section.
+        Logs a warning and returns silently.  Hooks are visible in /config for
+        inspection but cannot be disabled/re-enabled at runtime — a core
+        suspend/resume API is needed.
         """
-        raise NotImplementedError(
+        _log.warning(
             "Hook toggle is not supported in this version. "
-            "Hooks are read-only — visible in /config but not toggleable. "
-            "A core suspend/resume API is needed for safe hook toggle."
+            "Hook '%s' remains active. A core suspend/resume API "
+            "is needed for safe hook toggle.",
+            name,
         )
 
     def hook_enable(self, name: str) -> None:
-        """Hook toggle is not supported in this version."""
-        raise NotImplementedError(
+        """Hook toggle is not supported in this version.
+
+        Logs a warning and returns silently.
+        """
+        _log.warning(
             "Hook toggle is not supported in this version. "
-            "Hooks are read-only — visible in /config but not toggleable. "
-            "A core suspend/resume API is needed for safe hook toggle."
+            "Hook '%s' state unchanged. A core suspend/resume API "
+            "is needed for safe hook toggle.",
+            name,
         )
 
     # ------------------------------------------------------------------
@@ -662,9 +672,12 @@ class SessionConfigurator:
         tools = self._coordinator.get("tools")
         if tools is not None and name in tools:
             # Direct tool name — disable just this one tool.
+            # Use try/finally so the instance is always stashed even if unmount raises.
             instance = tools[name]
-            await self._coordinator.unmount("tools", name=name)
-            self._stash["tools"][name] = instance
+            try:
+                await self._coordinator.unmount("tools", name=name)
+            finally:
+                self._stash["tools"][name] = instance
             return
 
         # Module ID — disable all tools registered under that module.
@@ -695,7 +708,11 @@ class SessionConfigurator:
         """
         if name in self._stash["tools"]:
             instance = self._stash["tools"].pop(name)
-            await self._coordinator.mount("tools", instance, name=name)
+            try:
+                await self._coordinator.mount("tools", instance, name=name)
+            except Exception:
+                self._stash["tools"][name] = instance  # re-stash on failure
+                raise
             return
 
         # Module ID — re-enable all stashed tools registered under that module.
@@ -804,8 +821,10 @@ class SessionConfigurator:
             available = list(providers.keys()) if providers else []
             raise ValueError(f"Provider {name!r} not found. Available: {available}")
         instance = providers[name]
-        await self._coordinator.unmount("providers", name=name)
-        self._stash["providers"][name] = instance
+        try:
+            await self._coordinator.unmount("providers", name=name)
+        finally:
+            self._stash["providers"][name] = instance
 
     async def provider_enable(self, name: str) -> None:
         """Remount a previously disabled provider from the stash (enable it).
@@ -820,7 +839,11 @@ class SessionConfigurator:
             raise ValueError(f"Provider {name!r} not in stash. Cannot enable.")
 
         instance = self._stash["providers"].pop(name)
-        await self._coordinator.mount("providers", instance, name=name)
+        try:
+            await self._coordinator.mount("providers", instance, name=name)
+        except Exception:
+            self._stash["providers"][name] = instance  # re-stash on failure
+            raise
 
     # ------------------------------------------------------------------
     # Behavior group toggle (async)

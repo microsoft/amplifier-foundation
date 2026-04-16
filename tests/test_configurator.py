@@ -1,6 +1,7 @@
 """Tests for SessionConfigurator core constructor and stash."""
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -138,6 +139,34 @@ class TestContextToggle:
 
 class TestSessionConfiguratorConstructor:
     """Tests for SessionConfigurator constructor."""
+
+    def test_original_snapshot_initialized_before_take_snapshot(
+        self, mock_session: MagicMock, mock_prepared_bundle: MagicMock
+    ) -> None:
+        """_original_snapshot is None before take_snapshot() runs.
+
+        If take_snapshot() raises during __init__, diff_from_original()'s
+        'if self._original_snapshot is None' guard must work without AttributeError.
+        """
+        from unittest.mock import patch
+
+        captured_before: list = []
+
+        def failing_take_snapshot(self: Any) -> None:
+            captured_before.append(getattr(self, "_original_snapshot", "MISSING"))
+            raise RuntimeError("simulated failure in take_snapshot")
+
+        with patch.object(SessionConfigurator, "take_snapshot", failing_take_snapshot):
+            with pytest.raises(RuntimeError, match="simulated failure"):
+                SessionConfigurator(
+                    session=mock_session, prepared_bundle=mock_prepared_bundle
+                )
+
+        assert len(captured_before) == 1, "take_snapshot should have been called once"
+        assert captured_before[0] is None, (
+            "_original_snapshot must be initialized to None before take_snapshot() runs; "
+            "currently it is missing (AttributeError would occur in diff_from_original)"
+        )
 
     def test_stash_initialized_with_five_empty_categories(
         self, configurator: SessionConfigurator
@@ -334,6 +363,49 @@ class TestToolToggle:
         with pytest.raises(ValueError, match="not in stash"):
             await async_configurator.tool_enable("tool-bash")
 
+    @pytest.mark.asyncio
+    async def test_disable_stashes_instance_even_when_unmount_raises(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """tool_disable stashes the instance even when coordinator.unmount() raises.
+
+        If unmount raises, the instance must still be in the stash so state is consistent
+        (the tool is considered disabled and can be re-enabled later).
+        """
+        async_coordinator.unmount.side_effect = RuntimeError("unmount failed")
+
+        with pytest.raises(RuntimeError, match="unmount failed"):
+            await async_configurator.tool_disable("tool-bash")
+
+        # Instance must be stashed despite the unmount failure
+        assert "tool-bash" in async_configurator._stash["tools"], (
+            "Instance must be stashed in try/finally even when unmount raises"
+        )
+
+    @pytest.mark.asyncio
+    async def test_enable_restashes_instance_when_mount_raises(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """tool_enable re-stashes the instance if coordinator.mount() raises.
+
+        If mount raises, the instance must be put back in the stash so it's not lost.
+        """
+        # First disable successfully
+        async_coordinator.unmount.side_effect = None  # unmount succeeds
+        await async_configurator.tool_disable("tool-bash")
+        assert "tool-bash" in async_configurator._stash["tools"]
+
+        # Now make mount fail
+        async_coordinator.mount.side_effect = RuntimeError("mount failed")
+
+        with pytest.raises(RuntimeError, match="mount failed"):
+            await async_configurator.tool_enable("tool-bash")
+
+        # Instance must be back in stash after mount failure
+        assert "tool-bash" in async_configurator._stash["tools"], (
+            "Instance must be re-stashed in except block when mount raises"
+        )
+
 
 class TestProviderToggle:
     """Tests for async provider_disable and provider_enable methods."""
@@ -371,6 +443,48 @@ class TestProviderToggle:
         """Enabling a provider without prior disable raises ValueError with 'not in stash'."""
         with pytest.raises(ValueError, match="not in stash"):
             await async_configurator.provider_enable("provider-anthropic")
+
+    @pytest.mark.asyncio
+    async def test_disable_stashes_instance_even_when_unmount_raises(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """provider_disable stashes the instance even when coordinator.unmount() raises.
+
+        If unmount raises, the instance must still be in the stash so state is consistent.
+        """
+        async_coordinator.unmount.side_effect = RuntimeError("unmount failed")
+
+        with pytest.raises(RuntimeError, match="unmount failed"):
+            await async_configurator.provider_disable("provider-anthropic")
+
+        # Instance must be stashed despite the unmount failure
+        assert "provider-anthropic" in async_configurator._stash["providers"], (
+            "Instance must be stashed in try/finally even when unmount raises"
+        )
+
+    @pytest.mark.asyncio
+    async def test_enable_restashes_instance_when_mount_raises(
+        self, async_configurator: SessionConfigurator, async_coordinator: MagicMock
+    ) -> None:
+        """provider_enable re-stashes the instance if coordinator.mount() raises.
+
+        If mount raises, the instance must be put back in the stash so it's not lost.
+        """
+        # First disable successfully
+        async_coordinator.unmount.side_effect = None
+        await async_configurator.provider_disable("provider-anthropic")
+        assert "provider-anthropic" in async_configurator._stash["providers"]
+
+        # Now make mount fail
+        async_coordinator.mount.side_effect = RuntimeError("mount failed")
+
+        with pytest.raises(RuntimeError, match="mount failed"):
+            await async_configurator.provider_enable("provider-anthropic")
+
+        # Instance must be back in stash after mount failure
+        assert "provider-anthropic" in async_configurator._stash["providers"], (
+            "Instance must be re-stashed in except block when mount raises"
+        )
 
 
 class TestConfigGetSet:
@@ -414,37 +528,67 @@ class TestConfigGetSet:
 class TestHookToggle:
     """Tests for hook_disable and hook_enable methods.
 
-    Hooks are read-only in this version — toggle requires a core suspend/resume API
-    that doesn't exist yet. Both methods raise NotImplementedError unconditionally.
+    Hook toggle is not supported — a core suspend/resume API is needed.
+    Both methods must log a warning and return silently (not raise).
     """
 
-    def test_disable_raises_not_implemented(
+    def test_disable_returns_none_without_error(
         self, configurator: SessionConfigurator
     ) -> None:
-        """hook_disable raises NotImplementedError — hooks are read-only in this version."""
-        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
+        """hook_disable logs a warning and returns None — does NOT raise."""
+        result = configurator.hook_disable("on_before_tool")
+        assert result is None
+
+    def test_enable_returns_none_without_error(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hook_enable logs a warning and returns None — does NOT raise."""
+        result = configurator.hook_enable("on_before_tool")
+        assert result is None
+
+    def test_disable_any_name_returns_none(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hook_disable returns None for any hook name (including nonexistent ones)."""
+        result = configurator.hook_disable("nonexistent_hook")
+        assert result is None
+
+    def test_enable_any_name_returns_none(
+        self, configurator: SessionConfigurator
+    ) -> None:
+        """hook_enable returns None for any hook name (including nonexistent ones)."""
+        result = configurator.hook_enable("nonexistent_hook")
+        assert result is None
+
+    def test_disable_logs_warning(
+        self, configurator: SessionConfigurator, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """hook_disable emits a warning log mentioning the hook name."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
             configurator.hook_disable("on_before_tool")
 
-    def test_enable_raises_not_implemented(
-        self, configurator: SessionConfigurator
+        assert any(
+            "on_before_tool" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ), "Expected a WARNING log mentioning the hook name 'on_before_tool'"
+
+    def test_enable_logs_warning(
+        self, configurator: SessionConfigurator, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """hook_enable raises NotImplementedError — hooks are read-only in this version."""
-        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
+        """hook_enable emits a warning log mentioning the hook name."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
             configurator.hook_enable("on_before_tool")
 
-    def test_disable_any_name_raises_not_implemented(
-        self, configurator: SessionConfigurator
-    ) -> None:
-        """hook_disable raises NotImplementedError for any hook name — hooks are read-only."""
-        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
-            configurator.hook_disable("nonexistent_hook")
-
-    def test_enable_any_name_raises_not_implemented(
-        self, configurator: SessionConfigurator
-    ) -> None:
-        """hook_enable raises NotImplementedError for any hook name — hooks are read-only."""
-        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
-            configurator.hook_enable("nonexistent_hook")
+        assert any(
+            "on_before_tool" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ), "Expected a WARNING log mentioning the hook name 'on_before_tool'"
 
 
 class TestHookCaptureGracefulFallback:
@@ -468,22 +612,17 @@ class TestHookCaptureGracefulFallback:
             "Handler callable must NOT be present — public API does not expose it"
         )
 
-    def test_disable_raises_not_implemented_with_partial_metadata(
+    def test_disable_returns_none_with_partial_metadata(
         self, configurator: SessionConfigurator
     ) -> None:
-        """hook_disable raises NotImplementedError regardless of snapshot content.
+        """hook_disable returns None regardless of snapshot content — logs a warning."""
+        result = configurator.hook_disable("on_before_tool")
+        assert result is None
 
-        Hooks are read-only — the public unregister() API is no longer called.
-        """
-        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
-            configurator.hook_disable("on_before_tool")
-
-    def test_enable_raises_not_implemented(
-        self, configurator: SessionConfigurator
-    ) -> None:
-        """hook_enable raises NotImplementedError regardless of stash or snapshot state."""
-        with pytest.raises(NotImplementedError, match="Hook toggle is not supported"):
-            configurator.hook_enable("on_before_tool")
+    def test_enable_returns_none(self, configurator: SessionConfigurator) -> None:
+        """hook_enable returns None regardless of stash or snapshot state — logs a warning."""
+        result = configurator.hook_enable("on_before_tool")
+        assert result is None
 
     def test_empty_snapshot_when_coordinator_has_no_introspection(self) -> None:
         """Configurator initialises without error when coordinator has no hook introspection API.
@@ -2633,7 +2772,9 @@ class TestConfigurationChangedEvent:
 
         coordinator = MagicMock()
         coordinator.get_capability.return_value = None
-        coordinator.hooks.list_handlers.return_value = {"before_tool": ["on_before_tool"]}
+        coordinator.hooks.list_handlers.return_value = {
+            "before_tool": ["on_before_tool"]
+        }
         coordinator.hooks.emit = emit_mock
         coordinator.mount = AsyncMock()
         coordinator.unmount = AsyncMock(return_value=None)
