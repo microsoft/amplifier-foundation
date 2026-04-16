@@ -1,30 +1,41 @@
-# Bundle Configurator (Experiment)
+# amplifier-configurator
 
-An offline bundle editor that loads any Foundation bundle, shows the token cost breakdown by behavior, and lets you add or remove behaviors with full dependency tracking. Saves the result as a valid `.md` file that Foundation can load directly.
+A bundle editor for [Amplifier](https://github.com/microsoft/amplifier). Load any bundle — a well-known name like `foundation` or `amplifier-dev`, a user-registered bundle, a git URI, or a local `.md` file. See the token cost broken down by behavior. Add or remove parts. Save a new bundle file that Amplifier can load.
 
-This is an experiment co-located in the Foundation repo. It does not ship in the Foundation wheel. The merge path, if Brian approves the API, is to move `amplifier_configurator/` into `amplifier_foundation/configurator/` — same pattern as `amplifier_foundation/session/`.
+The value: know exactly where your session's tokens come from, and trim the ones you don't need.
+
+This is an experiment co-located in the [amplifier-foundation](https://github.com/microsoft/amplifier-foundation) repo. It does not ship in the Foundation wheel. The merge path, if Brian approves the API, is to move `amplifier_configurator/` into `amplifier_foundation/configurator/` — same pattern as `amplifier_foundation/session/`.
 
 ## Install
 
 ```bash
-pip install "git+https://github.com/microsoft/amplifier-foundation@feat/bundle-configurator-experiment#subdirectory=experiments/bundle-configurator"
+pip install "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/bundle-configurator"
 ```
 
-After this branch is merged to main:
+## Using This in an Amplifier Chat Session
 
-```bash
-pip install "git+https://github.com/microsoft/amplifier-foundation#subdirectory=experiments/bundle-configurator"
-```
+If you're running Amplifier, you don't need to write Python to use this library. Just ask the agent:
+
+- "Load the foundation bundle and show me the token cost per behavior"
+- "Remove `behavior-agents` from foundation, then save to `~/.amplifier/bundles/lean-foundation/bundle.md`"
+- "Activate that new bundle for this project"
+- "Show me the diff between foundation and my edited version"
+
+The agent will call the library methods shown below, run the relevant Amplifier CLI commands (`amplifier bundle add`, `amplifier bundle use`), and report back.
+
+The Python examples in the rest of this README show what the agent does on your behalf — you don't need to know Python to use this tool, just to understand what's possible.
 
 ## Quick Start
 
 ```python
 from amplifier_configurator import BundleConfigurator
 
-# Load any bundle Foundation knows about
+# Load any bundle by name, git URI, or file path
 cfg = BundleConfigurator.load_sync("foundation")
 
-# See token cost by behavior, sorted descending
+# See token cost by behavior, sorted descending.
+# A "behavior" is a named group of capabilities (tools, context files, etc.)
+# that a bundle includes — e.g. "code-intel", "bug-hunter", "python-dev".
 for behavior, tokens in cfg.tokens_by_behavior().items():
     print(f"  {behavior:30s} {tokens:5d} tokens")
 
@@ -60,7 +71,7 @@ cfg = await BundleConfigurator.load("foundation")
 cfg = BundleConfigurator.load_sync("foundation")
 ```
 
-`source` accepts any Foundation-supported identifier: bundle name, git URI, or file path.
+`source` accepts anything Amplifier can resolve: a well-known bundle name (`"foundation"`), a git URI, or a local file path.
 
 **Querying:**
 
@@ -93,20 +104,20 @@ cfg = BundleConfigurator.load_sync("foundation")
 
 **`BehaviorInfo`** — what a behavior contributes:
 - `name: str` — short name (e.g. `"code-intel"`)
-- `uri: str` — full Foundation URI
-- `parts: tuple[TrackedPart, ...]` — de-duplicated parts this behavior won
-- `total_tokens: int` — context token cost (context files + instructions only)
-- `depth: int` — 0 = direct include of root, 1 = transitive, etc.
+- `uri: str` — fully-qualified URI (e.g. `"foundation:code-intel"`)
+- `parts: tuple[TrackedPart, ...]` — de-duplicated parts this behavior owns after conflict resolution
+- `total_tokens: int` — token cost of this behavior's parts (context files + instructions)
+- `depth: int` — 0 = directly included by the root bundle, 1 = included by a depth-0 behavior, etc.
 - `include_chain: tuple[str, ...]` — path from root to this behavior
 
-**`TrackedPart`** — a single element with its origin:
+**`TrackedPart`** — a single element with its provenance (which behavior contributed it):
 - `kind: PartKind` — `TOOL | HOOK | AGENT | PROVIDER | CONTEXT`
-- `name: str` — module name or context key
-- `source_behavior: str | None` — which behavior contributed it (`None` = root)
+- `name: str` — module name or context key (e.g. `"tool-bash"`, `"python-dev:lsp-config"`)
+- `source_behavior: str | None` — which behavior contributed it (`None` = root bundle)
 - `tokens: int` — estimated token cost (non-zero only for `CONTEXT` parts)
-- `config: dict` — the raw dict from the bundle YAML
+- `config: dict` — the raw configuration dict from the bundle YAML
 
-**`BundleDiff`**:
+**`BundleDiff`** — the delta between two configurations:
 - `added_parts / removed_parts: tuple[TrackedPart, ...]`
 - `added_behaviors / removed_behaviors: tuple[str, ...]`
 - `before_tokens / after_tokens / token_delta: int`
@@ -116,40 +127,40 @@ cfg = BundleConfigurator.load_sync("foundation")
 ### Errors
 
 - `ConfiguratorError` — base error class
-- `LoadError` — Foundation failed to load the bundle
+- `LoadError` — the bundle could not be loaded from the given source
 - `DependencyError` — attempted to remove a required part (e.g. `tool-bash`, `tool-filesystem`, `tool-search`)
 
 ## What It Counts
 
-The library measures **context files and instruction text** — the portions of a bundle that are part of the bundle definition and loaded at session start. This is the controllable portion.
+The library measures **context files and instruction text** — the portions of a bundle that are loaded into the model's context window at session start. These are the parts you can control by editing the bundle.
 
-It does not measure tool schemas. Tool schemas are injected by Foundation at runtime based on installed module versions; they are not present in the `.md` bundle file and cannot be measured offline.
+It does not measure tool schemas. Tool schemas are generated at runtime by Foundation based on installed module versions; they are not present in the `.md` bundle file and cannot be measured statically.
 
 For most optimization work, context files and instructions are the dominant cost. Tool schemas are relatively stable across sessions.
 
 ## How It Works
 
-1. The library calls Foundation's `BundleRegistry` to load each included behavior separately, building a complete include tree.
+1. The library uses Foundation's `BundleRegistry` to load each included behavior separately, building a complete include tree.
 2. Each behavior's contributions (tools, hooks, agents, context files) are attributed to that behavior using a last-write-wins, bottom-up rule: deeper (leaf) behaviors win over shallower ones on conflicts.
-3. The resulting `ProvenanceMap` tracks every part with its source behavior, token cost, and original config dict.
+3. The resulting `ProvenanceMap` tracks every part with its source behavior, token cost, and original config dict. ("Provenance" here just means: which behavior contributed this part, and how it got there.)
 4. All mutation methods (`remove_behavior`, `remove_part`, `add_behavior`) work on the `ProvenanceMap` directly and return a new `BundleConfigurator` without reloading from disk.
-5. `save()` serializes the current state to YAML frontmatter + markdown body using the include-reference pattern (behaviors referenced by URI, not flattened).
+5. `save()` serializes the current state to YAML frontmatter + markdown body, referencing behaviors by URI rather than flattening them inline.
 
 ## Relationship to Runtime Configurator
 
-This library is the **offline** bundle editor. It produces `.md` bundle files.
+This library edits **bundle files on disk**. It produces `.md` files that you can register and use in future sessions.
 
-Brian's runtime configurator (in Foundation's session layer) is the **online** toggle — it switches behaviors on and off within a running session without touching the bundle file on disk.
+Brian's runtime configurator (in Foundation's session layer) toggles behaviors **within a running session** without touching the bundle file on disk.
 
-They are complementary: this library produces the files that the runtime configurator operates on. A workflow might be: use this library to produce a lean bundle variant, then use the runtime configurator to dynamically adjust it mid-session.
+They are complementary: this library produces the files that the runtime configurator operates on. A typical workflow: use this library to produce a lean bundle variant, then use the runtime configurator to dynamically adjust it mid-session.
 
 ## Status
 
 Experiment. Not production-ready. API may change based on Brian's feedback.
 
 Test coverage:
-- 129 unit tests (no Foundation required)
-- 6 integration tests (require Foundation to be installed and reachable)
+- 129 unit tests (no network calls, no Foundation install required)
+- 6 integration tests (load real bundles via Foundation)
 - 1 end-to-end round-trip test (`e2e_shadow_test.py`)
 
 ## Run Tests
@@ -158,7 +169,7 @@ Test coverage:
 # Install dependencies
 pip install -e ".[dev]"
 
-# Unit tests only (fast, no Foundation network calls)
+# Unit tests only (fast, no network calls)
 pytest tests/ -k "not integration"
 
 # Integration tests (loads real bundles via Foundation)
