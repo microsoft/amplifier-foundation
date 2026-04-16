@@ -2606,3 +2606,134 @@ class TestGetBehaviorRootNamespace:
         assert shadow_item["root_namespace"] == "shadow", (
             "shadow behavior's root_namespace should be 'shadow' (self-as-namespace fallback)"
         )
+
+
+class TestConfigurationChangedEvent:
+    """Tests for the generic configuration:changed event emitted after mutations.
+
+    The event is emitted by _emit_change_event() after behavior_disable(),
+    behavior_enable(), and apply_saved_settings().  It is fire-and-forget:
+    exceptions from hooks.emit() are swallowed and must not surface to callers.
+    """
+
+    def _make_cfg_with_emit_mock(
+        self,
+        provenance: dict | None = None,
+    ) -> tuple[SessionConfigurator, AsyncMock]:
+        """Build a SessionConfigurator whose coordinator.hooks.emit is an AsyncMock.
+
+        Returns (configurator, emit_mock) so tests can inspect calls.
+        The bundle has context:readme, tool:tool-bash, and agent:my-agent all
+        attributed to 'my-behavior' by default.
+        """
+        from pathlib import Path
+
+        tool_instance = MagicMock(name="tool-instance")
+        emit_mock = AsyncMock()
+
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {"before_tool": ["on_before_tool"]}
+        coordinator.hooks.emit = emit_mock
+        coordinator.mount = AsyncMock()
+        coordinator.unmount = AsyncMock(return_value=None)
+        coordinator.config = {"agents": {"my-agent": {}}}
+        coordinator.get = MagicMock(
+            side_effect=lambda mp: {"tool-bash": tool_instance} if mp == "tools" else {}
+        )
+
+        bundle = Bundle(
+            name="test-bundle",
+            context={"readme": Path("/tmp/readme.md")},
+            tools=[{"module": "tool-bash"}],
+            hooks=[],
+            providers=[],
+            agents={"my-agent": {"description": "Test"}},
+        )
+        bundle._provenance = provenance or {  # type: ignore[misc]
+            "context:readme": ["my-behavior"],
+            "tool:tool-bash": ["my-behavior"],
+            "agent:my-agent": ["my-behavior"],
+        }
+
+        prepared = MagicMock()
+        prepared.bundle = bundle
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        return SessionConfigurator(session=session, prepared_bundle=prepared), emit_mock
+
+    @pytest.mark.asyncio
+    async def test_behavior_disable_emits_configuration_changed(self) -> None:
+        """behavior_disable emits 'configuration:changed' with action='behavior_disable'."""
+        cfg, emit_mock = self._make_cfg_with_emit_mock()
+
+        await cfg.behavior_disable("my-behavior")
+
+        emit_mock.assert_called_once()
+        event_name, payload = emit_mock.call_args[0]
+        assert event_name == "configuration:changed"
+        assert payload["action"] == "behavior_disable"
+        assert payload["target"] == "my-behavior"
+        assert isinstance(payload["changes"], list)
+
+    @pytest.mark.asyncio
+    async def test_behavior_enable_emits_configuration_changed(self) -> None:
+        """behavior_enable emits 'configuration:changed' with action='behavior_enable'."""
+        cfg, emit_mock = self._make_cfg_with_emit_mock()
+
+        await cfg.behavior_disable("my-behavior")
+        emit_mock.reset_mock()
+
+        await cfg.behavior_enable("my-behavior")
+
+        emit_mock.assert_called_once()
+        event_name, payload = emit_mock.call_args[0]
+        assert event_name == "configuration:changed"
+        assert payload["action"] == "behavior_enable"
+        assert payload["target"] == "my-behavior"
+        assert isinstance(payload["changes"], list)
+
+    @pytest.mark.asyncio
+    async def test_emit_change_event_error_is_swallowed(self) -> None:
+        """Exceptions from hooks.emit() are swallowed — the mutation still succeeds.
+
+        A broken or missing hook registry must never cause behavior_disable()
+        to raise.  The event emission is best-effort (fire-and-forget).
+        """
+        cfg, emit_mock = self._make_cfg_with_emit_mock()
+        emit_mock.side_effect = RuntimeError("hook registry unavailable")
+
+        # Should not raise despite emit() failing
+        result = await cfg.behavior_disable("my-behavior")
+
+        # Mutation succeeded regardless
+        assert "context:readme" in result["disabled"]
+        assert "my-behavior" in cfg._disabled_behaviors
+
+    @pytest.mark.asyncio
+    async def test_apply_saved_settings_emits_configuration_changed(self) -> None:
+        """apply_saved_settings emits 'configuration:changed' with action='settings_applied'."""
+        cfg, emit_mock = self._make_cfg_with_emit_mock()
+
+        settings: dict = {
+            "disabled": {
+                "behaviors": [],
+                "context": [],
+                "tools": [],
+                "hooks": [],
+                "providers": [],
+                "agents": [],
+            },
+            "config_overrides": {},
+        }
+
+        await cfg.apply_saved_settings(settings)
+
+        emit_mock.assert_called_once()
+        event_name, payload = emit_mock.call_args[0]
+        assert event_name == "configuration:changed"
+        assert payload["action"] == "settings_applied"
+        assert payload["target"] == "saved"
+        assert payload["changes"] == []

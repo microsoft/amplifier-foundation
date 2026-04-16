@@ -826,6 +826,40 @@ class SessionConfigurator:
     # Behavior group toggle (async)
     # ------------------------------------------------------------------
 
+    async def _emit_change_event(
+        self, action: str, target: str, changes: list[str] | None = None
+    ) -> None:
+        """Emit a configuration:changed event after a successful mutation.
+
+        This is a generic lifecycle event that modules can optionally listen for
+        to re-evaluate their state when configuration changes (e.g., re-scan
+        skill sources, refresh caches, invalidate state derived from the bundle).
+
+        The event is fire-and-forget: any exception from ``hooks.emit()`` is
+        swallowed and logged at DEBUG level so that a missing or broken hook
+        registry never causes a configurator mutation to fail.
+
+        Args:
+            action: The action that was performed.  Conventional values:
+                ``"behavior_disable"``, ``"behavior_enable"``,
+                ``"settings_applied"``.
+            target: The target of the action (e.g. behavior name or
+                ``"saved"`` for :meth:`apply_saved_settings`).
+            changes: Optional list of specific items that changed
+                (provenance keys or item names).  Defaults to ``[]``.
+        """
+        try:
+            await self._coordinator.hooks.emit(
+                "configuration:changed",
+                {
+                    "action": action,
+                    "target": target,
+                    "changes": changes or [],
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("Failed to emit configuration:changed event: %s", exc)
+
     def _resolve_module_id_to_mounted_name(
         self, module_id: str, mount_point: str
     ) -> str | None:
@@ -1029,6 +1063,7 @@ class SessionConfigurator:
                 warnings.append(str(exc))
 
         self._disabled_behaviors.add(name)
+        await self._emit_change_event("behavior_disable", name, disabled)
         return {"disabled": disabled, "warnings": warnings}
 
     async def behavior_enable(self, name: str) -> dict[str, Any]:
@@ -1161,6 +1196,7 @@ class SessionConfigurator:
                 warnings.append(str(exc))
 
         self._disabled_behaviors.discard(name)
+        await self._emit_change_event("behavior_enable", name, enabled)
         return {"enabled": enabled, "warnings": warnings}
 
     # ------------------------------------------------------------------
@@ -1835,4 +1871,5 @@ class SessionConfigurator:
         for path, value in settings.get("config_overrides", {}).items():
             self.config_set(path, value)
 
+        await self._emit_change_event("settings_applied", "saved", [])
         return warnings
