@@ -16,6 +16,19 @@ After this branch is merged to main:
 pip install "git+https://github.com/microsoft/amplifier-foundation#subdirectory=experiments/bundle-configurator"
 ```
 
+## Using This in an Amplifier Chat Session
+
+If you're running Amplifier, you don't need to write Python to use this library. Just ask the agent:
+
+- "Load the foundation bundle and show me the token cost per behavior"
+- "Remove `behavior-agents` from foundation, then save to `~/.amplifier/bundles/lean-foundation/bundle.md`"
+- "Activate that new bundle for this project"
+- "Show me the diff between foundation and my edited version"
+
+The agent will call the library methods shown below, run the relevant Amplifier CLI commands (`amplifier bundle add`, `amplifier bundle use`), and report back.
+
+The Python examples in the rest of this README show what the agent does on your behalf — you don't need to know Python to use this tool, just to understand what's possible.
+
 ## Quick Start
 
 ```python
