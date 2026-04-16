@@ -1,8 +1,19 @@
 # Bundle Configurator (Experiment)
 
-An offline bundle editor that loads any Foundation bundle, shows the token cost breakdown by behavior, and lets you add or remove behaviors with full dependency tracking. Saves the result as a valid `.md` file that Foundation can load directly.
+A bundle editor for Amplifier. Load any bundle — a well-known name like `foundation` or `amplifier-dev`, a registered bundle, a git URI, or a local `.md` file. See the token cost broken down by behavior. Add or remove parts. Save a new bundle file that Amplifier can load.
 
-This is an experiment co-located in the Foundation repo. It does not ship in the Foundation wheel. The merge path, if Brian approves the API, is to move `amplifier_configurator/` into `amplifier_foundation/configurator/` — same pattern as `amplifier_foundation/session/`.
+**The value:** know exactly where your session's tokens come from, and trim the ones you don't need.
+
+This is an experiment co-located in the amplifier-foundation repo. It does not ship in the amplifier-foundation wheel. The merge path, if Brian approves the API, is to move `amplifier_configurator/` into `amplifier_foundation/configurator/` — same pattern as `amplifier_foundation/session/`.
+
+## Key Concepts
+
+A few terms used throughout this README:
+
+- **Behavior** — a composable unit in an Amplifier bundle (e.g. `dot-graph`, `browser-tester`). Each behavior contributes agents, context files, tools, and other parts to the bundle.
+- **Part** — a single element contributed by a behavior: a tool, hook, agent, provider, or context file. For example, the `code-intel` behavior contributes the `tool-lsp` tool and several context files.
+- **Provenance** — tracking which behavior contributed which part. This is how the configurator attributes token cost to individual behaviors.
+- **Composition** — the process of merging multiple behaviors into a final bundle. When behaviors overlap (e.g. two behaviors both contribute the same tool), the deeper behavior wins.
 
 ## Install
 
@@ -34,7 +45,7 @@ The Python examples in the rest of this README show what the agent does on your 
 ```python
 from amplifier_configurator import BundleConfigurator
 
-# Load any bundle Foundation knows about
+# Load any bundle by name, git URI, or file path
 cfg = BundleConfigurator.load_sync("foundation")
 
 # See token cost by behavior, sorted descending
@@ -57,6 +68,8 @@ for part in diff.removed_parts:
 lean.save("/tmp/lean-foundation/bundle.md")
 ```
 
+After running this, `/tmp/lean-foundation/bundle.md` is a valid bundle that Amplifier can load directly — identical to `foundation` but without the `code-intel` behavior and the tokens it contributed.
+
 ## API
 
 ### BundleConfigurator
@@ -73,7 +86,7 @@ cfg = await BundleConfigurator.load("foundation")
 cfg = BundleConfigurator.load_sync("foundation")
 ```
 
-`source` accepts any Foundation-supported identifier: bundle name, git URI, or file path.
+`source` accepts any identifier that amplifier-foundation can resolve: a bundle name (e.g. `"foundation"`), a git URI (e.g. `"git+https://github.com/org/repo"`), or a file path (e.g. `"./my-bundle/bundle.md"`).
 
 **Querying:**
 
@@ -104,15 +117,15 @@ cfg = BundleConfigurator.load_sync("foundation")
 
 ### Data Models
 
-**`BehaviorInfo`** — what a behavior contributes:
+**`BehaviorInfo`** — what a behavior contributes to the bundle:
 - `name: str` — short name (e.g. `"code-intel"`)
-- `uri: str` — full Foundation URI
+- `uri: str` — full bundle URI used to load this behavior
 - `parts: tuple[TrackedPart, ...]` — de-duplicated parts this behavior won
 - `total_tokens: int` — context token cost (context files + instructions only)
 - `depth: int` — 0 = direct include of root, 1 = transitive, etc.
 - `include_chain: tuple[str, ...]` — path from root to this behavior
 
-**`TrackedPart`** — a single element with its origin:
+**`TrackedPart`** — a single part with its provenance:
 - `kind: PartKind` — `TOOL | HOOK | AGENT | PROVIDER | CONTEXT`
 - `name: str` — module name or context key
 - `source_behavior: str | None` — which behavior contributed it (`None` = root)
@@ -129,30 +142,30 @@ cfg = BundleConfigurator.load_sync("foundation")
 ### Errors
 
 - `ConfiguratorError` — base error class
-- `LoadError` — Foundation failed to load the bundle
+- `LoadError` — amplifier-foundation failed to resolve or load the bundle
 - `DependencyError` — attempted to remove a required part (e.g. `tool-bash`, `tool-filesystem`, `tool-search`)
 
 ## What It Counts
 
-The library measures **context files and instruction text** — the portions of a bundle that are part of the bundle definition and loaded at session start. This is the controllable portion.
+The library measures **context files and instruction text** — the portions of a bundle that are loaded into the model's context at session start. This is the controllable portion of token cost.
 
-It does not measure tool schemas. Tool schemas are injected by Foundation at runtime based on installed module versions; they are not present in the `.md` bundle file and cannot be measured offline.
+It does **not** measure tool schemas. Tool schemas are injected by the runtime based on installed module versions; they are not present in the `.md` bundle file and cannot be measured from the bundle alone.
 
 For most optimization work, context files and instructions are the dominant cost. Tool schemas are relatively stable across sessions.
 
 ## How It Works
 
-1. The library calls Foundation's `BundleRegistry` to load each included behavior separately, building a complete include tree.
+1. The library calls amplifier-foundation's `BundleRegistry` to load each included behavior separately, building a complete include tree.
 2. Each behavior's contributions (tools, hooks, agents, context files) are attributed to that behavior using a last-write-wins, bottom-up rule: deeper (leaf) behaviors win over shallower ones on conflicts.
-3. The resulting `ProvenanceMap` tracks every part with its source behavior, token cost, and original config dict.
-4. All mutation methods (`remove_behavior`, `remove_part`, `add_behavior`) work on the `ProvenanceMap` directly and return a new `BundleConfigurator` without reloading from disk.
+3. The resulting provenance map tracks every part with its source behavior, token cost, and original config dict.
+4. All mutation methods (`remove_behavior`, `remove_part`, `add_behavior`) work on the provenance map directly and return a new `BundleConfigurator` without reloading from disk.
 5. `save()` serializes the current state to YAML frontmatter + markdown body using the include-reference pattern (behaviors referenced by URI, not flattened).
 
 ## Relationship to Runtime Configurator
 
-This library is the **offline** bundle editor. It produces `.md` bundle files.
+This library is the **file-level** bundle editor. It reads and writes `.md` bundle files on disk.
 
-Brian's runtime configurator (in Foundation's session layer) is the **online** toggle — it switches behaviors on and off within a running session without touching the bundle file on disk.
+Brian's runtime configurator (in the amplifier-foundation session layer) is the **session-level** toggle — it switches behaviors on and off within a running session without touching the bundle file on disk.
 
 They are complementary: this library produces the files that the runtime configurator operates on. A workflow might be: use this library to produce a lean bundle variant, then use the runtime configurator to dynamically adjust it mid-session.
 
@@ -161,8 +174,8 @@ They are complementary: this library produces the files that the runtime configu
 Experiment. Not production-ready. API may change based on Brian's feedback.
 
 Test coverage:
-- 129 unit tests (no Foundation required)
-- 6 integration tests (require Foundation to be installed and reachable)
+- 129 unit tests (no amplifier-foundation required)
+- 6 integration tests (require amplifier-foundation to be installed and reachable)
 - 1 end-to-end round-trip test (`e2e_shadow_test.py`)
 
 ## Run Tests
@@ -171,10 +184,10 @@ Test coverage:
 # Install dependencies
 pip install -e ".[dev]"
 
-# Unit tests only (fast, no Foundation network calls)
+# Unit tests only (fast, no network calls)
 pytest tests/ -k "not integration"
 
-# Integration tests (loads real bundles via Foundation)
+# Integration tests (loads real bundles via amplifier-foundation)
 pytest tests/test_real_bundles.py -m integration -v
 
 # End-to-end round trip
