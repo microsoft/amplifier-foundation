@@ -9,7 +9,7 @@ bundle:
     Includes lean-foundation base plus dev agents, Python tooling, and LSP.
     
     To use this bundle:
-      amplifier bundle add foundation:experiments/exp-lean/exp-lean-amplifier-dev --name exp-lean-amplifier-dev
+      amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/exp-lean/exp-lean-amplifier-dev.md' --name exp-lean-amplifier-dev
       amplifier bundle use exp-lean-amplifier-dev
 
 includes:

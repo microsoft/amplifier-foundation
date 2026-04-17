@@ -10,7 +10,7 @@ bundle:
     consultants, no heavy context docs.
     
     To use this bundle:
-      amplifier bundle add foundation:experiments/exp-lean/exp-lean-foundation --name exp-lean-foundation
+      amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/exp-lean/exp-lean-foundation.md' --name exp-lean-foundation
       amplifier bundle use exp-lean-foundation
 
 includes:

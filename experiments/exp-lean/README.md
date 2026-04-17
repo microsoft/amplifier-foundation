@@ -6,13 +6,15 @@ Stripped-down Amplifier bundles for cost-effective sessions. Two tiers available
 
 ```bash
 # Lean Foundation (84% token reduction: 54,568 -> 8,614 tokens)
-amplifier bundle add foundation:experiments/exp-lean/exp-lean-foundation --name exp-lean-foundation
+amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/exp-lean/exp-lean-foundation.md' --name exp-lean-foundation
 amplifier bundle use exp-lean-foundation
 
 # Lean Amplifier Dev (71% token reduction: 60,539 -> 17,790 tokens)
-amplifier bundle add foundation:experiments/exp-lean/exp-lean-amplifier-dev --name exp-lean-amplifier-dev
+amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/exp-lean/exp-lean-amplifier-dev.md' --name exp-lean-amplifier-dev
 amplifier bundle use exp-lean-amplifier-dev
 ```
+
+Single-quote the URI to prevent shell expansion of the `#` fragment. The `.md` suffix is required — pointing at the directory alone fails because there is no `bundle.md` at the directory root.
 
 ## exp-lean-foundation
 
