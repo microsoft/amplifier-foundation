@@ -45,7 +45,9 @@ tools:
   - module: tool-delegate
     # Fork of modules/tool-delegate with hardcoded foundation:* agent routing removed.
     # See experiments/exp-lean/modules/tool-delegate/README.md for fork rationale.
-    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/exp-lean/modules/tool-delegate
+    # NOTE: temporarily pointed at sadlilas:fix/lean-bundle-context-leak for pre-merge
+    # verification. Must be restored to microsoft/amplifier-foundation@main before merge.
+    source: git+https://github.com/sadlilas/amplifier-foundation@fix/lean-bundle-context-leak#subdirectory=experiments/exp-lean/modules/tool-delegate
     config:
       features:
         self_delegation:
