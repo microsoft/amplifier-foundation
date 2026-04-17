@@ -1,11 +1,24 @@
 [project]
-name = "amplifier-module-tool-delegate"
+# Renamed to prevent pip dist-name collision with upstream
+# modules/tool-delegate (same package name, same version).
+# The amplifier module entry point name 'tool-delegate' is preserved so
+# existing bundle YAMLs continue to work without changes.
+name = "amplifier-module-tool-delegate-exp-lean"
 version = "0.1.0"
-description = "Delegate tasks to specialized agents with enhanced context control"
+description = "Experimental fork of tool-delegate for exp-lean bundles. Removes hardcoded foundation:* agent routing from the tool description. See experiments/exp-lean/modules/tool-delegate/README.md for provenance and diff-vs-upstream."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Microsoft", email = "amplifier@microsoft.com" }]
+maintainers = [
+  { name = "exp-lean experiment", email = "amplifier@microsoft.com" },
+]
+# NOTE: the upstream pyproject.toml declares only amplifier-core but the
+# module also imports from amplifier-foundation (ProviderPreference,
+# tracing.generate_sub_session_id). This is a pre-existing upstream bug
+# inherited here intentionally — filing it as an upstream issue is out of
+# scope for this experiment. In practice amplifier-foundation is always
+# already installed when this module runs.
 dependencies = ["amplifier-core>=0.1.0"]
 
 [project.entry-points."amplifier.modules"]

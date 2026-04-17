@@ -24,7 +24,7 @@ This fork removes the hardcoded routing block surgically. The dynamic "Available
 
 ## Diff vs upstream
 
-Only `amplifier_module_tool_delegate/__init__.py` is modified. Three surgical changes:
+### `amplifier_module_tool_delegate/__init__.py` — three surgical text edits
 
 1. **Docstring header.** Adds a fork pointer at the top of the module docstring.
 
@@ -32,7 +32,25 @@ Only `amplifier_module_tool_delegate/__init__.py` is modified. Three surgical ch
 
 3. **`input_schema` for `agent` parameter.** Replaces the example `'foundation:explorer'` with generic `'self' or bundle path like 'namespace:agent-name'`. Same sanitization applied to the module-level docstring example at line 29.
 
-Everything else is byte-identical to upstream. `_get_agent_list()`, config parsing, session resumption, context control, tool inheritance — all preserved.
+No logic changes. `_get_agent_list()`, config parsing, session resumption, context control, provider preference handling, tool inheritance — all byte-identical to upstream.
+
+### `pyproject.toml` — renamed to prevent dist collision
+
+- **`name`** changed from `amplifier-module-tool-delegate` → `amplifier-module-tool-delegate-exp-lean`. Upstream and fork have the same version (`0.1.0`) in their respective `pyproject.toml` files; installing both into the same Python environment without the rename would silently overwrite one with the other.
+- **`description`** updated to explicitly identify this as a fork and point at this README.
+- **`maintainers`** added to signal that exp-lean is the maintenance owner even though Microsoft holds the repo.
+- **Entry point name** (`tool-delegate` under `[project.entry-points."amplifier.modules"]`) is **preserved** unchanged. Bundle YAMLs that reference `module: tool-delegate` continue to work without modification. Since lean sessions install only the fork (not upstream), there is no entry point collision in practice.
+- **Dependency list** (`amplifier-core>=0.1.0`) is copied verbatim from upstream. The module also imports from `amplifier-foundation` (`ProviderPreference`, `tracing.generate_sub_session_id`), which the upstream `pyproject.toml` does not declare. This is a pre-existing upstream bug inherited here intentionally — filing it against upstream is out of scope for this experiment. In practice `amplifier-foundation` is always already installed when this module runs, so the missing declaration never surfaces.
+
+### `tests/` — intentionally not carried forward
+
+The upstream `tests/` directory is **not** included in this fork. Reasons:
+
+- The upstream tests assert on the text of `_compose_description()` — including fragments that this fork removes. Copying them would either bake in failures or require fork-specific rewrites that drift from upstream.
+- The fork is delivered via `git+...#subdirectory=...` and installed by `uv pip install`. Tests are not part of the runtime install path.
+- The fork's behavioral contract is documented: everything is upstream-identical except the three text edits above. Any regression in that contract would surface either as upstream tests failing against upstream (our signal to re-audit the fork) or as a shadow-environment smoke test failing (see Maintenance protocol below).
+
+If fork-specific tests become warranted later, a single test asserting that the rendered tool description does **not** contain any hardcoded `foundation:*` agent names would be sufficient.
 
 ## Maintenance protocol
 
