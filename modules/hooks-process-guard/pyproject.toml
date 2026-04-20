@@ -19,6 +19,6 @@ packages = ["amplifier_module_hooks_process_guard"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]
