@@ -71,3 +71,6 @@ ai_working/tmp
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Guard against accidentally committing a nested clone of this repo
+/amplifier-foundation/

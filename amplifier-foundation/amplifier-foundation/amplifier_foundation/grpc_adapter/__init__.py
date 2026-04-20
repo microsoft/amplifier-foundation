@@ -1,1 +1,0 @@
-"""Python gRPC adapter for Amplifier modules. Bridges Python modules to non-Python hosts via gRPC. Invoked as: python -m amplifier_foundation.grpc_adapter. See docs/plans/2026-03-17-python-grpc-adapter-design.md for design details."""

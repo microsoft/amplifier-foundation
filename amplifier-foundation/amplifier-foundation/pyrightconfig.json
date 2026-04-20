@@ -1,8 +1,0 @@
-{
-  "include": [
-    "amplifier_foundation",
-    "tests"
-  ],
-  "extraPaths": ["."],
-  "typeCheckingMode": "standard"
-}
