@@ -1,4 +1,4 @@
-"""Integration tests for validate-bundle-repo.yaml v3.3.0 changes.
+"""Integration tests for validate-bundle-repo.yaml v3.4.0 changes.
 
 Verifies:
 - Valid YAML structure
@@ -64,30 +64,30 @@ class TestYAMLValidity:
 
 
 class TestVersionMetadata:
-    def test_version_is_3_3_0(self, recipe_data):
-        """version field must be '3.3.0' to reflect v3.3.0 changes."""
+    def test_version_is_3_4_0(self, recipe_data):
+        """version field must be '3.4.0' to reflect v3.4.0 changes."""
         data, _ = recipe_data
-        assert data["version"] == "3.3.0", (
-            f"Expected version '3.3.0', got '{data['version']}'. "
+        assert data["version"] == "3.4.0", (
+            f"Expected version '3.4.0', got '{data['version']}'. "
             "The version field must be bumped when significant changes are made."
         )
 
-    def test_header_comment_references_v3_3_0(self, recipe_data):
-        """File header comment must reference v3.3.0."""
+    def test_header_comment_references_v3_4_0(self, recipe_data):
+        """File header comment must reference v3.4.0."""
         _, content = recipe_data
-        # The first few lines should mention v3.3.0
+        # The first few lines should mention v3.4.0
         header_lines = content.split("\n")[:5]
         header = "\n".join(header_lines)
-        assert "3.3.0" in header, (
-            "Header comment must be updated to reference v3.3.0. "
+        assert "3.4.0" in header, (
+            "Header comment must be updated to reference v3.4.0. "
             f"Found header:\n{header}"
         )
 
-    def test_changelog_has_v3_3_0_entry(self, recipe_data):
-        """Changelog section must contain a v3.3.0 entry."""
+    def test_changelog_has_v3_4_0_entry(self, recipe_data):
+        """Changelog section must contain a v3.4.0 entry."""
         _, content = recipe_data
-        assert "v3.3.0" in content, (
-            "Changelog must contain a v3.3.0 entry describing the recipe validation "
+        assert "v3.4.0" in content, (
+            "Changelog must contain a v3.4.0 entry describing the recipe validation "
             "integration changes."
         )
 

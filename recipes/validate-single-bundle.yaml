@@ -5,6 +5,26 @@
 # Called by validate-bundle.yaml for each discovered bundle.
 # Can also be used directly for single-bundle validation.
 #
+# =============================================================================
+# CHANGELOG
+# =============================================================================
+#
+# v2.1.0 (2026-04-20):
+#   - NEW FEATURE: YAML Structure Lint (Step 0) — runs BEFORE dependency tracing
+#     * Detects 'includes:' nested under 'bundle:' (silently dropped by parser)
+#     * Detects unrecognized dict keys in includes entries (only 'bundle:' valid)
+#     * ROOT CAUSE: Bundle.from_dict() reads data.get('includes', []) from
+#       top-level only. _parse_include() only checks for 'bundle' key.
+#       Both bugs cause silent data loss — no error, no warning, includes
+#       simply vanish.
+#     * Fails early with actionable error messages referencing the fix pattern
+#     * Motivated by bkrabach/amplifier-bundle-parallax-discovery where 5 agents
+#       failed to register because all includes were nested under bundle:
+#
+# v2.0.0:
+#   - Initial version with accurate dependency tracing
+#   - Only counts context from actually-included behaviors
+#
 # Usage:
 #   amplifier tool invoke recipes operation=execute \
 #     recipe_path=foundation:recipes/validate-single-bundle.yaml \
@@ -14,14 +34,19 @@ name: validate-single-bundle
 description: |
   Validates a single Amplifier bundle by tracing its ACTUAL includes.
   
+  **v2.1.0: YAML Structure Lint**
+  - Detects `includes:` nested under `bundle:` (silently dropped by parser)
+  - Detects unrecognized dict keys in includes (only `bundle:` is valid)
+  - Runs BEFORE dependency tracing — fails early with actionable fixes
+  
   KEY IMPROVEMENT: Only counts context from behaviors that are actually
   included via `includes:`, not all behaviors in the repo.
   
   For example, if `shadow-amplifier` behavior is not in this bundle's
   includes chain, its context files won't be counted.
-version: "2.0.0"
+version: "2.1.0"
 author: "Amplifier Foundation Team"
-tags: ["bundle", "validation", "single", "dependency-tracing"]
+tags: ["bundle", "validation", "single", "dependency-tracing", "yaml-lint"]
 
 context:
   bundle_path: ""     # Required: Path to bundle file
@@ -30,6 +55,187 @@ context:
   repo_root: ""       # Required: Repository root directory
 
 steps:
+  # ============================================================================
+  # STEP 0: YAML Structure Lint (v2.1.0)
+  # Detects silent-failure structural bugs BEFORE dependency tracing.
+  #
+  # Bug 1: includes: nested under bundle: instead of top-level
+  #   Bundle.from_dict() reads data.get('includes', []) — top-level only.
+  #   Nested bundle.includes is silently invisible. All includes are lost.
+  #
+  # Bug 2: Unrecognized dict keys in includes entries
+  #   _parse_include() only checks for 'bundle:' key in dict entries.
+  #   Any other key (e.g., 'behavior:', 'include:') returns None silently.
+  #
+  # Fails early if either issue is found — prevents misleading trace results.
+  # ============================================================================
+
+  - id: "yaml-structure-lint"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      try:
+          import yaml
+      except ImportError:
+          # If PyYAML unavailable, skip lint (trace-dependencies will also need it)
+          print(json.dumps({
+              "phase": "yaml_structure_lint",
+              "skipped": True,
+              "passed": True,
+              "reason": "PyYAML not available"
+          }))
+          sys.exit(0)
+
+      def lint_bundle_yaml_structure(bundle_path: str) -> dict:
+          """Check for silent-failure structural bugs in bundle YAML."""
+          results = {
+              "phase": "yaml_structure_lint",
+              "bundle_path": bundle_path,
+              "errors": [],
+              "warnings": [],
+              "passed": True
+          }
+
+          path = Path(bundle_path).resolve()
+          if not path.exists():
+              results["errors"].append({
+                  "type": "file_not_found",
+                  "severity": "ERROR",
+                  "message": f"Bundle file not found: {bundle_path}"
+              })
+              results["passed"] = False
+              return results
+
+          try:
+              content = path.read_text()
+          except Exception as e:
+              results["errors"].append({
+                  "type": "read_error",
+                  "severity": "ERROR",
+                  "message": f"Cannot read bundle file: {e}"
+              })
+              results["passed"] = False
+              return results
+
+          # Parse YAML (handle .md frontmatter)
+          yaml_data = None
+          if path.suffix == '.md':
+              if content.startswith('---'):
+                  parts = content.split('---', 2)
+                  if len(parts) >= 2:
+                      try:
+                          yaml_data = yaml.safe_load(parts[1])
+                      except yaml.YAMLError as e:
+                          results["errors"].append({
+                              "type": "yaml_parse_error",
+                              "severity": "ERROR",
+                              "message": f"Invalid YAML frontmatter: {e}"
+                          })
+                          results["passed"] = False
+                          return results
+              else:
+                  # .md without frontmatter — not a bundle file, skip
+                  return results
+          else:
+              try:
+                  yaml_data = yaml.safe_load(content)
+              except yaml.YAMLError as e:
+                  results["errors"].append({
+                      "type": "yaml_parse_error",
+                      "severity": "ERROR",
+                      "message": f"Invalid YAML: {e}"
+                  })
+                  results["passed"] = False
+                  return results
+
+          if not isinstance(yaml_data, dict):
+              return results
+
+          # ── Bug 1: includes: nested under bundle: instead of top-level ──
+          bundle_section = yaml_data.get("bundle")
+          if isinstance(bundle_section, dict) and "includes" in bundle_section:
+              nested_includes = bundle_section["includes"]
+              count = len(nested_includes) if isinstance(nested_includes, list) else 1
+              results["errors"].append({
+                  "type": "nested_includes",
+                  "severity": "ERROR",
+                  "count": count,
+                  "message": (
+                      f"'includes:' is nested under 'bundle:' — this is SILENTLY IGNORED "
+                      f"by the parser. {count} include(s) will be invisible at runtime. "
+                      f"Bundle.from_dict() reads data.get('includes', []) from the "
+                      f"top-level dict only. Anything under data['bundle']['includes'] "
+                      f"is silently dropped."
+                  ),
+                  "fix": (
+                      "Move 'includes:' to the top level (same indent level as 'bundle:').\n"
+                      "\n"
+                      "  BROKEN (nested — silently dropped):\n"
+                      "    bundle:\n"
+                      "      name: my-bundle\n"
+                      "      includes:          # WRONG: nested under bundle\n"
+                      "        - bundle: foundation\n"
+                      "\n"
+                      "  CORRECT (top-level — matches dot-graph, foundation patterns):\n"
+                      "    bundle:\n"
+                      "      name: my-bundle\n"
+                      "\n"
+                      "    includes:              # RIGHT: top level\n"
+                      "      - bundle: foundation"
+                  )
+              })
+              results["passed"] = False
+
+          # ── Bug 2: Unrecognized dict keys in includes entries ──
+          top_includes = yaml_data.get("includes", [])
+          if isinstance(top_includes, list):
+              for idx, inc in enumerate(top_includes):
+                  if isinstance(inc, dict):
+                      keys = list(inc.keys())
+                      if "bundle" not in keys:
+                          bad_keys = [k for k in keys]
+                          results["errors"].append({
+                              "type": "unrecognized_include_key",
+                              "severity": "ERROR",
+                              "index": idx,
+                              "unrecognized_keys": bad_keys,
+                              "message": (
+                                  f"includes[{idx}] has unrecognized key(s): {bad_keys}. "
+                                  f"Only 'bundle:' is a valid key for dict-style includes — "
+                                  f"this entry is SILENTLY DROPPED by _parse_include(). "
+                                  f"The parser only checks include.get('bundle'); any other "
+                                  f"key returns None and the entry vanishes."
+                              ),
+                              "fix": (
+                                  f"Change '- {bad_keys[0]}: ...' to '- bundle: ...'.\n"
+                                  "\n"
+                                  "  Valid include formats:\n"
+                                  "    - bundle: foundation                     # namespace reference\n"
+                                  "    - bundle: foundation:behaviors/agents    # namespaced path\n"
+                                  "    - bundle: git+https://github.com/...    # external git URL\n"
+                                  "    - foundation                             # bare string (also valid)"
+                              )
+                          })
+                          results["passed"] = False
+
+          return results
+
+      result = lint_bundle_yaml_structure("{{bundle_path}}")
+      print(json.dumps(result))
+
+      # Exit non-zero if errors found — fails the step early
+      if not result["passed"]:
+          sys.exit(1)
+      EOF
+    output: "structure_lint"
+    parse_json: true
+    timeout: 30
+    on_error: "fail"
+
   # ============================================================================
   # STEP 1: Trace actual includes for this specific bundle
   # ============================================================================
@@ -257,6 +463,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
+    depends_on: ["yaml-structure-lint"]
 
   # ============================================================================
   # STEP 2: Context analysis using ONLY traced dependencies
@@ -488,6 +695,11 @@ steps:
       **Bundle:** {{bundle_name}} ({{bundle_type}})
       **Path:** {{bundle_path}}
 
+      **YAML Structure Lint (v2.1.0):**
+      ```json
+      {{structure_lint}}
+      ```
+
       **Dependency Trace:**
       ```json
       {{traced_deps}}
@@ -504,6 +716,19 @@ steps:
       
       **Verdict:** PASS | FAIL | PASS WITH WARNINGS
       
+      **IMPORTANT: If structure_lint.passed == false, the verdict MUST be FAIL.**
+      Structure lint errors indicate silently-dropped includes — the bundle will not
+      work as intended. These are the highest priority issues to fix.
+
+      **YAML Structure Lint:**
+      If structure_lint has errors, list them FIRST and PROMINENTLY:
+      - Each error with its type, message, and fix
+      - These are CRITICAL — they cause silent data loss at parse time
+      - The bundle's includes are being silently dropped
+      
+      If structure_lint.passed == true:
+      - Note: "YAML structure: OK — no silent-failure patterns detected"
+
       **Summary:**
       - Type: {{bundle_type}}
       - Name: (from traced_deps.bundle_name)

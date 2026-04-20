@@ -1,9 +1,17 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.3.0
+# Repository-Wide Bundle Validator Recipe v3.4.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.4.0 - YAML Structure Lint for silent-failure detection
+#        - New Phase 1.5: yaml-structure-lint checks ALL discovered bundles
+#        - Detects includes: nested under bundle: (silently dropped by parser)
+#        - Detects unrecognized dict keys in includes (only 'bundle:' valid)
+#        - Motivated by bkrabach/amplifier-bundle-parallax-discovery (5 agents silent-fail)
+#        - quality-classification incorporates structure_lint_issues
+#        - synthesize-report includes YAML Structure Lint section
+#
 # v3.3.0 - Opt-in recipe validation integration
 #        - New context vars: validate_recipes, validate_all, recipes_dir, known_agents
 #        - Phase 0.1: validate-all-flags step expands validate_all convenience flag
@@ -124,7 +132,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.3.0"
+version: "3.4.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -728,6 +736,202 @@ steps:
     timeout: 60
     on_error: "fail"
     depends_on: ["packaging-check", "build-check", "set-default-build-check"]
+
+  # ============================================================================
+  # PHASE 1.5: YAML Structure Lint (v3.4.0)
+  # Checks ALL discovered bundles for silent-failure structural bugs:
+  #
+  # Bug 1: includes: nested under bundle: instead of top-level
+  #   Bundle.from_dict() reads data.get('includes', []) — top-level only.
+  #   Nested bundle.includes is silently invisible. All includes are lost.
+  #
+  # Bug 2: Unrecognized dict keys in includes entries
+  #   _parse_include() only checks for 'bundle:' key in dict entries.
+  #   Any other key (e.g., 'behavior:', 'include:') returns None silently.
+  #
+  # Runs EARLY (before BundleRegistry validation) because these bugs cause
+  # bundles to appear to load "successfully" but with missing includes —
+  # the most insidious kind of failure.
+  # ============================================================================
+
+  - id: "yaml-structure-lint"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      try:
+          import yaml
+      except ImportError:
+          print(json.dumps({
+              "phase": "yaml_structure_lint",
+              "skipped": True,
+              "passed": True,
+              "reason": "PyYAML not available",
+              "bundles_checked": 0,
+              "errors": [],
+              "bundle_results": []
+          }))
+          sys.exit(0)
+
+      discovery = json.loads('''{{discovery_results}}''')
+
+      # Collect all bundle files from all categories
+      all_bundle_files = []
+      for category, paths in discovery.get("bundles_found", {}).items():
+          for bundle_path in paths:
+              all_bundle_files.append({"path": bundle_path, "category": category})
+
+      results = {
+          "phase": "yaml_structure_lint",
+          "bundles_checked": 0,
+          "errors": [],
+          "warnings": [],
+          "bundle_results": [],
+          "passed": True
+      }
+
+      for bundle_info in all_bundle_files:
+          bundle_path = bundle_info["path"]
+          category = bundle_info["category"]
+          results["bundles_checked"] += 1
+
+          bundle_result = {
+              "path": bundle_path,
+              "category": category,
+              "name": Path(bundle_path).stem,
+              "errors": [],
+              "passed": True
+          }
+
+          path = Path(bundle_path).resolve()
+          if not path.exists():
+              results["bundle_results"].append(bundle_result)
+              continue
+
+          try:
+              content = path.read_text()
+          except Exception:
+              results["bundle_results"].append(bundle_result)
+              continue
+
+          # Parse YAML (handle .md frontmatter)
+          yaml_data = None
+          if path.suffix == '.md':
+              if content.startswith('---'):
+                  parts = content.split('---', 2)
+                  if len(parts) >= 2:
+                      try:
+                          yaml_data = yaml.safe_load(parts[1])
+                      except yaml.YAMLError:
+                          results["bundle_results"].append(bundle_result)
+                          continue
+              else:
+                  results["bundle_results"].append(bundle_result)
+                  continue
+          else:
+              try:
+                  yaml_data = yaml.safe_load(content)
+              except yaml.YAMLError:
+                  results["bundle_results"].append(bundle_result)
+                  continue
+
+          if not isinstance(yaml_data, dict):
+              results["bundle_results"].append(bundle_result)
+              continue
+
+          # Extract bundle name for better error messages
+          bundle_section = yaml_data.get("bundle")
+          if isinstance(bundle_section, dict):
+              bundle_result["name"] = bundle_section.get("name", bundle_result["name"])
+
+          # ── Bug 1: includes: nested under bundle: instead of top-level ──
+          if isinstance(bundle_section, dict) and "includes" in bundle_section:
+              nested_includes = bundle_section["includes"]
+              count = len(nested_includes) if isinstance(nested_includes, list) else 1
+              error = {
+                  "type": "nested_includes",
+                  "severity": "ERROR",
+                  "bundle_path": bundle_path,
+                  "bundle_name": bundle_result["name"],
+                  "category": category,
+                  "count": count,
+                  "message": (
+                      f"'includes:' is nested under 'bundle:' in {Path(bundle_path).name} — "
+                      f"{count} include(s) SILENTLY DROPPED. "
+                      f"Bundle.from_dict() reads data.get('includes', []) from top-level only."
+                  ),
+                  "fix": (
+                      "Move 'includes:' to the top level (same indent as 'bundle:').\n"
+                      "  BROKEN:\n"
+                      "    bundle:\n"
+                      "      name: my-bundle\n"
+                      "      includes:        # WRONG: nested\n"
+                      "        - bundle: foo\n"
+                      "  CORRECT:\n"
+                      "    bundle:\n"
+                      "      name: my-bundle\n"
+                      "    includes:            # RIGHT: top level\n"
+                      "      - bundle: foo"
+                  )
+              }
+              bundle_result["errors"].append(error)
+              results["errors"].append(error)
+              bundle_result["passed"] = False
+              results["passed"] = False
+
+          # ── Bug 2: Unrecognized dict keys in includes entries ──
+          top_includes = yaml_data.get("includes", [])
+          if isinstance(top_includes, list):
+              for idx, inc in enumerate(top_includes):
+                  if isinstance(inc, dict):
+                      keys = list(inc.keys())
+                      if "bundle" not in keys:
+                          bad_keys = [k for k in keys]
+                          error = {
+                              "type": "unrecognized_include_key",
+                              "severity": "ERROR",
+                              "bundle_path": bundle_path,
+                              "bundle_name": bundle_result["name"],
+                              "category": category,
+                              "index": idx,
+                              "unrecognized_keys": bad_keys,
+                              "message": (
+                                  f"includes[{idx}] in {Path(bundle_path).name} has key "
+                                  f"'{bad_keys[0]}' — NOT RECOGNIZED. Only 'bundle:' is valid. "
+                                  f"This entry is SILENTLY DROPPED by _parse_include()."
+                              ),
+                              "fix": (
+                                  f"Change '- {bad_keys[0]}: ...' to '- bundle: ...'.\n"
+                                  "  Valid formats: '- bundle: name', '- bundle: ns:path', "
+                                  "'- bundle: git+https://...', or bare string '- name'"
+                              )
+                          }
+                          bundle_result["errors"].append(error)
+                          results["errors"].append(error)
+                          bundle_result["passed"] = False
+                          results["passed"] = False
+
+          results["bundle_results"].append(bundle_result)
+
+      results["summary"] = {
+          "bundles_checked": results["bundles_checked"],
+          "errors_total": len(results["errors"]),
+          "nested_includes_count": len([e for e in results["errors"] if e["type"] == "nested_includes"]),
+          "unrecognized_keys_count": len([e for e in results["errors"] if e["type"] == "unrecognized_include_key"]),
+          "bundles_with_errors": len([b for b in results["bundle_results"] if not b["passed"]]),
+          "passed": results["passed"]
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "structure_lint"
+    parse_json: true
+    timeout: 60
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
 
   # ============================================================================
   # PHASE 2: Individual Bundle Validation
@@ -2109,6 +2313,13 @@ steps:
       except (json.JSONDecodeError, ValueError):
           recipe_validation = {"quality_level": "good", "skipped": True, "summary": "Recipe validation not performed"}
 
+      # v3.4.0: Parse YAML structure lint results
+      structure_lint_raw = '''{{structure_lint}}'''
+      try:
+          structure_lint = json.loads(structure_lint_raw)
+      except (json.JSONDecodeError, ValueError):
+          structure_lint = {"passed": True, "skipped": True, "errors": []}
+
       # Handle case where individual validation was skipped
       if individual.get("skipped", False):
           # v3.2.0: Check if this is an environment limitation (not a bundle problem)
@@ -2219,6 +2430,7 @@ steps:
               "experiment_issues": [],
               "context_sink_issues": [],
               "tool_placement_issues": [],
+              "structure_lint_issues": [],  # v3.4.0
               # v3.2.0: Environment status tracking
               "environment_status": {
                   "validation_mode": env_check.get("validation_mode", "unknown"),
@@ -2359,11 +2571,25 @@ steps:
                   "severity": "INFO"
               })
 
+          # v3.4.0: YAML Structure Lint errors (highest priority — silent data loss)
+          if not structure_lint.get("skipped", False) and not structure_lint.get("passed", True):
+              for error in structure_lint.get("errors", []):
+                  results["structure_lint_issues"].append({
+                      "type": error.get("type"),
+                      "bundle_path": error.get("bundle_path"),
+                      "bundle_name": error.get("bundle_name"),
+                      "category": error.get("category"),
+                      "message": error.get("message"),
+                      "severity": "ERROR",
+                      "fix": error.get("fix", "")
+                  })
+
           # Determine overall quality level
           # Priority: critical > needs_work > polish > good
           
           critical_count = results["summary"]["critical"]
           critical_count += len([i for i in results["packaging_issues"] if i.get("severity") == "critical"])
+          critical_count += len([i for i in results["structure_lint_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["hygiene_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["completeness_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["experiment_issues"] if i.get("severity") == "ERROR"])
@@ -2422,7 +2648,8 @@ steps:
               "experiments_passed": experiments.get("passed", True),
               "total_hygiene_errors": len(results["hygiene_issues"]) + len(results["completeness_issues"]) + len(results["experiment_issues"]),
               "context_sink_warnings": len([i for i in results["context_sink_issues"] if i.get("severity") == "WARNING"]),
-              "tool_placement_suggestions": len(results["tool_placement_issues"])
+              "tool_placement_suggestions": len(results["tool_placement_issues"]),
+              "structure_lint_errors": len(results["structure_lint_issues"])
           }
 
           # v3.3.0: Recipe validation summary
@@ -2449,7 +2676,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
-    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation"]
+    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint"]
 
   # ============================================================================
   # PHASE 2.75: Initialize Optional Outputs
@@ -3075,6 +3302,11 @@ steps:
       {{recipe_validation}}
       ```
 
+      **YAML Structure Lint (v3.4.0):**
+      ```json
+      {{structure_lint}}
+      ```
+
       **Bundle Doc Freshness (Phase 6 v3):**
       ```json
       {{bundle_doc_freshness}}
@@ -3206,6 +3438,16 @@ steps:
       ### Suggestions (Consider) - LOW Priority
       Tool placement optimizations, context sink improvements
 
+      ### YAML Structure Lint (v3.4.0)
+      If structure_lint.passed == false:
+      - [CRITICAL ERROR] These are the HIGHEST PRIORITY findings — they cause SILENT DATA LOSS
+      - List each error with type, affected bundle, message, and fix
+      - For nested_includes: "X include(s) are silently invisible — agents/behaviors won't load"
+      - For unrecognized_include_key: "Entry silently dropped — only 'bundle:' key is recognized"
+      - Link to the root cause in the parser code
+      If structure_lint.passed == true:
+      - Note: "All bundles passed YAML structure lint — no silent-failure patterns detected"
+
       ### Bundle Doc Freshness (Phase 6 v3)
       If `bundle_doc_freshness.dot_available` is true, report:
       - bundle.dot status: fresh/stale/missing
@@ -3219,7 +3461,7 @@ steps:
 
       ## Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v3.3.0
+      - Recipe: validate-bundle-repo v3.4.0
       - Validation Mode: [mode from env_check]
       - Foundation: [version or "not available"]
       - Quality Thresholds:
