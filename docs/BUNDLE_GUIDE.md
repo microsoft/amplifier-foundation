@@ -17,7 +17,7 @@ A **bundle** is a composable unit of configuration that produces a mount plan fo
 
 Bundles are the primary way to share and compose AI agent configurations.
 
-**Key insight**: Bundles are **configuration**, not Python packages. A bundle repo does not need a root `pyproject.toml`.
+**Key insight**: Bundles are **configuration**, not Python packages. A bundle repo does not need a root `pyproject.toml`. *(For the rare exception — a bundle that needs to share Python code across its modules, or that also ships a standalone CLI — see [Bundle with Root Python Package](#root-python-package).)*
 
 ---
 
@@ -423,15 +423,81 @@ my-bundle/
 └── ...
 ```
 
-**Note**: No `pyproject.toml` at the root. Only modules inside `modules/` need their own `pyproject.toml`.
+**Note**: No `pyproject.toml` at the root. Only modules inside `modules/` need their own `pyproject.toml`. *(For the advanced case where modules need to share Python code, see [Bundle with Root Python Package](#root-python-package) below.)*
 
-### Hybrid Bundle (Standalone CLI + Bundle Assets) - Rare
+<a id="root-python-package"></a>
+### Bundle with Root Python Package (Advanced — Avoid If Possible)
 
-> **When do you need this?** Only when your bundle provides a **standalone CLI tool** (installed via `uv tool install`) that **requires bundle assets at runtime** to function. Examples: `amplifier-bundle-shadow` provides the `amplifier-shadow` CLI which needs container configs.
->
-> **Most bundles don't need this.** If your bundle just provides agents, tools, and context for use within Amplifier sessions, use the standard pure bundle pattern above. Put tool functionality in `modules/tool-*/` subdirectories.
+> **You probably don't need this.** Bundles are configuration, not Python packages. Before reaching for a root `pyproject.toml`, work through the alternatives below. This pattern exists for cases that legitimately need it, but most bundles that reach for it don't.
 
-Some bundles provide BOTH a standalone Python CLI tool AND bundle configuration (agents, context, etc.). These require careful packaging to avoid conflicts.
+A bundle can declare itself an installable Python package by adding a root `pyproject.toml` with `[project]` and `[build-system]`. When foundation loads such a bundle, its module activator (`activate_bundle_package()`) installs this package editable before any modules activate, and propagates the package's source root to `sys.path` so the bundle's modules — and child sessions spawned from them — can import from it.
+
+Two legitimate uses for this pattern:
+
+1. **Shared Python code across modules** — multiple `modules/tool-*` or `modules/hook-*` need to import common types, clients, or helpers from the same bundle.
+2. **Standalone CLI + bundle assets** — the bundle also ships a `uv tool install`-able CLI that needs bundle assets at runtime. Example: [`amplifier-bundle-shadow`](https://github.com/microsoft/amplifier-bundle-shadow) provides the `amplifier-shadow` CLI which needs container configs.
+
+#### Consider these alternatives first
+
+Before using this pattern, ask whether one of these solves your problem more cleanly:
+
+1. **Collapse into one larger module.** If two modules need to share code, that's often a signal the module boundary is wrong. A single `modules/tool-my-thing/` avoids the problem entirely. The "bricks and studs" philosophy says the right answer is often to redraw the module boundary, not to share code across it.
+
+2. **Publish the shared code as its own package.** If the shared code has independent value, put it on PyPI (or an internal registry) and let each module depend on it normally. The shared code becomes a real dependency rather than an ambient import. Cleanest separation.
+
+3. **Duplicate the helper.** For a few utility functions, duplication is preferable to coupling. The dependency tax of a shared library isn't worth paying for a one-liner.
+
+4. **Use a root bundle package (this section).** When the shared code is substantial, genuinely coupled to this bundle, and not publishable independently — or when you're shipping a standalone CLI alongside bundle assets — then use the patterns below.
+
+#### Case (a): Shared Python code across modules
+
+```
+my-bundle/
+├── bundle.md
+├── pyproject.toml              # Installable root package
+├── src/
+│   └── my_bundle_shared/       # Shared Python package
+│       ├── __init__.py
+│       ├── client.py
+│       └── types.py
+└── modules/
+    ├── tool-foo/
+    │   └── pyproject.toml      # Imports from my_bundle_shared
+    └── hook-bar/
+        └── pyproject.toml      # Imports from my_bundle_shared
+```
+
+Modules import from the shared package by its normal package name:
+
+```python
+# modules/tool-foo/__init__.py
+from my_bundle_shared import SharedClient
+from my_bundle_shared.types import Request
+```
+
+Root `pyproject.toml`:
+
+```toml
+[project]
+name = "my-bundle-shared"
+version = "0.1.0"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/my_bundle_shared"]
+```
+
+Foundation handles the rest automatically: `activate_bundle_package()` installs the root package editable before any modules activate, and adds `src/` to `sys.path` so the modules and any child sessions inherit the import paths.
+
+> **Anti-pattern warning**: Do NOT try to wire shared code via `[tool.uv.sources]` path overrides inside your modules' `pyproject.toml` files. Foundation installs modules with `--no-sources`, which silently strips those overrides — the install looks successful but the shared package never reaches `sys.path`. See [`[tool.uv.sources]` Path Dependencies Silently Fail](#uv-sources-silent-failure) in Anti-Patterns.
+
+#### Case (b): Standalone CLI + bundle assets
+
+When the bundle also ships a standalone Python CLI tool, packaging needs extra care to avoid conflicts between the Python package namespace and bundle assets.
 
 ```
 my-hybrid-bundle/
@@ -453,7 +519,7 @@ my-hybrid-bundle/
 
 **Why?** When using hatch's `force-include` to put non-Python files in a wheel, the target path must NOT shadow the Python package namespace. See [Packaging Anti-Patterns](#-force-include-shadowing-python-namespace) below.
 
-**pyproject.toml for hybrid bundles:**
+**pyproject.toml for case (b):**
 
 ```toml
 [project]
@@ -474,7 +540,7 @@ packages = ["src/my_package"]
 "context" = "my_package/_bundle/context"
 ```
 
-**Testing hybrid packages**: Always test with a built wheel, not just editable installs:
+**Testing case (b) packages**: Always test with a built wheel, not just editable installs:
 
 ```bash
 uv build --wheel
@@ -956,6 +1022,32 @@ packages = ["src/my_package"]
 
 **Critical**: This bug only appears in built wheels, not editable installs. Always test with `uv build && uv pip install dist/*.whl`.
 
+<a id="uv-sources-silent-failure"></a>
+### ❌ `[tool.uv.sources]` Path Dependencies Silently Fail
+
+```toml
+# DON'T DO THIS in modules/tool-foo/pyproject.toml
+[project]
+dependencies = ["my-bundle-shared"]
+
+[tool.uv.sources]
+my-bundle-shared = { path = "../../src/my_bundle_shared" }   # ❌ Silently stripped
+```
+
+```toml
+# DO THIS - rely on the bundle's root package (see Bundle with Root Python Package)
+[project]
+dependencies = []   # ✅ Shared code arrives via activate_bundle_package() → sys.path
+```
+
+**Why it's wrong**: Foundation's module activator passes `--no-sources` to every `uv pip install` when activating modules. This prevents rebuild surprises but also silently strips any `[tool.uv.sources]` overrides — the install succeeds, the module imports fail at runtime.
+
+**The failure mode**: Install logs look clean. Unit tests may pass in a dev environment where the shared package happens to be on `sys.path` for other reasons. Then the bundle fails in production with `ImportError: No module named 'my_bundle_shared'`.
+
+**The fix**: If modules legitimately need shared code, use the [Bundle with Root Python Package](#root-python-package) pattern. Foundation's `activate_bundle_package()` installs the bundle's root package editable and adds its source directory to `sys.path` before modules activate — shared imports work automatically in modules and in any child sessions they spawn.
+
+**Rule of thumb**: `[tool.uv.sources]` is fine for local development of a module repo in isolation, but it has no effect at runtime when foundation activates the module. Don't rely on it to wire shared code across a bundle's modules.
+
 ### ❌ Declaring amplifier-core as Runtime Dependency
 
 ```toml
@@ -1358,7 +1450,7 @@ The `meta.description` is shown when listing agents. Include:
 
 ### No Root pyproject.toml
 
-Bundles are configuration, not Python packages. Don't add a `pyproject.toml` at the bundle root.
+Bundles are configuration, not Python packages. Don't add a `pyproject.toml` at the bundle root. See [Bundle with Root Python Package](#root-python-package) for the rare exception — bundles that need to share Python code across modules, or that also ship a standalone CLI.
 
 ---
 
