@@ -43,11 +43,6 @@ tools:
         enabled: false  # Disable per-turn skill listing to save ~1,250 tokens/turn
   # Agent delegation
   - module: tool-delegate
-    # Fork of modules/tool-delegate with hardcoded foundation:* agent routing removed.
-    # See experiments/exp-lean/modules/tool-delegate/README.md for fork rationale.
-    # NOTE: temporarily pointed at sadlilas:fix/lean-bundle-context-leak for pre-merge
-    # verification. Must be restored to microsoft/amplifier-foundation@main before merge.
-    source: git+https://github.com/sadlilas/amplifier-foundation@fix/lean-bundle-context-leak#subdirectory=experiments/exp-lean/modules/tool-delegate
     config:
       features:
         self_delegation:
