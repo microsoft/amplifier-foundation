@@ -1,0 +1,336 @@
+# =============================================================================
+# BUNDLE BEHAVIORAL MODEL RECIPE
+# =============================================================================
+#
+# Analyzes a resolved Amplifier bundle's full transitive composition and
+# produces a scenario-driven behavioral model document.
+#
+# Usage:
+#   recipes(
+#     operation="execute",
+#     recipe_path="recipes/bundle-behavioral-model.yaml",
+#     context={
+#       "bundle_name": "foundation",
+#       "registry_path": "~/.amplifier/registry.json",
+#       "output_path": "docs/bundle-behavioral-model-foundation.md"
+#     }
+#   )
+#
+# =============================================================================
+
+name: "bundle-behavioral-model"
+description: "Analyze a bundle's full composition and produce a behavioral model document"
+version: "1.0.0"
+tags: ["bundle", "analysis", "documentation", "behavioral-model"]
+
+recursion:
+  max_total_steps: 200
+
+context:
+  bundle_name: ""       # Required: Name of the bundle to analyze (e.g. "foundation")
+  registry_path: ""     # Required: Path to registry.json (e.g. "~/.amplifier/registry.json")
+  output_path: ""       # Required: Output file path for the model document
+
+steps:
+  # ==========================================================================
+  # Step 1: Deterministic Parse
+  # Read registry.json, walk dependency tree, parse all component files,
+  # output JSON manifest with ParsedManifest per file + triage flags.
+  # ==========================================================================
+  - id: "parse-composition"
+    type: "bash"
+    timeout: 60
+    parse_json: true
+    output: "manifest"
+    command: |
+      set -euo pipefail
+      cd "$(git rev-parse --show-toplevel)"
+      uv run python recipes/scripts/parse_bundle_composition.py \
+        "{{bundle_name}}" "{{registry_path}}"
+
+  # ==========================================================================
+  # Step 1b: Composition Effects (deterministic)
+  # Compute tool availability, delegation necessity, loopholes, and
+  # skill-mode associations from the structural manifest.
+  # Runs the parser again and pipes directly to the analyzer to avoid
+  # ARG_MAX limits when passing large JSON through bash expansion.
+  # ==========================================================================
+  - id: "analyze-composition"
+    type: "bash"
+    timeout: 60
+    parse_json: true
+    output: "composition_effects"
+    command: |
+      set -euo pipefail
+      cd "$(git rev-parse --show-toplevel)"
+      uv run python recipes/scripts/parse_bundle_composition.py \
+        "{{bundle_name}}" "{{registry_path}}" \
+        | uv run python recipes/scripts/analyze_composition_effects.py
+
+  # ==========================================================================
+  # Step 2: LLM Extraction (parallel)
+  # For each prose-heavy file flagged by triage, extract 6 behavioral fields.
+  # ==========================================================================
+  - id: "extract-behaviors"
+    agent: "foundation:explorer"
+    foreach: "{{manifest.focused_llm_targets}}"
+    as: "target"
+    parallel: 5
+    max_iterations: 200
+    collect: "extractions"
+    on_error: "continue"
+    timeout: 120
+    model_role: fast
+    prompt: |
+      You are a behavioral extraction agent. You read Amplifier component files
+      and extract structured behavioral information.
+
+      ## Input
+
+      File: {{target.file_path}}
+      Component type: {{target.component_type}}
+      Bundle: {{target.bundle_origin}}
+      Description: {{target.description}}
+
+      Read the file at the path above and extract the following 6 fields.
+      Return ONLY a JSON object with these fields, no other text:
+
+      ```json
+      {
+        "file_path": "{{target.file_path}}",
+        "component_type": "{{target.component_type}}",
+        "purpose": "One sentence: what does this component do?",
+        "behavioral_directives": ["List of things this component tells the LLM to do or not do"],
+        "trigger_conditions": ["When this component activates or should be used"],
+        "exit_conditions": ["When this component finishes or transitions away"],
+        "prose_references": [{"type": "delegation|skill|mode|recipe|tool", "target": "name", "when": "condition"}],
+        "workflow_phases": ["Ordered phases or steps described in the prose"]
+      }
+      ```
+
+      Rules:
+      - Be specific and concrete, not generic
+      - Extract actual names from @mentions and delegation targets
+      - For modes: focus on tool restrictions, transition rules, and the hybrid pattern
+      - For agents: focus on the meta.description triggers and body methodology
+      - For skills: focus on workflow phases, tables, and behavioral logic
+      - For context files: focus on behavioral directives and cross-cutting concerns
+      - If a field has no content, use an empty list []
+
+  # ==========================================================================
+  # Step 3: Synthesis
+  # Combine structural manifest, composition effects, and LLM-extracted
+  # behaviors into a coherent behavioral model document.
+  # ==========================================================================
+  - id: "synthesize-model"
+    agent: "foundation:file-ops"
+    timeout: 600
+    model_role: writing
+    output: "model_document"
+    prompt: |
+      You are a technical writer producing a behavioral model for the
+      Amplifier bundle "{{bundle_name}}".
+
+      Synthesize the structural analysis and behavioral extractions below into
+      a well-organized markdown document. Write it to: {{output_path}}
+
+      ---
+
+      ## Dependency Tree
+
+      {{manifest.dependency_tree}}
+
+      ## Composition Effects (deterministic structural analysis)
+
+      This JSON contains five computed dimensions:
+      - tool_availability_matrix: per-mode tool classifications (safe/warn/confirm/block)
+      - delegation_necessity_map: per-mode × operation necessity (direct/warn/delegate)
+      - composition_loopholes: modes where sub-sessions bypass restrictions
+      - skill_mode_associations: skill-to-mode pairings by name overlap
+      - agent_mode_compatibility: agent tool needs vs mode restrictions
+
+      {{composition_effects}}
+
+      ## Behavioral Extractions (per-component LLM analysis)
+
+      Each entry is a JSON object with: file_path, component_type, purpose,
+      behavioral_directives, trigger_conditions, exit_conditions,
+      prose_references, workflow_phases.
+
+      {{extractions}}
+
+      ## Dependency Components Summary
+
+      Components from dependency bundles (not fully extracted, but available
+      for cross-reference in Section 6 and Section 8). Each entry has
+      component_type, bundle_origin, and description.
+
+      {{manifest.dependency_summary}}
+
+      ## Recipe Structural Data (deterministic parse of recipe YAML files)
+
+      Each entry contains: name, version, tags, execution_mode (flat|staged),
+      steps (id, type, agent, condition, output, foreach, parallel),
+      data_flow (variable -> produced_by + consumed_by),
+      approval_gates (stage name + requires_approval),
+      sub_recipe_calls (step_id + recipe path).
+
+      This is deterministic structural data -- richer and more reliable than
+      LLM extraction for recipes. Use this as the PRIMARY source for Section 7.
+
+      {{manifest.focused_recipe_manifests}}
+
+      ---
+
+      ## Required Document Structure
+
+      ### 1. Overview
+      - Bundle name, purpose, full dependency tree
+      - Component inventory: count by type (modes, agents, skills, context files,
+        recipes, behavior YAMLs)
+
+      ### 2. Tool Governance
+      - Tool availability matrix: per mode, list safe/warn/confirm/blocked tools
+      - Delegation necessity: per mode x operation, whether direct/warn/must-delegate
+      - Composition loopholes: where sub-sessions bypass mode restrictions via
+        delegate or recipes tools
+
+      ### 3. Mode Behaviors
+      For each mode:
+      - Purpose and when to activate
+      - Tool policy (exact safe/warn/confirm/block lists)
+      - Entry conditions, exit conditions, allowed transitions
+      - Behavioral directives (what the LLM should do/not do in this mode)
+
+      ### 4. Agent Behaviors
+      For each agent:
+      - Purpose and trigger conditions (from meta.description)
+      - Model role(s) and delegation patterns
+      - Tool requirements and mode compatibility
+      - Exit conditions
+
+      ### 5. Skill Behaviors
+      For each skill:
+      - Purpose and invocation method (slash command, model-invoked, or both)
+      - Workflow phases in order
+      - Mode associations (which modes pair with this skill)
+      - Trigger and exit conditions
+
+      ### 6. Context & Cross-Cutting Concerns
+      - Behavioral directives from context files (standing orders, delegation rules)
+      - Patterns spanning multiple components
+      - Delegation chains and escalation paths
+
+      ### 7. Recipe Workflows
+      Use the "Recipe Structural Data" section above as your PRIMARY source.
+      For each recipe:
+      - Name, purpose (from description), execution mode (flat vs staged)
+      - Step-by-step walkthrough: for each step, show id, agent (or type=bash),
+        what it produces (output variable), and what it consumes (variable refs)
+      - Data flow diagram: which steps produce variables consumed by later steps
+      - Approval gates (if staged): which stages pause for user approval
+      - Relationship to modes: does this recipe automate the same workflow as a
+        mode? If so, note that they are parallel mechanisms (recipe = automated
+        pipeline, mode = interactive session) -- recipes do NOT activate modes
+      - Agent delegation: which agents are invoked at each step, what model_role
+
+      ### 8. Behavioral Invariants
+      - Constraints that hold regardless of mode or state
+      - System-wide guarantees and safety properties
+      - Contradictions or gaps found in the data
+
+      ## Writing Rules
+      - Use actual component names, tool names, mode names — no generic placeholders
+      - Use markdown tables for structured comparisons (tool matrices, mode summaries)
+      - Cross-reference between sections where components interact
+      - Flag contradictions, gaps, or ambiguities in the source data
+      - Do NOT invent behaviors not present in the input data
+
+  # ==========================================================================
+  # Step 4: Scenario Generation
+  # Read the synthesized model document and generate concrete behavioral
+  # scenarios that exercise the bundle's components in realistic interactions.
+  # ==========================================================================
+  - id: "generate-scenarios"
+    agent: "foundation:file-ops"
+    timeout: 600
+    model_role: reasoning
+    output: "scenarios"
+    prompt: |
+      You are a behavioral scenario designer. Read the behavioral model
+      document at {{output_path}} and generate concrete scenarios that show
+      how the bundle "{{bundle_name}}" behaves in practice.
+
+      Read the file first, then generate scenarios and APPEND them to the
+      same file as a new "## 9. Behavioral Scenarios" section (or the next
+      available section number if 9 is taken).
+
+      ## What a Scenario Is
+
+      A scenario is a concrete, step-by-step trace of what happens when a
+      user triggers a specific interaction. It names the exact components
+      involved (agents, modes, skills, tools, recipes) and shows the
+      decision points, delegation chains, and outcomes.
+
+      ## Scenario Categories
+
+      Generate scenarios from EACH of these categories that apply to the
+      bundle (skip categories that don't apply):
+
+      ### A. Happy Path Scenarios
+      The most common, intended usage patterns. What does a typical
+      session look like?
+      - "User asks to [primary bundle capability]"
+      - "User activates [mode] and works through [workflow]"
+
+      ### B. Component Interaction Scenarios
+      How do the bundle's components work together?
+      - "User triggers [agent] which delegates to [other agent]"
+      - "[Mode] restricts tools but [recipe] bypasses via sub-session"
+      - "[Skill] activates and invokes [mode] transition"
+
+      ### C. Edge Case Scenarios
+      What happens at the boundaries?
+      - "User asks for something outside the bundle's scope"
+      - "A delegated agent fails or returns unexpected results"
+      - "User tries to use a blocked tool in a mode"
+      - "Two components give conflicting guidance"
+
+      ### D. Cross-Bundle Scenarios
+      How does this bundle interact with its dependencies?
+      - "User workflow spans [this bundle] and [dependency bundle]"
+      - "Foundation agent is delegated to from bundle-specific context"
+
+      ## Scenario Format
+
+      For each scenario, use this structure:
+
+      ```
+      ### Scenario [N]: [Descriptive Title]
+
+      **Trigger:** [What the user says or does]
+
+      **Walkthrough:**
+      1. [Component] receives the trigger because [reason]
+      2. [Component] does [action] — [why this happens based on behavioral directives]
+      3. [Decision point]: if [condition] then [path A] else [path B]
+      4. ...
+
+      **Components Involved:** [list of agents, modes, skills, recipes, tools]
+
+      **Key Behavioral Rules Exercised:**
+      - [Rule from invariants/directives that governs this scenario]
+      - [Another rule]
+
+      **Outcome:** [What the user sees / what state the system is in]
+      ```
+
+      ## Rules
+      - Generate 5-10 scenarios depending on bundle complexity
+      - Every scenario must trace through ACTUAL components named in the model
+      - Reference specific behavioral directives and invariants from the model
+      - Show delegation chains with the exact agent names
+      - Include at least one scenario showing a composition loophole or
+        tool policy interaction (if the bundle has modes)
+      - Include at least one failure/edge case scenario
+      - Do NOT invent components or behaviors not in the model document
