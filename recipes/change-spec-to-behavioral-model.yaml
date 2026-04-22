@@ -1,0 +1,406 @@
+# =============================================================================
+# CHANGE-SPEC-TO-BEHAVIORAL-MODEL RECIPE
+# =============================================================================
+#
+# Generates a behavioral model showing how proposed changes would affect an
+# existing bundle. Combines the bundle's current resolved composition with
+# a change spec document to produce a merged model with impact analysis.
+#
+# This recipe fills the gap between bundle-behavioral-model (models what IS)
+# and spec-to-behavioral-model (models a fresh design). It answers: "Given
+# this existing bundle AND these proposed changes, what would the system
+# look like after the changes, and which existing behaviors are affected?"
+#
+# See context/understanding-mechanisms/bundle-lifecycle.md for when to use
+# this recipe vs the other behavioral model recipes.
+#
+# Usage:
+#   recipes(
+#     operation="execute",
+#     recipe_path="recipes/change-spec-to-behavioral-model.yaml",
+#     context={
+#       "bundle_name": "superpowers",
+#       "registry_path": "~/.amplifier/registry.json",
+#       "change_spec_path": "working/proposed-changes.md",
+#       "output_path": "working/superpowers-change-model.md"
+#     }
+#   )
+#
+# =============================================================================
+
+name: "change-spec-to-behavioral-model"
+description: "Generate a behavioral model showing how proposed changes affect an existing bundle"
+version: "1.0.0"
+tags: ["change-spec", "behavioral-model", "impact-analysis", "bundle-improvement"]
+
+context:
+  bundle_name: ""        # Required: Name of the existing bundle to analyze
+  registry_path: ""      # Required: Path to ~/.amplifier/registry.json
+  change_spec_path: ""   # Required: Path to the change spec markdown document
+  output_path: ""        # Required: Output file path for the merged behavioral model
+
+steps:
+  # ==========================================================================
+  # Step 1: Parse Existing Composition (deterministic)
+  # Reuses the same script as bundle-behavioral-model to get the full
+  # resolved composition of the existing bundle.
+  # ==========================================================================
+  - id: "parse-composition"
+    type: "bash"
+    timeout: 60
+    parse_json: true
+    output: "manifest"
+    command: |
+      set -euo pipefail
+      cd "$(git rev-parse --show-toplevel)"
+      uv run python recipes/scripts/parse_bundle_composition.py \
+        "{{bundle_name}}" "{{registry_path}}"
+
+  # ==========================================================================
+  # Step 1b: Composition Effects (deterministic)
+  # Compute tool availability, delegation necessity, loopholes for the
+  # existing bundle -- this is the baseline the changes will modify.
+  # ==========================================================================
+  - id: "analyze-composition"
+    type: "bash"
+    timeout: 60
+    parse_json: true
+    output: "composition_effects"
+    command: |
+      set -euo pipefail
+      cd "$(git rev-parse --show-toplevel)"
+      uv run python recipes/scripts/parse_bundle_composition.py \
+        "{{bundle_name}}" "{{registry_path}}" \
+        | uv run python recipes/scripts/analyze_composition_effects.py
+
+  # ==========================================================================
+  # Step 2: Extract Changes from Spec
+  # Read the change spec document and extract a structured JSON
+  # representation of what is being added, modified, and removed.
+  # ==========================================================================
+  - id: "extract-changes"
+    agent: "foundation:explorer"
+    timeout: 300
+    model_role: reasoning
+    parse_json: true
+    output: "changes"
+    prompt: |
+      You are a change extraction agent. Read the change spec document
+      at {{change_spec_path}} and extract a structured JSON representation
+      of every proposed change.
+
+      Return a JSON object with these top-level keys:
+
+      ```json
+      {
+        "change_summary": {
+          "bundle_name": "",
+          "purpose": "One sentence: what is this set of changes trying to achieve?",
+          "scope": "minor|moderate|major"
+        },
+        "added_mechanisms": {
+          "modes": [
+            {
+              "name": "", "purpose": "",
+              "tool_policies": {"safe": [], "warn": [], "confirm": [], "block": []},
+              "default_action": "",
+              "behavioral_directives": []
+            }
+          ],
+          "agents": [
+            {
+              "name": "", "purpose": "",
+              "model_role": ["primary_role", "fallback_role"],
+              "trigger_conditions": [], "behavioral_directives": [],
+              "tool_requirements": [], "context_loading": []
+            }
+          ],
+          "skills": [
+            {
+              "name": "", "type": "inline|fork|companion",
+              "purpose": "", "invocation": "",
+              "mode_association": ""
+            }
+          ],
+          "recipes": [
+            {
+              "name": "", "purpose": "", "execution_mode": "flat|staged",
+              "steps": [{"id": "", "agent": "", "produces": "", "consumes": []}],
+              "approval_gates": []
+            }
+          ],
+          "context_files": [
+            {"name": "", "purpose": "", "estimated_tokens": 0}
+          ],
+          "hooks": [
+            {"name": "", "purpose": "", "triggers_on": "", "behavior": ""}
+          ]
+        },
+        "modified_mechanisms": {
+          "modes": [
+            {
+              "name": "", "what_changes": "",
+              "before": {"tool_policies": {}, "behavioral_directives": []},
+              "after": {"tool_policies": {}, "behavioral_directives": []}
+            }
+          ],
+          "agents": [
+            {
+              "name": "", "what_changes": "",
+              "before": {},
+              "after": {}
+            }
+          ],
+          "skills": [],
+          "recipes": [],
+          "context_files": [],
+          "hooks": []
+        },
+        "removed_mechanisms": {
+          "modes": [{"name": "", "reason": ""}],
+          "agents": [{"name": "", "reason": ""}],
+          "skills": [],
+          "recipes": [],
+          "context_files": [],
+          "hooks": []
+        },
+        "interaction_changes": [
+          {
+            "description": "How an existing interaction between mechanisms changes",
+            "affected_mechanisms": [],
+            "before_behavior": "",
+            "after_behavior": ""
+          }
+        ],
+        "migration_notes": ["Any notes about backward compatibility or transition"],
+        "ambiguities": [
+          {
+            "item": "What is ambiguous in the change spec",
+            "possible_interpretations": [],
+            "recommendation": ""
+          }
+        ]
+      }
+      ```
+
+      Rules:
+      - Extract ONLY what the change spec states. Do not infer or add.
+      - If a category has no changes, use empty lists.
+      - For modified mechanisms, capture BOTH the before and after states.
+        The "before" state should reflect what the spec says about current
+        behavior. If the spec doesn't describe current behavior, note
+        that in ambiguities.
+      - For interaction_changes, identify any cases where the change spec
+        describes how existing mechanism interactions would change (e.g.,
+        "the agent should now delegate to X instead of Y").
+      - Flag anything ambiguous -- unclear scope, unspecified tool policies,
+        mechanisms referenced but not fully defined.
+      - For model_role, extract as an ordered fallback array. Single role
+        "reasoning" becomes ["reasoning", "general"].
+
+  # ==========================================================================
+  # Step 3: Synthesize Merged Model
+  # Combine the existing bundle composition with the proposed changes to
+  # produce a behavioral model showing the full system AFTER changes,
+  # with clear marking of what changed and impact analysis.
+  # ==========================================================================
+  - id: "synthesize-model"
+    agent: "foundation:file-ops"
+    timeout: 600
+    model_role: writing
+    output: "model_document"
+    prompt: |
+      You are a technical writer producing a behavioral model that shows how
+      proposed changes would affect the existing bundle "{{bundle_name}}".
+
+      You have two inputs:
+      1. The EXISTING bundle's composition (structural analysis below)
+      2. The PROPOSED CHANGES extracted from the change spec
+
+      Synthesize these into a single document that shows the full system
+      AFTER changes are applied, with clear marking of what is new, modified,
+      or removed.
+
+      Write the document to: {{output_path}}
+
+      ---
+
+      ## Existing Bundle Composition
+
+      ### Dependency Tree
+      {{manifest.dependency_tree}}
+
+      ### Composition Effects (current baseline)
+      {{composition_effects}}
+
+      ### Component Summary (dependencies)
+      {{manifest.dependency_summary}}
+
+      ### Recipe Structural Data (current)
+      {{manifest.focused_recipe_manifests}}
+
+      ---
+
+      ## Proposed Changes
+
+      {{changes}}
+
+      ---
+
+      ## Required Document Structure
+
+      ### 1. Change Overview
+      - Bundle name and change purpose
+      - Scope assessment (minor/moderate/major)
+      - Summary table: counts of added, modified, removed mechanisms by type
+      - Current component inventory vs projected inventory after changes
+
+      ### 2. Tool Governance (After Changes)
+      - Tool availability matrix per mode -- show the FULL matrix after changes
+      - For each mode: mark policies that are NEW or CHANGED with [NEW] or [CHANGED]
+      - If modes are added: show their full tool policy
+      - If modes are removed: note what tool policies are lost
+      - Delegation necessity changes: any new must-delegate situations?
+      - Composition loophole changes: any new bypass paths?
+
+      ### 3. Mode Behaviors (After Changes)
+      For EVERY mode in the system after changes (existing + new):
+      - If unchanged: brief summary with "[UNCHANGED]" marker
+      - If modified: full description with "[MODIFIED]" marker showing before/after
+      - If new: full description with "[NEW]" marker
+      - If removed: note with "[REMOVED]" marker and impact on other components
+
+      ### 4. Agent Behaviors (After Changes)
+      Same pattern as modes: mark each as [UNCHANGED], [MODIFIED], [NEW], or [REMOVED]
+      For modified agents: clearly show what changed in behavior, delegation, or scope
+
+      ### 5. Skill Behaviors (After Changes)
+      Same marking pattern. Note any mode association changes.
+
+      ### 6. Context & Cross-Cutting Concerns (After Changes)
+      - Context file changes and token budget impact
+      - Delegation chain changes
+      - Any new cross-cutting patterns introduced by the changes
+      - Any existing cross-cutting patterns disrupted
+
+      ### 7. Recipe Workflows (After Changes)
+      - For existing recipes in {{manifest.focused_recipe_manifests}}: note if they
+        are affected by the changes (e.g., a renamed agent breaks a recipe step)
+      - For new recipes: full step-by-step walkthrough
+      - For modified recipes: show what changed
+
+      ### 8. Impact Analysis
+      This is the critical section. Analyze:
+
+      **a. Regression Risks**
+      - Which existing behaviors might break due to the changes?
+      - Are any existing delegation chains disrupted?
+      - Do renamed/removed components break references elsewhere?
+
+      **b. Interaction Effects**
+      - How do new mechanisms interact with existing ones?
+      - Are there new composition loopholes?
+      - Do new modes affect existing agent compatibility?
+
+      **c. Token Budget Impact**
+      - Net change in always-loaded context (added - removed)
+      - Any components that push the bundle over reasonable token budgets?
+
+      **d. Migration Considerations**
+      - What do existing users need to know?
+      - Are there breaking changes in the user-facing interface?
+      - What's the recommended adoption path?
+
+      ### 9. Ambiguities and Open Questions
+      - Items flagged as ambiguous in the change extraction
+      - Design decisions implied but not stated in the change spec
+      - Questions that need answers before implementation
+
+      ## Writing Rules
+      - Use actual component names from both the existing composition and changes
+      - Use markdown tables for structured comparisons
+      - The [UNCHANGED], [MODIFIED], [NEW], [REMOVED] markers must appear in section headers
+      - Cross-reference between sections where changes affect multiple components
+      - Flag contradictions between changes and existing composition
+      - Do NOT invent behaviors not present in either input
+
+  # ==========================================================================
+  # Step 4: Scenario Generation
+  # Generate scenarios that exercise both preserved and changed behaviors,
+  # including scenarios specifically targeting the change boundaries.
+  # ==========================================================================
+  - id: "generate-scenarios"
+    agent: "foundation:file-ops"
+    timeout: 600
+    model_role: reasoning
+    output: "scenarios"
+    prompt: |
+      You are a behavioral scenario designer. Read the behavioral model
+      document at {{output_path}} and generate scenarios that verify the
+      proposed changes work correctly within the existing system.
+
+      Read the file first, then APPEND a new "## 10. Behavioral Scenarios"
+      section (or the next available section number).
+
+      ## Scenario Categories
+
+      Generate scenarios from EACH of these categories:
+
+      ### A. Preserved Behavior Scenarios (Regression Check)
+      Scenarios that should work EXACTLY the same after the changes.
+      These verify nothing was accidentally broken.
+      - Exercise the most critical existing workflows
+      - Focus on areas adjacent to the changes (most likely to regress)
+
+      ### B. New Behavior Scenarios
+      Scenarios exercising the newly added mechanisms.
+      - Happy path for each new mechanism
+      - How new mechanisms integrate with existing ones
+      - Delegation chains that cross new/existing boundaries
+
+      ### C. Modified Behavior Scenarios
+      Scenarios where behavior intentionally changes.
+      - Show the NEW expected behavior (not the old)
+      - Highlight the difference from current behavior
+      - Verify the modification achieves its stated purpose
+
+      ### D. Boundary and Edge Cases
+      Scenarios at the seams between old and new.
+      - What happens at the transition between unchanged and changed components?
+      - What if a user follows the old workflow -- do they get a graceful transition?
+      - Error cases: what happens when new mechanisms fail?
+
+      ### E. Removed Behavior Scenarios
+      If mechanisms were removed, show:
+      - What happens when a user tries the old workflow
+      - How the system guides them to the replacement
+
+      ## Scenario Format
+
+      For each scenario, use this structure:
+
+      ```
+      ### Scenario [N]: [Descriptive Title] [PRESERVED|NEW|MODIFIED|BOUNDARY|REMOVAL]
+
+      **Trigger:** [What the user says or does]
+
+      **Walkthrough:**
+      1. [Component] receives the trigger because [reason]
+      2. [Component] does [action] — [why, referencing specific change or preservation]
+      3. ...
+
+      **Components Involved:** [list with [NEW]/[MODIFIED] markers where applicable]
+
+      **Change Relevance:** [Why this scenario matters for validating the changes]
+
+      **Outcome:** [What the user sees / system state after]
+      ```
+
+      ## Rules
+      - Generate 6-12 scenarios depending on change complexity
+      - At least 2 PRESERVED scenarios (regression coverage)
+      - At least 1 scenario per NEW mechanism
+      - At least 1 BOUNDARY scenario
+      - Every scenario must trace through ACTUAL components from the model
+      - Mark which components are [NEW], [MODIFIED], or existing in each scenario
+      - Do NOT invent components or behaviors not in the model document
