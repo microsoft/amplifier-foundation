@@ -33,5 +33,5 @@ agents:
 # Per-bundle agent roster context (describes the 7 agents above).
 # Pairs with delegation-mechanics.md loaded by lean-foundation.
 context:
-  inject:
+  include:
     - foundation:experiments/exp-lean/context/exp-lean-amplifier-dev-agents.md
