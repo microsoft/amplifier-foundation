@@ -734,6 +734,38 @@ async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> dict[
     return {"name": "tool-my-tool", "version": "0.1.0", "provides": ["my_tool"]}
 ```
 
+### `async def on_session_ready(coordinator) → None` (optional)
+
+Called once, after every module across all phases has completed `mount()`. The coordinator is fully composed at this point: all providers, tools, hooks, capabilities, and contributions are registered and visible. Return value is ignored. Exceptions are non-fatal — logged as warnings, remaining `on_session_ready()` calls continue.
+
+**When to use it:**
+- You need to discover what other modules registered (events, capabilities, contributions) and can't know that at `mount()` time
+- You need to wire your module to another module's capability and want a guarantee it's present
+- You're replacing a defensive "check if capability exists yet" pattern with a clean single path
+
+**Example — eliminating a defensive dual-path:**
+
+```python
+# Before — defensive dual-path in mount() (register handler AND check immediately,
+# because mount order determines whether the capability exists yet)
+async def mount(coordinator, config):
+    coordinator.hooks.register("skills:discovered", on_skills_discovered)
+    # Also check immediately in case tool-skills already ran
+    if coordinator.get_capability("skills.discovery") is not None:
+        await _fetch_skills(coordinator)   # duplicate path
+
+# After — single path in on_session_ready() (all modules mounted, no ordering assumption)
+async def mount(coordinator, config):
+    pass  # or any setup that doesn't need full composition
+
+async def on_session_ready(coordinator):
+    # tools are guaranteed mounted; one path, capability is either present or absent
+    if coordinator.get_capability("skills.discovery") is not None:
+        await _fetch_skills(coordinator)
+```
+
+For the full contract, see `core:CONTRACTS.md § on_session_ready`.
+
 ### pyproject.toml Entry Point
 
 ```toml
