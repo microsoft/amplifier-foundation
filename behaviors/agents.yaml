@@ -34,7 +34,7 @@ tools:
 
   # Register foundation's own skills directory for discovery
   - module: tool-skills
-    source: git+https://github.com/microsoft/amplifier-module-tool-skills@main
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
     config:
       skills:
         - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
