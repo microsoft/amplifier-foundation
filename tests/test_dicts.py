@@ -294,7 +294,7 @@ class TestMergeModuleListsListConfig:
         parent = [
             {
                 "module": "tool-skills",
-                "source": "git+https://github.com/microsoft/amplifier-module-tool-skills@main",
+                "source": "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills",
                 "config": {
                     "skills": [
                         "git+https://github.com/obra/superpowers@main#subdirectory=skills",
@@ -306,7 +306,7 @@ class TestMergeModuleListsListConfig:
         child = [
             {
                 "module": "tool-skills",
-                "source": "git+https://github.com/microsoft/amplifier-module-tool-skills@main",
+                "source": "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills",
                 "config": {
                     "skills": [
                         "git+https://github.com/bkrabach/amplifier-bundle-parallax-discovery@main#subdirectory=skills",
