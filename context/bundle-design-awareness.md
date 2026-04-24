@@ -25,19 +25,19 @@ Do NOT skip the model step. See `foundation:context/understanding-mechanisms/bun
 
 ## Available Recipes
 
-**`foundation:recipes/objectives-to-behavioral-model.yaml`**
+**`@foundation:recipes/objectives-to-behavioral-model.yaml`**
 Starting from scratch? This designs mechanisms AND generates a behavioral model from your objectives.
 Required context: `objectives_path`, `output_path`
 
-**`foundation:recipes/spec-to-behavioral-model.yaml`**
+**`@foundation:recipes/spec-to-behavioral-model.yaml`**
 Have a mechanism spec? This generates a behavioral model for verification before implementation.
 Required context: `spec_path`, `output_path`
 
-**`foundation:recipes/bundle-behavioral-model.yaml`**
+**`@foundation:recipes/bundle-behavioral-model.yaml`**
 Have an existing bundle? This generates a model for understanding or improvement.
 Required context: `bundle_name`, `registry_path` (path to `~/.amplifier/registry.json`), `output_path`
 
-**`foundation:recipes/change-spec-to-behavioral-model.yaml`**
+**`@foundation:recipes/change-spec-to-behavioral-model.yaml`**
 Proposing changes to an existing bundle? This combines the bundle's current composition with your change spec to produce a merged model showing the full system after changes, with impact analysis and regression scenarios.
 Required context: `bundle_name`, `registry_path`, `change_spec_path`, `output_path`
 
