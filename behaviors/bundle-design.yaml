@@ -1,5 +1,5 @@
 bundle:
-  name: bundle-design-behavior
+  name: behavior-bundle-design
   version: 1.0.0
   description: Expert for the full bundle lifecycle -- designing, modeling, and building Amplifier bundles
 

@@ -44,7 +44,8 @@ steps:
     output: "manifest"
     command: |
       set -euo pipefail
-      cd "$(git rev-parse --show-toplevel)"
+      FOUNDATION_ROOT=$(python3 -c "import amplifier_foundation, pathlib; print(pathlib.Path(amplifier_foundation.__file__).parent.parent)")
+      cd "$FOUNDATION_ROOT"
       uv run python recipes/scripts/parse_bundle_composition.py \
         "{{bundle_name}}" "{{registry_path}}"
 
@@ -62,7 +63,8 @@ steps:
     output: "composition_effects"
     command: |
       set -euo pipefail
-      cd "$(git rev-parse --show-toplevel)"
+      FOUNDATION_ROOT=$(python3 -c "import amplifier_foundation, pathlib; print(pathlib.Path(amplifier_foundation.__file__).parent.parent)")
+      cd "$FOUNDATION_ROOT"
       uv run python recipes/scripts/parse_bundle_composition.py \
         "{{bundle_name}}" "{{registry_path}}" \
         | uv run python recipes/scripts/analyze_composition_effects.py
