@@ -579,7 +579,7 @@ steps:
 
           Detects execution_mode as 'staged' when a 'stages' key is present,
           otherwise 'flat'.  Builds data_flow by tracking step outputs and scanning
-          step data for {{var}} references.  Extracts approval_gates from stages
+          step data for template variable references.  Extracts approval_gates from stages
           with requires_approval=true.  Tracks sub_recipe_calls for steps with
           type='recipe'.
           """
@@ -623,7 +623,7 @@ steps:
               if step.output:
                   output_producers[step.output] = step.id
 
-          # Find consumers by scanning all step fields for {{var}} references
+          # Find consumers by scanning all step fields for template variable references
           consumers: dict[str, list[str]] = {v: [] for v in output_producers}
           for step_raw in steps_raw:
               if not isinstance(step_raw, dict):
@@ -1954,7 +1954,7 @@ steps:
 
           Detects execution_mode as 'staged' when a 'stages' key is present,
           otherwise 'flat'.  Builds data_flow by tracking step outputs and scanning
-          step data for {{var}} references.  Extracts approval_gates from stages
+          step data for template variable references.  Extracts approval_gates from stages
           with requires_approval=true.  Tracks sub_recipe_calls for steps with
           type='recipe'.
           """
@@ -1998,7 +1998,7 @@ steps:
               if step.output:
                   output_producers[step.output] = step.id
 
-          # Find consumers by scanning all step fields for {{var}} references
+          # Find consumers by scanning all step fields for template variable references
           consumers: dict[str, list[str]] = {v: [] for v in output_producers}
           for step_raw in steps_raw:
               if not isinstance(step_raw, dict):
