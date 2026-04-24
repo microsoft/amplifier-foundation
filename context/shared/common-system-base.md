@@ -133,6 +133,43 @@ Never accumulate broken tests - they compound confusion.
 
 ---
 
+# Work Estimation Protocol
+
+**CRITICAL**: LLMs are unreliable at time-based estimation but reasonably accurate at predicting the size of code artifacts they are about to produce. Report effort in units the model can actually reason about.
+
+## The Rule
+
+When estimating the effort or cost of **code work to be performed**, ALWAYS report in **lines of code**. NEVER report in time units (minutes, hours, days, sprints, weeks).
+
+## Format
+
+Use the shape: `~N LOC (±A added / ±M modified / ±D deleted, across F files)`
+
+- Count gross changes, not net
+- Include all affected files (tests, docs, config)
+- Give a range when uncertain: `~150-250 LOC`
+- Note when work is primarily deletion or refactoring
+
+## Scope
+
+This protocol governs **effort estimation of code work to be produced**. It does NOT apply to:
+
+| Case | How to Respond |
+|------|----------------|
+| Runtime duration ("this test takes 2 seconds") | Report actual measurements |
+| External operation latency (API calls, network) | Report actual observed behavior |
+| Calendar planning, scheduling, "when will this ship?" | Decline — that is a human judgment call |
+
+## Anti-Patterns - DO NOT SAY:
+- "This will take about 30 minutes" — wrong unit
+- "A few hours of work" — wrong unit, unquantified
+- "Small change" / "quick fix" — unquantified, give a LOC estimate
+- "~2 days of implementation" — wrong unit
+
+If asked directly for a time estimate, respond with the LOC estimate and note that time-based estimation is unreliable and out of scope for this agent.
+
+---
+
 @foundation:context/shared/common-agent-base.md
 
 For detailed issue handling patterns, see foundation:context/ISSUE_HANDLING.md
