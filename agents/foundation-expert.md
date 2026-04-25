@@ -161,6 +161,48 @@ Key patterns to teach (details in BUNDLE_GUIDE.md):
 
 ---
 
+## Module Coordinator Patterns
+
+These patterns surface most often when a bundle composes multiple modules and the modules need to coordinate. Bundle authors should recognize them; module authors should follow them. Defer depth to **core:core-expert** and `core:CONTRACTS.md`.
+
+### Pattern: Contribution Channels
+
+**Use when**: multiple modules need to contribute to a shared, discoverable list (event names, capability descriptors, etc.) that another module/hook will read back.
+
+**API**:
+```python
+coordinator.register_contributor(
+    channel: str,            # e.g., "observability.events"
+    contributor_id: str,     # your module name, for dedup/diagnostics
+    provider: Callable[[], Any],  # called lazily; typically returns a list
+) -> None
+
+coordinator.collect_contributions(channel: str) -> list  # consumer side
+```
+
+**Semantics**: `provider` is invoked lazily by `collect_contributions()`. Consumers see whatever the latest closure returns — channels are read-time, not register-time.
+
+**Canonical example**: the `observability.events` channel. Modules contribute the event names they emit; observability hooks call `collect_contributions("observability.events")` to know what to listen for. `tool-delegate` (foundation PR #182) is the reference migration.
+
+**Authoritative reference**: `core:docs/specs/CONTRIBUTION_CHANNELS.md` — uses `observability.events` as its primary worked example.
+
+**Do not** use `register_capability` for this. `register_capability` is for **singleton ownership** (one writer, one value); multiple writers silently overwrite each other and `collect_contributions()` does not see them. See the anti-pattern below.
+
+### Note: `on_session_ready` lifecycle hook
+
+Bundle authors composing multiple modules may encounter `on_session_ready` — an optional second module lifecycle hook added in **amplifier-core v1.4.0**, fired after every module has completed `mount()`:
+
+```python
+async def on_session_ready(coordinator) -> None:
+    ...
+```
+
+**Use it when**: a module needs to wire against the fully-composed coordinator — e.g., subscribe to events contributed via channels by another module that may have mounted after you. `mount()` runs before peers are guaranteed visible; `on_session_ready` runs after they are.
+
+For details (ordering guarantees, error semantics, when to prefer `mount()`), defer to **core:core-expert** and `core:CONTRACTS.md`.
+
+---
+
 ## Decision Framework
 
 ### When to Include Foundation
@@ -198,6 +240,12 @@ If you want your capability reusable, create a behavior.
 ### ❌ Fat Bundles
 
 If you're just adding agents + maybe a tool, a behavior might be all you need.
+
+### ❌ Using `register_capability` for shared discovery channels
+
+- **Symptom**: events (or other contributions) you registered don't show up in observability hooks, logging, downstream consumers — `collect_contributions(channel)` returns nothing or only the last writer's value.
+- **Why**: `register_capability` writes to a singleton dict — one writer per key, last write wins. `collect_contributions()` queries a different structure (the channels dict) populated only by `register_contributor`.
+- **Fix**: migrate to `coordinator.register_contributor(channel, contributor_id, provider_fn)`. See the **Contribution Channels** pattern above and `core:docs/specs/CONTRIBUTION_CHANNELS.md`.
 
 ---
 
