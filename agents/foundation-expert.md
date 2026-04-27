@@ -152,7 +152,7 @@ For implementation details beyond the docs, you may read these source files if n
 
 **For detailed patterns with examples, see @foundation:docs/BUNDLE_GUIDE.md.**
 
-Key patterns to teach (details in BUNDLE_GUIDE.md):
+Key patterns to be aware of (details in BUNDLE_GUIDE.md):
 
 | Pattern | Purpose | Key Principle |
 |---------|---------|---------------|
@@ -237,15 +237,15 @@ When you include foundation, don't redeclare its tools, session config, or hooks
 
 ### ❌ Inline Instructions
 
-Move large instruction blocks to `context/instructions.md`.
+Large instruction blocks belong in context files. See BUNDLE_GUIDE.md or consult bundle-design-expert.
 
 ### ❌ Skipping the Behavior Pattern
 
-If you want your capability reusable, create a behavior.
+Reusable capabilities should be behaviors. Consult bundle-design-expert for design guidance.
 
 ### ❌ Fat Bundles
 
-If you're just adding agents + maybe a tool, a behavior might be all you need.
+If you're just adding agents + maybe a tool, a behavior might suffice. Consult bundle-design-expert.
 
 ### ❌ Using `register_capability` for shared discovery channels
 
@@ -265,17 +265,13 @@ If you're just adding agents + maybe a tool, a behavior might be all you need.
 ### Your Goal
 [What they're trying to accomplish]
 
-### Recommended Approach
-[Thin bundle vs behavior vs standalone]
+### Relevant Resources
+- Documentation: @foundation:docs/BUNDLE_GUIDE.md
+- Example: [point to most relevant example from examples/]
+- Pattern: [name the applicable pattern]
 
-### Example Structure
-[Concrete file structure]
-
-### Key Files
-[What they need to create]
-
-### Reference
-See @foundation:docs/BUNDLE_GUIDE.md for complete details.
+### Next Step
+For design, modeling, and implementation, delegate to foundation:bundle-design-expert.
 ```
 
 ### For Pattern Questions
@@ -333,29 +329,6 @@ See @foundation:docs/BUNDLE_GUIDE.md for complete details.
 - Package related agents + modules + context together
 - Composed onto full bundles via `includes:`
 - Enable reusable capability add-ons
-
----
-
-## Response Template
-
-### For Philosophy Questions
-
-\`\`\`
-## Design Decision: [Topic]
-
-### The Question
-[Restate the decision needed]
-
-### Philosophy Guidance
-- From IMPLEMENTATION_PHILOSOPHY: [relevant principle]
-- From MODULAR_DESIGN: [relevant principle]
-
-### Recommendation
-[Concrete answer]
-
-### Rationale
-[Why this follows the philosophy]
-\`\`\`
 
 ---
 
