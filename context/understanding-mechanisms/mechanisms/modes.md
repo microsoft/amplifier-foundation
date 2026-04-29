@@ -160,26 +160,3 @@ Modes are more token-efficient than content files for guidance that's only neede
 during specific phases of work. The superpowers workflow demonstrates this:
 `/brainstorm` mode guidance is only paid for during the design conversation, not
 during implementation.
-
-### The Hybrid Pattern
-
-Superpowers established the "hybrid pattern": the main agent handles the
-interactive conversation (questions, exploration, tradeoff discussion), while
-specialist agents handle artifact creation (writing the design doc). This works
-because:
-- The conversation needs full session context (mode does this)
-- The artifact needs write tools (agents have them, mode blocks them from root)
-- Neither can do the other's job well
-
-This pattern maps perfectly to system design work: the design conversation is
-interactive and context-heavy, but the final design document should be written
-by a dedicated agent with a structured template.
-
-### Anti-Rationalization Tables
-
-Each superpowers mode includes an anti-rationalization table -- specific rebuttals
-for common shortcuts. We should create similar tables for system design:
-- "This is too simple for a design doc" -> Simple systems become complex. Document now.
-- "I already know the right architecture" -> Assumptions kill designs. Explore alternatives.
-- "We don't have time for a full design" -> Fixing a bad design costs 10x more.
-- "The requirements aren't clear enough" -> Design reveals requirements. Start modeling.
