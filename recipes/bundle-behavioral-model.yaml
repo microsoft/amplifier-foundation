@@ -651,11 +651,7 @@ steps:
                   isinstance(approval_data, dict) and approval_data.get("required")
               )
               if has_approval:
-                  prompt_template = (
-                      approval_data.get("prompt")
-                      if isinstance(approval_data, dict)
-                      else stage.get("approval_context_template")
-                  )
+                  prompt_template = approval_data.get("prompt") or stage.get("approval_context_template")
                   approval_gates.append(
                       ApprovalGate(
                           stage=stage.get("name", ""),
@@ -2026,11 +2022,7 @@ steps:
                   isinstance(approval_data, dict) and approval_data.get("required")
               )
               if has_approval:
-                  prompt_template = (
-                      approval_data.get("prompt")
-                      if isinstance(approval_data, dict)
-                      else stage.get("approval_context_template")
-                  )
+                  prompt_template = approval_data.get("prompt") or stage.get("approval_context_template")
                   approval_gates.append(
                       ApprovalGate(
                           stage=stage.get("name", ""),

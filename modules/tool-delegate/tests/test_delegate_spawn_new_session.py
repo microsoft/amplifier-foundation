@@ -133,7 +133,9 @@ class TestOrchSectionIsinstanceGuard:
         parent_session.config = {"session": {"orchestrator": "loop-basic"}}
         coordinator.session = parent_session
 
-        tool = DelegateTool(coordinator, {"features": {}, "settings": {"exclude_tools": []}})
+        tool = DelegateTool(
+            coordinator, {"features": {}, "settings": {"exclude_tools": []}}
+        )
 
         await tool._spawn_new_session(
             agent_name="test-agent",
@@ -182,11 +184,15 @@ class TestOrchSectionIsinstanceGuard:
         parent_session = MagicMock()
         parent_session.session_id = "parent-session-123"
         parent_session.config = {
-            "session": {"orchestrator": {"type": "loop-basic", "config": expected_orch_config}}
+            "session": {
+                "orchestrator": {"type": "loop-basic", "config": expected_orch_config}
+            }
         }
         coordinator.session = parent_session
 
-        tool = DelegateTool(coordinator, {"features": {}, "settings": {"exclude_tools": []}})
+        tool = DelegateTool(
+            coordinator, {"features": {}, "settings": {"exclude_tools": []}}
+        )
 
         await tool._spawn_new_session(
             agent_name="test-agent",

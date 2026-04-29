@@ -379,8 +379,12 @@ class TestMergeModuleListsListConfig:
     def test_three_way_list_merge(self) -> None:
         """A→B→C merges all lists: the primary real-world bug scenario."""
         a = [{"module": "hooks-mode", "config": {"search_paths": ["@modes:modes"]}}]
-        b = [{"module": "hooks-mode", "config": {"search_paths": ["@superpowers:modes"]}}]
-        c = [{"module": "hooks-mode", "config": {"search_paths": ["@dev-machine:modes"]}}]
+        b = [
+            {"module": "hooks-mode", "config": {"search_paths": ["@superpowers:modes"]}}
+        ]
+        c = [
+            {"module": "hooks-mode", "config": {"search_paths": ["@dev-machine:modes"]}}
+        ]
         ab = merge_module_lists(a, b)
         abc = merge_module_lists(ab, c)
         paths = abc[0]["config"]["search_paths"]
