@@ -14,6 +14,8 @@ Amplifier exposes seven composable primitives for building agent systems:
 
 They overlap by design. The goal is not to pick one, but to assign **clear ownership** and **correct attachment points**, then compose them through **behaviors** — the YAML wiring layer that assembles mechanisms into bundles.
 
+> **Companion guide:** Once you've decided what to build, see `foundation:docs/BUNDLE_GUIDE.md` for implementation — YAML authoring, file structure, tool modules, and step-by-step walkthroughs.
+
 > **Use combinations freely. Avoid duplicated authority.**
 
 | Mechanism | Verb | Triggered by |
