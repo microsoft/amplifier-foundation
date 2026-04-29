@@ -133,7 +133,6 @@ Each concern should have one primary owner:
 | **Expertise smearing** (too high) | Heuristics duplicated across recipe step prompts | Centralize in a **skill** |
 | **Skill hypertrophy** | A skill that spawns agents, manages state, enforces policy | Split: policy to mode, workflow to recipe, expertise stays in skill |
 | **Capability fiction** | APIs described in context but not exposed as tools | Wire as a **tool** (or MCP resource) |
-| **Cognitive overload** | Single agent prompt does everything | Decompose into **delegated agents** with focused concerns |
 | **Knowledge entanglement** | Docs copy-pasted into agent prompts, skills, and recipe steps | Centralize as **content** files, reference via `@mention` |
 | **Missing hook, using mode** | You need programmatic logic (compute, API calls) but used a mode | Write a **hook** module — modes are declarative only |
 | **Composition loophole** | Mode blocks `write_file` but allows `delegate` or `recipes` as safe — sub-agents bypass parent mode restrictions via their own sessions | Audit which tools can spawn child sessions. If `delegate`/`recipes` are safe, sub-agents can write files, run code, and launch pipelines regardless of the parent mode's restrictions. Name it explicitly in the spec. |
@@ -531,9 +530,9 @@ Denial is terminal — no built-in retry. Design implications:
 
 ---
 
-## Practical Example: This Bundle
+## Practical Example: A Hypothetical Systems-Design Bundle
 
-The `systems-design` bundle composes all seven mechanisms:
+Consider a hypothetical `systems-design` bundle that composes all seven mechanisms:
 
 | Mechanism | Instance | Role |
 |-----------|----------|------|
@@ -545,7 +544,7 @@ The `systems-design` bundle composes all seven mechanisms:
 | **Tools** | `tool-mode`, `tool-skills` (via behavior YAML wiring) | LLM-accessible mode switching and skill loading |
 | **Content** | `system-design-principles.md`, `structured-design-template.md`, `instructions.md` | Design philosophy and standing orders injected into root session |
 
-**Key design decisions:**
+**Key design decisions a bundle like this would illustrate:**
 
 - **Three agent model roles** (`reasoning`, `critique`, `writing`): The workflow moves through distinct cognitive phases with different model requirements.
 - **Content files (~4K) kept as always-loaded, not skills:** Agents @mention these in their own sub-sessions, so converting to skills wouldn't reduce child session costs. Trade-off accepted for a design-focused bundle. A general-purpose bundle should convert reference frameworks to skills.

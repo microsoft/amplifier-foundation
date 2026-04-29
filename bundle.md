@@ -17,8 +17,6 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-core@main#subdirectory=behaviors/core-expert.yaml
   # Foundation expert behavior
   - bundle: foundation:behaviors/foundation-expert
-  # Bundle design expert behavior
-  - bundle: foundation:behaviors/bundle-design
   # Foundation behaviors
   - bundle: foundation:behaviors/sessions
   - bundle: foundation:behaviors/status-context

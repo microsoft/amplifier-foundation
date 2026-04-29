@@ -104,48 +104,6 @@ model_role at call time.
 - `amplifier-foundation/modules/tool-delegate/__init__.py` -- Delegate tool (1,252 lines)
 - `amplifier-core/docs/SESSION_FORK_SPECIFICATION.md` -- Kernel fork mechanism
 
-## Relevance to System Design Bundle
-
-Agents are the mechanism for specialized design expertise that requires dedicated
-context and potentially different model capabilities.
-
-### Immediate Opportunities
-
-- **Systems architect agent**: A reasoning-class agent that specializes in system
-  modeling -- identifying goals, constraints, actors, resources, interfaces,
-  feedback loops, failure modes. Uses the structured response template from the
-  agentic-system-design doc. Could be the primary design agent.
-
-- **Design critic agent**: A critique-class agent that reviews proposed designs
-  from multiple perspectives. Loaded with adversarial review prompts (SRE, security,
-  staff engineer, finance, operator). Uses `model_role: [critique, reasoning, general]`.
-
-- **Constraint analyst agent**: Specialized in identifying, tracking, and evaluating
-  design constraints and tradeoffs. Understands that architecture is about choosing
-  what to sacrifice, not finding optimal solutions.
-
-- **Codebase surveyor agent**: Extends the explorer pattern but focused on
-  architectural understanding -- identifying module boundaries, dependency patterns,
-  coupling hotspots, data flows, and architectural debt.
-
-### The Context Sink Pattern for Design
-
-The context sink pattern is especially valuable for design work because:
-- Design exploration requires reading many files (codebase survey)
-- Different perspectives require different context (SRE vs security vs DX)
-- The parent session needs to stay lean for the long design conversation
-- Each specialist agent can carry heavy design reference documentation
-
-### Agents vs Skills for Design Capabilities
-
-| Use an Agent When | Use a Skill When |
-|-------------------|-----------------|
-| Need isolated context window | Knowledge injection is sufficient |
-| Need specific model capabilities | Current model works fine |
-| Multi-turn investigation needed | Single-shot guidance works |
-| Heavy doc consumption required | Lightweight patterns needed |
-| Tool restrictions differ from parent | Same tools work |
-
 ## Context Window Impact
 
 Agents are the primary **context management** mechanism in Amplifier. The context

@@ -51,6 +51,7 @@ steps:
     parse_json: true
     output: "manifest"
     command: |
+      set -euo pipefail
       "${AMPLIFIER_PYTHON:-python3}" - "{{bundle_name}}" "{{registry_path}}" << 'PYEOF'
       #!/usr/bin/env python3
       """Deterministic parser for Amplifier bundle composition.
@@ -447,9 +448,17 @@ steps:
               file_result: list[tuple[Path, str]] = [(local_path, "behavior_yaml")]
               # Also scan the parent when it looks like a bundle directory so that
               # sibling agents, context files, etc. are captured as well.
+              # If the parent isn't a bundle root (e.g. behaviors/), check the
+              # grandparent too — handles the common case where a behavior YAML
+              # lives in behaviors/ but modes/, agents/, context/ are siblings.
               parent = local_path.parent
-              if _looks_like_bundle_dir(parent):
-                  parent_entries = discover_component_files(parent)
+              scan_root = parent if _looks_like_bundle_dir(parent) else None
+              if scan_root is None and parent.parent != parent:
+                  grandparent = parent.parent
+                  if _looks_like_bundle_dir(grandparent):
+                      scan_root = grandparent
+              if scan_root is not None:
+                  parent_entries = discover_component_files(scan_root)
                   seen: set[Path] = {local_path}
                   for entry_path, entry_type in parent_entries:
                       if entry_path not in seen:
@@ -587,7 +596,7 @@ steps:
 
           Detects execution_mode as 'staged' when a 'stages' key is present,
           otherwise 'flat'.  Builds data_flow by tracking step outputs and scanning
-          step data for template variable references.  Extracts approval_gates from stages
+          step data for { {var} } references.  Extracts approval_gates from stages
           with requires_approval=true.  Tracks sub_recipe_calls for steps with
           type='recipe'.
           """
@@ -631,7 +640,7 @@ steps:
               if step.output:
                   output_producers[step.output] = step.id
 
-          # Find consumers by scanning all step fields for template variable references
+          # Find consumers by scanning all step fields for { {var} } references
           consumers: dict[str, list[str]] = {v: [] for v in output_producers}
           for step_raw in steps_raw:
               if not isinstance(step_raw, dict):
@@ -659,7 +668,9 @@ steps:
                   isinstance(approval_data, dict) and approval_data.get("required")
               )
               if has_approval:
-                  prompt_template = approval_data.get("prompt") or stage.get("approval_context_template")
+                  prompt_template = approval_data.get("prompt") or stage.get(
+                      "approval_context_template"
+                  )
                   approval_gates.append(
                       ApprovalGate(
                           stage=stage.get("name", ""),
@@ -692,6 +703,10 @@ steps:
                   version=version,
                   tags=tags,
                   execution_mode=execution_mode,
+                  # input_interface is reserved for future use. Recipe input
+                  # validation (required/optional context variables) is not yet
+                  # parsed from recipe YAML; the field is kept as an empty
+                  # placeholder so downstream consumers have a stable schema.
                   input_interface={"required": [], "optional": []},
                   steps=steps,
                   data_flow=data_flow,
@@ -838,6 +853,7 @@ steps:
           bundles: dict[str, Any],
           bundle_origin: str,
           seen_paths: set[str] | None = None,
+          registry_path: Path | None = None,
       ) -> list[ParsedManifest]:
           """Resolve agent/context/behavior includes from a parsed behavior YAML.
 
@@ -885,11 +901,69 @@ steps:
           results: list[ParsedManifest] = []
 
           def _resolve_ns_path(ref: str, for_agents: bool = False) -> Path | None:
-              """Resolve a 'namespace:relative_path' reference to an absolute Path.
+              """Resolve a 'namespace:relative_path' or git+https:// URL reference
+              to an absolute Path.
+
+              For ``git+https://`` URLs the bundle is located by matching the URL
+              (without its ``#fragment``) against the ``uri`` field of each
+              registry bundle.  The optional ``#subdirectory=<path>`` fragment
+              tells us which file/directory inside the bundle to return.
 
               Returns None (with a warning) when the namespace is unknown, the
               local_path cannot be determined, or the resolved file does not exist.
               """
+              # -- Handle git+https:// URL refs ----------------------------------
+              if ref.startswith("git+https://"):
+                  # Separate the #fragment (if any) from the base URL.
+                  if "#" in ref:
+                      base_url, fragment = ref.rsplit("#", 1)
+                  else:
+                      base_url, fragment = ref, ""
+
+                  # Extract subdirectory from fragment (e.g. "subdirectory=behaviors/modes.yaml")
+                  subdirectory: str | None = None
+                  if fragment.startswith("subdirectory="):
+                      subdirectory = fragment[len("subdirectory=") :]
+
+                  # Find the bundle whose URI matches the base URL.
+                  for bname, entry in bundles.items():
+                      entry_uri = entry.get("uri", "")
+                      entry_base = (
+                          entry_uri.rsplit("#", 1)[0] if "#" in entry_uri else entry_uri
+                      )
+                      if entry_base != base_url:
+                          continue
+
+                      lp_str: str | None = entry.get("local_path")
+                      if lp_str is None:
+                          lp_str = _resolve_null_path(bname, bundles)
+                      if lp_str is None:
+                          continue
+
+                      lp = Path(lp_str)
+                      base = lp.parent if lp.is_file() else lp
+                      if subdirectory:
+                          candidate = base / subdirectory
+                          if candidate.exists():
+                              return candidate
+                      else:
+                          # No subdirectory: the URL points to a bundle root.
+                          # Look for the primary bundle file within it.
+                          for name in ("bundle.md", "bundle.yaml"):
+                              candidate = base / name
+                              if candidate.exists():
+                                  return candidate
+                          # Fallback: return the directory for the caller to handle
+                          if base.exists():
+                              return base
+                      return None
+
+                  logging.warning(
+                      "resolve_behavior_includes: no bundle URI matches '%s'",
+                      base_url,
+                  )
+                  return None
+
               if ":" not in ref:
                   return None
               namespace, rel_path = ref.split(":", 1)
@@ -904,6 +978,19 @@ steps:
               lp_str: str | None = entry.get("local_path")
               if lp_str is None:
                   lp_str = _resolve_null_path(namespace, bundles)
+              if lp_str is None:
+                  # Cache fallback: search ~/.amplifier/cache/ for a matching bundle dir.
+                  if registry_path is not None:
+                      cache_dir = registry_path.parent / "cache"
+                      if cache_dir.is_dir():
+                          for candidate in sorted(
+                              cache_dir.glob(f"*{namespace}*"),
+                              key=lambda p: p.stat().st_mtime if p.is_dir() else 0,
+                              reverse=True,
+                          ):
+                              if candidate.is_dir() and _looks_like_bundle_dir(candidate):
+                                  lp_str = str(candidate)
+                                  break
               if lp_str is None:
                   logging.warning(
                       "resolve_behavior_includes: cannot resolve local_path for"
@@ -981,12 +1068,12 @@ steps:
                               bundles,
                               bundle_origin,
                               seen_paths=seen_paths,
+                              registry_path=registry_path,
                           )
                       )
               except Exception as exc:
                   logging.warning(
-                      "resolve_behavior_includes: failed to resolve nested behavior"
-                      " '%s': %s",
+                      "resolve_behavior_includes: failed to resolve nested behavior '%s': %s",
                       ref,
                       exc,
                   )
@@ -1194,15 +1281,11 @@ steps:
                           if cache_dir.is_dir():
                               candidates: list[Path] = sorted(
                                   cache_dir.glob(f"*{bname}*"),
-                                  key=lambda p: (
-                                      p.stat().st_mtime if p.is_dir() else 0
-                                  ),
+                                  key=lambda p: p.stat().st_mtime if p.is_dir() else 0,
                                   reverse=True,
                               )
                               for candidate in candidates:
-                                  if candidate.is_dir() and _looks_like_bundle_dir(
-                                      candidate
-                                  ):
+                                  if candidate.is_dir() and _looks_like_bundle_dir(candidate):
                                       logging.warning(
                                           "Bundle '%s' has no local_path; resolved"
                                           " from cache: %s",
@@ -1247,6 +1330,7 @@ steps:
                               bundles,
                               bname,
                               seen_paths=seen_include_paths,
+                              registry_path=registry_path,
                           )
                           for inc_manifest in include_manifests:
                               try:
@@ -1352,12 +1436,14 @@ steps:
           for m in manifests:
               if m.get("bundle_origin") in focus_origins:
                   continue
-              dependency_summary.append({
-                  "file_path": m.get("file_path", ""),
-                  "component_type": m.get("component_type", ""),
-                  "bundle_origin": m.get("bundle_origin", ""),
-                  "description": m.get("description"),
-              })
+              dependency_summary.append(
+                  {
+                      "file_path": m.get("file_path", ""),
+                      "component_type": m.get("component_type", ""),
+                      "bundle_origin": m.get("bundle_origin", ""),
+                      "description": m.get("description"),
+                  }
+              )
 
           # Focused recipe manifests: only from the target bundle's focus set
           focused_recipe_manifests = [
@@ -1428,6 +1514,7 @@ steps:
     parse_json: true
     output: "composition_effects"
     command: |
+      set -euo pipefail
       "${AMPLIFIER_PYTHON:-python3}" - "{{bundle_name}}" "{{registry_path}}" << 'PYEOF'
       #!/usr/bin/env python3
       """Deterministic parser for Amplifier bundle composition.
@@ -1824,9 +1911,17 @@ steps:
               file_result: list[tuple[Path, str]] = [(local_path, "behavior_yaml")]
               # Also scan the parent when it looks like a bundle directory so that
               # sibling agents, context files, etc. are captured as well.
+              # If the parent isn't a bundle root (e.g. behaviors/), check the
+              # grandparent too — handles the common case where a behavior YAML
+              # lives in behaviors/ but modes/, agents/, context/ are siblings.
               parent = local_path.parent
-              if _looks_like_bundle_dir(parent):
-                  parent_entries = discover_component_files(parent)
+              scan_root = parent if _looks_like_bundle_dir(parent) else None
+              if scan_root is None and parent.parent != parent:
+                  grandparent = parent.parent
+                  if _looks_like_bundle_dir(grandparent):
+                      scan_root = grandparent
+              if scan_root is not None:
+                  parent_entries = discover_component_files(scan_root)
                   seen: set[Path] = {local_path}
                   for entry_path, entry_type in parent_entries:
                       if entry_path not in seen:
@@ -1964,7 +2059,7 @@ steps:
 
           Detects execution_mode as 'staged' when a 'stages' key is present,
           otherwise 'flat'.  Builds data_flow by tracking step outputs and scanning
-          step data for template variable references.  Extracts approval_gates from stages
+          step data for { {var} } references.  Extracts approval_gates from stages
           with requires_approval=true.  Tracks sub_recipe_calls for steps with
           type='recipe'.
           """
@@ -2008,7 +2103,7 @@ steps:
               if step.output:
                   output_producers[step.output] = step.id
 
-          # Find consumers by scanning all step fields for template variable references
+          # Find consumers by scanning all step fields for { {var} } references
           consumers: dict[str, list[str]] = {v: [] for v in output_producers}
           for step_raw in steps_raw:
               if not isinstance(step_raw, dict):
@@ -2036,7 +2131,9 @@ steps:
                   isinstance(approval_data, dict) and approval_data.get("required")
               )
               if has_approval:
-                  prompt_template = approval_data.get("prompt") or stage.get("approval_context_template")
+                  prompt_template = approval_data.get("prompt") or stage.get(
+                      "approval_context_template"
+                  )
                   approval_gates.append(
                       ApprovalGate(
                           stage=stage.get("name", ""),
@@ -2069,6 +2166,10 @@ steps:
                   version=version,
                   tags=tags,
                   execution_mode=execution_mode,
+                  # input_interface is reserved for future use. Recipe input
+                  # validation (required/optional context variables) is not yet
+                  # parsed from recipe YAML; the field is kept as an empty
+                  # placeholder so downstream consumers have a stable schema.
                   input_interface={"required": [], "optional": []},
                   steps=steps,
                   data_flow=data_flow,
@@ -2215,6 +2316,7 @@ steps:
           bundles: dict[str, Any],
           bundle_origin: str,
           seen_paths: set[str] | None = None,
+          registry_path: Path | None = None,
       ) -> list[ParsedManifest]:
           """Resolve agent/context/behavior includes from a parsed behavior YAML.
 
@@ -2262,11 +2364,69 @@ steps:
           results: list[ParsedManifest] = []
 
           def _resolve_ns_path(ref: str, for_agents: bool = False) -> Path | None:
-              """Resolve a 'namespace:relative_path' reference to an absolute Path.
+              """Resolve a 'namespace:relative_path' or git+https:// URL reference
+              to an absolute Path.
+
+              For ``git+https://`` URLs the bundle is located by matching the URL
+              (without its ``#fragment``) against the ``uri`` field of each
+              registry bundle.  The optional ``#subdirectory=<path>`` fragment
+              tells us which file/directory inside the bundle to return.
 
               Returns None (with a warning) when the namespace is unknown, the
               local_path cannot be determined, or the resolved file does not exist.
               """
+              # -- Handle git+https:// URL refs ----------------------------------
+              if ref.startswith("git+https://"):
+                  # Separate the #fragment (if any) from the base URL.
+                  if "#" in ref:
+                      base_url, fragment = ref.rsplit("#", 1)
+                  else:
+                      base_url, fragment = ref, ""
+
+                  # Extract subdirectory from fragment (e.g. "subdirectory=behaviors/modes.yaml")
+                  subdirectory: str | None = None
+                  if fragment.startswith("subdirectory="):
+                      subdirectory = fragment[len("subdirectory=") :]
+
+                  # Find the bundle whose URI matches the base URL.
+                  for bname, entry in bundles.items():
+                      entry_uri = entry.get("uri", "")
+                      entry_base = (
+                          entry_uri.rsplit("#", 1)[0] if "#" in entry_uri else entry_uri
+                      )
+                      if entry_base != base_url:
+                          continue
+
+                      lp_str: str | None = entry.get("local_path")
+                      if lp_str is None:
+                          lp_str = _resolve_null_path(bname, bundles)
+                      if lp_str is None:
+                          continue
+
+                      lp = Path(lp_str)
+                      base = lp.parent if lp.is_file() else lp
+                      if subdirectory:
+                          candidate = base / subdirectory
+                          if candidate.exists():
+                              return candidate
+                      else:
+                          # No subdirectory: the URL points to a bundle root.
+                          # Look for the primary bundle file within it.
+                          for name in ("bundle.md", "bundle.yaml"):
+                              candidate = base / name
+                              if candidate.exists():
+                                  return candidate
+                          # Fallback: return the directory for the caller to handle
+                          if base.exists():
+                              return base
+                      return None
+
+                  logging.warning(
+                      "resolve_behavior_includes: no bundle URI matches '%s'",
+                      base_url,
+                  )
+                  return None
+
               if ":" not in ref:
                   return None
               namespace, rel_path = ref.split(":", 1)
@@ -2281,6 +2441,19 @@ steps:
               lp_str: str | None = entry.get("local_path")
               if lp_str is None:
                   lp_str = _resolve_null_path(namespace, bundles)
+              if lp_str is None:
+                  # Cache fallback: search ~/.amplifier/cache/ for a matching bundle dir.
+                  if registry_path is not None:
+                      cache_dir = registry_path.parent / "cache"
+                      if cache_dir.is_dir():
+                          for candidate in sorted(
+                              cache_dir.glob(f"*{namespace}*"),
+                              key=lambda p: p.stat().st_mtime if p.is_dir() else 0,
+                              reverse=True,
+                          ):
+                              if candidate.is_dir() and _looks_like_bundle_dir(candidate):
+                                  lp_str = str(candidate)
+                                  break
               if lp_str is None:
                   logging.warning(
                       "resolve_behavior_includes: cannot resolve local_path for"
@@ -2358,12 +2531,12 @@ steps:
                               bundles,
                               bundle_origin,
                               seen_paths=seen_paths,
+                              registry_path=registry_path,
                           )
                       )
               except Exception as exc:
                   logging.warning(
-                      "resolve_behavior_includes: failed to resolve nested behavior"
-                      " '%s': %s",
+                      "resolve_behavior_includes: failed to resolve nested behavior '%s': %s",
                       ref,
                       exc,
                   )
@@ -2571,15 +2744,11 @@ steps:
                           if cache_dir.is_dir():
                               candidates: list[Path] = sorted(
                                   cache_dir.glob(f"*{bname}*"),
-                                  key=lambda p: (
-                                      p.stat().st_mtime if p.is_dir() else 0
-                                  ),
+                                  key=lambda p: p.stat().st_mtime if p.is_dir() else 0,
                                   reverse=True,
                               )
                               for candidate in candidates:
-                                  if candidate.is_dir() and _looks_like_bundle_dir(
-                                      candidate
-                                  ):
+                                  if candidate.is_dir() and _looks_like_bundle_dir(candidate):
                                       logging.warning(
                                           "Bundle '%s' has no local_path; resolved"
                                           " from cache: %s",
@@ -2624,6 +2793,7 @@ steps:
                               bundles,
                               bname,
                               seen_paths=seen_include_paths,
+                              registry_path=registry_path,
                           )
                           for inc_manifest in include_manifests:
                               try:
@@ -2729,12 +2899,14 @@ steps:
           for m in manifests:
               if m.get("bundle_origin") in focus_origins:
                   continue
-              dependency_summary.append({
-                  "file_path": m.get("file_path", ""),
-                  "component_type": m.get("component_type", ""),
-                  "bundle_origin": m.get("bundle_origin", ""),
-                  "description": m.get("description"),
-              })
+              dependency_summary.append(
+                  {
+                      "file_path": m.get("file_path", ""),
+                      "component_type": m.get("component_type", ""),
+                      "bundle_origin": m.get("bundle_origin", ""),
+                      "description": m.get("description"),
+                  }
+              )
 
           # Focused recipe manifests: only from the target bundle's focus set
           focused_recipe_manifests = [
@@ -2753,7 +2925,6 @@ steps:
               "skipped_bundles": skipped_bundles,
               "skills_sources": skills_sources,
           }
-
 
       # ---------------------------------------------------------------------------
       # Constants
@@ -3315,16 +3486,8 @@ steps:
               "agent_mode_compatibility": compute_agent_mode_compatibility(manifests),
           }
 
-
-
-
-      # ---------------------------------------------------------------------------
-      # Combined entrypoint: parse then analyze
-      # ---------------------------------------------------------------------------
-
-
       def main() -> None:
-          """Parse bundle composition then compute composition effects, output JSON."""
+          """CLI entrypoint: parse + analyze a bundle, output composition effects JSON."""
           if len(sys.argv) != 3:
               error = {"error": f"Usage: {sys.argv[0]} <bundle_name> <registry_path>"}
               print(json.dumps(error))

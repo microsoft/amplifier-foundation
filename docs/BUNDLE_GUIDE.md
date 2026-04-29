@@ -19,6 +19,8 @@ Bundles are the primary way to share and compose AI agent configurations.
 
 **Key insight**: Bundles are **configuration**, not Python packages. A bundle repo does not need a root `pyproject.toml`. *(For the rare exception — a bundle that needs to share Python code across its modules, or that also ships a standalone CLI — see [Bundle with Root Python Package](#root-python-package).)*
 
+> **See also:** For mechanism selection guidance and bundle design methodology, see `context/understanding-mechanisms/designing-with-mechanisms.md`.
+
 ---
 
 ## The Thin Bundle Pattern (Recommended)

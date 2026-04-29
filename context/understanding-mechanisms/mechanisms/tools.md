@@ -83,38 +83,6 @@ tools:
 - `amplifier-module-tool-filesystem/` -- Multi-tool module example
 - `amplifier-foundation/modules/tool-delegate/` -- Tool that spawns agents
 
-## Relevance to System Design Bundle
-
-Custom tools could provide structured design capabilities:
-
-- **Design model tool**: A tool that maintains a structured system model (goals,
-  constraints, actors, interfaces, dependencies) that the LLM builds incrementally
-  during design exploration. Unlike a context file, a tool can validate, transform,
-  and persist structured data.
-
-- **Tradeoff analysis tool**: A tool that takes design options and evaluation
-  criteria, then produces a structured comparison matrix. The tool enforces the
-  analysis framework (latency, complexity, reliability, cost, security, etc.)
-  rather than relying on the LLM to remember the framework.
-
-- **Constraint tracker**: A tool that maintains an explicit set of design
-  constraints and checks proposed changes against them. Could flag when a design
-  decision violates a previously established constraint.
-
-- **Architecture diagram tool**: A tool that generates visual representations
-  (dot-viz, mermaid) from the structured system model, giving the LLM a way to
-  produce concrete artifacts during design.
-
-However, tools are the heaviest mechanism -- each requires a Python module, entry
-point, protocol compliance, and maintenance. For our initial experiments, skills
-and context files may deliver faster value. Tools should be reserved for
-capabilities that genuinely need structured data manipulation or external system
-interaction.
-
-Key question: Which design capabilities need the structure and validation that
-tools provide vs. which can be accomplished through prompt engineering (skills/
-context)?
-
 ## Context Window Impact
 
 Tools affect the context window through their **results** -- every tool call

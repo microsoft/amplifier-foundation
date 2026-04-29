@@ -42,6 +42,8 @@ A model answers: "Given these mechanisms, what actually happens in real usage sc
 
 **Why you need one:** A spec says what you intended. A model shows what would actually happen. The gap between intent and reality is where bugs live. Scenarios expose that gap before you write any YAML.
 
+**Caveat on scenario coverage:** Behavioral model scenarios are LLM-generated and may not cover all edge cases or failure modes. Treat the model as a verification aid that catches common design problems early, not as exhaustive proof of correctness. Critical or high-risk interactions should still be validated through manual review and real-world testing.
+
 **When you don't need one:** Trivial bundles (a single agent with no modes, no recipes, no complex interactions) may not benefit from formal modeling. Use judgment -- if the bundle has mechanism interactions (modes + agents, recipes + skills, etc.), model it.
 
 ### Implementation

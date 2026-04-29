@@ -82,45 +82,6 @@ Hooks are composed via behavior YAML files, just like tools.
 - `amplifier-core/docs/HOOKS_API.md` -- Complete API documentation
 - `amplifier-foundation/modules/hooks-progress-monitor/` -- Real implementation
 
-## Relevance to System Design Bundle
-
-Hooks offer powerful automated feedback mechanisms for system design work:
-
-- **Design completeness monitor**: Like `hooks-progress-monitor` detects analysis
-  paralysis, a design hook could monitor whether the agent is exploring all
-  dimensions of a design problem. If the agent produces an architecture without
-  addressing failure modes, the hook could inject a reminder: "Design appears
-  incomplete: no failure scenarios addressed."
-
-- **Constraint violation detector**: A hook on `tool:pre` (before file writes)
-  could check if a proposed implementation violates established design constraints.
-  For example, if the design specifies "stateless services" and the agent writes
-  code with session state, the hook could warn or block.
-
-- **Design phase enforcement**: The modes bundle already does this -- hooks enforce
-  tool policies during different phases. A system design bundle could use the same
-  pattern: block implementation tools during design exploration, block design tools
-  during implementation.
-
-- **Architectural drift detection**: A hook on `tool:post` after file edits could
-  compare changes against the system's architectural model and flag drift. "This
-  change introduces a dependency between modules X and Y that the architecture
-  shows as independent."
-
-- **Context injection for design prompts**: Hooks can inject context before every
-  LLM call. A design hook could inject the current system model, active constraints,
-  or design checklist items as ephemeral context, ensuring the agent always has the
-  design context available without permanently consuming context window.
-
-The key advantage of hooks over context files is that hooks are **dynamic** -- they
-can respond to what's happening in real-time and inject different context based on
-the current state. The disadvantage is implementation complexity (Python module +
-protocol compliance).
-
-For initial experiments, the modes system (which is built on hooks) gives us most
-of the design-phase enforcement we need without writing custom hooks. Custom hooks
-would be valuable later for automated design quality feedback.
-
 ## Context Window Impact
 
 Hooks interact with the context window through the `inject_context` action, which

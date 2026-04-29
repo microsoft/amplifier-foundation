@@ -1,5 +1,8 @@
 # Bundle Design
 
+> **This behavior is opt-in.** It is not loaded by default with the foundation bundle.
+> Add it to your bundle with: `amplifier bundle add foundation/behaviors/bundle-design`
+
 This bundle provides an expert agent and recipes for the full bundle lifecycle: designing, modeling, and building Amplifier bundles.
 
 ## Expert Agent

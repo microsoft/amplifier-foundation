@@ -100,31 +100,6 @@ Each mode blocks write tools and enforces a specific development phase:
 - `amplifier-bundle-superpowers/modes/` -- 6 superpowers mode definitions
 - `amplifier-bundle-modes/modes/` -- 3 built-in mode definitions
 
-## Relevance to System Design Bundle
-
-Modes are perhaps the **most directly applicable** mechanism from superpowers.
-The brainstorm mode already demonstrates how to structure a design conversation,
-and we can build system-design-specific modes that follow the same pattern.
-
-### Immediate Opportunities
-
-- **`/design` mode**: A mode for structured system design exploration. Like
-  brainstorm, it would block write tools and enforce a phased process:
-  1. Understand the system context (read code, docs)
-  2. Identify constraints and requirements
-  3. Explore design alternatives (at least 3)
-  4. Evaluate tradeoffs systematically
-  5. Present design section-by-section with validation
-  6. Delegate design document creation to a specialist agent
-
-- **`/systems-design-review` mode**: A mode for evaluating existing designs or proposed
-  changes against the codebase. Block writes, allow reads and analysis tools.
-  Enforce multi-perspective review (SRE, security, DX, cost, ops).
-
-- **`/constraint-analysis` mode**: A mode focused specifically on discovering,
-  documenting, and evaluating design constraints. Block writes, allow reads.
-  Enforce systematic constraint identification before solution exploration.
-
 ## Context Window Impact
 
 Modes affect the context window through **ephemeral injection** -- the mode's
