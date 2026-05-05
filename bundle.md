@@ -29,7 +29,7 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-bundle-recipes@main#subdirectory=behaviors/recipes.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-design-intelligence@main#subdirectory=behaviors/design-intelligence.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-python-dev@main
-  - bundle: git+https://github.com/microsoft/amplifier-bundle-shadow@main
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main
   - bundle: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=behaviors/skills.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-browser-tester@main#subdirectory=behaviors/browser-tester.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-superpowers@main#subdirectory=behaviors/superpowers-methodology.yaml

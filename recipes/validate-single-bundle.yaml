@@ -42,8 +42,8 @@ description: |
   KEY IMPROVEMENT: Only counts context from behaviors that are actually
   included via `includes:`, not all behaviors in the repo.
   
-  For example, if `shadow-amplifier` behavior is not in this bundle's
-  includes chain, its context files won't be counted.
+  For example, if a behavior is not in this bundle's includes chain,
+  its context files won't be counted.
 version: "2.1.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "single", "dependency-tracing", "yaml-lint"]

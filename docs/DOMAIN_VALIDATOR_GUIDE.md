@@ -593,7 +593,7 @@ This ensures the classification logic is correctly calibrated at the boundaries.
 |------|----------|--------|---------|
 | `amplifier-bundle-recipes` | PASS | ✅ **PASS** | Quick-approval path worked! |
 | `amplifier-foundation` | Minor suggestions | ✅ 8 good, 8 polish | Correct differentiation |
-| `amplifier-bundle-shadow` | Some warnings | ⚠️ PASS WITH WARNINGS | Bundle.yaml descriptions noted |
+| `amplifier-bundle-amplifier-tester` | Some warnings | ⚠️ PASS WITH WARNINGS | Bundle.yaml descriptions noted |
 
 ---
 

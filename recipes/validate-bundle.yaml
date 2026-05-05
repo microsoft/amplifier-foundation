@@ -29,9 +29,9 @@ description: |
   - Only counts context from actually-included behaviors
   - Reports results per-bundle with clear separation
   
-  For example, if `shadow-amplifier` behavior is only included by 
-  `bundles/amplifier-dev.yaml` and NOT by the root `bundle.md`, the shadow
-  context files will only be counted when validating `amplifier-dev`.
+  For example, if a behavior is only included by `bundles/amplifier-dev.yaml`
+  and NOT by the root `bundle.md`, its context files will only be counted
+  when validating `amplifier-dev`.
 version: "2.0.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "context-health", "dependency-tracing"]

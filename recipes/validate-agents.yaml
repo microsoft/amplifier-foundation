@@ -12,7 +12,7 @@
 #        - Template variables now parsed via json.loads() instead of direct interpolation
 #        - Fixes boolean true/false (JSON) vs True/False (Python) mismatch
 #
-# v1.2.1 - Fixed bundle-level tool detection (Shadow bundle pattern)
+# v1.2.1 - Fixed bundle-level tool detection (bundle-level tools pattern)
 #        - Tools defined in bundles/*.yaml now count as explicit
 #        - Fixed undefined variable handling when LLM phases are skipped
 #        - Phase 6 now gracefully handles missing quality_results/tool_analysis
@@ -265,8 +265,8 @@ steps:
           Parse bundles/*.yaml files to find tool definitions at bundle level.
           Returns a dict mapping agent names to their bundle-defined tools.
           
-          This handles the Shadow bundle pattern where tools are defined in
-          bundle.yaml rather than agent frontmatter.
+          This handles the bundle-level tools pattern where tools are defined
+          in bundle.yaml rather than agent frontmatter.
           """
           bundle_tools = {}
           path = Path(repo_path).expanduser().resolve()
@@ -404,7 +404,7 @@ steps:
                   # Empty tools section is OK - it's explicit
                   pass
           elif has_bundle_tools:
-              # Tools defined at bundle level (e.g., Shadow bundle pattern)
+              # Tools defined at bundle level (bundle-level tools pattern)
               result["has_explicit_tools"] = True
               result["tools_source"] = "bundle"
               result["bundle_tools_file"] = bundle_level_tools[agent_name]["source"]

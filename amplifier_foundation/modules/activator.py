@@ -175,10 +175,10 @@ class ModuleActivator:
         modules that import from that package, we need to install the bundle's
         package BEFORE activating modules. This enables patterns like:
 
-            # In modules/tool-shadow/__init__.py
-            from amplifier_bundle_shadow import ShadowManager
+            # In modules/tool-<name>/__init__.py
+            from amplifier_bundle_<name> import SomeHelper
 
-        where amplifier_bundle_shadow is the bundle's own package.
+        where amplifier_bundle_<name> is the bundle's own package.
 
         Args:
             bundle_path: Path to bundle root directory containing pyproject.toml.

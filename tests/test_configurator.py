@@ -2644,19 +2644,19 @@ class TestGetBehaviorRootNamespace:
     def test_returns_behavior_name_when_no_sibling_exists(self) -> None:
         """When no non-behavior sibling exists, returns behavior_name itself.
 
-        This handles behaviors like 'shadow', 'foundation', 'python-dev', and
-        'routing-matrix' which ARE the root namespace — their agents are named
+        This handles behaviors like 'amplifier-tester', 'foundation', 'python-dev',
+        and 'routing-matrix' which ARE the root namespace — their agents are named
         '{behavior_name}:{agent-name}' or '{behavior_name}-{agent-name}'.
         """
         sbp = {
-            "shadow": "/path/to/shadow",
-            "shadow-behavior": "/path/to/shadow",
+            "amplifier-tester": "/path/to/amplifier-tester",
+            "amplifier-tester-behavior": "/path/to/amplifier-tester",
         }
         cfg = self._make_configurator_with_sbp(sbp)
-        result = cfg._get_behavior_root_namespace("shadow")
-        assert result == "shadow", (
-            "_get_behavior_root_namespace should return 'shadow' when it has no "
-            "non-behavior sibling at the same path (shadow IS its own namespace)"
+        result = cfg._get_behavior_root_namespace("amplifier-tester")
+        assert result == "amplifier-tester", (
+            "_get_behavior_root_namespace should return 'amplifier-tester' when it "
+            "has no non-behavior sibling at the same path (it IS its own namespace)"
         )
 
     def test_returns_behavior_name_for_foundation_style(self) -> None:
@@ -2709,7 +2709,7 @@ class TestGetBehaviorRootNamespace:
         )
 
     def test_behaviors_list_sets_self_root_namespace(self) -> None:
-        """behaviors_list() uses self-as-namespace root_namespace for behaviors like 'shadow'."""
+        """behaviors_list() uses self-as-namespace root_namespace for behaviors like 'amplifier-tester'."""
         from pathlib import Path
 
         coordinator = MagicMock()
@@ -2723,12 +2723,12 @@ class TestGetBehaviorRootNamespace:
         bundle_mock.tools = []
         bundle_mock.providers = []
         bundle_mock._provenance = {
-            "agent:shadow-operator": ["shadow"],
-            "agent:shadow-smoke-test": ["shadow"],
+            "agent:setup-digital-twin": ["amplifier-tester"],
+            "agent:validator": ["amplifier-tester"],
         }
-        # shadow is its own namespace: only "shadow" in sbp at this path
+        # amplifier-tester is its own namespace: only "amplifier-tester" in sbp at this path
         bundle_mock.source_base_paths = {
-            "shadow": Path("/path/to/shadow"),
+            "amplifier-tester": Path("/path/to/amplifier-tester"),
         }
 
         prepared = MagicMock()
@@ -2740,10 +2740,11 @@ class TestGetBehaviorRootNamespace:
         cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
         items = cfg.behaviors_list()
 
-        shadow_item = next((i for i in items if i["name"] == "shadow"), None)
-        assert shadow_item is not None, "shadow should appear in behaviors_list()"
-        assert shadow_item["root_namespace"] == "shadow", (
-            "shadow behavior's root_namespace should be 'shadow' (self-as-namespace fallback)"
+        item = next((i for i in items if i["name"] == "amplifier-tester"), None)
+        assert item is not None, "amplifier-tester should appear in behaviors_list()"
+        assert item["root_namespace"] == "amplifier-tester", (
+            "amplifier-tester behavior's root_namespace should be 'amplifier-tester' "
+            "(self-as-namespace fallback)"
         )
 
 

@@ -50,7 +50,8 @@ For long sessions, maintain a `SCRATCH.md` file at workspace root:
 │ 2. Make changes in dependency order:                    │
 │    core → foundation → modules → bundles → apps         │
 ├─────────────────────────────────────────────────────────┤
-│ 3. Test at each level (unit → local override → shadow)  │
+│ 3. Test at each level (unit → local override → Digital  │
+│    Twin Universe (DTU))                                 │
 ├─────────────────────────────────────────────────────────┤
 │ 4. Push in dependency order                             │
 ├─────────────────────────────────────────────────────────┤
@@ -116,8 +117,9 @@ git checkout -b feat/use-new-capability
 # ... make changes ...
 pytest tests/
 
-# 4. Shadow test (critical for core changes)
-# Use shadow tool to test module works with local core changes
+# 4. DTU validation (critical for core changes)
+# Delegate to amplifier-tester:setup-digital-twin to verify module
+# works with local core changes
 
 # 5. Push core first
 cd ../amplifier-core
@@ -180,7 +182,7 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 1. Identify which core API the module calls
 2. Check if core API contract changed
 3. Test with pinned core version to isolate
-4. Use shadow environment to test fix
+4. Validate the fix in a DTU via `amplifier-tester:setup-digital-twin`
 
 ### Issue in Bundle Composition
 

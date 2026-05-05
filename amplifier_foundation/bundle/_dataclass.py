@@ -316,9 +316,9 @@ class Bundle:
         activator = ModuleActivator(install_deps=install_deps, base_path=self.base_path)
 
         # CRITICAL: Install bundle packages BEFORE activating modules
-        # Modules may import from their parent bundle's package (e.g., tool-shadow
-        # imports from amplifier_bundle_shadow). These packages must be installed
-        # before modules can be activated.
+        # Modules may import from their parent bundle's package (e.g., a tool
+        # module importing helpers from `amplifier_bundle_<name>`). These packages
+        # must be installed before modules can be activated.
         if install_deps:
             # Install this bundle's package (if it has pyproject.toml)
             if self.base_path:

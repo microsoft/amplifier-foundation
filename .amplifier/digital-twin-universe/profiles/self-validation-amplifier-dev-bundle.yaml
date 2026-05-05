@@ -1,0 +1,127 @@
+# Validates local working-tree changes for:
+#   - amplifier (CLI app)         — installed directly from local Gitea by URL
+#   - amplifier-foundation        — routed via url_rewrite to local Gitea
+#
+# The transitively included bundles (amplifier-bundle-amplifier-tester,
+# amplifier-bundle-digital-twin-universe, amplifier-bundle-gitea) are pulled
+# from upstream GitHub, not from local Gitea — this profile does NOT exercise
+# their working-tree changes.
+#
+# This run installs the amplifier-dev bundle that lives INSIDE the
+# amplifier-foundation repo at bundles/amplifier-dev.yaml (referenced via
+# the `#subdirectory=` URI fragment), instead of plain `foundation`. Because
+# amplifier-foundation has a url_rewrite rule pointing at local Gitea, the
+# amplifier-dev bundle file resolves from the user's local working-tree
+# snapshot.
+#
+# Local repos are NOT modified. The amplifier-foundation working-tree snapshot
+# was force-pushed to a local Gitea instance, and the url_rewrite below
+# redirects its github.com URL to that Gitea so the install picks up local
+# state.
+#
+# IMPORTANT: We do NOT add a url_rewrite rule for the bare `amplifier` repo
+# because the matcher is prefix-substring based and would also capture
+# github.com/microsoft/amplifier-module-* and other unrelated repos, breaking
+# transitive installs. Instead we install `amplifier` directly from the local
+# Gitea by URL.
+
+name: self-validation-amplifier-dev-bundle
+description: >
+  Digital Twin Universe (DTU) validating uncommitted working-tree changes for amplifier,
+  amplifier-foundation, and the digital-twin-universe / gitea /
+  amplifier-tester bundles. Uses the amplifier-dev bundle defined inside
+  amplifier-foundation (bundles/amplifier-dev.yaml) instead of plain
+  foundation.
+
+base:
+  image: ubuntu:24.04
+
+# Only amplifier-foundation is rewritten to local Gitea. All other
+# github.com/microsoft/amplifier-* URLs (provider-anthropic, tool-bash,
+# hooks-*, bundle-*, etc.) pass through to upstream GitHub.
+url_rewrites:
+  auth:
+    username: admin
+    token_var: GITEA_TOKEN
+  allow_uv_github_fast_path: false
+  rules:
+    - match: github.com/microsoft/amplifier-foundation
+      target: ${GITEA_URL}/admin/amplifier-foundation
+
+passthrough:
+  allow_external: true
+  services:
+    - name: anthropic
+      key_env: ANTHROPIC_API_KEY
+
+provision:
+  setup_cmds:
+    # Base system + uv
+    - apt-get update && apt-get install -y git curl ca-certificates
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    # Make /etc/profile.d/dtu-env.sh apply to interactive (non-login) shells too.
+    # Without this, `amplifier-digital-twin exec` lands in a non-login shell
+    # where /root/.local/bin is NOT on PATH and ANTHROPIC_API_KEY / proxy vars
+    # are unset — so `amplifier` reports "command not found". The guard makes
+    # the bashrc safe even if dtu-env.sh hasn't been written yet.
+    - |
+      cat > /root/.bashrc << 'EOF'
+      [ -f /etc/profile.d/dtu-env.sh ] && . /etc/profile.d/dtu-env.sh
+      EOF
+
+    # Install Amplifier CLI directly from local Gitea (so the user's local
+    # `amplifier` changes are exercised). The transitive amplifier-app-cli
+    # and amplifier-foundation deps are also pulled from Gitea via the
+    # url_rewrites above.
+    # UV_NO_GITHUB_FAST_PATH belt-and-suspenders for proxy honoring.
+    - |
+      export PATH="/root/.local/bin:$PATH"
+      export UV_NO_GITHUB_FAST_PATH=1
+      uv tool install "git+${GITEA_URL}/admin/amplifier"
+
+    # Configure Anthropic provider (uses upstream provider-anthropic from GitHub).
+    - |
+      mkdir -p /root/.amplifier
+      cat > /root/.amplifier/settings.yaml << EOF
+      config:
+        providers:
+          - module: provider-anthropic
+            source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
+            config:
+              api_key: $ANTHROPIC_API_KEY
+      EOF
+
+    # Add the amplifier-dev bundle. It's a yaml file inside the
+    # amplifier-foundation repo, referenced via `#subdirectory=` (amplifier's
+    # standard URI fragment for bundle yaml subpaths). The url_rewrite for
+    # amplifier-foundation routes this to the local Gitea snapshot.
+    #
+    # amplifier-dev transitively includes amplifier-tester (which includes
+    # digital-twin-universe, which includes gitea), so all 4 bundles get
+    # composed automatically. Note: only amplifier-foundation has a
+    # url_rewrite — the transitive bundles resolve from upstream GitHub,
+    # so this profile does NOT exercise their working-tree changes.
+    - |
+      export PATH="/root/.local/bin:$PATH"
+      export UV_NO_GITHUB_FAST_PATH=1
+      amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/amplifier-dev.yaml' --app
+
+    # Quick provision-time sanity checks.
+    - |
+      export PATH="/root/.local/bin:$PATH"
+      amplifier --version
+      amplifier bundle list
+
+    - mkdir -p /home/user/project
+
+update:
+  cmds:
+    - |
+      export PATH="/root/.local/bin:$PATH"
+      export UV_NO_GITHUB_FAST_PATH=1
+      amplifier update --yes --force
+
+readiness:
+  - name: amplifier-installed
+    command: 'PATH=/root/.local/bin:$PATH amplifier --version'
