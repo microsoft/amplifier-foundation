@@ -13,8 +13,8 @@ Each level provides more confidence but requires more setup:
 │ 4. Push & CI              (confidence: ████░)           │
 │    Full CI pipeline, all tests, real dependencies       │
 ├─────────────────────────────────────────────────────────┤
-│ 3. Shadow Environment     (confidence: ███░░)           │
-│    OS-isolated sandbox with local source snapshots      │
+│ 3. Digital Twin Universe  (confidence: ███░░)           │
+│    (DTU) Validation — local repos via Gitea             │
 │    Tests: Does my change work with other local changes? │
 ├─────────────────────────────────────────────────────────┤
 │ 2. Local Source Override  (confidence: ██░░░)           │
@@ -34,11 +34,11 @@ Each level provides more confidence but requires more setup:
 | Module internal change | 1. Unit tests |
 | Module API change | 2. Local override |
 | Core internal change | 2. Local override + sample modules |
-| Core contract change | 3. Shadow environment |
-| Multi-repo coordinated change | 3. Shadow environment |
-| Breaking change | 3. Shadow + careful push order |
+| Core contract change | 3. DTU validation |
+| Multi-repo coordinated change | 3. DTU validation |
+| Breaking change | 3. DTU + careful push order |
 | **Core release / any tag** | **5. Docker E2E smoke test** |
-| Multi-repo coordinated change | 3. Shadow + 5. E2E |
+| Multi-repo coordinated change | 3. DTU + 5. E2E |
 
 ## Level 1: Unit Tests
 
@@ -76,65 +76,32 @@ Then run Amplifier normally - it will use your local sources.
 
 **When sufficient**: Testing that Amplifier correctly loads and uses your changes.
 
-## Level 3: Shadow Environment
+## Level 3: DTU Validation
 
-For testing changes that span multiple repos or need isolation:
+For changes that span multiple repos or need isolation, use the **amplifier-tester** bundle. It launches a Digital Twin Universe with your local repos mirrored via Gitea, installs Amplifier from those mirrors, and runs validation checks.
 
-```bash
-# Create shadow environment with local sources
-amplifier-shadow create \
-  --local ~/repos/amplifier-core:microsoft/amplifier-core \
-  --local ~/repos/amplifier-foundation:microsoft/amplifier-foundation
+Always delegate — don't drive the CLI directly:
 
-# Execute commands in the shadow
-amplifier-shadow exec <shadow-id> "uv tool install git+https://github.com/microsoft/amplifier"
-amplifier-shadow exec <shadow-id> "amplifier run 'test my changes'"
-
-# Clean up
-amplifier-shadow destroy <shadow-id>
+```
+delegate(agent="amplifier-tester:setup-digital-twin",
+         instruction="Set up a DTU validating my changes to <repo-paths>",
+         context_depth="all", context_scope="full")
 ```
 
-> **Note**: If `amplifier-shadow` is not installed, install it with:
-> ```bash
-> uv tool install git+https://github.com/microsoft/amplifier-bundle-shadow
-> ```
+For follow-up checks against an existing DTU:
 
-### What Shadow Provides
-
-1. **OS-level isolation** - Sandboxed filesystem (bubblewrap on Linux, sandbox-exec on macOS)
-2. **Local source snapshots** - Your uncommitted changes captured as bare git repos
-3. **Git URL rewriting** - `git clone https://github.com/microsoft/amplifier-core` fetches from local snapshot
-4. **Full network access** - Can still reach PyPI, other dependencies
-
-### When to Use Shadow
-
-- Testing core changes with module compatibility
-- Testing multi-repo changes together
-- Verifying `uv tool install` works with your changes
-- Destructive tests that shouldn't affect real environment
-
-### Shadow Workflow
-
-```bash
-# 1. Make changes in your local repos (don't need to commit)
-
-# 2. Create shadow with those changes
-amplifier-shadow create \
-  --local ~/repos/amplifier-core:microsoft/amplifier-core \
-  --local ~/repos/amplifier-module-xyz:microsoft/amplifier-module-xyz \
-  --name my-test
-
-# 3. Test in shadow
-amplifier-shadow exec my-test "uv tool install git+https://github.com/microsoft/amplifier"
-amplifier-shadow exec my-test "amplifier run 'verify changes work'"
-# or run tests
-amplifier-shadow exec my-test "cd /workspace && pytest tests/"
-
-# 4. If tests pass, commit and push your changes
-
-# 5. Destroy shadow
-amplifier-shadow destroy my-test
 ```
+delegate(agent="amplifier-tester:validator",
+         instruction="Validate DTU <instance-id>: verify <what>",
+         context_depth="recent", context_scope="agents")
+```
+
+### When to Use DTU Validation
+
+- Core contract or kernel changes with module compatibility concerns
+- Multi-repo coordinated changes
+- Verifying `uv tool install` works end-to-end with your changes
+- Destructive tests that shouldn't touch your real environment
 
 ## Level 4: Push & CI
 
@@ -171,9 +138,9 @@ The highest-confidence validation — tests the actual built artifact in a clean
 | Change Type | Minimum Level |
 |-------------|---------------|
 | Core internal change | 2. Local override |
-| Core contract change | 3. Shadow environment |
+| Core contract change | 3. DTU validation |
 | **Core release / any tag** | **5. Docker E2E smoke test** |
-| Multi-repo coordinated change | 3. Shadow + 5. E2E |
+| Multi-repo coordinated change | 3. DTU + 5. E2E |
 
 ### Why It Exists
 
@@ -198,7 +165,7 @@ Changes to **kernel contracts** (amplifier-core) MUST be validated through at le
 | Core coordinator/session | Full `amplifier run` E2E (Level 5) |
 | Core tool dispatch | Foundation tool-delegate + real tool call |
 | Foundation bundle loading | CLI `amplifier run --bundle` with real bundle |
-| Module protocol changes | Shadow test with affected modules |
+| Module protocol changes | DTU validation with affected modules |
 
 ## Testing Specific Scenarios
 
@@ -230,13 +197,10 @@ amplifier  # Start interactive session (no subcommand = interactive mode)
 cd amplifier-core
 pytest tests/
 
-# 2. Shadow test with dependent modules
-amplifier shadow create \
-  --local-source amplifier-core:. \
-  --local-source amplifier-module-affected1:/path/to/module1 \
-  --local-source amplifier-module-affected2:/path/to/module2
-
-amplifier shadow run -- pytest  # Run all module tests in shadow
+# 2. DTU validation with dependent modules
+# Delegate to amplifier-tester:setup-digital-twin with the paths to
+# amplifier-core and each affected module. Then run tests via
+# amplifier-digital-twin exec <instance-id> "pytest"
 
 # 3. If passing, push core first
 git push origin feat/contract-change
@@ -270,16 +234,13 @@ amplifier  # Start interactive session with the active bundle
 3. Check for missing dependencies
 4. Use `amplifier --verbose` to see load errors
 
-### Shadow Environment Issues
+### DTU Validation Issues
 
-1. Verify local paths are correct
-2. Check that repos have content (not empty)
-3. On Linux, verify bubblewrap is installed: `which bwrap`
-4. On macOS, sandbox-exec should be available by default
+For DTU-specific troubleshooting (Gitea mirror failures, profile generation issues, container provisioning), consult the `digital-twin-universe` skill or delegate to `digital-twin-universe:dtu-profile-builder`.
 
 ### Integration Test Failures
 
 1. Check if dependency versions changed
-2. Verify all local changes are captured in shadow
+2. Verify all local changes are reflected in the DTU's Gitea mirror
 3. Test each repo individually first
 4. Check push order - did you push dependencies first?

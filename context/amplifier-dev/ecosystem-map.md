@@ -36,8 +36,8 @@
 
 | If You Change... | Test By... | Push Order |
 |------------------|------------|------------|
-| amplifier-core contracts | Shadow env with ALL dependent modules | Core first, then modules |
-| amplifier-core internals | Unit tests + shadow with sample modules | Core only |
+| amplifier-core contracts | Digital Twin Universe (DTU) validation with ALL dependent modules | Core first, then modules |
+| amplifier-core internals | Unit tests + DTU with sample modules | Core only |
 | amplifier-foundation | Direct tests + app integration | Foundation first |
 | A module | Module unit tests | Module only (isolated) |
 | A bundle | Load bundle, verify composition | Bundle only |
@@ -112,7 +112,7 @@ amplifier-dev ~/work/my-feature
 
 1. Design change, document in spec
 2. Implement in core with backward compatibility if possible
-3. Test ALL affected modules in shadow environment
+3. Test ALL affected modules in a DTU via `amplifier-tester:setup-digital-twin`
 4. Update modules to use new contract
 5. Push core, then modules
 6. Deprecation period if breaking

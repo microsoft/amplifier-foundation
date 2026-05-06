@@ -4,6 +4,11 @@ Full narratives of past incidents with timelines and detailed analysis. These ca
 are referenced by `context/ISSUE_HANDLING.md` and mined on demand by agents when encountering
 situations that rhyme with past cases.
 
+> **Note:** Older case studies reference "shadow tests" and `shadow-smoke-test` from the
+> retired `amplifier-bundle-shadow`. The current ecosystem uses Digital Twin Universes via
+> `amplifier-tester:setup-digital-twin` and `amplifier-tester:validator`. The historical
+> wording is preserved as-is below.
+
 ---
 
 ## Index

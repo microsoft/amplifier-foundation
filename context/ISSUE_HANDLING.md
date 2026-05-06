@@ -131,7 +131,7 @@ present the decision in one round and the text in a follow-up.
 **Actions:**
 1. Implement the fix
 2. Run `python_check` to verify syntax
-3. **Commit locally** (before shadow testing)
+3. **Commit locally** (before Digital Twin Universe (DTU) testing)
    - Creates snapshot for testing
    - Enables easy rollback if needed
    - Documents what changed
@@ -158,14 +158,14 @@ implementations exist in the case studies or if known pitfalls apply to this typ
 
 ---
 
-### Phase 5: **Shadow Testing**
+### Phase 5: **DTU Validation**
 
 **Goal:** Prove the fix works with evidence.
 
 **Actions:**
-1. Create shadow environment with local changes
-2. Install Amplifier from local source
-3. Reproduce the original issue scenario
+1. Launch a Digital Twin Universe with local changes via `amplifier-tester:setup-digital-twin`
+2. The DTU installs Amplifier from your local source
+3. Reproduce the original issue scenario inside the DTU
 4. Verify all evidence requirements
 5. If tests fail -> investigate -> fix -> re-test (loop until working)
 
@@ -191,14 +191,14 @@ must demonstrate the fix from the user's perspective.
 **Actions:**
 
 1. **Run Independent Smoke Test (FINAL DEFENSE):**
-   - Execute shadow-smoke-test in fresh environment
+   - Run `amplifier-tester:validator` in a fresh DTU
    - Verify fix works from user perspective
    - Capture objective PASS/FAIL verdict
    - This is the LAST validation before seeking push approval
 
 2. **GATE 2 - Present Complete Solution:**
    - Summary of fix with file:line references
-   - Complete shadow test results with evidence
+   - Complete DTU validation results with evidence
    - Before/after comparison
    - Independent smoke test results (PASS verdict)
    - Commit hash ready to push
@@ -216,7 +216,7 @@ must demonstrate the fix from the user's perspective.
    - Update any related documentation
    - **Provide post-merge verification steps proactively:**
      (1) How to verify locally (`git pull && pytest`)
-     (2) How to verify on another machine (fresh clone or shadow environment)
+     (2) How to verify on another machine (fresh clone or DTU)
      (3) What to watch for (regressions, dependency issues)
 
 **IMPORTANT:** If any changes occur after the smoke test (fixing issues it found, user feedback iterations), the smoke test MUST run again before requesting push approval.
@@ -404,8 +404,8 @@ Trace where critical data (config, providers, modules) flows:
 | Agent | When to Use | What They Provide |
 |-------|-------------|-------------------|
 | `foundation:test-coverage` | Comprehensive testing strategy needed | Test planning, coverage analysis, edge case identification |
-| `shadow-operator` | Shadow environment testing | Isolated test execution |
-| `shadow-smoke-test` | Independent validation | Objective PASS/FAIL verdict |
+| `amplifier-tester:setup-digital-twin` | DTU environment for ecosystem changes | Isolated test execution |
+| `amplifier-tester:validator` | Independent validation in DTU | Objective PASS/FAIL verdict |
 
 **When to consult test-coverage:**
 - Complex fix requiring multi-layered testing
@@ -461,7 +461,7 @@ Use this checklist for every issue:
 
 ### Testing
 - [ ] Define specific evidence requirements
-- [ ] Create shadow environment with local changes
+- [ ] Launch DTU with local changes via `amplifier-tester:setup-digital-twin`
 - [ ] Run complete end-to-end test
 - [ ] Verify ALL evidence requirements pass
 - [ ] Collect before/after comparison
@@ -470,7 +470,7 @@ Use this checklist for every issue:
 
 ### Finalization
 - [ ] Push via git-ops agent (handles rebasing, quality)
-- [ ] Run independent shadow-smoke-test validation
+- [ ] Run independent `amplifier-tester:validator` pass
 - [ ] Comment on issue with fix details and evidence
 - [ ] Close issue with resolution steps for users
 - [ ] Update process documentation with learnings
@@ -608,7 +608,7 @@ For PR review guidance, see `docs/PR_REVIEW_GUIDE.md`.
 ### The Fix
 [Code changes with explanation]
 
-### Shadow Testing - ALL EVIDENCE VERIFIED
+### DTU Validation - ALL EVIDENCE VERIFIED
 [Table of evidence requirements and results]
 
 ### Files Changed
@@ -636,7 +636,7 @@ NOT `amplifier update` (because update is what's broken)
 ### Multi-Repo Fixes
 
 When a fix touches multiple repos:
-1. Test all changes together in shadow environment
+1. Test all changes together in a DTU via `amplifier-tester:setup-digital-twin`
 2. Push in dependency order (core -> foundation -> modules -> apps)
 3. Reference related commits in each commit message
 4. Create tracking issue linking all PRs
@@ -692,7 +692,7 @@ them for contextually relevant content rather than loading everything.
 
 X **"I'll fix it and see if it works"** -> Investigate first, understand, then fix  
 X **"The tests probably pass"** -> Actually run them with evidence requirements  
-X **"I think this is done"** -> Shadow test proves it's done  
+X **"I think this is done"** -> DTU validation proves it's done  
 X **"Let me make one more change"** -> Commit, test, then make next change  
 X **"This might be related"** -> Find the exact relationship  
 X **"I'll ask the user to test it"** -> You test it first, present working solution  
@@ -713,7 +713,7 @@ An issue is properly resolved when:
 
 - [x] Root cause identified with specific file:line references
 - [x] Fix implemented and committed locally
-- [x] Shadow tested with all evidence requirements passing
+- [x] DTU validated with all evidence requirements passing
 - [x] Independent smoke test validation (PASS verdict)
 - [x] Pushed to appropriate repository
 - [x] Issue commented with fix details and user resolution steps
@@ -736,7 +736,7 @@ When presenting investigation findings at GATE 1, always include:
 3. **Default action** with indication of proceeding unless redirected
 
 **Anti-pattern:** "Here are options A, B, C, D. Which would you like?"
-**Correct pattern:** "Based on investigation, I recommend Option C (shadow test to verify, then respond with clarification request) because this validates our finding before responding. Proceeding with shadow test unless you redirect me."
+**Correct pattern:** "Based on investigation, I recommend Option C (DTU validation to verify, then respond with clarification request) because this validates our finding before responding. Proceeding with DTU validation unless you redirect me."
 
 ### 2. Unknown Terms = Custom Code Heuristic
 
@@ -755,12 +755,12 @@ When issue reports mention terms not found in the Amplifier codebase:
 
 **NEVER propose posting code advice/workarounds without first:**
 
-1. Shadow testing the exact code pattern
+1. Testing the exact code pattern in a DTU
 2. Verifying it works in a realistic scenario
 3. Having specific evidence the advice is correct
 
 **Anti-pattern:** "I can add a follow-up comment suggesting they try X"
-**Correct pattern:** "I tested X in shadow environment [evidence]. Ready to post."
+**Correct pattern:** "I tested X in a DTU [evidence]. Ready to post."
 
 This applies even when the advice seems obviously correct. Test it.
 
@@ -773,8 +773,8 @@ When issue could have multiple explanations:
 3. **Run comprehensive test** rather than iterating
 
 **Example for timing issues:**
-- Scenario A: Standard PreparedBundle flow -> test with shadow-operator
-- Scenario B: Custom orchestrator bypassing PreparedBundle -> test with amplifier-smoke-test
+- Scenario A: Standard PreparedBundle flow -> test with `amplifier-tester:setup-digital-twin`
+- Scenario B: Custom orchestrator bypassing PreparedBundle -> follow up with `amplifier-tester:validator`
 - Run BOTH tests before presenting findings
 
 ### 5. Version Mismatch Detection
@@ -826,6 +826,6 @@ processes.
 
 > "My time is cheaper than yours. I should do all the investigation, testing, and validation before bringing you a complete, proven solution. Only bring you design decisions, not missing research."
 
-> "Commit locally before shadow testing. Test until proven working. Present complete evidence, not hopes."
+> "Commit locally before DTU testing. Test until proven working. Present complete evidence, not hopes."
 
 > "If I discover something three times and it's still not working, I don't understand the problem yet. Keep investigating."

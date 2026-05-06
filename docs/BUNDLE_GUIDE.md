@@ -435,7 +435,7 @@ A bundle can declare itself an installable Python package by adding a root `pypr
 Two legitimate uses for this pattern:
 
 1. **Shared Python code across modules** — multiple `modules/tool-*` or `modules/hook-*` need to import common types, clients, or helpers from the same bundle.
-2. **Standalone CLI + bundle assets** — the bundle also ships a `uv tool install`-able CLI that needs bundle assets at runtime. Example: [`amplifier-bundle-shadow`](https://github.com/microsoft/amplifier-bundle-shadow) provides the `amplifier-shadow` CLI which needs container configs.
+2. **Standalone CLI + bundle assets** — the bundle also ships a `uv tool install`-able CLI that needs bundle assets at runtime. Example: [`amplifier-bundle-digital-twin-universe`](https://github.com/microsoft/amplifier-bundle-digital-twin-universe) provides the `amplifier-digital-twin` CLI which needs profile templates and container configs at runtime.
 
 #### Consider these alternatives first
 
