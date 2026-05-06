@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from dataclasses import field
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -24,6 +25,39 @@ from amplifier_foundation.spawn_utils import apply_provider_preferences_with_res
 from amplifier_foundation.bundle._dataclass import Bundle
 
 logger = logging.getLogger(__name__)
+
+
+# Intentionally duplicated across provider-anthropic, foundation, and hooks-streaming-ui.
+# These are separate repos with no shared utility dependency. The function is 10 lines —
+# the coordination cost of sharing outweighs the duplication cost.
+def _sum_cost_usd(contributions: list) -> Decimal | None:
+    """Sum cost_usd from collect_contributions() results. Returns None if no cost data."""
+    total: Decimal | None = None
+    for c in contributions:
+        if c and isinstance(c, dict):
+            cost = c.get("cost_usd")
+            if cost is not None:
+                total = (total or Decimal("0")) + (
+                    cost if isinstance(cost, Decimal) else Decimal(str(cost))
+                )
+    return total
+
+
+async def _bridge_child_cost(
+    child_coordinator,
+    parent_coordinator,
+    child_session_id: str,
+) -> None:
+    """Propagate child session cost to parent's session.cost channel."""
+    child_contributions = await child_coordinator.collect_contributions("session.cost")
+    child_total = _sum_cost_usd(child_contributions)
+
+    if child_total is not None:
+        parent_coordinator.register_contributor(
+            "session.cost",
+            f"delegate:{child_session_id}",
+            lambda total=child_total: {"cost_usd": total},
+        )
 
 
 class BundleModuleSource:
@@ -663,6 +697,13 @@ class PreparedBundle:
         # Execute instruction and cleanup
         try:
             response = await child_session.execute(instruction)
+            # Bridge child session cost to parent coordinator
+            if parent_session:
+                await _bridge_child_cost(
+                    child_coordinator=child_session.coordinator,
+                    parent_coordinator=parent_session.coordinator,
+                    child_session_id=child_session.session_id,
+                )
         finally:
             # Unregister the temporary hook before cleanup
             unregister()
