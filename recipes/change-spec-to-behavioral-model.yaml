@@ -59,9 +59,6 @@ steps:
       Reads registry.json, walks the transitive dependency tree for a target bundle,
       parses all component files (modes, agents, recipes, skills, behavior YAMLs,
       context files), and outputs a JSON manifest to stdout.
-
-      Usage:
-          python parse_bundle_composition.py <bundle_name> <registry_path>
       """
 
       from __future__ import annotations
@@ -1467,9 +1464,6 @@ steps:
       def main() -> None:
           """CLI entrypoint: parse a bundle's composition and output JSON to stdout.
 
-          Usage:
-              python parse_bundle_composition.py <bundle_name> <registry_path>
-
           Exits with code 1 and prints an error JSON if the bundle is not found.
           """
           if len(sys.argv) != 3:
@@ -1522,9 +1516,6 @@ steps:
       Reads registry.json, walks the transitive dependency tree for a target bundle,
       parses all component files (modes, agents, recipes, skills, behavior YAMLs,
       context files), and outputs a JSON manifest to stdout.
-
-      Usage:
-          python parse_bundle_composition.py <bundle_name> <registry_path>
       """
 
       from __future__ import annotations
@@ -2973,7 +2964,7 @@ steps:
           """Return (safe, warn, confirm, explicit_block, default_action) from mode data.
 
           Handles both the ``tool_policies`` key (used in test fixtures) and the
-          ``tool_categories`` key (emitted by parse_bundle_composition.py).
+          ``tool_categories`` key (emitted by the parse-composition recipe step).
           """
           tool_data: dict[str, Any] = (
               mode_data.get("tool_policies") or mode_data.get("tool_categories") or {}
