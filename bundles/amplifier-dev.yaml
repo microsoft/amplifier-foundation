@@ -19,6 +19,8 @@ includes:
   # which in turn pulls in gitea. Devs working ON the ecosystem need
   # all three to validate their changes in isolated DTU environments.
   - bundle: git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main
+  # Bundle-design expertise: default-on for ecosystem developers (opt-in for end users via foundation bundle)
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/bundle-design.yaml
 
 # Development-specific session settings
 session:
