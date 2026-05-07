@@ -312,9 +312,14 @@ class TestSubdirectoryBundleLoading:
                 f"file://{base}#subdirectory=behaviors/recipes"
             )
 
-            # The bundle should have source_base_paths set up
+            # The bundle should have source_base_paths set up.
+            # The 'recipes' namespace must resolve to its own directory (behaviors/recipes/),
+            # NOT to the checkout root.  Agents and context for 'recipes:' live under
+            # behaviors/recipes/agents/ and behaviors/recipes/context/, not root/agents/.
             assert bundle.name == "recipes"
-            assert bundle.source_base_paths.get("recipes") == base.resolve()
+            assert bundle.source_base_paths.get("recipes") == (
+                base / "behaviors" / "recipes"
+            ).resolve()
 
     @pytest.mark.asyncio
     async def test_root_bundle_no_extra_source_base_paths(self) -> None:
@@ -359,6 +364,121 @@ class TestSubdirectoryBundleLoading:
             # Without a root bundle, source_base_paths won't be populated
             assert bundle.name == "auth"
             assert "auth" not in bundle.source_base_paths
+
+    @pytest.mark.asyncio
+    async def test_behavior_namespace_maps_to_subbundle_root_not_checkout_root(
+        self,
+    ) -> None:
+        """Behavior YAML's namespace must map to the sub-bundle root, not the checkout root.
+
+        Regression test for: when a bundle at {checkout}/sub/ includes a behavior YAML at
+        {checkout}/sub/behaviors/ that declares bundle.name='subns', the registry was setting
+        source_base_paths['subns'] = {checkout}/ (checkout root) via resolved.source_root
+        instead of {checkout}/sub/ (the sub-bundle's own directory).
+
+        This caused:
+          - resolve_agent_path('subns:foo') to return the WRONG agent file from the checkout
+            root's agents/ directory instead of sub/agents/
+          - load_agent_metadata() to populate agents with the wrong tools list
+
+        The concrete production failure: build-up:coder was loading foundation:explorer's
+        tool list because source_base_paths['build-up'] pointed at the foundation checkout root
+        (where foundation's own explorer.md lives at agents/explorer.md) instead of
+        experiments/build-up/ (where build-up:explorer.md lives at agents/explorer.md).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            # Checkout root — simulates the foundation git repo root
+            (root / "bundle.md").write_text(
+                "---\nbundle:\n  name: foundation-root\n  version: 1.0.0\n---\n# Root"
+            )
+
+            # Decoy agent at the ROOT level — simulates foundation's own foo.md.
+            # With the bug, resolve_agent_path('subns:foo') returns THIS wrong file.
+            (root / "agents").mkdir()
+            (root / "agents" / "foo.md").write_text(
+                "---\nmeta:\n  name: wrong-foo\n  description: Decoy (wrong file)\n---\n# Wrong\n"
+            )
+
+            # Sub-bundle directory — simulates experiments/build-up/
+            sub = root / "sub"
+            sub.mkdir()
+            (sub / "agents").mkdir()
+            (sub / "behaviors").mkdir()
+
+            # Correct agent at the SUB-BUNDLE level — the right file we expect
+            (sub / "agents" / "foo.md").write_text(
+                "---\n"
+                "meta:\n"
+                "  name: foo\n"
+                "  description: Correct agent\n"
+                "tools:\n"
+                "  - module: tool-bash\n"
+                "    source: git+https://github.com/example/tool-bash@main\n"
+                "---\n"
+                "# Foo\n"
+            )
+
+            behavior_path = sub / "behaviors" / "config.yaml"
+
+            # Sub-bundle main file — simulates build-up-foundation.md
+            # Includes the behavior YAML via a direct file:// URI.
+            (sub / "bundle-main.md").write_text(
+                "---\n"
+                "bundle:\n"
+                "  name: bundle-main\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f'  - "file://{behavior_path}"\n'
+                "---\n"
+            )
+
+            # Behavior YAML — simulates build-up-foundation.yaml with bundle.name: build-up.
+            # Note: this file lives in behaviors/ subdirectory, but the 'subns' namespace
+            # resources (agents/, context/) live at the parent sub/ level.
+            behavior_path.write_text(
+                "bundle:\n"
+                "  name: subns\n"
+                "  version: 1.0.0\n"
+                "agents:\n"
+                "  include:\n"
+                "    - subns:foo\n"
+            )
+
+            registry = BundleRegistry(home=root / "home")
+            bundle = await registry._load_single(
+                f"file://{root}#subdirectory=sub/bundle-main.md"
+            )
+
+            # ASSERTION 1: 'subns' namespace must resolve to sub/ (not root/)
+            # Bug: resolved.source_root (root/) was used instead of bundle.base_path (sub/)
+            assert bundle.source_base_paths.get("subns") == sub.resolve(), (
+                f"source_base_paths['subns'] = {bundle.source_base_paths.get('subns')!r}, "
+                f"expected {sub.resolve()!r} — was it set to the checkout root instead?"
+            )
+
+            # ASSERTION 2: agent resolution must return the correct file from sub/agents/
+            # Bug: with source_base_paths['subns'] = root/, it returned root/agents/foo.md (decoy)
+            bundle.load_agent_metadata()
+            agent_path = bundle.resolve_agent_path("subns:foo")
+            assert agent_path is not None, "resolve_agent_path('subns:foo') returned None"
+            assert agent_path.resolve() == (sub / "agents" / "foo.md").resolve(), (
+                f"resolve_agent_path('subns:foo') = {agent_path!r}, "
+                f"expected {(sub / 'agents' / 'foo.md').resolve()!r} — got the checkout-root decoy?"
+            )
+
+            # ASSERTION 3: agent tools must come from the correct file (sub/agents/foo.md)
+            # Bug: loaded decoy which has no tools, so agent had empty tool list
+            assert "subns:foo" in bundle.agents, (
+                f"'subns:foo' not in bundle.agents after load_agent_metadata(); "
+                f"agents = {list(bundle.agents.keys())}"
+            )
+            agent_data = bundle.agents["subns:foo"]
+            assert "tools" in agent_data, (
+                f"No 'tools' key in agent data — loaded from wrong file? "
+                f"agent_data = {agent_data}"
+            )
 
 
 class TestDiamondAndCircularDependencies:
