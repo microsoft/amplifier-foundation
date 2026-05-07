@@ -1,0 +1,135 @@
+---
+bundle:
+  # Namespace: agents and context registered via this bundle resolve under
+  # `build-up:` (e.g. `build-up:explorer`, `build-up:context/...`).
+  # This YAML lives in experiments/build-up/behaviors/ but the agents/ and
+  # context/ directories live one level up at experiments/build-up/.
+  # namespace_root: .. tells the registry to set
+  #   source_base_paths['build-up'] = experiments/build-up/
+  # rather than the default (this file's own behaviors/ directory).
+  name: build-up
+  version: 0.4.0
+  namespace_root: ..
+  description: |
+    Build-up foundation behavior. The parent session is a pure orchestrator —
+    it has ONLY `todo` and `delegate` and CANNOT load any other tool.
+    Every concrete action (read a file, run a command, search code, edit code,
+    run tests) goes through one of four self-sufficient sub-session agents.
+    Each agent declares its own tools in its `.md` frontmatter; those tools
+    are pre-activated at compose time via the `load_agent_metadata()` ordering
+    fix in `amplifier-app-cli/lib/bundle_loader/prepare.py` (companion change
+    on the same branch as this bundle).
+
+      Parent tools:   todo + delegate                   (orchestration only)
+      explorer:       bash, filesystem, search, todo, delegate     (read-only)
+      planner:        filesystem, todo, delegate                   (design / spec / review)
+      coder:          bash, filesystem, search, todo, delegate     (implementation from spec)
+      tester:         bash, filesystem, search, todo, delegate     (verification, test gen)
+
+    No web, no skills, no LSP, no apply-patch, no MCP. Earn them back via smoke testing.
+
+    History:
+      0.1.0 — Lean parent (4 tool modules at parent), no agents.
+      0.2.0 — Radical agent-router. Parent stripped to todo+delegate. Four
+              agents authored (explorer/planner/coder/tester). Failed because
+              agent-declared tools weren't pre-activated.
+      0.2.1 — Path resolution fix: agents.include uses build-up:<name>;
+              bundle.name set to "build-up" so source_base_paths resolves.
+              Descriptions render. Tools still missing at agent spawn.
+      0.2.2 — Workaround: declared bash/filesystem/search at parent for
+              inheritance. Architecture worked but parent's tool spec grew
+              from 5,679 to 9,138 input tokens. Discipline enforced by prompt.
+      0.3.0 — Real fix: app-cli now calls bundle.load_agent_metadata() before
+              bundle.prepare(), so agent-side tool sources get activated at
+              compose time. Parent reverts to todo+delegate; agents carry
+              their own tools structurally, not by inheritance.
+      0.4.0 — Explicit namespace_root: .. replaces the removed is_relative_to()
+              filesystem heuristic in compose(). The registry now resolves
+              source_base_paths['build-up'] = experiments/build-up/ at load
+              time via this declaration, without inspecting directory layout.
+
+# Session configuration
+session:
+  raw: true
+  orchestrator:
+    module: loop-streaming
+    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    config:
+      extended_thinking: true
+  context:
+    module: context-simple
+    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+    config:
+      max_tokens: 300000
+      compact_threshold: 0.8
+      auto_compact: true
+
+# Tools at the parent bundle level — ONLY what the orchestrator itself uses.
+#
+# Agent-side tools (bash, filesystem, search, etc.) are declared inside each
+# agent's .md frontmatter under its own `tools:` block, with explicit `source:`
+# URIs. They are pre-activated at compose time by `Bundle.prepare()` after
+# `load_agent_metadata()` populates `mount_plan["agents"][name]["tools"]`
+# from the agent files (see the companion ordering fix in
+# `amplifier-app-cli/lib/bundle_loader/prepare.py`).
+#
+# Result: parent's tool spec stays small, agents carry their own tools
+# structurally rather than via inherited declarations.
+tools:
+  - module: tool-todo
+    source: git+https://github.com/microsoft/amplifier-module-tool-todo@main
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          enabled: true
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+
+# Free-cost UX hooks (no per-turn context cost)
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/streaming-ui.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/status-context.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/redaction.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/logging.yaml
+
+# Productivity hooks
+hooks:
+  - module: hooks-todo-reminder
+    source: git+https://github.com/microsoft/amplifier-module-hooks-todo-reminder@main
+    config:
+      inject_role: user
+      priority: 10
+  - module: hooks-todo-display
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-todo-display
+    config:
+      show_progress_bar: true
+      show_border: true
+  - module: hooks-session-naming
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-session-naming
+    config:
+      initial_trigger_turn: 2
+      update_interval_turns: 5
+
+# The four self-sufficient agents this bundle ships.
+# Resolved via the `build-up` namespace declared above:
+#   build-up:explorer  -> experiments/build-up/agents/explorer.md
+agents:
+  include:
+    - build-up:explorer
+    - build-up:planner
+    - build-up:coder
+    - build-up:tester
+
+# Single piece of additional context: how to use the delegate tool
+context:
+  include:
+    - build-up:context/delegation-mechanics.md
