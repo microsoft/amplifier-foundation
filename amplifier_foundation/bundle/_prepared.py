@@ -717,9 +717,9 @@ class PreparedBundle:
         # Execute instruction and cleanup
         try:
             response = await child_session.execute(instruction)
-            # Bridge child session cost to parent coordinator (_bridge_child_cost never raises)
+            # Bridge child session cost to parent coordinator (bridge_child_cost never raises)
             if parent_session:
-                await _bridge_child_cost(
+                await bridge_child_cost(
                     child_coordinator=child_session.coordinator,
                     parent_coordinator=parent_session.coordinator,
                     child_session_id=child_session.session_id,
