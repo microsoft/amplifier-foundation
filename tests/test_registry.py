@@ -312,9 +312,14 @@ class TestSubdirectoryBundleLoading:
                 f"file://{base}#subdirectory=behaviors/recipes"
             )
 
-            # The bundle should have source_base_paths set up
+            # The bundle should have source_base_paths set up.
+            # The 'recipes' namespace must resolve to its own directory (behaviors/recipes/),
+            # NOT to the checkout root.  Agents and context for 'recipes:' live under
+            # behaviors/recipes/agents/ and behaviors/recipes/context/, not root/agents/.
             assert bundle.name == "recipes"
-            assert bundle.source_base_paths.get("recipes") == base.resolve()
+            assert bundle.source_base_paths.get("recipes") == (
+                base / "behaviors" / "recipes"
+            ).resolve()
 
     @pytest.mark.asyncio
     async def test_root_bundle_no_extra_source_base_paths(self) -> None:
@@ -359,6 +364,346 @@ class TestSubdirectoryBundleLoading:
             # Without a root bundle, source_base_paths won't be populated
             assert bundle.name == "auth"
             assert "auth" not in bundle.source_base_paths
+
+    @pytest.mark.asyncio
+    async def test_behavior_namespace_maps_to_subbundle_root_not_checkout_root(
+        self,
+    ) -> None:
+        """Behavior YAML's namespace must map to the sub-bundle root, not the checkout root.
+
+        Regression test for: when a bundle at {checkout}/sub/ includes a behavior YAML at
+        {checkout}/sub/behaviors/ that declares bundle.name='subns', the registry was setting
+        source_base_paths['subns'] = {checkout}/ (checkout root) via resolved.source_root
+        instead of {checkout}/sub/ (the sub-bundle's own directory).
+
+        This caused:
+          - resolve_agent_path('subns:foo') to return the WRONG agent file from the checkout
+            root's agents/ directory instead of sub/agents/
+          - load_agent_metadata() to populate agents with the wrong tools list
+
+        The concrete production failure: build-up:coder was loading foundation:explorer's
+        tool list because source_base_paths['build-up'] pointed at the foundation checkout root
+        (where foundation's own explorer.md lives at agents/explorer.md) instead of
+        experiments/build-up/ (where build-up:explorer.md lives at agents/explorer.md).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            # Checkout root — simulates the foundation git repo root
+            (root / "bundle.md").write_text(
+                "---\nbundle:\n  name: foundation-root\n  version: 1.0.0\n---\n# Root"
+            )
+
+            # Decoy agent at the ROOT level — simulates foundation's own foo.md.
+            # With the bug, resolve_agent_path('subns:foo') returns THIS wrong file.
+            (root / "agents").mkdir()
+            (root / "agents" / "foo.md").write_text(
+                "---\nmeta:\n  name: wrong-foo\n  description: Decoy (wrong file)\n---\n# Wrong\n"
+            )
+
+            # Sub-bundle directory — simulates experiments/build-up/
+            sub = root / "sub"
+            sub.mkdir()
+            (sub / "agents").mkdir()
+            (sub / "behaviors").mkdir()
+
+            # Correct agent at the SUB-BUNDLE level — the right file we expect
+            (sub / "agents" / "foo.md").write_text(
+                "---\n"
+                "meta:\n"
+                "  name: foo\n"
+                "  description: Correct agent\n"
+                "tools:\n"
+                "  - module: tool-bash\n"
+                "    source: git+https://github.com/example/tool-bash@main\n"
+                "---\n"
+                "# Foo\n"
+            )
+
+            behavior_path = sub / "behaviors" / "config.yaml"
+
+            # Sub-bundle main file — simulates build-up-foundation.md
+            # Includes the behavior YAML via a direct file:// URI.
+            (sub / "bundle-main.md").write_text(
+                "---\n"
+                "bundle:\n"
+                "  name: bundle-main\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f'  - "file://{behavior_path}"\n'
+                "---\n"
+            )
+
+            # Behavior YAML — simulates build-up-foundation.yaml with bundle.name: build-up.
+            # Note: this file lives in behaviors/ subdirectory, but the 'subns' namespace
+            # resources (agents/, context/) live at the parent sub/ level.
+            # namespace_root: .. declares this explicitly (the explicit-declaration fix).
+            behavior_path.write_text(
+                "bundle:\n"
+                "  name: subns\n"
+                "  version: 1.0.0\n"
+                "  namespace_root: ..\n"
+                "agents:\n"
+                "  include:\n"
+                "    - subns:foo\n"
+            )
+
+            registry = BundleRegistry(home=root / "home")
+            bundle = await registry._load_single(
+                f"file://{root}#subdirectory=sub/bundle-main.md"
+            )
+
+            # ASSERTION 1: 'subns' namespace must resolve to sub/ (not root/)
+            # Bug: resolved.source_root (root/) was used instead of bundle.base_path (sub/)
+            assert bundle.source_base_paths.get("subns") == sub.resolve(), (
+                f"source_base_paths['subns'] = {bundle.source_base_paths.get('subns')!r}, "
+                f"expected {sub.resolve()!r} — was it set to the checkout root instead?"
+            )
+
+            # ASSERTION 2: agent resolution must return the correct file from sub/agents/
+            # Bug: with source_base_paths['subns'] = root/, it returned root/agents/foo.md (decoy)
+            bundle.load_agent_metadata()
+            agent_path = bundle.resolve_agent_path("subns:foo")
+            assert agent_path is not None, "resolve_agent_path('subns:foo') returned None"
+            assert agent_path.resolve() == (sub / "agents" / "foo.md").resolve(), (
+                f"resolve_agent_path('subns:foo') = {agent_path!r}, "
+                f"expected {(sub / 'agents' / 'foo.md').resolve()!r} — got the checkout-root decoy?"
+            )
+
+            # ASSERTION 3: agent tools must come from the correct file (sub/agents/foo.md)
+            # Bug: loaded decoy which has no tools, so agent had empty tool list
+            assert "subns:foo" in bundle.agents, (
+                f"'subns:foo' not in bundle.agents after load_agent_metadata(); "
+                f"agents = {list(bundle.agents.keys())}"
+            )
+            agent_data = bundle.agents["subns:foo"]
+            assert "tools" in agent_data, (
+                f"No 'tools' key in agent data — loaded from wrong file? "
+                f"agent_data = {agent_data}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_namespace_root_field_is_parsed_from_yaml(self) -> None:
+        """namespace_root declared in bundle: YAML block is parsed onto the Bundle.
+
+        TDD gate: this test fails before the namespace_root field and from_dict
+        parsing are implemented, then passes after.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "bundle.md").write_text(
+                "---\nbundle:\n  name: root\n  version: 1.0.0\n---\n"
+            )
+            sub = root / "sub"
+            sub.mkdir()
+            sub_behaviors = sub / "behaviors"
+            sub_behaviors.mkdir()
+            (sub_behaviors / "config.yaml").write_text(
+                "bundle:\n"
+                "  name: myns\n"
+                "  version: 1.0.0\n"
+                "  namespace_root: ..\n"
+            )
+
+            from amplifier_foundation.bundle._dataclass import Bundle
+
+            bundle = Bundle.from_dict(
+                {"bundle": {"name": "myns", "version": "1.0.0", "namespace_root": ".."}},
+                base_path=sub_behaviors,
+            )
+
+            # namespace_root must be parsed and stored on the Bundle
+            assert bundle.namespace_root == "..", (
+                f"Expected bundle.namespace_root == '..', got {bundle.namespace_root!r}. "
+                "The namespace_root field needs to be added to Bundle and parsed in from_dict()."
+            )
+
+    @pytest.mark.asyncio
+    async def test_namespace_root_absent_uses_yaml_directory(self) -> None:
+        """Without namespace_root, source_base_paths[name] = YAML file's own directory.
+
+        The default (Fix 1) behavior: a behavior YAML's namespace resolves to its own
+        directory. Bundle authors whose agents/ live in the same directory as the YAML
+        don't need namespace_root at all.
+
+        NOTE: 3+ level nesting (namespace_root pointing above the immediate parent) is
+        explicitly out of scope for this release. Only single-level '..' is supported and
+        tested here.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "bundle.md").write_text(
+                "---\nbundle:\n  name: root\n  version: 1.0.0\n---\n"
+            )
+            sub = root / "sub"
+            sub.mkdir()
+            sub_behaviors = sub / "behaviors"
+            sub_behaviors.mkdir()
+
+            # agents/ lives in behaviors/ (same directory as the YAML — no namespace_root needed)
+            (sub_behaviors / "agents").mkdir()
+            (sub_behaviors / "agents" / "bar.md").write_text(
+                "---\nmeta:\n  name: bar\n---\n# Bar\n"
+            )
+
+            (sub_behaviors / "config.yaml").write_text(
+                "bundle:\n"
+                "  name: subns\n"
+                "  version: 1.0.0\n"
+                # deliberately no namespace_root
+                "agents:\n"
+                "  include:\n"
+                "    - subns:bar\n"
+            )
+
+            registry = BundleRegistry(home=root / "home")
+            bundle = await registry._load_single(
+                f"file://{root}#subdirectory=sub/behaviors/config.yaml"
+            )
+
+            # Without namespace_root, namespace resolves to the YAML's own directory
+            assert bundle.source_base_paths.get("subns") == sub_behaviors.resolve(), (
+                f"Expected source_base_paths['subns'] = {sub_behaviors.resolve()!r}, "
+                f"got {bundle.source_base_paths.get('subns')!r}. "
+                "Default (no namespace_root) must use the YAML file's own directory."
+            )
+
+            # Agent at behaviors/agents/bar.md resolves correctly with default
+            agent_path = bundle.resolve_agent_path("subns:bar")
+            assert agent_path is not None
+            assert agent_path.resolve() == (sub_behaviors / "agents" / "bar.md").resolve(), (
+                f"Expected {(sub_behaviors / 'agents' / 'bar.md').resolve()!r}, "
+                f"got {agent_path!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_top_level_bundle_namespace_resolution_unaffected(self) -> None:
+        """Fix 1 (registry.py: source_root → base_path) does not affect top-level bundles.
+
+        The registry only sets source_base_paths[bundle.name] for *nested* bundles
+        (bundles where bundle.name != root_bundle.name).  This test proves that Fix 1's
+        change leaves top-level (root) bundles — the foundation:* / recipes:* style —
+        fully unaffected:
+          - source_base_paths[bundle.name] is not set by the registry for root bundles
+          - resolve_agent_path('name:foo') still works for root bundles via the
+            namespace == self.name fallback path in resolve_agent_path()
+
+        This is the regression guard for the foundation:bug-hunter style reference.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Top-level root bundle — simulates the foundation repo root
+            (base / "agents").mkdir()
+            (base / "agents" / "bug-hunter.md").write_text(
+                "---\nmeta:\n  name: bug-hunter\n  description: The bug hunter agent\n---\n# Bug Hunter\n"
+            )
+            (base / "bundle.md").write_text(
+                "---\nbundle:\n  name: foundation\n  version: 1.0.0\n---\n# Foundation\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            # Load the root bundle directly (not via #subdirectory=)
+            bundle = await registry._load_single(f"file://{base}")
+
+            # Registry does NOT populate source_base_paths[name] for root bundles
+            # (the nested-bundle code path in registry.py is not reached)
+            assert "foundation" not in bundle.source_base_paths, (
+                "Top-level bundle should not have source_base_paths['foundation'] set "
+                "by the registry. Fix 1 may have unintentionally affected root bundles."
+            )
+
+            # resolve_agent_path still works via the 'namespace == self.name' fallback
+            agent_path = bundle.resolve_agent_path("foundation:bug-hunter")
+            assert agent_path is not None, (
+                "resolve_agent_path('foundation:bug-hunter') returned None for a root bundle. "
+                "The namespace==self.name fallback in resolve_agent_path() is broken."
+            )
+            assert agent_path.resolve() == (base / "agents" / "bug-hunter.md").resolve(), (
+                f"Expected {(base / 'agents' / 'bug-hunter.md').resolve()!r}, "
+                f"got {agent_path!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_context_paths_resolve_via_namespace_root(self) -> None:
+        """Context path resolution uses source_base_paths set by namespace_root.
+
+        Regression test that the same source_base_paths fix that corrects agent
+        resolution also fixes context path resolution.  Same decoy-file pattern:
+
+          - Decoy context file at behaviors/context/doc.md (YAML's own directory)
+          - Real context file at sub/context/doc.md (namespace_root parent)
+          - namespace_root: .. declared in the YAML
+
+        After loading and calling resolve_pending_context(), the bundle's context
+        map must point to the real file, not the decoy.
+
+        NOTE: 3+ level nesting is explicitly out of scope (not tested here).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            # Checkout root bundle
+            (root / "bundle.md").write_text(
+                "---\nbundle:\n  name: root\n  version: 1.0.0\n---\n"
+            )
+
+            sub = root / "sub"
+            sub.mkdir()
+
+            # Real context file at sub/context/ (where namespace_root points)
+            (sub / "context").mkdir()
+            (sub / "context" / "doc.md").write_text("# Real document\n")
+
+            # Sub-bundle main file
+            behavior_path = sub / "behaviors" / "config.yaml"
+            (sub / "behaviors").mkdir()
+            (sub / "bundle-main.md").write_text(
+                "---\n"
+                "bundle:\n"
+                "  name: main\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f'  - "file://{behavior_path}"\n'
+                "---\n"
+            )
+
+            # Decoy context file at behaviors/context/ (wrong location)
+            (sub / "behaviors" / "context").mkdir()
+            (sub / "behaviors" / "context" / "doc.md").write_text("# Decoy document\n")
+
+            # Behavior YAML with namespace_root: .. and a pending context include
+            behavior_path.write_text(
+                "bundle:\n"
+                "  name: subns\n"
+                "  version: 1.0.0\n"
+                "  namespace_root: ..\n"
+                "context:\n"
+                "  include:\n"
+                "    - subns:context/doc.md\n"  # pending — resolved via source_base_paths
+            )
+
+            registry = BundleRegistry(home=root / "home")
+            bundle = await registry._load_single(
+                f"file://{root}#subdirectory=sub/bundle-main.md"
+            )
+
+            # Resolve pending context (requires source_base_paths to be correct)
+            bundle.resolve_pending_context()
+
+            # The context entry for 'subns:context/doc.md' must resolve to
+            # sub/context/doc.md (via namespace_root), NOT to behaviors/context/doc.md (decoy)
+            context_key = "subns:context/doc.md"
+            assert context_key in bundle.context, (
+                f"'{context_key}' not found in bundle.context after resolve_pending_context(). "
+                f"Available context keys: {list(bundle.context.keys())}"
+            )
+            resolved = bundle.context[context_key]
+            assert resolved.resolve() == (sub / "context" / "doc.md").resolve(), (
+                f"Context resolved to {resolved!r}, "
+                f"expected {(sub / 'context' / 'doc.md').resolve()!r} (real file). "
+                "Did it resolve to the decoy at behaviors/context/doc.md instead?"
+            )
 
 
 class TestDiamondAndCircularDependencies:

@@ -39,6 +39,20 @@ class Bundle:
         version: Bundle version string.
         description: Optional description.
         includes: List of bundle URIs to include.
+        namespace_root: Optional path (relative to the bundle file's own directory)
+            that points to where this namespace's agents/ and context/ sub-directories
+            live.  Use when the bundle YAML is in a sub-directory (e.g. behaviors/) but
+            its resources live in a parent directory (e.g. the bundle root).
+
+            Example — YAML at ``experiments/build-up/behaviors/build-up-foundation.yaml``
+            with agents at ``experiments/build-up/agents/``::
+
+                bundle:
+                  name: build-up
+                  namespace_root: ..   # agents/ lives one level above this file
+
+            When absent (the default), the YAML file's own directory is used.  Only
+            single-level relative paths are supported; 3+ level nesting is out of scope.
         session: Session config (orchestrator, context).
         providers: List of provider configs.
         tools: List of tool configs.
@@ -46,10 +60,25 @@ class Bundle:
         agents: Dict mapping agent name to definition.
         context: Dict mapping context name to file path.
         instruction: System instruction from markdown body.
-        base_path: Path to bundle root directory.
-        source_base_paths: Dict mapping namespace to base_path for @mention resolution.
-            Tracks original base_path for each bundle during composition, enabling
-            @namespace:path references to resolve correctly to source files.
+        base_path: Path to bundle root directory (the directory containing the bundle
+            file, set at load time).
+        source_base_paths: Maps each namespace name → the directory under which that
+            namespace's ``agents/``, ``context/``, etc. sub-directories live.
+
+            Invariant: the value is always the *resource root*, never:
+            - the git checkout root (a common mistake fixed in the registry)
+            - the location of the YAML file that declared the namespace, unless
+              ``namespace_root`` is absent and the YAML is the resource root
+
+            Populated by the registry at load time:
+            - For the bundle's own namespace: ``bundle.base_path`` (default) or
+              ``(bundle.base_path / bundle.namespace_root).resolve()`` when
+              ``namespace_root`` is declared.
+            - For included bundles: the root bundle's source root.
+
+            If a bundle's resources live in a parent directory of its YAML file,
+            declare ``bundle.namespace_root`` in the frontmatter; do NOT rely on
+            filesystem heuristics here.
     """
 
     # Metadata
@@ -57,6 +86,7 @@ class Bundle:
     version: str = "1.0.0"
     description: str = ""
     includes: list[str] = field(default_factory=list)
+    namespace_root: str | None = None
 
     # Mount plan sections
     session: dict[str, Any] = field(default_factory=dict)
@@ -76,7 +106,7 @@ class Bundle:
     base_path: Path | None = None
     source_base_paths: dict[str, Path] = field(
         default_factory=dict
-    )  # Track base_path for each source namespace
+    )  # namespace → resource root dir (where agents/, context/, etc. live)
     _pending_context: dict[str, str] = field(
         default_factory=dict
     )  # Context refs needing namespace resolution
@@ -148,6 +178,7 @@ class Bundle:
             version=self.version,
             description=self.description,
             includes=list(self.includes),
+            namespace_root=self.namespace_root,
             session=dict(self.session),
             providers=list(self.providers),
             tools=list(self.tools),
@@ -163,20 +194,28 @@ class Bundle:
         )
 
         for other in others:
-            # Merge other's source_base_paths first (preserves registry-set values like source_root)
-            # This is critical for subdirectory bundles where registry sets source_root mapping
+            # Merge other's source_base_paths, but handle other's own namespace
+            # separately below so we can use the pre-resolved path (which may
+            # incorporate namespace_root) rather than falling back to base_path.
             if other.source_base_paths:
                 for ns, path in other.source_base_paths.items():
+                    if ns == other.name:
+                        continue  # handled explicitly below
                     if ns not in result.source_base_paths:
                         result.source_base_paths[ns] = path
 
-            # Also track other's own namespace as fallback (if not already set via source_base_paths)
-            if (
-                other.name
-                and other.base_path
-                and other.name not in result.source_base_paths
-            ):
-                result.source_base_paths[other.name] = other.base_path
+            # Register other's own namespace.
+            # Prefer the pre-resolved path from other.source_base_paths[other.name]
+            # (set by registry.py at load time, possibly incorporating namespace_root)
+            # over the raw other.base_path.  This avoids filesystem heuristics here.
+            if other.name and other.name not in result.source_base_paths:
+                if other.name in other.source_base_paths:
+                    # Use the registry-resolved path; may have been adjusted by namespace_root.
+                    result.source_base_paths[other.name] = other.source_base_paths[
+                        other.name
+                    ]
+                elif other.base_path:
+                    result.source_base_paths[other.name] = other.base_path
 
             # Metadata: later wins
             result.name = other.name or result.name
@@ -437,17 +476,27 @@ class Bundle:
         """Resolve agent file by name.
 
         Handles both namespaced and simple names:
-        - "foundation:bug-hunter" -> looks in source_base_paths["foundation"]/agents/
-        - "bug-hunter" -> looks in self.base_path/agents/
+        - ``"foundation:bug-hunter"`` → ``source_base_paths["foundation"] / "agents" / "bug-hunter.md"``
+        - ``"bug-hunter"`` → ``self.base_path / "agents" / "bug-hunter.md"``
 
-        For namespaced agents from included bundles, uses source_base_paths
-        to find the correct bundle's agents directory.
+        For namespaced agents, the lookup key in ``source_base_paths`` is the namespace
+        portion of the name.  ``source_base_paths[namespace]`` is the *resource root* for
+        that namespace — the directory that contains the ``agents/`` sub-directory.
+
+        **It is never the git checkout root and never the YAML file's directory unless
+        those happen to be the resource root.**  Bundle authors whose YAML lives in a
+        sub-directory but whose agents live in the parent must declare ``namespace_root``
+        in the bundle frontmatter so the registry sets ``source_base_paths[name]``
+        correctly at load time.
+
+        Fallback: if the namespace is not in ``source_base_paths`` but matches
+        ``self.name``, ``self.base_path`` is used as a last resort.
 
         Args:
-            name: Agent name (may include bundle prefix).
+            name: Agent name (may include bundle namespace prefix).
 
         Returns:
-            Path to agent file, or None if not found.
+            Path to agent ``.md`` file, or None if not found.
         """
         # Check for namespaced agent (e.g., "foundation:bug-hunter")
         if ":" in name:
@@ -564,6 +613,7 @@ class Bundle:
         """
         bundle_meta = data.get("bundle", {})
         bundle_name = bundle_meta.get("name", "")
+        namespace_root = bundle_meta.get("namespace_root")
 
         # Validate module lists before using them
         providers = _validate_module_list(
@@ -586,6 +636,7 @@ class Bundle:
             version=bundle_meta.get("version", "1.0.0"),
             description=bundle_meta.get("description", ""),
             includes=data.get("includes", []),
+            namespace_root=namespace_root,
             session=data.get("session", {}),
             providers=providers,
             tools=tools,
