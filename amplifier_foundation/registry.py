@@ -506,7 +506,7 @@ class BundleRegistry:
                             f"@{bundle.name}: -> {ns_path} "
                             f"(via namespace_root={bundle.namespace_root!r})"
                         )
-                    else:
+                    elif bundle.base_path is not None:
                         bundle.source_base_paths[bundle.name] = bundle.base_path
                         logger.debug(
                             f"Nested bundle also registered own namespace "
