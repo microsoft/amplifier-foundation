@@ -211,7 +211,9 @@ class Bundle:
             if other.name and other.name not in result.source_base_paths:
                 if other.name in other.source_base_paths:
                     # Use the registry-resolved path; may have been adjusted by namespace_root.
-                    result.source_base_paths[other.name] = other.source_base_paths[other.name]
+                    result.source_base_paths[other.name] = other.source_base_paths[
+                        other.name
+                    ]
                 elif other.base_path:
                     result.source_base_paths[other.name] = other.base_path
 

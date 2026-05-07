@@ -495,7 +495,10 @@ class BundleRegistry:
                 # that bundles whose agents/ / context/ live in a parent directory can
                 # declare that explicitly instead of relying on filesystem heuristics.
                 if bundle.name and bundle.name != root_bundle.name:
-                    if bundle.namespace_root is not None and bundle.base_path is not None:
+                    if (
+                        bundle.namespace_root is not None
+                        and bundle.base_path is not None
+                    ):
                         ns_path = (bundle.base_path / bundle.namespace_root).resolve()
                         bundle.source_base_paths[bundle.name] = ns_path
                         logger.debug(
