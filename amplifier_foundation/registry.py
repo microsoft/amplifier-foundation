@@ -489,12 +489,26 @@ class BundleRegistry:
                 # NOT resolved.source_root (the git checkout root).
                 # This ensures namespace:agents/ and namespace:context/ resolve
                 # relative to the sub-bundle's own directory, not the checkout root.
+                #
+                # If the bundle declares `namespace_root` in its frontmatter (e.g.
+                # `namespace_root: ..`), resolve that path relative to base_path so
+                # that bundles whose agents/ / context/ live in a parent directory can
+                # declare that explicitly instead of relying on filesystem heuristics.
                 if bundle.name and bundle.name != root_bundle.name:
-                    bundle.source_base_paths[bundle.name] = bundle.base_path
-                    logger.debug(
-                        f"Nested bundle also registered own namespace "
-                        f"@{bundle.name}: -> {bundle.base_path}"
-                    )
+                    if bundle.namespace_root is not None and bundle.base_path is not None:
+                        ns_path = (bundle.base_path / bundle.namespace_root).resolve()
+                        bundle.source_base_paths[bundle.name] = ns_path
+                        logger.debug(
+                            f"Nested bundle also registered own namespace "
+                            f"@{bundle.name}: -> {ns_path} "
+                            f"(via namespace_root={bundle.namespace_root!r})"
+                        )
+                    else:
+                        bundle.source_base_paths[bundle.name] = bundle.base_path
+                        logger.debug(
+                            f"Nested bundle also registered own namespace "
+                            f"@{bundle.name}: -> {bundle.base_path}"
+                        )
 
             # Determine if this is a root bundle or nested bundle
             # A bundle is a nested bundle if we found a DIFFERENT root bundle above it

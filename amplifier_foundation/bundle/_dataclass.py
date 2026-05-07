@@ -57,6 +57,7 @@ class Bundle:
     version: str = "1.0.0"
     description: str = ""
     includes: list[str] = field(default_factory=list)
+    namespace_root: str | None = None
 
     # Mount plan sections
     session: dict[str, Any] = field(default_factory=dict)
@@ -148,6 +149,7 @@ class Bundle:
             version=self.version,
             description=self.description,
             includes=list(self.includes),
+            namespace_root=self.namespace_root,
             session=dict(self.session),
             providers=list(self.providers),
             tools=list(self.tools),
@@ -164,7 +166,8 @@ class Bundle:
 
         for other in others:
             # Merge other's source_base_paths, but handle other's own namespace
-            # separately below so we can apply parent-path awareness.
+            # separately below so we can use the pre-resolved path (which may
+            # incorporate namespace_root) rather than falling back to base_path.
             if other.source_base_paths:
                 for ns, path in other.source_base_paths.items():
                     if ns == other.name:
@@ -173,34 +176,15 @@ class Bundle:
                         result.source_base_paths[ns] = path
 
             # Register other's own namespace.
-            # When `other` is a sub-resource (e.g. a behavior YAML in behaviors/)
-            # AND result lives in a parent directory, use result.base_path so that
-            # namespace:agents/ etc. resolve at the bundle root, not the behavior subdir.
+            # Prefer the pre-resolved path from other.source_base_paths[other.name]
+            # (set by registry.py at load time, possibly incorporating namespace_root)
+            # over the raw other.base_path.  This avoids filesystem heuristics here.
             if other.name and other.name not in result.source_base_paths:
-                if (
-                    other.base_path
-                    and result.base_path
-                    and other.base_path != result.base_path
-                    and other.base_path.is_relative_to(result.base_path)
-                ):
-                    # other lives inside result's directory; use result's base_path
-                    result.source_base_paths[other.name] = result.base_path
+                if other.name in other.source_base_paths:
+                    # Use the registry-resolved path; may have been adjusted by namespace_root.
+                    result.source_base_paths[other.name] = other.source_base_paths[other.name]
                 elif other.base_path:
                     result.source_base_paths[other.name] = other.base_path
-
-            # Promote self's namespace when self (result) is a sub-resource of other.
-            # In _compose_includes the call order is behavior.compose(parent-bundle),
-            # so self=behavior (base_path=behaviors/) and other=parent (base_path=root/).
-            # The behavior's own namespace must map to root/, not behaviors/.
-            if (
-                self.name
-                and self.name in result.source_base_paths
-                and self.base_path
-                and other.base_path
-                and self.base_path != other.base_path
-                and self.base_path.is_relative_to(other.base_path)
-            ):
-                result.source_base_paths[self.name] = other.base_path
 
             # Metadata: later wins
             result.name = other.name or result.name
@@ -588,6 +572,7 @@ class Bundle:
         """
         bundle_meta = data.get("bundle", {})
         bundle_name = bundle_meta.get("name", "")
+        namespace_root = bundle_meta.get("namespace_root")
 
         # Validate module lists before using them
         providers = _validate_module_list(
@@ -610,6 +595,7 @@ class Bundle:
             version=bundle_meta.get("version", "1.0.0"),
             description=bundle_meta.get("description", ""),
             includes=data.get("includes", []),
+            namespace_root=namespace_root,
             session=data.get("session", {}),
             providers=providers,
             tools=tools,

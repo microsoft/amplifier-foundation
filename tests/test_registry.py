@@ -437,10 +437,12 @@ class TestSubdirectoryBundleLoading:
             # Behavior YAML — simulates build-up-foundation.yaml with bundle.name: build-up.
             # Note: this file lives in behaviors/ subdirectory, but the 'subns' namespace
             # resources (agents/, context/) live at the parent sub/ level.
+            # namespace_root: .. declares this explicitly (the explicit-declaration fix).
             behavior_path.write_text(
                 "bundle:\n"
                 "  name: subns\n"
                 "  version: 1.0.0\n"
+                "  namespace_root: ..\n"
                 "agents:\n"
                 "  include:\n"
                 "    - subns:foo\n"
@@ -478,6 +480,100 @@ class TestSubdirectoryBundleLoading:
             assert "tools" in agent_data, (
                 f"No 'tools' key in agent data — loaded from wrong file? "
                 f"agent_data = {agent_data}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_namespace_root_field_is_parsed_from_yaml(self) -> None:
+        """namespace_root declared in bundle: YAML block is parsed onto the Bundle.
+
+        TDD gate: this test fails before the namespace_root field and from_dict
+        parsing are implemented, then passes after.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "bundle.md").write_text(
+                "---\nbundle:\n  name: root\n  version: 1.0.0\n---\n"
+            )
+            sub = root / "sub"
+            sub.mkdir()
+            sub_behaviors = sub / "behaviors"
+            sub_behaviors.mkdir()
+            (sub_behaviors / "config.yaml").write_text(
+                "bundle:\n"
+                "  name: myns\n"
+                "  version: 1.0.0\n"
+                "  namespace_root: ..\n"
+            )
+
+            from amplifier_foundation.bundle._dataclass import Bundle
+
+            bundle = Bundle.from_dict(
+                {"bundle": {"name": "myns", "version": "1.0.0", "namespace_root": ".."}},
+                base_path=sub_behaviors,
+            )
+
+            # namespace_root must be parsed and stored on the Bundle
+            assert bundle.namespace_root == "..", (
+                f"Expected bundle.namespace_root == '..', got {bundle.namespace_root!r}. "
+                "The namespace_root field needs to be added to Bundle and parsed in from_dict()."
+            )
+
+    @pytest.mark.asyncio
+    async def test_namespace_root_absent_uses_yaml_directory(self) -> None:
+        """Without namespace_root, source_base_paths[name] = YAML file's own directory.
+
+        The default (Fix 1) behavior: a behavior YAML's namespace resolves to its own
+        directory. Bundle authors whose agents/ live in the same directory as the YAML
+        don't need namespace_root at all.
+
+        NOTE: 3+ level nesting (namespace_root pointing above the immediate parent) is
+        explicitly out of scope for this release. Only single-level '..' is supported and
+        tested here.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "bundle.md").write_text(
+                "---\nbundle:\n  name: root\n  version: 1.0.0\n---\n"
+            )
+            sub = root / "sub"
+            sub.mkdir()
+            sub_behaviors = sub / "behaviors"
+            sub_behaviors.mkdir()
+
+            # agents/ lives in behaviors/ (same directory as the YAML — no namespace_root needed)
+            (sub_behaviors / "agents").mkdir()
+            (sub_behaviors / "agents" / "bar.md").write_text(
+                "---\nmeta:\n  name: bar\n---\n# Bar\n"
+            )
+
+            (sub_behaviors / "config.yaml").write_text(
+                "bundle:\n"
+                "  name: subns\n"
+                "  version: 1.0.0\n"
+                # deliberately no namespace_root
+                "agents:\n"
+                "  include:\n"
+                "    - subns:bar\n"
+            )
+
+            registry = BundleRegistry(home=root / "home")
+            bundle = await registry._load_single(
+                f"file://{root}#subdirectory=sub/behaviors/config.yaml"
+            )
+
+            # Without namespace_root, namespace resolves to the YAML's own directory
+            assert bundle.source_base_paths.get("subns") == sub_behaviors.resolve(), (
+                f"Expected source_base_paths['subns'] = {sub_behaviors.resolve()!r}, "
+                f"got {bundle.source_base_paths.get('subns')!r}. "
+                "Default (no namespace_root) must use the YAML file's own directory."
+            )
+
+            # Agent at behaviors/agents/bar.md resolves correctly with default
+            agent_path = bundle.resolve_agent_path("subns:bar")
+            assert agent_path is not None
+            assert agent_path.resolve() == (sub_behaviors / "agents" / "bar.md").resolve(), (
+                f"Expected {(sub_behaviors / 'agents' / 'bar.md').resolve()!r}, "
+                f"got {agent_path!r}"
             )
 
 
