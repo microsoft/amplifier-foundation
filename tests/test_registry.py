@@ -576,6 +576,135 @@ class TestSubdirectoryBundleLoading:
                 f"got {agent_path!r}"
             )
 
+    @pytest.mark.asyncio
+    async def test_top_level_bundle_namespace_resolution_unaffected(self) -> None:
+        """Fix 1 (registry.py: source_root → base_path) does not affect top-level bundles.
+
+        The registry only sets source_base_paths[bundle.name] for *nested* bundles
+        (bundles where bundle.name != root_bundle.name).  This test proves that Fix 1's
+        change leaves top-level (root) bundles — the foundation:* / recipes:* style —
+        fully unaffected:
+          - source_base_paths[bundle.name] is not set by the registry for root bundles
+          - resolve_agent_path('name:foo') still works for root bundles via the
+            namespace == self.name fallback path in resolve_agent_path()
+
+        This is the regression guard for the foundation:bug-hunter style reference.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Top-level root bundle — simulates the foundation repo root
+            (base / "agents").mkdir()
+            (base / "agents" / "bug-hunter.md").write_text(
+                "---\nmeta:\n  name: bug-hunter\n  description: The bug hunter agent\n---\n# Bug Hunter\n"
+            )
+            (base / "bundle.md").write_text(
+                "---\nbundle:\n  name: foundation\n  version: 1.0.0\n---\n# Foundation\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            # Load the root bundle directly (not via #subdirectory=)
+            bundle = await registry._load_single(f"file://{base}")
+
+            # Registry does NOT populate source_base_paths[name] for root bundles
+            # (the nested-bundle code path in registry.py is not reached)
+            assert "foundation" not in bundle.source_base_paths, (
+                "Top-level bundle should not have source_base_paths['foundation'] set "
+                "by the registry. Fix 1 may have unintentionally affected root bundles."
+            )
+
+            # resolve_agent_path still works via the 'namespace == self.name' fallback
+            agent_path = bundle.resolve_agent_path("foundation:bug-hunter")
+            assert agent_path is not None, (
+                "resolve_agent_path('foundation:bug-hunter') returned None for a root bundle. "
+                "The namespace==self.name fallback in resolve_agent_path() is broken."
+            )
+            assert agent_path.resolve() == (base / "agents" / "bug-hunter.md").resolve(), (
+                f"Expected {(base / 'agents' / 'bug-hunter.md').resolve()!r}, "
+                f"got {agent_path!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_context_paths_resolve_via_namespace_root(self) -> None:
+        """Context path resolution uses source_base_paths set by namespace_root.
+
+        Regression test that the same source_base_paths fix that corrects agent
+        resolution also fixes context path resolution.  Same decoy-file pattern:
+
+          - Decoy context file at behaviors/context/doc.md (YAML's own directory)
+          - Real context file at sub/context/doc.md (namespace_root parent)
+          - namespace_root: .. declared in the YAML
+
+        After loading and calling resolve_pending_context(), the bundle's context
+        map must point to the real file, not the decoy.
+
+        NOTE: 3+ level nesting is explicitly out of scope (not tested here).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            # Checkout root bundle
+            (root / "bundle.md").write_text(
+                "---\nbundle:\n  name: root\n  version: 1.0.0\n---\n"
+            )
+
+            sub = root / "sub"
+            sub.mkdir()
+
+            # Real context file at sub/context/ (where namespace_root points)
+            (sub / "context").mkdir()
+            (sub / "context" / "doc.md").write_text("# Real document\n")
+
+            # Sub-bundle main file
+            behavior_path = sub / "behaviors" / "config.yaml"
+            (sub / "behaviors").mkdir()
+            (sub / "bundle-main.md").write_text(
+                "---\n"
+                "bundle:\n"
+                "  name: main\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f'  - "file://{behavior_path}"\n'
+                "---\n"
+            )
+
+            # Decoy context file at behaviors/context/ (wrong location)
+            (sub / "behaviors" / "context").mkdir()
+            (sub / "behaviors" / "context" / "doc.md").write_text("# Decoy document\n")
+
+            # Behavior YAML with namespace_root: .. and a pending context include
+            behavior_path.write_text(
+                "bundle:\n"
+                "  name: subns\n"
+                "  version: 1.0.0\n"
+                "  namespace_root: ..\n"
+                "context:\n"
+                "  include:\n"
+                "    - subns:context/doc.md\n"  # pending — resolved via source_base_paths
+            )
+
+            registry = BundleRegistry(home=root / "home")
+            bundle = await registry._load_single(
+                f"file://{root}#subdirectory=sub/bundle-main.md"
+            )
+
+            # Resolve pending context (requires source_base_paths to be correct)
+            bundle.resolve_pending_context()
+
+            # The context entry for 'subns:context/doc.md' must resolve to
+            # sub/context/doc.md (via namespace_root), NOT to behaviors/context/doc.md (decoy)
+            context_key = "subns:context/doc.md"
+            assert context_key in bundle.context, (
+                f"'{context_key}' not found in bundle.context after resolve_pending_context(). "
+                f"Available context keys: {list(bundle.context.keys())}"
+            )
+            resolved = bundle.context[context_key]
+            assert resolved.resolve() == (sub / "context" / "doc.md").resolve(), (
+                f"Context resolved to {resolved!r}, "
+                f"expected {(sub / 'context' / 'doc.md').resolve()!r} (real file). "
+                "Did it resolve to the decoy at behaviors/context/doc.md instead?"
+            )
+
 
 class TestDiamondAndCircularDependencies:
     """Tests for diamond dependency handling and circular dependency detection."""
