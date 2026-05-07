@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Collects cost_usd contributions from a session.cost channel and returns the
 # total as Decimal, or None when no cost data is present (e.g. self-hosted models).
-def _sum_cost_usd(contributions: list) -> Decimal | None:
+def sum_cost_usd(contributions: list) -> Decimal | None:
     """Sum cost_usd from collect_contributions() results. Returns None if no cost data.
 
     None != Decimal("0"): None means cost unknown (no rate data); 0 means known-free.
@@ -51,7 +51,7 @@ def _sum_cost_usd(contributions: list) -> Decimal | None:
     return total
 
 
-async def _bridge_child_cost(
+async def bridge_child_cost(
     child_coordinator,
     parent_coordinator,
     child_session_id: str,
@@ -63,7 +63,7 @@ async def _bridge_child_cost(
     """
     try:
         child_contributions = await child_coordinator.collect_contributions("session.cost")
-        child_total = _sum_cost_usd(child_contributions)
+        child_total = sum_cost_usd(child_contributions)
 
         if child_total is not None:
             # Freeze value in default arg — child coordinator will be torn down after this

@@ -21,9 +21,9 @@ async def test_prepared_bundle_spawn_bridges_child_cost():
 
     parent_coord.register_contributor = capture_register
 
-    from amplifier_foundation.bundle._prepared import _sum_cost_usd, _bridge_child_cost  # noqa: F401
+    from amplifier_foundation import sum_cost_usd, bridge_child_cost  # noqa: F401
 
-    await _bridge_child_cost(
+    await bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
         child_session_id="foundation-child-001",
