@@ -1,15 +1,15 @@
 bundle:
-  name: foundation-expert-behavior
+  name: behavior-bundle-design
   version: 1.0.0
-  description: Navigator for the Amplifier Foundation ecosystem -- knows what exists and helps users find the right resources, examples, and documentation
+  description: Expert for the full bundle lifecycle -- designing, modeling, and building Amplifier bundles
 
 agents:
   include:
     # Note: agent loading searches /agents dir automatically - don't include "agents" in path
-    - foundation:foundation-expert
+    - foundation:bundle-design-expert
 
 context:
   include:
     # Thin awareness pointer - just enough to know the domain exists and to delegate
     # Heavy documentation lives in the agent file (context sink pattern)
-    - foundation:context/bundle-awareness.md
+    - foundation:context/bundle-design-awareness.md

@@ -1,0 +1,207 @@
+# =============================================================================
+# SPEC-TO-BEHAVIORAL-MODEL RECIPE
+# =============================================================================
+#
+# Generates a behavioral model document from a mechanism spec document.
+# This is the counterpart to bundle-behavioral-model.yaml (which generates a
+# behavioral model from an implemented bundle). This recipe works from the
+# spec alone, before implementation.
+#
+# Usage:
+#   recipes(
+#     operation="execute",
+#     recipe_path="recipes/spec-to-behavioral-model.yaml",
+#     context={
+#       "spec_path": "working/systems-design-mechanism-spec.md",
+#       "output_path": "working/systems-design-behavioral-model-from-spec.md"
+#     }
+#   )
+#
+# =============================================================================
+
+name: "spec-to-behavioral-model"
+description: "Generate a behavioral model from a mechanism spec document"
+version: "1.0.0"
+tags: ["mechanism-spec", "behavioral-model", "analysis"]
+
+context:
+  spec_path: ""        # Required: Path to the mechanism spec markdown
+  output_path: ""      # Required: Output file path for the behavioral model
+
+steps:
+  # ==========================================================================
+  # Step 1: Extract Mechanisms
+  # Read the mechanism spec document and extract a structured JSON
+  # representation of every mechanism defined in it.
+  # ==========================================================================
+  - id: "extract-mechanisms"
+    agent: "foundation:explorer"
+    timeout: 300
+    model_role: reasoning
+    parse_json: true
+    output: "extraction"
+    prompt: |
+      You are a mechanism extraction agent. Read the mechanism spec document
+      at {{spec_path}} and extract a structured JSON representation of every
+      mechanism defined in it.
+
+      Return a JSON object with these top-level keys:
+
+      ```json
+      {
+        "bundle_identity": {
+          "name": "", "purpose": "", "dependencies": [],
+          "installation_paths": []
+        },
+        "context_files": [
+          {"name": "", "purpose": "", "estimated_tokens": 0, "always_loaded": true}
+        ],
+        "modes": [
+          {
+            "name": "", "purpose": "",
+            "tool_policies": {"safe": [], "warn": [], "confirm": [], "block": []},
+            "default_action": "",
+            "companion_skill": "",
+            "transitions": [],
+            "behavioral_directives": []
+          }
+        ],
+        "agents": [
+          {
+            "name": "", "purpose": "",
+            "model_role": ["primary_role", "fallback_role"],
+            "trigger_conditions": [], "operating_modes": [],
+            "behavioral_directives": [], "tool_requirements": [],
+            "context_loading": [], "exit_conditions": []
+          }
+        ],
+        "skills": [
+          {
+            "name": "", "type": "inline|fork|companion",
+            "purpose": "", "invocation": "",
+            "workflow_phases": [], "behavioral_directives": [],
+            "mode_association": "",
+            "delegation_pattern": {"delegates_to": "named_agent|anonymous_persona", "target": "", "count": 0}
+          }
+        ],
+        "recipes": [
+          {
+            "name": "", "purpose": "", "execution_mode": "flat|staged",
+            "steps": [{"id": "", "agent": "", "produces": "", "consumes": []}],
+            "approval_gates": [{"name": "", "placed_after_step": "", "semantic": "validates_previous|authorizes_next"}],
+            "relationship_to_modes": ""
+          }
+        ],
+        "hooks": [
+          {"name": "", "purpose": "", "triggers_on": "", "behavior": ""}
+        ]
+      }
+      ```
+
+      Rules:
+      - Extract ONLY what the spec document states. Do not infer or add.
+      - If a field has no value in the spec, use empty string or empty list.
+      - For tool policies, use the exact tool names from the spec.
+      - For agents, capture all operating modes (e.g., ANALYZE, DESIGN, ASSESS).
+      - For skills, distinguish inline vs fork vs companion types.
+      - For recipes, capture step-by-step data flow.
+      - For model_role, extract as an ordered fallback array. If the spec
+        specifies a single role (e.g., "reasoning"), represent it as
+        ["reasoning", "general"] since Amplifier agents use fallback chains.
+        If the spec explicitly lists multiple roles, preserve the order.
+      - For approval gates, determine the semantic: does the gate validate
+        what the previous step produced ("validates_previous"), or authorize
+        proceeding to the next step ("authorizes_next")? Look at the gate's
+        position relative to steps and the gate name for clues. If ambiguous,
+        flag it as ambiguous.
+      - For fork skills that delegate, distinguish whether they delegate to
+        a named agent (e.g., "systems-design-critic") or to anonymous agents
+        with persona instructions (e.g., "5 parallel agents with SRE/security/
+        etc. personas"). Extract the target and count.
+
+  # ==========================================================================
+  # Step 2: Synthesize Model
+  # Combine the extracted mechanisms into a coherent behavioral model
+  # document and write it to the output path.
+  # ==========================================================================
+  - id: "synthesize-model"
+    agent: "foundation:file-ops"
+    timeout: 600
+    model_role: writing
+    output: "model_document"
+    prompt: |
+      You are a technical writer producing a behavioral model for an
+      Amplifier bundle based on its mechanism spec.
+
+      The following JSON was extracted from the mechanism spec. Use it
+      as your ONLY source of truth. Do not infer or add anything not
+      present in the extraction.
+
+      ## Extracted Mechanisms
+
+      {{extraction}}
+
+      ---
+
+      Write a behavioral model document to: {{output_path}}
+
+      ## Required Document Structure
+
+      ### 1. Overview
+      - Bundle name, purpose, dependencies
+      - Component inventory: count by type
+
+      ### 2. Tool Governance
+      - Tool availability matrix per mode (safe/warn/confirm/block)
+      - Default action for unlisted tools
+      - Note: delegation necessity and composition loopholes cannot be
+        fully derived from a spec (they require resolved transitive
+        composition). Flag this as a limitation.
+
+      ### 3. Mode Behaviors
+      For each mode: purpose, tool policy, companion skill,
+      transitions, behavioral directives
+
+      ### 4. Agent Behaviors
+      For each agent: purpose, model role, trigger conditions,
+      operating modes, behavioral directives, tool requirements,
+      context loading, exit conditions
+
+      ### 5. Skill Behaviors
+      For each skill: purpose, type (inline/fork/companion),
+      invocation method, workflow phases, mode association
+
+      ### 6. Context & Cross-Cutting Concerns
+      - Context files and their roles
+      - Token budget (from estimated_tokens if available)
+      - Delegation chains and routing patterns
+
+      ### 7. Recipe Workflows
+      For each recipe: purpose, execution mode, step walkthrough,
+      data flow, approval gates, relationship to modes
+
+      ### 8. Behavioral Scenarios
+      Generate 3-5 scenarios showing how mechanisms interact when
+      triggered. For each scenario:
+      - Trigger (what the user says/does)
+      - Mechanism chain (which mechanisms activate in what order)
+      - Context flow (what loads where)
+      - Expected outcome
+
+      Scenarios should cover: at least one mode-driven interactive
+      flow, one recipe-driven automated flow, and one agent
+      delegation chain.
+
+      ### 9. Spec-Derived Limitations
+      List what CANNOT be determined from the spec alone:
+      - Transitive dependency tree (spec states direct deps only)
+      - Composition loopholes (require resolved tool policies)
+      - Delegation necessity map (requires full tool matrix)
+      - Actual token counts (spec has estimates only)
+
+      ## Writing Rules
+      - Use actual component names from the extraction
+      - Use markdown tables for structured comparisons
+      - Cross-reference between sections where components interact
+      - Flag where the spec is ambiguous or incomplete
+      - Do NOT invent behaviors not present in the extraction
