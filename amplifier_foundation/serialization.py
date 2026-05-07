@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from decimal import Decimal
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,10 @@ def sanitize_for_json(value: Any, *, max_depth: int = 50) -> Any:
     # Handle None and primitives (always serializable)
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
+
+    # Handle Decimal — convert to str to preserve precision (not float, which loses it)
+    if isinstance(value, Decimal):
+        return str(value)
 
     # Handle dicts recursively
     if isinstance(value, dict):
