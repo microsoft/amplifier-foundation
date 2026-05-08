@@ -21,7 +21,7 @@ meta:
     assistant: 'I will delegate to tester to run the suite, measure coverage, and report gaps.'
     </example>
 
-model_role: [coding, general]
+model_role: general
 
 tools:
   - module: tool-bash

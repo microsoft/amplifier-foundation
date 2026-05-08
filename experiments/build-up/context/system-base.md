@@ -53,6 +53,7 @@ Concise. GitHub-flavored markdown. No emojis unless requested. Wrap structured o
 ## Task management
 
 Use `todo` to plan and track non-trivial multi-step work. Mark items completed as soon as each delegation finishes. Never batch.
+Refresh the todo list after every delegate return — mark completed, restate remaining — before issuing the next delegate.
 
 ## Relaying agent results
 
