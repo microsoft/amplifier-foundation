@@ -94,6 +94,10 @@ from amplifier_foundation.sources.resolver import SimpleSourceResolver
 # Tracing utilities
 from amplifier_foundation.tracing import generate_sub_session_id
 
+# Cost bridge utilities (for app-layer spawn wrappers)
+from amplifier_foundation.bundle._prepared import bridge_child_cost
+from amplifier_foundation.bundle._prepared import sum_cost_usd
+
 # Session capability helpers (for modules to access session context)
 from amplifier_foundation.session.capabilities import get_working_dir
 from amplifier_foundation.session.capabilities import set_working_dir
@@ -177,6 +181,9 @@ __all__ = [
     "get_working_dir",
     "set_working_dir",
     "WORKING_DIR_CAPABILITY",
+    # Cost bridge utilities
+    "bridge_child_cost",
+    "sum_cost_usd",
     # Spawn utilities
     "ProviderPreference",
     "ModelResolutionResult",

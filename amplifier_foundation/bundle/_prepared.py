@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from dataclasses import field
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -24,6 +25,59 @@ from amplifier_foundation.spawn_utils import apply_provider_preferences_with_res
 from amplifier_foundation.bundle._dataclass import Bundle
 
 logger = logging.getLogger(__name__)
+
+
+# Collects cost_usd contributions from a session.cost channel and returns the
+# total as Decimal, or None when no cost data is present (e.g. self-hosted models).
+def sum_cost_usd(contributions: list) -> Decimal | None:
+    """Sum cost_usd from collect_contributions() results. Returns None if no cost data.
+
+    None != Decimal("0"): None means cost unknown (no rate data); 0 means known-free.
+    Tolerates both Decimal and str values (providers may emit either).
+    Silently skips malformed values rather than raising.
+    """
+    total: Decimal | None = None
+    for c in contributions:
+        if c and isinstance(c, dict):
+            cost = c.get("cost_usd")
+            if cost is not None:
+                if isinstance(cost, Decimal):
+                    total = (total or Decimal("0")) + cost
+                else:
+                    try:
+                        total = (total or Decimal("0")) + Decimal(str(cost))
+                    except Exception:
+                        pass  # malformed cost_usd value; skip and degrade gracefully
+    return total
+
+
+async def bridge_child_cost(
+    child_coordinator,
+    parent_coordinator,
+    child_session_id: str,
+) -> None:
+    """Propagate child session cost to parent's session.cost channel. Never raises.
+
+    Cost accounting must not surface as a spawn failure. Any exception is logged as
+    a warning and swallowed so the caller always sees a clean return.
+    """
+    try:
+        child_contributions = await child_coordinator.collect_contributions("session.cost")
+        child_total = sum_cost_usd(child_contributions)
+
+        if child_total is not None:
+            # Freeze value in default arg — child coordinator will be torn down after this
+            parent_coordinator.register_contributor(
+                "session.cost",
+                f"delegate:{child_session_id}",
+                lambda total=child_total: {"cost_usd": total},
+            )
+    except Exception:
+        logger.warning(
+            "Failed to bridge child session cost for %s; skipping",
+            child_session_id,
+            exc_info=True,
+        )
 
 
 class BundleModuleSource:
@@ -663,6 +717,13 @@ class PreparedBundle:
         # Execute instruction and cleanup
         try:
             response = await child_session.execute(instruction)
+            # Bridge child session cost to parent coordinator (bridge_child_cost never raises)
+            if parent_session:
+                await bridge_child_cost(
+                    child_coordinator=child_session.coordinator,
+                    parent_coordinator=parent_session.coordinator,
+                    child_session_id=child_session.session_id,
+                )
         finally:
             # Unregister the temporary hook before cleanup
             unregister()
