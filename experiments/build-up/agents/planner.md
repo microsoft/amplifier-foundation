@@ -10,6 +10,15 @@ meta:
       - DESIGN: produce an implementation spec — file paths, interfaces, success criteria.
       - REVIEW: critique existing code or design for simplicity and correctness.
 
+    USE WHEN: design or architecture decisions need to be made; an implementation spec
+    needs to be written; existing code or a design needs review for simplicity, correctness,
+    or scope; questions like "how should we build X?", "design Y", "add feature Z",
+    "critique this", "review this module".
+
+    DO NOT USE WHEN: a complete spec already exists (route to `coder` directly);
+    exploration is needed first to understand the territory (route to `explorer`); the
+    change is trivial enough to spec inline in a delegate call to `coder`.
+
     Returns: structured spec or review with concrete next-action recommendations.
 
     Examples:
