@@ -2,8 +2,17 @@
 meta:
   name: explorer
   description: |
-    Multi-file exploration and codebase survey. Use whenever the parent needs a structured
-    understanding of code, docs, or configuration spanning more than a single known file.
+    Multi-file exploration and codebase survey. Read-only reconnaissance.
+
+    USE WHEN: the parent needs structured understanding of code, docs, or configuration
+    spanning more than a single known file. Triggering questions: "how does X work?",
+    "where is Y defined?", "what depends on Z?", "find everything related to A", "trace
+    the flow of B", "survey the auth/config/<feature>".
+
+    DO NOT USE WHEN: a single known file needs reading (the parent should delegate that
+    to a more focused agent or, if the file is small, summarize the request directly to
+    `coder`); design or architecture decisions need to be made (route to `planner`); a
+    spec already exists and you just need code (route to `coder`).
 
     REQUIRES in the delegation instruction:
       - The objective or question to answer
