@@ -214,3 +214,141 @@ Explore mode body.
         bundle = Bundle(name="modes", base_path=tmp_path)
         warnings = bundle.validate_modes()
         assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Item 2: inner shape validation for contributes block
+# ---------------------------------------------------------------------------
+
+
+class TestValidateModesInnerShapes:
+    """Tests for validate_modes() inner-shape validation of contributes keys."""
+
+    def _bundle_with_mode(self, tmp_path: Path, content: str) -> Bundle:
+        modes_dir = tmp_path / "modes"
+        modes_dir.mkdir(exist_ok=True)
+        _write(modes_dir / "subject.md", content)
+        return Bundle(name="modes", base_path=tmp_path)
+
+    def test_agents_as_list_produces_warning(self, tmp_path: Path) -> None:
+        """contributes.agents being a list (not a dict) must produce a warning."""
+        bundle = self._bundle_with_mode(
+            tmp_path,
+            """\
+---
+mode:
+  name: bad-agents
+  contributes:
+    agents:
+      - agent-one
+      - agent-two
+---
+""",
+        )
+        warnings = bundle.validate_modes()
+        assert len(warnings) == 1
+        assert "agents" in warnings[0]
+        assert "subject.md" in warnings[0]
+
+    def test_agents_with_non_dict_value_produces_warning(self, tmp_path: Path) -> None:
+        """contributes.agents mapping a string value (not dict) must produce a warning."""
+        bundle = self._bundle_with_mode(
+            tmp_path,
+            """\
+---
+mode:
+  name: bad-agent-value
+  contributes:
+    agents:
+      my-agent: "just a string"
+---
+""",
+        )
+        warnings = bundle.validate_modes()
+        assert len(warnings) == 1
+        assert "agents" in warnings[0]
+        assert "subject.md" in warnings[0]
+
+    def test_context_as_string_produces_warning(self, tmp_path: Path) -> None:
+        """contributes.context being a string (not a list) must produce a warning."""
+        bundle = self._bundle_with_mode(
+            tmp_path,
+            """\
+---
+mode:
+  name: bad-context
+  contributes:
+    context: "@modes:context/schema.md"
+---
+""",
+        )
+        warnings = bundle.validate_modes()
+        assert len(warnings) == 1
+        assert "context" in warnings[0]
+        assert "subject.md" in warnings[0]
+
+    def test_skills_with_non_string_entry_produces_warning(self, tmp_path: Path) -> None:
+        """contributes.skills list containing a non-string entry must produce a warning."""
+        bundle = self._bundle_with_mode(
+            tmp_path,
+            """\
+---
+mode:
+  name: bad-skills
+  contributes:
+    skills:
+      - "@modes:skills/good-skill"
+      - 42
+---
+""",
+        )
+        warnings = bundle.validate_modes()
+        assert len(warnings) == 1
+        assert "skills" in warnings[0]
+        assert "subject.md" in warnings[0]
+
+    def test_unknown_contributes_key_produces_warning(self, tmp_path: Path) -> None:
+        """An unknown top-level key in contributes must produce a warning (not failure)."""
+        bundle = self._bundle_with_mode(
+            tmp_path,
+            """\
+---
+mode:
+  name: unknown-key
+  contributes:
+    agents:
+      my-agent:
+        source: "@modes:agents/my-agent"
+    future_feature: some_value
+---
+""",
+        )
+        warnings = bundle.validate_modes()
+        assert len(warnings) == 1
+        assert "future_feature" in warnings[0]
+        assert "subject.md" in warnings[0]
+
+    def test_valid_full_contributes_block_produces_no_warnings(
+        self, tmp_path: Path
+    ) -> None:
+        """A fully populated valid contributes block must produce no warnings."""
+        bundle = self._bundle_with_mode(
+            tmp_path,
+            """\
+---
+mode:
+  name: valid-full
+  contributes:
+    agents:
+      mode-author:
+        source: "@modes:agents/mode-author"
+    context:
+      - "@modes:context/schema.md"
+      - "@modes:context/anti-patterns.md"
+    skills:
+      - "@modes:skills/mode-design-discipline"
+---
+""",
+        )
+        warnings = bundle.validate_modes()
+        assert warnings == []

@@ -642,6 +642,78 @@ class Bundle:
                 )
                 warnings.append(msg)
                 logger.warning(msg)
+                continue
+
+            # Inner shape validation for each supported category
+            _KNOWN_CONTRIBUTES_KEYS = frozenset({"agents", "context", "skills"})
+            for key in contributes:
+                if key not in _KNOWN_CONTRIBUTES_KEYS:
+                    msg = (
+                        f"{mode_path.name}: unknown key {key!r} in 'contributes'"
+                        f" — expected one of {sorted(_KNOWN_CONTRIBUTES_KEYS)}"
+                    )
+                    warnings.append(msg)
+                    logger.warning(msg)
+
+            # agents: must be dict[str, dict]
+            agents_val = contributes.get("agents")
+            if agents_val is not None:
+                if not isinstance(agents_val, dict):
+                    msg = (
+                        f"{mode_path.name}: 'contributes.agents' must be a dict"
+                        f" mapping str \u2192 dict; got {type(agents_val).__name__}"
+                    )
+                    warnings.append(msg)
+                    logger.warning(msg)
+                else:
+                    for agent_name, agent_cfg in agents_val.items():
+                        if not isinstance(agent_cfg, dict):
+                            msg = (
+                                f"{mode_path.name}: 'contributes.agents[{agent_name!r}]'"
+                                f" must be a dict; got {type(agent_cfg).__name__}"
+                            )
+                            warnings.append(msg)
+                            logger.warning(msg)
+
+            # context: must be list[str]
+            context_val = contributes.get("context")
+            if context_val is not None:
+                if not isinstance(context_val, list):
+                    msg = (
+                        f"{mode_path.name}: 'contributes.context' must be a list"
+                        f" of strings; got {type(context_val).__name__}"
+                    )
+                    warnings.append(msg)
+                    logger.warning(msg)
+                else:
+                    for i, entry in enumerate(context_val):
+                        if not isinstance(entry, str):
+                            msg = (
+                                f"{mode_path.name}: 'contributes.context[{i}]'"
+                                f" must be a string; got {type(entry).__name__}"
+                            )
+                            warnings.append(msg)
+                            logger.warning(msg)
+
+            # skills: must be list[str]
+            skills_val = contributes.get("skills")
+            if skills_val is not None:
+                if not isinstance(skills_val, list):
+                    msg = (
+                        f"{mode_path.name}: 'contributes.skills' must be a list"
+                        f" of strings; got {type(skills_val).__name__}"
+                    )
+                    warnings.append(msg)
+                    logger.warning(msg)
+                else:
+                    for i, entry in enumerate(skills_val):
+                        if not isinstance(entry, str):
+                            msg = (
+                                f"{mode_path.name}: 'contributes.skills[{i}]'"
+                                f" must be a string; got {type(entry).__name__}"
+                            )
+                            warnings.append(msg)
+                            logger.warning(msg)
 
         return warnings
 
