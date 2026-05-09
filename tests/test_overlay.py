@@ -235,3 +235,63 @@ class TestContextCapability:
 
         cap = coordinator.get_capability("mode_overlay_context") or []
         assert shared_path in cap
+
+
+# ---------------------------------------------------------------------------
+# Skills capability tests
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsCapability:
+    """Tests: mode_overlay_skills capability via apply / revoke."""
+
+    @pytest.mark.asyncio
+    async def test_skills_apply_registers_capability(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """apply() with skills paths registers mode_overlay_skills capability."""
+        contributions = {"skills": ["@modes:skills/mode-design-discipline"]}
+        await overlay.apply("mode:demo", contributions)
+
+        cap = coordinator.get_capability("mode_overlay_skills")
+        assert cap == ["@modes:skills/mode-design-discipline"]
+
+    @pytest.mark.asyncio
+    async def test_skills_revoke_clears_capability(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """revoke() clears mode_overlay_skills capability."""
+        contributions = {"skills": ["@modes:skills/mode-design-discipline"]}
+        await overlay.apply("mode:demo", contributions)
+        await overlay.revoke("mode:demo")
+
+        cap = coordinator.get_capability("mode_overlay_skills") or []
+        assert cap == []
+
+    @pytest.mark.asyncio
+    async def test_mixed_categories_in_one_apply(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """apply() with agents+context+skills mounts all three atomically; revoke unwinds all."""
+        contributions = {
+            "agents": {"mode-author": {"description": "x"}},
+            "context": ["@modes:context/schema.md"],
+            "skills": ["@modes:skills/mode-design-discipline"],
+        }
+        await overlay.apply("mode:demo", contributions)
+
+        # All three categories mounted
+        assert "mode-author" in coordinator.config["agents"]
+        assert coordinator.get_capability("mode_overlay_context") == [
+            "@modes:context/schema.md"
+        ]
+        assert coordinator.get_capability("mode_overlay_skills") == [
+            "@modes:skills/mode-design-discipline"
+        ]
+
+        # Revoke unwinds all three atomically
+        await overlay.revoke("mode:demo")
+
+        assert "mode-author" not in coordinator.config["agents"]
+        assert (coordinator.get_capability("mode_overlay_context") or []) == []
+        assert (coordinator.get_capability("mode_overlay_skills") or []) == []
