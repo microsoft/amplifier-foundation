@@ -184,3 +184,54 @@ class TestS1AgentPath:
 
         # Baseline agent must still be present
         assert "baseline-agent" in coordinator.config["agents"]
+
+
+# ---------------------------------------------------------------------------
+# Context capability tests
+# ---------------------------------------------------------------------------
+
+
+class TestContextCapability:
+    """Tests: mode_overlay_context capability via apply / revoke."""
+
+    @pytest.mark.asyncio
+    async def test_context_apply_registers_capability(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """apply() with context paths registers mode_overlay_context capability."""
+        contributions = {
+            "context": ["@modes:context/schema.md", "@modes:context/anti-patterns.md"]
+        }
+        await overlay.apply("mode:demo", contributions)
+
+        cap = coordinator.get_capability("mode_overlay_context")
+        assert cap == ["@modes:context/schema.md", "@modes:context/anti-patterns.md"]
+
+    @pytest.mark.asyncio
+    async def test_context_revoke_clears_capability(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """revoke() clears mode_overlay_context capability."""
+        contributions = {"context": ["@modes:context/schema.md"]}
+        await overlay.apply("mode:demo", contributions)
+        await overlay.revoke("mode:demo")
+
+        cap = coordinator.get_capability("mode_overlay_context") or []
+        assert cap == []
+
+    @pytest.mark.asyncio
+    async def test_context_revoke_keeps_paths_referenced_by_other_scope(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """revoke() only removes paths whose refcount drops to zero.
+
+        A shared path applied under two scopes survives when only one revokes.
+        """
+        shared_path = "@modes:context/shared.md"
+        await overlay.apply("mode:m1", {"context": [shared_path]})
+        await overlay.apply("mode:m2", {"context": [shared_path]})
+
+        await overlay.revoke("mode:m1")
+
+        cap = coordinator.get_capability("mode_overlay_context") or []
+        assert shared_path in cap
