@@ -422,3 +422,16 @@ class TestEventEmission:
         )
         assert result.success is True
         assert "a1" in coordinator.config["agents"]
+
+
+# ---------------------------------------------------------------------------
+# Package-level export tests
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_overlay_exported_from_configurator_package() -> None:
+    """RuntimeOverlay and TransitionResult are importable from the configurator package root."""
+    from amplifier_foundation.configurator import RuntimeOverlay, TransitionResult
+
+    assert RuntimeOverlay is not None
+    assert TransitionResult is not None
