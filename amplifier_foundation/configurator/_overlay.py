@@ -11,6 +11,16 @@ RuntimeOverlay adds *additive* contributions (agents, context, skills) under nam
 
 Phase 1 covers agents, context, skills. tools/config overrides reserved for v1.1.
 Event names are caller-injected (the modes bundle owns canonical names).
+
+Design choice — caller-injected event names:
+The constructor takes `success_event` and `failure_event` as required keyword-only
+strings rather than importing fixed event constants from a hosting bundle. This
+keeps `RuntimeOverlay` standalone — the foundation library has no dependency on
+any specific bundle's event names. The modes bundle (and any future consumer)
+owns its canonical event vocabulary and passes the names in. Consumers that
+prefer not to emit events at all can pass any string they like; the event
+emission is fail-safe (exceptions in `_emit` are swallowed and logged at debug
+level, not propagated).
 """
 
 from __future__ import annotations
