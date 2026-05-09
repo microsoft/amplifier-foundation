@@ -360,3 +360,65 @@ class TestRollback:
         ]
         assert "mode:activation_failed" in emitted_events
         assert "mode:transition_completed" not in emitted_events
+
+
+# ---------------------------------------------------------------------------
+# Event emission contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestEventEmission:
+    """Tests: event-emission contract for apply() and revoke()."""
+
+    @pytest.mark.asyncio
+    async def test_apply_emits_success_event_with_payload(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """apply() emits success_event with scope, success=True, and mounted delta."""
+        await overlay.apply("mode:demo", {"agents": {"a1": {"description": "x"}}})
+
+        success_calls = [
+            c
+            for c in coordinator.hooks.emit.call_args_list
+            if c.args[0] == "mode:transition_completed"
+        ]
+        assert len(success_calls) == 1
+        payload = success_calls[0].args[1]
+        assert payload["scope"] == "mode:demo"
+        assert payload["success"] is True
+        assert ("agents", "a1") in payload["mounted"]
+
+    @pytest.mark.asyncio
+    async def test_revoke_emits_success_event_with_unmounted(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """revoke() emits success_event with scope and unmounted delta."""
+        await overlay.apply("mode:demo", {"agents": {"a1": {"description": "x"}}})
+        coordinator.hooks.emit.reset_mock()
+        await overlay.revoke("mode:demo")
+
+        success_calls = [
+            c
+            for c in coordinator.hooks.emit.call_args_list
+            if c.args[0] == "mode:transition_completed"
+        ]
+        assert len(success_calls) == 1
+        payload = success_calls[0].args[1]
+        assert payload["scope"] == "mode:demo"
+        assert ("agents", "a1") in payload["unmounted"]
+
+    @pytest.mark.asyncio
+    async def test_event_emit_failure_does_not_break_apply(self) -> None:
+        """emit-side failures are swallowed (best-effort) and apply still succeeds."""
+        coordinator = _make_coordinator()
+        coordinator.hooks.emit.side_effect = RuntimeError("hook bus on fire")
+        fresh_overlay = RuntimeOverlay(
+            coordinator,
+            success_event="mode:transition_completed",
+            failure_event="mode:activation_failed",
+        )
+        result = await fresh_overlay.apply(
+            "mode:demo", {"agents": {"a1": {"description": "x"}}}
+        )
+        assert result.success is True
+        assert "a1" in coordinator.config["agents"]
