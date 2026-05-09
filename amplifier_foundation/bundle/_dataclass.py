@@ -735,6 +735,51 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
     return result
 
 
+def _load_mode_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
+    """Load mode config from a .md file.
+
+    Extracts metadata from the mode: frontmatter section, including name,
+    description, advertised flag, contributes block, and any additional keys.
+    The markdown body is included as the instruction.
+
+    Args:
+        path: Path to mode .md file
+        fallback_name: Name to use if not specified in file
+
+    Returns:
+        Dict with name, description, advertised, contributes, instruction
+        (from markdown body), and any additional mode section keys.
+    """
+    from amplifier_foundation.io.frontmatter import parse_frontmatter
+
+    text = path.read_text(encoding="utf-8")
+    frontmatter, body = parse_frontmatter(text)
+
+    # Modes use mode: section
+    mode_section = frontmatter.get("mode", {})
+    if not isinstance(mode_section, dict):
+        mode_section = {}
+
+    # Build result with backward-compatible defaults
+    result: dict[str, Any] = {
+        "name": mode_section.get("name", fallback_name),
+        "description": mode_section.get("description", ""),
+        "advertised": mode_section.get("advertised", True),
+        "contributes": mode_section.get("contributes", {}) or {},
+    }
+
+    # Pass through remaining mode_section keys verbatim if not already in result
+    for key, value in mode_section.items():
+        if key not in result:
+            result[key] = value
+
+    # Include instruction from markdown body
+    if body and body.strip():
+        result["instruction"] = body.strip()
+
+    return result
+
+
 def _parse_context(
     context_config: dict[str, Any], base_path: Path | None
 ) -> tuple[dict[str, Path], dict[str, str]]:
