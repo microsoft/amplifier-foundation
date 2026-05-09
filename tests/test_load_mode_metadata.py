@@ -77,3 +77,39 @@ class TestLoadModeFileMetadata:
         assert "instruction" in result
         assert "Demo Mode body" in result["instruction"]
         assert "system reminder text" in result["instruction"]
+
+    def test_minimal_mode_defaults(self, tmp_path: Path) -> None:
+        """Backward compat: modes with only name+description get advertised=True, contributes={}."""
+        f = tmp_path / "minimal.md"
+        f.write_text(
+            "---\nmode:\n  name: minimal\n  description: Minimal mode\n---\n",
+            encoding="utf-8",
+        )
+
+        result: dict[str, Any] = _load_mode_file_metadata(f, "minimal")
+
+        assert result["advertised"] is True
+        assert result["contributes"] == {}
+
+    def test_fallback_name_when_no_mode_section(self, tmp_path: Path) -> None:
+        """Modes with no frontmatter fall back to the caller-provided name, with safe defaults."""
+        f = tmp_path / "noframe.md"
+        f.write_text("just markdown body, no frontmatter\n", encoding="utf-8")
+
+        result: dict[str, Any] = _load_mode_file_metadata(f, "noframe")
+
+        assert result["name"] == "noframe"
+        assert result["advertised"] is True
+        assert result["contributes"] == {}
+
+    def test_contributes_explicit_null_yields_empty_dict(self, tmp_path: Path) -> None:
+        """Explicit null contributes: (no value) is coerced to empty dict via `or {}`."""
+        f = tmp_path / "nullcontrib.md"
+        f.write_text(
+            "---\nmode:\n  name: nullcontrib\n  contributes:\n---\n",
+            encoding="utf-8",
+        )
+
+        result: dict[str, Any] = _load_mode_file_metadata(f, "nullcontrib")
+
+        assert result["contributes"] == {}
