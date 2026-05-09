@@ -227,7 +227,8 @@ class RuntimeOverlay:
                 result.success = False
                 result.error = str(exc)
 
-        await self._emit(self._success_event, scope, result)
+        event_name = self._success_event if result.success else self._failure_event
+        await self._emit(event_name, scope, result)
         return result
 
     # ------------------------------------------------------------------

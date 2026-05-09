@@ -435,3 +435,57 @@ def test_runtime_overlay_exported_from_configurator_package() -> None:
 
     assert RuntimeOverlay is not None
     assert TransitionResult is not None
+
+
+# ---------------------------------------------------------------------------
+# Item 1: revoke() failure event emission
+# ---------------------------------------------------------------------------
+
+
+class TestRevokeFailureEvent:
+    """Tests: revoke() emits failure_event when unmount raises, not success_event."""
+
+    @pytest.mark.asyncio
+    async def test_revoke_emits_failure_event_on_unmount_error(self) -> None:
+        """revoke() emits failure_event (not success_event) when _decrement raises.
+
+        The bug: revoke() always emits self._success_event at the end, even
+        after setting result.success = False due to an unmount exception.
+        """
+        coordinator = _make_coordinator()
+        fresh_overlay = RuntimeOverlay(
+            coordinator,
+            success_event="mode:transition_completed",
+            failure_event="mode:activation_failed",
+        )
+
+        # Apply a scope successfully
+        await fresh_overlay.apply(
+            "mode:demo",
+            {"agents": {"mode-author": {"description": "x"}}},
+        )
+        coordinator.hooks.emit.reset_mock()
+
+        # Monkey-patch _decrement to raise on the specific agent key
+        original_decrement = fresh_overlay._decrement
+
+        def failing_decrement(category: str, key: str) -> None:
+            if category == "agents" and key == "mode-author":
+                raise RuntimeError("simulated unmount failure")
+            return original_decrement(category, key)
+
+        fresh_overlay._decrement = failing_decrement  # type: ignore[method-assign]
+
+        result = await fresh_overlay.revoke("mode:demo")
+
+        assert result.success is False
+
+        emitted_events = [
+            call.args[0] for call in coordinator.hooks.emit.call_args_list
+        ]
+        assert "mode:activation_failed" in emitted_events, (
+            f"failure_event not emitted; emitted: {emitted_events}"
+        )
+        assert "mode:transition_completed" not in emitted_events, (
+            f"success_event was incorrectly emitted on failure; emitted: {emitted_events}"
+        )
