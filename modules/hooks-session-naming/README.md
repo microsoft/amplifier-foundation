@@ -43,8 +43,10 @@ Session naming is a simple classification task; it does not need the priority mo
 
 Resolution order:
 
-1. **`model_role`** — Resolved against `coordinator.session_state["routing_matrix"]`
-   via `resolve_model_role` from `hooks-routing`. Defaults to `"fast"`.
+1. **`model_role`** — Resolved against the `model_role_resolver` capability
+   (registered by whichever routing bundle is active — typically the
+   matrix-based one shipped in `amplifier-bundle-routing-matrix`). Defaults to
+   `"fast"`.
 
 2. **Fallback** — `next(iter(providers.values()))` — the first/priority provider.
    Used when `model_role` is `None`, or when resolution fails.

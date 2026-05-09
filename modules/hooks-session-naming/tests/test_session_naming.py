@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import sys
-import types
-from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from amplifier_foundation.spawn_utils import ProviderPreference
 
 import pytest
 
@@ -38,11 +37,16 @@ def _make_mock_provider() -> MagicMock:
 def _make_coordinator(
     *,
     providers: dict | None = None,
-    session_state: dict | None = None,
+    model_role_resolver=None,
 ) -> MagicMock:
-    """Return a coordinator mock wired for session-naming tests."""
+    """Return a coordinator mock wired for session-naming tests.
+
+    ``model_role_resolver`` is the duck-typed capability the consumer code
+    looks up via ``coordinator.get_capability("model_role_resolver")``.
+    Pass ``None`` (default) to simulate "no routing bundle installed".
+    """
     coordinator = MagicMock()
-    coordinator.session_state = session_state or {}
+    coordinator.session_state = {}
     coordinator.hooks = MagicMock()
     coordinator.hooks.emit = AsyncMock()
     coordinator.hooks.register = MagicMock()
@@ -55,20 +59,22 @@ def _make_coordinator(
     coordinator.get = MagicMock(
         side_effect=lambda key: _providers if key == "providers" else None
     )
+    capabilities: dict = {"model_role_resolver": model_role_resolver}
+    coordinator.get_capability = MagicMock(side_effect=capabilities.get)
     return coordinator
 
 
 def _make_hook(
     *,
     providers: dict | None = None,
-    session_state: dict | None = None,
+    model_role_resolver=None,
     model_role: str | None = None,
     initial_trigger_turn: int = 2,
 ) -> SessionNamingHook:
     """Return a SessionNamingHook with mocked coordinator."""
     coordinator = _make_coordinator(
         providers=providers,
-        session_state=session_state,
+        model_role_resolver=model_role_resolver,
     )
     config = SessionNamingConfig(
         initial_trigger_turn=initial_trigger_turn,
@@ -77,52 +83,21 @@ def _make_hook(
     return SessionNamingHook(coordinator, config)
 
 
-def _install_mock_routing(
+def _make_resolver(
     *,
-    resolve_fn=None,
-    find_fn=None,
-) -> Callable[[], None]:
-    """Inject a mock amplifier_module_hooks_routing.resolver into sys.modules.
+    return_value: list | None = None,
+    name: str = "test-matrix",
+):
+    """Build a duck-typed ``model_role_resolver`` mock.
 
-    Returns a cleanup() callable — always call it in a finally block.
-
-    Usage:
-        cleanup = _install_mock_routing(resolve_fn=AsyncMock(...))
-        try:
-            ...
-        finally:
-            cleanup()
+    The new capability contract is:
+        async def resolve(model_role: str | list[str]) -> list[ProviderPreference]
+    Tests pass the mock via ``_make_hook(model_role_resolver=resolver)``.
     """
-    mock_resolver_mod = types.ModuleType("amplifier_module_hooks_routing.resolver")
-    if resolve_fn is not None:
-        mock_resolver_mod.resolve_model_role = resolve_fn  # type: ignore[attr-defined]
-    if find_fn is not None:
-        mock_resolver_mod.find_provider_by_type = find_fn  # type: ignore[attr-defined]
-
-    mock_routing_mod = types.ModuleType("amplifier_module_hooks_routing")
-
-    originals: dict = {}
-    for mod_name in (
-        "amplifier_module_hooks_routing",
-        "amplifier_module_hooks_routing.resolver",
-    ):
-        if mod_name in sys.modules:
-            originals[mod_name] = sys.modules[mod_name]
-
-    sys.modules["amplifier_module_hooks_routing"] = mock_routing_mod
-    sys.modules["amplifier_module_hooks_routing.resolver"] = mock_resolver_mod
-
-    def cleanup() -> None:
-        for mod_name in (
-            "amplifier_module_hooks_routing",
-            "amplifier_module_hooks_routing.resolver",
-        ):
-            if mod_name in originals:
-                sys.modules[mod_name] = originals[mod_name]
-            elif mod_name in sys.modules:
-                del sys.modules[mod_name]
-
-    return cleanup
+    resolver = MagicMock()
+    resolver.name = name
+    resolver.resolve = AsyncMock(return_value=return_value if return_value is not None else [])
+    return resolver
 
 
 # =============================================================================
@@ -345,98 +320,48 @@ class TestModelRoleResolution:
             "provider-openai": openai_provider,
         }
 
-        routing_matrix = {
-            "roles": {
-                "fast": {
-                    "candidates": [{"provider": "anthropic", "model": "claude-haiku-*"}]
-                }
-            }
-        }
-
-        mock_resolve = AsyncMock(
+        resolver = _make_resolver(
             return_value=[
-                {"provider": "anthropic", "model": "claude-haiku-4-5", "config": {}}
+                ProviderPreference(provider="anthropic", model="claude-haiku-4-5", config={}),
             ]
         )
-        cleanup = _install_mock_routing(resolve_fn=mock_resolve)
-        try:
-            hook = _make_hook(
-                providers=providers,
-                session_state={"routing_matrix": routing_matrix},
-                model_role="fast",
-            )
-            await hook._call_provider("name this session")
-
-            assert anthropic_provider.complete.called, (
-                "Expected anthropic provider to be called based on model_role resolution"
-            )
-            assert not openai_provider.complete.called
-
-            mock_resolve.assert_called_once()
-            call_args = mock_resolve.call_args
-            assert call_args[0][0] == ["fast"], "Must pass [model_role] as roles list"
-
-            call_kwargs = anthropic_provider.complete.call_args
-            request = call_kwargs[0][0]
-            assert request.model == "claude-haiku-4-5"
-        finally:
-            cleanup()
-
-    @pytest.mark.asyncio
-    async def test_model_role_falls_back_when_routing_not_installed(
-        self, caplog
-    ) -> None:
-        """ImportError on hooks-routing → falls back to priority provider, logs warning."""
-        priority_provider = _make_mock_provider()
-        providers = {"provider-priority": priority_provider}
-
-        for mod_name in (
-            "amplifier_module_hooks_routing",
-            "amplifier_module_hooks_routing.resolver",
-        ):
-            sys.modules.pop(mod_name, None)
-
         hook = _make_hook(
             providers=providers,
-            session_state={"routing_matrix": {"roles": {}}},
+            model_role_resolver=resolver,
             model_role="fast",
         )
+        await hook._call_provider("name this session")
 
-        import logging
-
-        with caplog.at_level(logging.DEBUG):
-            await hook._call_provider("name this session")
-
-        assert priority_provider.complete.called, (
-            "Must fall back to priority provider when hooks-routing not available"
+        assert anthropic_provider.complete.called, (
+            "Expected anthropic provider to be called based on model_role resolution"
         )
-        assert any(
-            "hooks-routing" in msg or "model_role" in msg for msg in caplog.messages
-        ), "Must log a debug message mentioning model_role or hooks-routing"
+        assert not openai_provider.complete.called
 
+        resolver.resolve.assert_called_once()
+        call_args = resolver.resolve.call_args
+        assert call_args[0][0] == "fast", "Must pass model_role as a string"
+
+        call_kwargs = anthropic_provider.complete.call_args
+        request = call_kwargs[0][0]
+        assert request.model == "claude-haiku-4-5"
     @pytest.mark.asyncio
-    async def test_model_role_falls_back_when_no_routing_matrix(self) -> None:
-        """No routing_matrix in session_state → falls back to priority provider."""
+    async def test_model_role_falls_back_when_no_resolver_capability(self) -> None:
+        """No model_role_resolver capability → falls back to priority provider."""
         priority_provider = _make_mock_provider()
         providers = {"provider-priority": priority_provider}
 
-        mock_resolve = AsyncMock(return_value=[])
-        cleanup = _install_mock_routing(resolve_fn=mock_resolve)
-        try:
-            hook = _make_hook(
-                providers=providers,
-                session_state={},
-                model_role="fast",
-            )
-            await hook._call_provider("name this session")
+        resolver = _make_resolver(return_value=[])
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=None,
+            model_role="fast",
+        )
+        await hook._call_provider("name this session")
 
-            assert priority_provider.complete.called, (
-                "Must fall back to priority provider when routing_matrix absent"
-            )
-            mock_resolve.assert_not_called()
-        finally:
-            cleanup()
-
+        assert priority_provider.complete.called, (
+            "Must fall back to priority provider when model_role_resolver capability is absent"
+        )
+        resolver.resolve.assert_not_called()
     @pytest.mark.asyncio
     async def test_no_model_role_uses_priority_provider(self) -> None:
         """Without model_role, existing behavior is preserved (priority provider)."""

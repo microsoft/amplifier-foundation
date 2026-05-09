@@ -475,43 +475,37 @@ class SessionNamingHook:
             model_override: str | None = None
 
             if self.config.model_role:
-                routing_matrix = getattr(self.coordinator, "session_state", {}).get(
-                    "routing_matrix"
+                # Look up the model_role_resolver capability registered by
+                # whichever routing bundle (matrix-based, cost-aware, etc.)
+                # is active in this session. Duck-typed contract:
+                #     async def resolve(model_role) -> list[ProviderPreference]
+                resolver = (
+                    self.coordinator.get_capability("model_role_resolver")
+                    if hasattr(self.coordinator, "get_capability")
+                    else None
                 )
-                if routing_matrix:
-                    try:
-                        from amplifier_module_hooks_routing.resolver import (
-                            resolve_model_role,
-                        )
-
-                        roles = [self.config.model_role]
-                        matrix = routing_matrix.get("roles", {})
-                        resolved = await resolve_model_role(roles, matrix, providers)
-                        if resolved:
-                            resolved_provider_name = resolved[0]["provider"]
-                            model_override = resolved[0].get("model")
-                            # Find the provider whose key contains the resolved name
-                            for key, p in providers.items():
-                                if resolved_provider_name.lower() in key.lower():
-                                    provider = p
-                                    break
-                        else:
-                            logger.warning(
-                                "model_role %r resolved to no candidates",
-                                self.config.model_role,
-                            )
-                    except ImportError:
-                        logger.debug(
-                            "model_role %r specified but hooks-routing not installed,"
-                            " falling back to priority provider",
-                            self.config.model_role,
-                        )
-                else:
+                if resolver is None:
                     logger.debug(
-                        "model_role %r set but no routing_matrix in session state,"
-                        " falling back to priority provider",
+                        "model_role %r set but no model_role_resolver capability"
+                        " registered, falling back to priority provider",
                         self.config.model_role,
                     )
+                else:
+                    resolved = await resolver.resolve(self.config.model_role)
+                    if resolved:
+                        # ProviderPreference attrs: .provider, .model, .config
+                        resolved_provider_name = resolved[0].provider
+                        model_override = resolved[0].model
+                        # Find the provider whose key contains the resolved name
+                        for key, p in providers.items():
+                            if resolved_provider_name.lower() in key.lower():
+                                provider = p
+                                break
+                    else:
+                        logger.warning(
+                            "model_role %r resolved to no candidates",
+                            self.config.model_role,
+                        )
 
             # Fallback: use first/priority provider
             if provider is None:

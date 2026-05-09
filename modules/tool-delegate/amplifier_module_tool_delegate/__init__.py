@@ -765,50 +765,39 @@ Agent usage notes:
                 ProviderPreference.from_dict(p) for p in raw_provider_prefs
             ]
 
-        # Model role resolution via routing matrix (caller override)
-        # provider_preferences wins when both are provided (explicit pin overrides matrix)
+        # Model role resolution via the model_role_resolver capability (caller override)
+        # provider_preferences wins when both are provided (explicit pin overrides resolver).
+        #
+        # The capability is generic — the routing-matrix bundle ships the
+        # default matrix-based implementation, but other strategies (cost-aware,
+        # latency-aware, availability-aware) may register an alternate resolver
+        # under the same key. We duck-type against the contract:
+        #     async def resolve(model_role) -> list[ProviderPreference]
         raw_model_role = input.get("model_role", "").strip()
         if raw_model_role and provider_preferences is None:
-            routing_state = getattr(self.coordinator, "session_state", {}).get(
-                "routing_matrix"
+            resolver = (
+                self.coordinator.get_capability("model_role_resolver")
+                if hasattr(self.coordinator, "get_capability")
+                else None
             )
-            if routing_state:
-                try:
-                    from amplifier_module_hooks_routing.resolver import (
-                        resolve_model_role,
-                    )
-
-                    roles = [raw_model_role]
-                    matrix = routing_state.get("roles", {})
-                    providers = self.coordinator.get("providers") or {}
-                    resolved = await resolve_model_role(roles, matrix, providers)
-                    if resolved:
-                        provider_preferences = [
-                            ProviderPreference(
-                                provider=r["provider"],
-                                model=r["model"],
-                                config=r.get("config", {}),
-                            )
-                            for r in resolved
-                        ]
-                    else:
-                        logger.warning(
-                            "model_role '%s' resolved to no candidates "
-                            "(available roles: %s, installed providers: %s)",
-                            raw_model_role,
-                            list(matrix.keys()),
-                            list(providers.keys()),
-                        )
-                except ImportError:
-                    logger.warning(
-                        "model_role '%s' specified but amplifier_module_hooks_routing not available",
-                        raw_model_role,
-                    )
-            else:
+            if resolver is None:
                 logger.warning(
-                    "model_role '%s' specified but no routing_matrix in session state",
+                    "model_role '%s' specified but no model_role_resolver "
+                    "capability is registered (install a routing bundle)",
                     raw_model_role,
                 )
+            else:
+                resolved = await resolver.resolve(raw_model_role)
+                if resolved:
+                    # Resolver returns list[ProviderPreference] (foundation public type).
+                    provider_preferences = list(resolved)
+                else:
+                    logger.warning(
+                        "model_role '%s' resolved to no candidates against "
+                        "installed providers (resolver=%s)",
+                        raw_model_role,
+                        getattr(resolver, "name", type(resolver).__name__),
+                    )
 
         # Validate instruction (always required)
         if not instruction:
