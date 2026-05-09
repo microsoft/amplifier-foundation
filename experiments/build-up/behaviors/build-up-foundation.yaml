@@ -83,7 +83,19 @@ tools:
     config:
       features:
         self_delegation:
-          enabled: true
+          # Disabled at the parent level so the orchestrator cannot delegate
+          # to itself. The build-up parent has only `todo` + `delegate` —
+          # spawning another instance of the parent bundle (which is what
+          # `agent="self"` does) produces a sub-instance with no real tools
+          # (no bash/filesystem/search/edit_file) that can only thrash mode/
+          # todo until context overflows.
+          #
+          # Sub-agents (build-up:explorer, :planner, :coder, :tester) declare
+          # their own `tool-delegate` instances independently in their .md
+          # frontmatter. They keep self-delegation enabled (the default) for
+          # legitimate parallel-dispatch patterns at the specialist layer
+          # — see explorer.md's parallel-dispatch guidance.
+          enabled: false
         session_resume:
           enabled: true
         context_inheritance:
