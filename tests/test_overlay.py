@@ -562,8 +562,108 @@ class TestDebugMethods:
         assert "mode:demo" in state["scope_claims"]
 
         # refcounts: (agents, mode-author) must have refcount >= 1
-        rc = {str(k): v for k, v in state["refcounts"].items()}
         assert any("mode-author" in str(k) for k in state["refcounts"])
 
         # owned: agents key must list mode-author
         assert "mode-author" in state["owned"].get("agents", [])
+
+
+# ---------------------------------------------------------------------------
+# Item 5: _owned / _refcounts invariant
+# ---------------------------------------------------------------------------
+
+
+def _assert_owned_refcount_invariant(overlay: RuntimeOverlay, label: str = "") -> None:
+    """Assert that _owned and _refcounts are in sync.
+
+    Invariant (for overlays with no session-baseline agents):
+      For every category C in overlay._owned:
+          set(_owned[C].keys())
+          == { k  for (C2, k), rc in _refcounts.items()  if C2 == C and rc > 0 }
+
+    In other words: every key in _owned[C] has a positive refcount, and every
+    key with a positive refcount in category C is present in _owned[C].
+
+    Note: this invariant assumes the overlay was created with no initial
+    session-baseline agents.  Baseline agents appear in _refcounts (rc=1) but
+    NOT in _owned (they were never mounted by the overlay).  The test below
+    uses an overlay with an empty agent baseline to avoid that asymmetry.
+    """
+    for category, owned_dict in overlay._owned.items():
+        owned_keys = set(owned_dict.keys())
+        positive_rc_keys = {
+            k
+            for (cat, k), rc in overlay._refcounts.items()
+            if cat == category and rc > 0
+        }
+        tag = f" [{label}]" if label else ""
+        assert owned_keys == positive_rc_keys, (
+            f"Invariant violated{tag} for category={category!r}: "
+            f"_owned keys={owned_keys} != positive-refcount keys={positive_rc_keys}"
+        )
+
+
+class TestOwnedRefcountInvariant:
+    """Invariant: _owned and _refcounts stay in sync across apply/revoke sequences."""
+
+    @pytest.mark.asyncio
+    async def test_invariant_holds_across_apply_revoke_sequence(self) -> None:
+        """After each step in a multi-scope sequence the _owned/_refcount invariant holds.
+
+        Sequence:
+          0. initial state (nothing applied)
+          1. apply scope-A: agent-x + context-path-1
+          2. apply scope-B: agent-x (overlap) + context-path-2
+          3. revoke scope-A: agent-x rc 2→1 (stays owned), path-1 rc 1→0 (unmounted)
+          4. revoke scope-B: agent-x rc 1→0 (unmounted), path-2 rc 1→0 (unmounted)
+
+        The overlay is created with NO initial agents so the baseline is empty
+        and the clean invariant (owned == positive-refcount-keys) holds at all
+        steps for all categories.
+        """
+        # Start with an empty-baseline overlay
+        coordinator = _make_coordinator(initial_agents=None)
+        ov = RuntimeOverlay(
+            coordinator,
+            success_event="mode:transition_completed",
+            failure_event="mode:activation_failed",
+        )
+
+        _assert_owned_refcount_invariant(ov, "initial")
+
+        # Step 1: apply scope-A
+        await ov.apply(
+            "scope-A",
+            {
+                "agents": {"agent-x": {"description": "x"}},
+                "context": ["@modes:context/path-1.md"],
+            },
+        )
+        _assert_owned_refcount_invariant(ov, "after apply scope-A")
+
+        # Step 2: apply scope-B (agent-x overlaps; path-2 is new)
+        await ov.apply(
+            "scope-B",
+            {
+                "agents": {"agent-x": {"description": "y"}},
+                "context": ["@modes:context/path-2.md"],
+            },
+        )
+        _assert_owned_refcount_invariant(ov, "after apply scope-B")
+
+        # Step 3: revoke scope-A (agent-x rc 2→1: stays; path-1 rc 1→0: unmounted)
+        await ov.revoke("scope-A")
+        _assert_owned_refcount_invariant(ov, "after revoke scope-A")
+
+        # Spot-check: agent-x still owned (rc=1), path-1 gone, path-2 still owned
+        assert ov.get_refcount("agents", "agent-x") == 1
+        assert ov.get_refcount("context", "@modes:context/path-1.md") == 0
+        assert ov.get_refcount("context", "@modes:context/path-2.md") == 1
+
+        # Step 4: revoke scope-B (agent-x rc 1→0: unmounted; path-2 rc 1→0: unmounted)
+        await ov.revoke("scope-B")
+        _assert_owned_refcount_invariant(ov, "after revoke scope-B")
+
+        # Everything fully unmounted
+        assert ov.get_refcount("agents", "agent-x") == 0
+        assert ov.get_refcount("context", "@modes:context/path-2.md") == 0
