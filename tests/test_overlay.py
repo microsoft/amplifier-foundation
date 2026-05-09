@@ -108,3 +108,79 @@ class TestS2AgentPath:
 
         assert result.success is True
         assert result.unmounted == []
+
+
+# ---------------------------------------------------------------------------
+# S1 tests: agent declared in both session baseline and mode contribution
+# ---------------------------------------------------------------------------
+
+
+class TestS1AgentPath:
+    """S1 tests: agent overlap with session baseline.
+
+    S1 invariant: when the same agent name is declared in the session baseline
+    AND contributed by a mode, the refcount goes 1→2 on apply (no remount, no
+    config replacement) and 2→1 on revoke (no unmount, agent stays).  §7.
+    """
+
+    @pytest.mark.asyncio
+    async def test_s1_agent_in_session_and_mode_no_unmount_on_revoke(self) -> None:
+        """S1: mode apply does not replace session-level config; revoke does not unmount.
+
+        Trace:
+          _capture_baseline → refcounts[('agents','mode-author')] = 1
+          apply → _increment → before=1, rc=2, _mount NOT called (before != 0)
+          revoke → _decrement → before=2, rc=1, _unmount NOT called (new_rc != 0)
+        """
+        coordinator = _make_coordinator(
+            initial_agents={"mode-author": {"description": "session-level"}}
+        )
+        overlay = RuntimeOverlay(
+            coordinator,
+            success_event="mode:transition_completed",
+            failure_event="mode:activation_failed",
+        )
+
+        # Apply mode with same agent name but a different (mode-level) description
+        result = await overlay.apply(
+            "mode:demo",
+            {"agents": {"mode-author": {"description": "mode-level"}}},
+        )
+        assert result.success is True
+
+        # S1 invariant: session-level config must NOT be replaced by mode contribution
+        assert (
+            coordinator.config["agents"]["mode-author"]["description"]
+            == "session-level"
+        )
+
+        # Revoke: refcount went 2→1 — agent must still be present with session-level desc
+        await overlay.revoke("mode:demo")
+        assert "mode-author" in coordinator.config["agents"]
+        assert (
+            coordinator.config["agents"]["mode-author"]["description"]
+            == "session-level"
+        )
+
+    @pytest.mark.asyncio
+    async def test_s1_baseline_agent_not_added_by_mode_apply_alone(self) -> None:
+        """S1: baseline agent persists after apply+revoke of mode with empty agents.
+
+        A mode that contributes no agents must not disturb the session baseline.
+        """
+        coordinator = _make_coordinator(
+            initial_agents={"baseline-agent": {"description": "baseline"}}
+        )
+        overlay = RuntimeOverlay(
+            coordinator,
+            success_event="mode:transition_completed",
+            failure_event="mode:activation_failed",
+        )
+
+        # Apply a mode that contributes nothing to agents
+        await overlay.apply("mode:demo", {"agents": {}})
+        # Revoke that mode
+        await overlay.revoke("mode:demo")
+
+        # Baseline agent must still be present
+        assert "baseline-agent" in coordinator.config["agents"]
