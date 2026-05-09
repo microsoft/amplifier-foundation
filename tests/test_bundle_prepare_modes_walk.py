@@ -137,3 +137,80 @@ class TestValidateModes:
 
         # At least one WARNING record must mention 'bad.md'
         assert any("bad.md" in record.message for record in caplog.records)
+
+    def test_validate_modes_clean_on_existing_modes_bundle(
+        self, tmp_path: Path
+    ) -> None:
+        """Backward-compat smoke test: legacy mode files (no contributes block,
+        no advertised key) must parse cleanly and produce zero warnings.
+
+        Mirrors the shipped shape of modes in microsoft/amplifier-bundle-modes.
+        """
+        modes_dir = tmp_path / "modes"
+        modes_dir.mkdir()
+
+        # (a) plan.md — warn on bash, safe for read tools
+        _write(
+            modes_dir / "plan.md",
+            """\
+---
+mode:
+  name: plan
+  description: "Plan only — no writes."
+  shortcut: plan
+  default_action: warn
+  tools:
+    safe:
+      - read_file
+      - glob
+      - grep
+    warn:
+      - bash
+---
+You are in plan mode. Read-only.
+""",
+        )
+
+        # (b) careful.md — confirm before writes
+        _write(
+            modes_dir / "careful.md",
+            """\
+---
+mode:
+  name: careful
+  description: "Confirm before writes."
+  shortcut: careful
+  default_action: allow
+  tools:
+    confirm:
+      - write_file
+      - edit_file
+      - bash
+---
+Careful mode body.
+""",
+        )
+
+        # (c) explore.md — read-only exploration
+        _write(
+            modes_dir / "explore.md",
+            """\
+---
+mode:
+  name: explore
+  description: "Read-only exploration."
+  shortcut: explore
+  default_action: block
+  tools:
+    safe:
+      - read_file
+      - glob
+      - grep
+---
+Explore mode body.
+""",
+        )
+
+        bundle = Bundle(name="modes", base_path=tmp_path)
+        warnings = bundle.validate_modes()
+        assert warnings == []
