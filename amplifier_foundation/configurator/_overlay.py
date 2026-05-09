@@ -107,11 +107,19 @@ class RuntimeOverlay:
     def _capture_baseline(self) -> None:
         """Record refcount=1 for session-baseline agents.
 
-        S1 invariant: if a mode contributes the same agent name as the session
-        baseline, the refcount reaches 2 and _mount() is never called (no-op).
-
-        context/skills baseline is empty — session-level context flows through
-        bundle.context / tool-skills config, not through overlay capability.
+        ASYMMETRY (intentional, v1):
+        - Agents: captured here. If a mode contributes an agent name that already
+          exists in the session config, the refcount reaches 2 and _mount() is
+          never called — the existing instance is preserved. This implements the
+          S1 overlap scenario for agents.
+        - Context: NOT captured here. Session-level context flows through the
+          bundle's `context: include:` mechanism and the existing `provider:request`
+          hook's @-mention resolver. Mode-contributed context is a separate,
+          additive layer registered as the `mode_overlay_context` capability.
+          A mode contributing the same context file as the session bundle will
+          not deduplicate — both sources will inject independently. Document this
+          in the mode authoring guide if it becomes a real issue.
+        - Skills: NOT captured here. Same rationale as context.
         """
         for agent_name in self._coordinator.config.get("agents") or {}:
             rc_key: tuple[str, str] = ("agents", agent_name)
