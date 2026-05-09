@@ -489,3 +489,81 @@ class TestRevokeFailureEvent:
         assert "mode:transition_completed" not in emitted_events, (
             f"success_event was incorrectly emitted on failure; emitted: {emitted_events}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Item 4: debug methods — get_refcount and dump_state
+# ---------------------------------------------------------------------------
+
+
+class TestDebugMethods:
+    """Tests: get_refcount() and dump_state() introspection helpers."""
+
+    @pytest.mark.asyncio
+    async def test_get_refcount_returns_zero_for_unknown_key(
+        self, overlay: RuntimeOverlay
+    ) -> None:
+        """get_refcount() returns 0 for a key that has never been applied (no raise)."""
+        assert overlay.get_refcount("agents", "nonexistent") == 0
+
+    @pytest.mark.asyncio
+    async def test_get_refcount_reflects_applied_scope(
+        self, overlay: RuntimeOverlay
+    ) -> None:
+        """get_refcount() returns 1 after a scope contributes an agent."""
+        await overlay.apply(
+            "mode:demo", {"agents": {"mode-author": {"description": "x"}}}
+        )
+        assert overlay.get_refcount("agents", "mode-author") == 1
+
+    @pytest.mark.asyncio
+    async def test_get_refcount_increments_with_two_scopes(
+        self, overlay: RuntimeOverlay
+    ) -> None:
+        """get_refcount() returns 2 when two scopes contribute the same item."""
+        await overlay.apply(
+            "mode:demo1", {"agents": {"shared-agent": {"description": "x"}}}
+        )
+        await overlay.apply(
+            "mode:demo2", {"agents": {"shared-agent": {"description": "y"}}}
+        )
+        assert overlay.get_refcount("agents", "shared-agent") == 2
+
+    @pytest.mark.asyncio
+    async def test_get_refcount_drops_to_zero_after_revoke(
+        self, overlay: RuntimeOverlay
+    ) -> None:
+        """get_refcount() returns 0 after the only referencing scope is revoked."""
+        await overlay.apply(
+            "mode:demo", {"agents": {"mode-author": {"description": "x"}}}
+        )
+        await overlay.revoke("mode:demo")
+        assert overlay.get_refcount("agents", "mode-author") == 0
+
+    @pytest.mark.asyncio
+    async def test_dump_state_returns_expected_structure(
+        self, overlay: RuntimeOverlay
+    ) -> None:
+        """dump_state() returns scope_claims, refcounts, and owned keys."""
+        await overlay.apply(
+            "mode:demo",
+            {
+                "agents": {"mode-author": {"description": "x"}},
+                "context": ["@modes:context/schema.md"],
+            },
+        )
+        state = overlay.dump_state()
+
+        assert "scope_claims" in state
+        assert "refcounts" in state
+        assert "owned" in state
+
+        # scope_claims: mode:demo must be present
+        assert "mode:demo" in state["scope_claims"]
+
+        # refcounts: (agents, mode-author) must have refcount >= 1
+        rc = {str(k): v for k, v in state["refcounts"].items()}
+        assert any("mode-author" in str(k) for k in state["refcounts"])
+
+        # owned: agents key must list mode-author
+        assert "mode-author" in state["owned"].get("agents", [])

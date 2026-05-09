@@ -232,6 +232,48 @@ class RuntimeOverlay:
         return result
 
     # ------------------------------------------------------------------
+    # Debug / introspection helpers
+    # ------------------------------------------------------------------
+
+    def get_refcount(self, category: str, key: str) -> int:
+        """Return current refcount for (category, key). 0 if not tracked.
+
+        Args:
+            category:   Category name, e.g. ``'agents'``.
+            key:        Item key within the category.
+
+        Returns:
+            Current refcount (>= 0).  Returns 0 for any key that has never
+            been applied or has been fully revoked — never raises.
+        """
+        return self._refcounts.get((category, key), 0)
+
+    def dump_state(self) -> dict[str, Any]:
+        """Return a debug snapshot: scope_claims, refcounts (sorted), and owned items per category.
+
+        Suitable for printing during incident debugging. Read-only — does not
+        modify any overlay state.
+
+        Returns:
+            ``{
+                "scope_claims": {scope: list_of_(category, key)_tuples},
+                "refcounts":    {(category, key): count, …},  # sorted by (cat, key)
+                "owned":        {category: [key, …], …},
+            }``
+        """
+        return {
+            "scope_claims": {
+                scope: list(claims) for scope, claims in self._scope_claims.items()
+            },
+            "refcounts": dict(
+                sorted(self._refcounts.items(), key=lambda item: item[0])
+            ),
+            "owned": {
+                category: list(items.keys()) for category, items in self._owned.items()
+            },
+        }
+
+    # ------------------------------------------------------------------
     # Refcount helpers
     # ------------------------------------------------------------------
 
