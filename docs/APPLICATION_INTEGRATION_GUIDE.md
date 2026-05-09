@@ -74,7 +74,7 @@ Every Amplifier application follows this core pattern, regardless of application
 ### Minimal Example
 
 ```python
-from amplifier_core import load_bundle
+from amplifier_foundation import load_bundle
 
 # Steps 1-3: Once at startup
 bundle = await load_bundle("./bundle.md")
@@ -143,7 +143,7 @@ bundle:
 
 includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - behavior: my-app:behaviors/domain-expert
+  - bundle: my-app:behaviors/domain-expert
 
 session:
   orchestrator: {module: loop-streaming}
@@ -160,7 +160,7 @@ You are a helpful domain expert.
 Build bundles in Python at startup. Good for dynamic configuration based on environment, user, or runtime conditions.
 
 ```python
-from amplifier_core import Bundle
+from amplifier_foundation import Bundle
 
 base = Bundle(
     name="my-app",
