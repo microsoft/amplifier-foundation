@@ -295,3 +295,68 @@ class TestSkillsCapability:
         assert "mode-author" not in coordinator.config["agents"]
         assert (coordinator.get_capability("mode_overlay_context") or []) == []
         assert (coordinator.get_capability("mode_overlay_skills") or []) == []
+
+
+# ---------------------------------------------------------------------------
+# Rollback tests (§6 step 9, §12)
+# ---------------------------------------------------------------------------
+
+
+class TestRollback:
+    """Atomic rollback: prior mounts unwound in reverse when apply() fails mid-way."""
+
+    @pytest.mark.asyncio
+    async def test_apply_rollback_on_invalid_agent_payload(
+        self, overlay: RuntimeOverlay, coordinator: MagicMock
+    ) -> None:
+        """apply() failure mid-way rolls back prior mounts and leaves scope unapplied.
+
+        Sequence:
+          1. context contribution processed first (succeeds → mounted)
+          2. agents contribution processed next → _normalise_agents raises ValueError
+             for 'bad-agent': 'not-a-dict'
+          3. rollback unwinds context mount in reverse → context capability drops to []
+          4. scope NOT added to _scope_claims → retry with valid payload succeeds
+        """
+        bad_contributions = {
+            "context": ["@modes:context/ok.md"],
+            "agents": {"bad-agent": "not-a-dict"},
+        }
+        result = await overlay.apply("mode:bad", bad_contributions)
+
+        # Result must indicate failure with a descriptive error
+        assert result.success is False
+        assert result.error is not None
+        assert "bad-agent" in result.error or "dict" in result.error.lower()
+
+        # Context capability must have been rolled back (it was mounted, then unwound)
+        cap = coordinator.get_capability("mode_overlay_context") or []
+        assert cap == []
+
+        # bad-agent must not be in coordinator.config['agents']
+        assert "bad-agent" not in coordinator.config["agents"]
+
+        # Scope must NOT be marked applied — retry with valid payload must succeed
+        result2 = await overlay.apply(
+            "mode:bad", {"agents": {"good-agent": {"description": "x"}}}
+        )
+        assert result2.success is True
+        assert "good-agent" in coordinator.config["agents"]
+
+    @pytest.mark.asyncio
+    async def test_apply_rollback_emits_failure_event(self) -> None:
+        """apply() failure emits the failure event and does NOT emit the success event."""
+        coordinator = _make_coordinator()
+        fresh_overlay = RuntimeOverlay(
+            coordinator,
+            success_event="mode:transition_completed",
+            failure_event="mode:activation_failed",
+        )
+
+        await fresh_overlay.apply("mode:bad", {"agents": {"x": "not-a-dict"}})
+
+        emitted_events = [
+            call.args[0] for call in coordinator.hooks.emit.call_args_list
+        ]
+        assert "mode:activation_failed" in emitted_events
+        assert "mode:transition_completed" not in emitted_events
