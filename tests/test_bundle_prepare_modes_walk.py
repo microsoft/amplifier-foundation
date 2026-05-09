@@ -217,6 +217,49 @@ Explore mode body.
 
 
 # ---------------------------------------------------------------------------
+# Item 3: mode_warnings surfaced on PreparedBundle
+# ---------------------------------------------------------------------------
+
+
+class TestPreparedBundleModeWarnings:
+    """Tests: PreparedBundle.mode_warnings exposes validate_modes() output."""
+
+    @pytest.mark.asyncio
+    async def test_prepare_surfaces_mode_warnings_on_prepared_bundle(
+        self, tmp_path: Path
+    ) -> None:
+        """Bundle.prepare() populates PreparedBundle.mode_warnings with warnings
+        from validate_modes() so callers can inspect them post-prepare.
+        """
+        modes_dir = tmp_path / "modes"
+        modes_dir.mkdir()
+        _write(
+            modes_dir / "bad.md",
+            """\
+---
+mode:
+  name: bad
+  contributes:
+    - item1
+    - item2
+---
+""",
+        )
+        bundle = Bundle(name="modes", base_path=tmp_path)
+        prepared = await bundle.prepare(install_deps=False)
+
+        assert hasattr(prepared, "mode_warnings"), (
+            "PreparedBundle must have a mode_warnings attribute"
+        )
+        assert len(prepared.mode_warnings) >= 1, (
+            f"Expected at least one warning, got: {prepared.mode_warnings}"
+        )
+        assert any("bad.md" in w for w in prepared.mode_warnings), (
+            f"Expected 'bad.md' in warnings; got: {prepared.mode_warnings}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Item 2: inner shape validation for contributes block
 # ---------------------------------------------------------------------------
 

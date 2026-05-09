@@ -433,7 +433,7 @@ class Bundle:
         # Validates contributes structure; actual module activation for contributed
         # sources defers to v1.1 when contributes.tools joins.
         # Warnings are logged but do not fail prepare().
-        self.validate_modes()
+        mode_warnings = self.validate_modes()
 
         # Activate all modules and get their paths
         module_paths = await activator.activate_all(
@@ -455,6 +455,7 @@ class Bundle:
             resolver=resolver,
             bundle=self,
             bundle_package_paths=bundle_package_paths,
+            mode_warnings=mode_warnings,
         )
 
     def resolve_context_path(self, name: str) -> Path | None:
