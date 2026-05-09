@@ -259,13 +259,52 @@ Agent usage notes:
 
         Returns:
             JSON schema for the tool input with structured parameters
+
+        Implementation note:
+            The schema body is kept as a pure literal in ``_static_input_schema()``
+            so foundation's static token-cost estimator
+            (``amplifier_foundation.bundle_docs.tool_schema._extract_input_schema``)
+            can extract it via ``ast.literal_eval``. The dynamic note about
+            whether self-delegation is enabled in this session is appended
+            here, post-construction, in-place on the agent description.
+
+            (Take care not to write the substring r-e-t-u-r-n followed by
+            an open brace anywhere in this file's docstrings — that text
+            pattern is what the static estimator's regex looks for, and
+            non-literal text after such a match will trip ast.literal_eval.)
+        """
+        schema = self._static_input_schema()
+        # Reflect the runtime self-delegation state in the parameter description
+        # so the model has a clear signal about whether `agent="self"` will be
+        # accepted in this session — the bare example list alone has been
+        # observed to encourage models to attempt `"self"` even when
+        # `execute()` will hard-reject it.
+        if self.self_delegation_enabled:
+            note = " Self-delegation is enabled in this session."
+        else:
+            note = (
+                " Self-delegation is DISABLED in this session —"
+                " `agent='self'` will be rejected by execute()."
+                " Use a registered agent name or bundle path instead."
+            )
+        schema["properties"]["agent"]["description"] += note
+        return schema
+
+    def _static_input_schema(self) -> dict:
+        """Return a fresh literal copy of the input schema dict.
+
+        The dict body below is intentionally kept as a pure literal — no
+        computed expressions, no string concatenation, no name references —
+        so foundation's bundle-docs token-cost estimator can statically
+        evaluate it via ``ast.literal_eval``. The dynamic self-delegation
+        status note is applied by ``input_schema`` after this returns.
         """
         return {
             "type": "object",
             "properties": {
                 "agent": {
                     "type": "string",
-                    "description": "Agent to delegate to (e.g., 'foundation:explorer', 'self', or bundle path)",
+                    "description": "Agent to delegate to (e.g., 'foundation:explorer', 'self', or bundle path).",
                 },
                 "instruction": {
                     "type": "string",
