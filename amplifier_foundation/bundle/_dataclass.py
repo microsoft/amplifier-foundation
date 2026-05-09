@@ -429,6 +429,12 @@ class Bundle:
                         if isinstance(mod_spec, dict) and "source" in mod_spec:
                             modules_to_activate.append(resolve_source(mod_spec))
 
+        # Phase 1: schema-only modes walk.
+        # Validates contributes structure; actual module activation for contributed
+        # sources defers to v1.1 when contributes.tools joins.
+        # Warnings are logged but do not fail prepare().
+        self.validate_modes()
+
         # Activate all modules and get their paths
         module_paths = await activator.activate_all(
             modules_to_activate, progress_callback=progress_callback
@@ -596,6 +602,48 @@ class Bundle:
                     logger.warning(
                         f"Failed to load metadata for agent '{agent_name}': {e}"
                     )
+
+    def validate_modes(self) -> list[str]:
+        """Scan modes/ directory for .md files and validate their schema.
+
+        Phase 1 of the modes walk: schema-validation-only.  Checks that each
+        mode file is parseable and that its ``contributes`` block, when present,
+        is a dict.  Actual module activation for contributed sources is deferred
+        to v1.1 when ``contributes.tools`` joins.
+
+        Warnings are logged but do not fail prepare().
+
+        Returns:
+            List of warning strings (empty when everything is valid).
+        """
+        warnings: list[str] = []
+
+        if not self.base_path:
+            return warnings
+
+        modes_dir = self.base_path / "modes"
+        if not modes_dir.is_dir():
+            return warnings
+
+        for mode_path in sorted(modes_dir.glob("*.md")):
+            try:
+                meta = _load_mode_file_metadata(mode_path, fallback_name=mode_path.stem)
+            except Exception as exc:
+                msg = f"{mode_path.name}: failed to parse frontmatter: {exc}"
+                warnings.append(msg)
+                logger.warning(msg)
+                continue
+
+            contributes = meta.get("contributes", {})
+            if not isinstance(contributes, dict):
+                msg = (
+                    f"{mode_path.name}: 'contributes' must be a dict;"
+                    f" got {type(contributes).__name__}"
+                )
+                warnings.append(msg)
+                logger.warning(msg)
+
+        return warnings
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], base_path: Path | None = None) -> Bundle:
