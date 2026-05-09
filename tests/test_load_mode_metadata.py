@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from amplifier_foundation.bundle._dataclass import _load_mode_file_metadata
 
@@ -113,3 +114,19 @@ class TestLoadModeFileMetadata:
         result: dict[str, Any] = _load_mode_file_metadata(f, "nullcontrib")
 
         assert result["contributes"] == {}
+
+    def test_malformed_yaml_raises(self, tmp_path: Path) -> None:
+        """Malformed YAML frontmatter propagates yaml.YAMLError — loader does NOT swallow it.
+
+        Contract: _load_mode_file_metadata raises yaml.YAMLError on malformed frontmatter.
+        The prepare-walk caller is responsible for catching/logging the error.
+        Centralizing the catch there keeps observability consistent.
+        """
+        f = tmp_path / "broken.md"
+        f.write_text(
+            "---\nmode: name: broken\ncontributes: { not closed\n---\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(yaml.YAMLError):
+            _load_mode_file_metadata(f, fallback_name="broken")
