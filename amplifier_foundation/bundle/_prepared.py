@@ -26,6 +26,14 @@ from amplifier_foundation.bundle._dataclass import Bundle
 
 logger = logging.getLogger(__name__)
 
+# Coordinator capability key for bridged delegate costs.
+# Stored value: dict[child_session_id, Decimal]. Enables replace-on-dup semantics:
+# re-bridging the same child (multi-turn resume) updates its slot rather than
+# appending a new contributor each time. State lives on the coordinator itself
+# via register_capability, so it's bounded by coordinator lifetime — no module-
+# level state, no id() reuse hazard.
+_DELEGATE_COSTS_CAPABILITY = "_bridge_delegate_costs"
+
 
 # Collects cost_usd contributions from a session.cost channel and returns the
 # total as Decimal, or None when no cost data is present (e.g. self-hosted models).
@@ -58,20 +66,48 @@ async def bridge_child_cost(
 ) -> None:
     """Propagate child session cost to parent's session.cost channel. Never raises.
 
+    Uses a single "delegate-children" contributor per parent coordinator backed by a
+    mutable dict stored on the coordinator as a capability. Re-bridging the same child
+    on multi-turn resume replaces its slot in the dict rather than appending a new
+    contributor each time (which would N-tuple count costs across resumes).
+
+    State is attached to the coordinator via register_capability, so it lives and dies
+    with the coordinator — no module-level dict, no id() reuse hazard, no leak across
+    sessions.
+
     Cost accounting must not surface as a spawn failure. Any exception is logged as
     a warning and swallowed so the caller always sees a clean return.
     """
     try:
-        child_contributions = await child_coordinator.collect_contributions("session.cost")
+        child_contributions = await child_coordinator.collect_contributions(
+            "session.cost"
+        )
         child_total = sum_cost_usd(child_contributions)
 
         if child_total is not None:
-            # Freeze value in default arg — child coordinator will be torn down after this
-            parent_coordinator.register_contributor(
-                "session.cost",
-                f"delegate:{child_session_id}",
-                lambda total=child_total: {"cost_usd": total},
+            delegate_costs = parent_coordinator.get_capability(
+                _DELEGATE_COSTS_CAPABILITY
             )
+
+            if delegate_costs is None:
+                # First bridge for this coordinator — create the shared dict, attach
+                # it to the coordinator, and register one contributor that reads from
+                # it. Subsequent bridges find the existing dict and mutate it in place.
+                delegate_costs = {}
+                parent_coordinator.register_capability(
+                    _DELEGATE_COSTS_CAPABILITY, delegate_costs
+                )
+                parent_coordinator.register_contributor(
+                    "session.cost",
+                    "delegate-children",
+                    lambda d=delegate_costs: (
+                        {"cost_usd": sum(d.values())} if d else None
+                    ),
+                )
+
+            # Replace-on-dup: updating an existing key is idempotent across resumes
+            delegate_costs[child_session_id] = child_total
+
     except Exception:
         logger.warning(
             "Failed to bridge child session cost for %s; skipping",
