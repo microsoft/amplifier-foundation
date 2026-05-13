@@ -8,6 +8,7 @@ All existing imports continue to work unchanged:
     from amplifier_foundation.configurator import SessionConfigurator
     from amplifier_foundation.configurator import _normalize_module_name, ...
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,6 +20,10 @@ from amplifier_foundation.configurator._provenance_utils import (
     _lookup_prov_behavior as _lookup_prov_behavior,  # noqa: F401
     _normalize_module_name as _normalize_module_name,  # noqa: F401
 )
+from amplifier_foundation.configurator._overlay import RuntimeOverlay as RuntimeOverlay  # noqa: F401 — re-export
+from amplifier_foundation.configurator._overlay import (
+    TransitionResult as TransitionResult,
+)  # noqa: F401 — re-export
 from amplifier_foundation.configurator._state_manager import BundleStateManager
 
 
@@ -224,6 +229,8 @@ __all__ = [
     "SessionConfigurator",
     "BundleStateManager",
     "BundleInspector",
+    "RuntimeOverlay",
+    "TransitionResult",
     "_PROV_CATEGORY_MAP",
     "_normalize_module_name",
     "_build_normalized_prov_lookup",

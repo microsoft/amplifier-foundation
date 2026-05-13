@@ -429,6 +429,12 @@ class Bundle:
                         if isinstance(mod_spec, dict) and "source" in mod_spec:
                             modules_to_activate.append(resolve_source(mod_spec))
 
+        # Phase 1: schema-only modes walk.
+        # Validates contributes structure; actual module activation for contributed
+        # sources defers to v1.1 when contributes.tools joins.
+        # Warnings are logged but do not fail prepare().
+        mode_warnings = self.validate_modes()
+
         # Activate all modules and get their paths
         module_paths = await activator.activate_all(
             modules_to_activate, progress_callback=progress_callback
@@ -449,6 +455,7 @@ class Bundle:
             resolver=resolver,
             bundle=self,
             bundle_package_paths=bundle_package_paths,
+            mode_warnings=mode_warnings,
         )
 
     def resolve_context_path(self, name: str) -> Path | None:
@@ -597,6 +604,120 @@ class Bundle:
                         f"Failed to load metadata for agent '{agent_name}': {e}"
                     )
 
+    def validate_modes(self) -> list[str]:
+        """Scan modes/ directory for .md files and validate their schema.
+
+        Phase 1 of the modes walk: schema-validation-only.  Checks that each
+        mode file is parseable and that its ``contributes`` block, when present,
+        is a dict.  Actual module activation for contributed sources is deferred
+        to v1.1 when ``contributes.tools`` joins.
+
+        Warnings are logged but do not fail prepare().
+
+        Returns:
+            List of warning strings (empty when everything is valid).
+        """
+        warnings: list[str] = []
+
+        if not self.base_path:
+            return warnings
+
+        modes_dir = self.base_path / "modes"
+        if not modes_dir.is_dir():
+            return warnings
+
+        for mode_path in sorted(modes_dir.glob("*.md")):
+            try:
+                meta = _load_mode_file_metadata(mode_path, fallback_name=mode_path.stem)
+            except Exception as exc:
+                msg = f"{mode_path.name}: failed to parse frontmatter: {exc}"
+                warnings.append(msg)
+                logger.warning(msg)
+                continue
+
+            contributes = meta.get("contributes", {})
+            if not isinstance(contributes, dict):
+                msg = (
+                    f"{mode_path.name}: 'contributes' must be a dict;"
+                    f" got {type(contributes).__name__}"
+                )
+                warnings.append(msg)
+                logger.warning(msg)
+                continue
+
+            # Inner shape validation for each supported category
+            _KNOWN_CONTRIBUTES_KEYS = frozenset({"agents", "context", "skills"})
+            for key in contributes:
+                if key not in _KNOWN_CONTRIBUTES_KEYS:
+                    msg = (
+                        f"{mode_path.name}: unknown key {key!r} in 'contributes'"
+                        f" — expected one of {sorted(_KNOWN_CONTRIBUTES_KEYS)}"
+                    )
+                    warnings.append(msg)
+                    logger.warning(msg)
+
+            # agents: must be dict[str, dict]
+            agents_val = contributes.get("agents")
+            if agents_val is not None:
+                if not isinstance(agents_val, dict):
+                    msg = (
+                        f"{mode_path.name}: 'contributes.agents' must be a dict"
+                        f" mapping str \u2192 dict; got {type(agents_val).__name__}"
+                    )
+                    warnings.append(msg)
+                    logger.warning(msg)
+                else:
+                    for agent_name, agent_cfg in agents_val.items():
+                        if not isinstance(agent_cfg, dict):
+                            msg = (
+                                f"{mode_path.name}: 'contributes.agents[{agent_name!r}]'"
+                                f" must be a dict; got {type(agent_cfg).__name__}"
+                            )
+                            warnings.append(msg)
+                            logger.warning(msg)
+
+            # context: must be list[str]
+            context_val = contributes.get("context")
+            if context_val is not None:
+                if not isinstance(context_val, list):
+                    msg = (
+                        f"{mode_path.name}: 'contributes.context' must be a list"
+                        f" of strings; got {type(context_val).__name__}"
+                    )
+                    warnings.append(msg)
+                    logger.warning(msg)
+                else:
+                    for i, entry in enumerate(context_val):
+                        if not isinstance(entry, str):
+                            msg = (
+                                f"{mode_path.name}: 'contributes.context[{i}]'"
+                                f" must be a string; got {type(entry).__name__}"
+                            )
+                            warnings.append(msg)
+                            logger.warning(msg)
+
+            # skills: must be list[str]
+            skills_val = contributes.get("skills")
+            if skills_val is not None:
+                if not isinstance(skills_val, list):
+                    msg = (
+                        f"{mode_path.name}: 'contributes.skills' must be a list"
+                        f" of strings; got {type(skills_val).__name__}"
+                    )
+                    warnings.append(msg)
+                    logger.warning(msg)
+                else:
+                    for i, entry in enumerate(skills_val):
+                        if not isinstance(entry, str):
+                            msg = (
+                                f"{mode_path.name}: 'contributes.skills[{i}]'"
+                                f" must be a string; got {type(entry).__name__}"
+                            )
+                            warnings.append(msg)
+                            logger.warning(msg)
+
+        return warnings
+
     @classmethod
     def from_dict(cls, data: dict[str, Any], base_path: Path | None = None) -> Bundle:
         """Create Bundle from parsed dict (from YAML/frontmatter).
@@ -729,6 +850,51 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
         result["model_role"] = frontmatter["model_role"]
 
     # Include instruction from markdown body (same as bundle loading does)
+    if body and body.strip():
+        result["instruction"] = body.strip()
+
+    return result
+
+
+def _load_mode_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
+    """Load mode config from a .md file.
+
+    Extracts metadata from the mode: frontmatter section, including name,
+    description, advertised flag, contributes block, and any additional keys.
+    The markdown body is included as the instruction.
+
+    Args:
+        path: Path to mode .md file
+        fallback_name: Name to use if not specified in file
+
+    Returns:
+        Dict with name, description, advertised, contributes, instruction
+        (from markdown body), and any additional mode section keys.
+    """
+    from amplifier_foundation.io.frontmatter import parse_frontmatter
+
+    text = path.read_text(encoding="utf-8")
+    frontmatter, body = parse_frontmatter(text)
+
+    # Modes use mode: section
+    mode_section = frontmatter.get("mode", {})
+    if not isinstance(mode_section, dict):
+        mode_section = {}
+
+    # Build result with backward-compatible defaults
+    result: dict[str, Any] = {
+        "name": mode_section.get("name", fallback_name),
+        "description": mode_section.get("description", ""),
+        "advertised": mode_section.get("advertised", True),
+        "contributes": mode_section.get("contributes", {}) or {},
+    }
+
+    # Pass through remaining mode_section keys verbatim if not already in result
+    for key, value in mode_section.items():
+        if key not in result:
+            result[key] = value
+
+    # Include instruction from markdown body
     if body and body.strip():
         result["instruction"] = body.strip()
 

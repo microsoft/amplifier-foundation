@@ -20,6 +20,10 @@ from __future__ import annotations
 # Core classes
 from amplifier_foundation.bundle import Bundle
 from amplifier_foundation.configurator import SessionConfigurator
+from amplifier_foundation.configurator import (
+    RuntimeOverlay,
+    TransitionResult,
+)  # re-export for hooks-mode
 
 # Reference implementations
 from amplifier_foundation.cache.disk import DiskCache
@@ -116,6 +120,8 @@ __all__ = [
     # Core
     "Bundle",
     "SessionConfigurator",
+    "RuntimeOverlay",
+    "TransitionResult",
     "BundleRegistry",
     "BundleState",
     "UpdateInfo",

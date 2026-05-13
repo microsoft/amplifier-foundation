@@ -234,6 +234,7 @@ class PreparedBundle:
     resolver: BundleModuleResolver
     bundle: Bundle
     bundle_package_paths: list[str] = field(default_factory=list)
+    mode_warnings: list[str] = field(default_factory=list)
 
     def _build_bundles_for_resolver(self, bundle: "Bundle") -> dict[str, "Bundle"]:
         """Build bundle registry for mention resolution.
