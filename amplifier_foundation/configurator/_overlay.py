@@ -35,8 +35,13 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CAP_OVERLAY_CONTEXT = "mode_overlay_context"
-_CAP_OVERLAY_SKILLS = "mode_overlay_skills"
+_CAP_OVERLAY_CONTEXT = "runtime_context_overlay"
+_CAP_OVERLAY_SKILLS = "runtime_skill_overlay"
+
+# Public exports: stable constants for downstream consumers (tool-skills, hooks-mode,
+# session_spawner). Import from amplifier_foundation top level, not from this module.
+RUNTIME_CONTEXT_OVERLAY_CAPABILITY: str = _CAP_OVERLAY_CONTEXT
+RUNTIME_SKILL_OVERLAY_CAPABILITY: str = _CAP_OVERLAY_SKILLS
 
 # Categories handled in Phase 1
 _SUPPORTED_CATEGORIES = frozenset({"agents", "context", "skills"})
@@ -125,7 +130,7 @@ class RuntimeOverlay:
         - Context: NOT captured here. Session-level context flows through the
           bundle's `context: include:` mechanism and the existing `provider:request`
           hook's @-mention resolver. Mode-contributed context is a separate,
-          additive layer registered as the `mode_overlay_context` capability.
+          additive layer registered as the `runtime_context_overlay` capability.
           A mode contributing the same context file as the session bundle will
           not deduplicate — both sources will inject independently. Document this
           in the mode authoring guide if it becomes a real issue.

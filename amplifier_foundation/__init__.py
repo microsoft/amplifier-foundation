@@ -24,6 +24,10 @@ from amplifier_foundation.configurator import (
     RuntimeOverlay,
     TransitionResult,
 )  # re-export for hooks-mode
+from amplifier_foundation.configurator._overlay import (
+    RUNTIME_CONTEXT_OVERLAY_CAPABILITY,
+    RUNTIME_SKILL_OVERLAY_CAPABILITY,
+)  # producer-neutral capability name constants for downstream consumers
 
 # Reference implementations
 from amplifier_foundation.cache.disk import DiskCache
@@ -122,6 +126,9 @@ __all__ = [
     "SessionConfigurator",
     "RuntimeOverlay",
     "TransitionResult",
+    # Overlay capability name constants (producer-neutral; use these instead of hardcoded strings)
+    "RUNTIME_SKILL_OVERLAY_CAPABILITY",
+    "RUNTIME_CONTEXT_OVERLAY_CAPABILITY",
     "BundleRegistry",
     "BundleState",
     "UpdateInfo",
