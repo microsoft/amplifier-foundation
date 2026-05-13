@@ -1,0 +1,35 @@
+bundle:
+  name: forced-delegation-infra
+  version: 1.0.0
+  description: |
+    Restricted tool set for root orchestrator. Only delegate, todo, mode,
+    load_skill, recipes, and team_knowledge. All file/code/web/bash tools
+    are removed from root — agents have the full toolkit.
+
+tools:
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          enabled: true
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+        exclude_hooks: []
+
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-module-tool-skills@main
+    config:
+      skills:
+        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+
+# NOTE: tool-filesystem, tool-bash, tool-web, tool-search are intentionally
+# NOT included. Agents get them via their own tool sets. Root can only
+# delegate, plan (todo), and load skills.
