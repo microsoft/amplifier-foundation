@@ -192,31 +192,35 @@ class TestS1AgentPath:
 
 
 class TestContextCapability:
-    """Tests: mode_overlay_context capability via apply / revoke."""
+    """Tests: runtime_context_overlay capability via apply / revoke."""
 
     @pytest.mark.asyncio
     async def test_context_apply_registers_capability(
         self, overlay: RuntimeOverlay, coordinator: MagicMock
     ) -> None:
-        """apply() with context paths registers mode_overlay_context capability."""
+        """apply() with context paths registers runtime_context_overlay capability."""
+        from amplifier_foundation import RUNTIME_CONTEXT_OVERLAY_CAPABILITY
+
         contributions = {
             "context": ["@modes:context/schema.md", "@modes:context/anti-patterns.md"]
         }
         await overlay.apply("mode:demo", contributions)
 
-        cap = coordinator.get_capability("mode_overlay_context")
+        cap = coordinator.get_capability(RUNTIME_CONTEXT_OVERLAY_CAPABILITY)
         assert cap == ["@modes:context/schema.md", "@modes:context/anti-patterns.md"]
 
     @pytest.mark.asyncio
     async def test_context_revoke_clears_capability(
         self, overlay: RuntimeOverlay, coordinator: MagicMock
     ) -> None:
-        """revoke() clears mode_overlay_context capability."""
+        """revoke() clears runtime_context_overlay capability."""
+        from amplifier_foundation import RUNTIME_CONTEXT_OVERLAY_CAPABILITY
+
         contributions = {"context": ["@modes:context/schema.md"]}
         await overlay.apply("mode:demo", contributions)
         await overlay.revoke("mode:demo")
 
-        cap = coordinator.get_capability("mode_overlay_context") or []
+        cap = coordinator.get_capability(RUNTIME_CONTEXT_OVERLAY_CAPABILITY) or []
         assert cap == []
 
     @pytest.mark.asyncio
@@ -227,13 +231,15 @@ class TestContextCapability:
 
         A shared path applied under two scopes survives when only one revokes.
         """
+        from amplifier_foundation import RUNTIME_CONTEXT_OVERLAY_CAPABILITY
+
         shared_path = "@modes:context/shared.md"
         await overlay.apply("mode:m1", {"context": [shared_path]})
         await overlay.apply("mode:m2", {"context": [shared_path]})
 
         await overlay.revoke("mode:m1")
 
-        cap = coordinator.get_capability("mode_overlay_context") or []
+        cap = coordinator.get_capability(RUNTIME_CONTEXT_OVERLAY_CAPABILITY) or []
         assert shared_path in cap
 
 
@@ -243,29 +249,33 @@ class TestContextCapability:
 
 
 class TestSkillsCapability:
-    """Tests: mode_overlay_skills capability via apply / revoke."""
+    """Tests: runtime_skill_overlay capability via apply / revoke."""
 
     @pytest.mark.asyncio
     async def test_skills_apply_registers_capability(
         self, overlay: RuntimeOverlay, coordinator: MagicMock
     ) -> None:
-        """apply() with skills paths registers mode_overlay_skills capability."""
+        """apply() with skills paths registers runtime_skill_overlay capability."""
+        from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
+
         contributions = {"skills": ["@modes:skills/mode-design-discipline"]}
         await overlay.apply("mode:demo", contributions)
 
-        cap = coordinator.get_capability("mode_overlay_skills")
+        cap = coordinator.get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY)
         assert cap == ["@modes:skills/mode-design-discipline"]
 
     @pytest.mark.asyncio
     async def test_skills_revoke_clears_capability(
         self, overlay: RuntimeOverlay, coordinator: MagicMock
     ) -> None:
-        """revoke() clears mode_overlay_skills capability."""
+        """revoke() clears runtime_skill_overlay capability."""
+        from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
+
         contributions = {"skills": ["@modes:skills/mode-design-discipline"]}
         await overlay.apply("mode:demo", contributions)
         await overlay.revoke("mode:demo")
 
-        cap = coordinator.get_capability("mode_overlay_skills") or []
+        cap = coordinator.get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY) or []
         assert cap == []
 
     @pytest.mark.asyncio
@@ -273,6 +283,11 @@ class TestSkillsCapability:
         self, overlay: RuntimeOverlay, coordinator: MagicMock
     ) -> None:
         """apply() with agents+context+skills mounts all three atomically; revoke unwinds all."""
+        from amplifier_foundation import (
+            RUNTIME_CONTEXT_OVERLAY_CAPABILITY,
+            RUNTIME_SKILL_OVERLAY_CAPABILITY,
+        )
+
         contributions = {
             "agents": {"mode-author": {"description": "x"}},
             "context": ["@modes:context/schema.md"],
@@ -282,10 +297,10 @@ class TestSkillsCapability:
 
         # All three categories mounted
         assert "mode-author" in coordinator.config["agents"]
-        assert coordinator.get_capability("mode_overlay_context") == [
+        assert coordinator.get_capability(RUNTIME_CONTEXT_OVERLAY_CAPABILITY) == [
             "@modes:context/schema.md"
         ]
-        assert coordinator.get_capability("mode_overlay_skills") == [
+        assert coordinator.get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY) == [
             "@modes:skills/mode-design-discipline"
         ]
 
@@ -293,8 +308,8 @@ class TestSkillsCapability:
         await overlay.revoke("mode:demo")
 
         assert "mode-author" not in coordinator.config["agents"]
-        assert (coordinator.get_capability("mode_overlay_context") or []) == []
-        assert (coordinator.get_capability("mode_overlay_skills") or []) == []
+        assert (coordinator.get_capability(RUNTIME_CONTEXT_OVERLAY_CAPABILITY) or []) == []
+        assert (coordinator.get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY) or []) == []
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +345,9 @@ class TestRollback:
         assert "bad-agent" in result.error or "dict" in result.error.lower()
 
         # Context capability must have been rolled back (it was mounted, then unwound)
-        cap = coordinator.get_capability("mode_overlay_context") or []
+        from amplifier_foundation import RUNTIME_CONTEXT_OVERLAY_CAPABILITY
+
+        cap = coordinator.get_capability(RUNTIME_CONTEXT_OVERLAY_CAPABILITY) or []
         assert cap == []
 
         # bad-agent must not be in coordinator.config['agents']
