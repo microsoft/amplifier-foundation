@@ -39,7 +39,7 @@ provider_preferences:
     model: gpt-5-mini
   - provider: openai
     model: gpt-5-nano
-  - provider: google
+  - provider: gemini
     model: gemini-*-flash
   - provider: github-copilot
     model: claude-haiku-*

@@ -47,9 +47,9 @@ provider_preferences:
     model: claude-sonnet-*
   - provider: openai
     model: gpt-5.[0-9]
-  - provider: google
+  - provider: gemini
     model: gemini-*-pro-preview
-  - provider: google
+  - provider: gemini
     model: gemini-*-pro
   - provider: github-copilot
     model: claude-sonnet-*
