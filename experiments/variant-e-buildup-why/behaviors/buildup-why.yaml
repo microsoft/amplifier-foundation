@@ -1,0 +1,144 @@
+---
+bundle:
+  # Namespace: agents and context registered via this bundle resolve under
+  # `variant-e-buildup-why:` (e.g. `variant-e-buildup-why:explorer`,
+  # `variant-e-buildup-why:context/...`).
+  # This YAML lives in experiments/variant-e-buildup-why/behaviors/ but the
+  # agents/ and context/ directories live one level up at
+  # experiments/variant-e-buildup-why/.
+  # namespace_root: .. tells the registry to set
+  #   source_base_paths['variant-e-buildup-why'] = experiments/variant-e-buildup-why/
+  # rather than the default (this file's own behaviors/ directory).
+  name: variant-e-buildup-why
+  version: 0.1.0
+  namespace_root: ..
+  description: |
+    Variant E -- Build-Up-WHY. The "full kitchen sink" experiment.
+
+    Strategies combined: 1 (WHY over rules) + 2 (strip) + 3 (Karpathy-style
+    behavioral anchors, inherited via build-up structure) + 4 + 5 + 7 + 8 +
+    9 (constitution) + 10 + 11 + 13.
+
+    Forked from the build-up experiment: parent has ONLY `todo` + `delegate`,
+    cannot directly read/write/run anything. Every concrete action goes
+    through one of four self-sufficient sub-session agents (explorer,
+    planner, coder, tester). Each agent declares its own tools in its
+    frontmatter; those tools are pre-activated at compose time via the
+    `load_agent_metadata()` ordering in
+    `amplifier-app-cli/lib/bundle_loader/prepare.py`.
+
+    On top of the build-up base, this variant:
+      - Prepends a 5-value constitution to system-base
+      - Rewrites every flat imperative in system-base, delegation-mechanics,
+        and all four agent prompts with explicit WHY reasoning
+      - Keeps the same tool surface, namespace mechanics, and history as
+        build-up 0.4.0
+
+      Parent tools:   todo + delegate                              (orchestration only)
+      explorer:       bash, filesystem, search, todo, delegate     (read-only)
+      planner:        filesystem, todo, delegate                   (design / spec / review)
+      coder:          bash, filesystem, search, todo, delegate     (implementation from spec)
+      tester:         bash, filesystem, search, todo, delegate     (verification, test gen)
+
+    No web, no skills, no LSP, no apply-patch, no MCP. Same as build-up.
+
+# Session configuration -- identical to build-up so the only measurable
+# variable is the prompt content, not the runtime.
+session:
+  raw: true
+  orchestrator:
+    module: loop-streaming
+    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    config:
+      extended_thinking: true
+  context:
+    module: context-simple
+    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+    config:
+      max_tokens: 300000
+      compact_threshold: 0.8
+      auto_compact: true
+
+# Tools at the parent bundle level -- ONLY what the orchestrator itself uses.
+#
+# Agent-side tools (bash, filesystem, search, etc.) are declared inside each
+# agent's .md frontmatter under its own `tools:` block, with explicit `source:`
+# URIs. They are pre-activated at compose time by `Bundle.prepare()` after
+# `load_agent_metadata()` populates `mount_plan["agents"][name]["tools"]`
+# from the agent files.
+#
+# Result: parent's tool spec stays small, agents carry their own tools
+# structurally rather than via inherited declarations.
+tools:
+  - module: tool-todo
+    source: git+https://github.com/microsoft/amplifier-module-tool-todo@main
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          # Disabled at the parent level so the orchestrator cannot delegate
+          # to itself. The parent has only `todo` + `delegate` -- spawning
+          # another instance of the parent bundle (which is what
+          # `agent="self"` does) produces a sub-instance with no real tools
+          # that can only thrash mode/todo until context overflows.
+          #
+          # Sub-agents declare their own `tool-delegate` instances
+          # independently in their .md frontmatter. They keep
+          # self-delegation enabled (the default) for legitimate
+          # parallel-dispatch patterns at the specialist layer.
+          enabled: false
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+
+# Free-cost UX hooks (no per-turn context cost)
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/streaming-ui.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/status-context.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/redaction.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/logging.yaml
+
+# Productivity hooks
+hooks:
+  - module: hooks-todo-reminder
+    source: git+https://github.com/microsoft/amplifier-module-hooks-todo-reminder@main
+    config:
+      inject_role: user
+      priority: 10
+  - module: hooks-todo-display
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-todo-display
+    config:
+      show_progress_bar: true
+      show_border: true
+  - module: hooks-session-naming
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-session-naming
+    config:
+      initial_trigger_turn: 2
+      update_interval_turns: 5
+
+# The four WHY-rewritten agents this variant ships. Resolved via the
+# `variant-e-buildup-why` namespace declared above. The agent files live at
+# experiments/variant-e-buildup-why/agents/<name>.md -- forked from
+# build-up's agents with WHY reasoning applied to every instruction.
+#
+# Per the task spec, these are referenced by full foundation path so the
+# eval harness resolves them unambiguously even when mounted alongside
+# build-up or other variants.
+agents:
+  include:
+    - foundation:experiments/variant-e-buildup-why/agents/explorer
+    - foundation:experiments/variant-e-buildup-why/agents/planner
+    - foundation:experiments/variant-e-buildup-why/agents/coder
+    - foundation:experiments/variant-e-buildup-why/agents/tester
+
+# Single piece of additional context: the WHY-rewritten delegation mechanics.
+context:
+  include:
+    - foundation:experiments/variant-e-buildup-why/context/delegation-mechanics-why.md
