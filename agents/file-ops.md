@@ -32,20 +32,6 @@ File-ops provides grep capabilities for content search with context lines.
 
 model_role: fast
 
-provider_preferences:
-  - provider: anthropic
-    model: claude-haiku-*
-  - provider: openai
-    model: gpt-5-mini
-  - provider: openai
-    model: gpt-5-nano
-  - provider: google
-    model: gemini-*-flash
-  - provider: github-copilot
-    model: claude-haiku-*
-  - provider: github-copilot
-    model: gpt-5-mini
-
 tools:
   - module: tool-filesystem
     source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main

@@ -15,22 +15,6 @@ Covers: OWASP Top 10, hardcoded secrets detection, input/output validation, cryp
 
 model_role: [security-audit, critique, general]
 
-provider_preferences:
-  - provider: anthropic
-    model: claude-opus-*
-  - provider: openai
-    model: gpt-5*-pro
-  - provider: openai
-    model: gpt-5.[0-9]
-  - provider: google
-    model: gemini-*-pro-preview
-  - provider: google
-    model: gemini-*-pro
-  - provider: github-copilot
-    model: claude-opus-*
-  - provider: github-copilot
-    model: gpt-5.[0-9]
-
 tools:
   - module: tool-filesystem
     source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main

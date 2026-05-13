@@ -42,20 +42,6 @@ meta:
 
 model_role: general
 
-provider_preferences:
-  - provider: anthropic
-    model: claude-sonnet-*
-  - provider: openai
-    model: gpt-5.[0-9]
-  - provider: google
-    model: gemini-*-pro-preview
-  - provider: google
-    model: gemini-*-pro
-  - provider: github-copilot
-    model: claude-sonnet-*
-  - provider: github-copilot
-    model: gpt-5.[0-9]
-
 tools:
   - module: tool-bash
     source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
