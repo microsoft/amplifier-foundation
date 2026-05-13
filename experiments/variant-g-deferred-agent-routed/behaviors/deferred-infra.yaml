@@ -1,0 +1,36 @@
+bundle:
+  name: deferred-infra
+  version: 1.0.0
+  description: |
+    Delegate tool + skills with NO awareness context injected.
+    Agent descriptions in the delegate tool schema are the sole routing signal.
+    All reference docs are behind skills for on-demand loading.
+
+tools:
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          enabled: true
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+        exclude_hooks: []
+
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+    config:
+      skills:
+        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/variant-g-deferred-agent-routed/skills"
+
+# NO context: include — that is the experiment.
+# All routing is via agent descriptions in the delegate tool schema.
+# All reference material is behind load_skill().
