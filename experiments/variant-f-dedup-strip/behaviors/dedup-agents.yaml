@@ -1,0 +1,36 @@
+bundle:
+  name: dedup-agents
+  version: 1.0.0
+  description: |
+    Delegate tool with STRIPPED delegation context.
+    Replaces foundation:behaviors/agents which loads ~330 lines of
+    delegation-instructions.md + multi-agent-patterns.md.
+    This loads ~69 lines of collapsed delegation.md instead.
+
+tools:
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          enabled: true
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+        exclude_hooks: []
+
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+    config:
+      skills:
+        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+
+context:
+  include:
+    - experiments/variant-f-dedup-strip/context/delegation.md
