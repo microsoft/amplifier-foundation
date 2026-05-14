@@ -1,0 +1,49 @@
+---
+bundle:
+  name: why-foundation-behavior
+  version: 0.1.0
+  description: |
+    Behavior layer for Variant B (WHY Foundation).
+
+    Replaces foundation:behaviors/agents. Provides the same UX hooks and
+    delegate tool as standard foundation, but loads the WHY-rewritten
+    delegation context instead of the original imperative version.
+
+# UX hooks: same as foundation
+includes:
+  - bundle: foundation:behaviors/streaming-ui
+  - bundle: foundation:behaviors/status-context
+  - bundle: foundation:behaviors/redaction
+  - bundle: foundation:behaviors/todo-reminder
+  - bundle: foundation:behaviors/sessions
+
+# Delegate tool: same config as foundation:behaviors/agents
+tools:
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          enabled: true
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+        exclude_hooks: []
+
+  # Register foundation's skills directory for discovery
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+    config:
+      skills:
+        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+
+# Load OUR WHY-rewritten delegation context (replaces foundation originals)
+context:
+  include:
+    - foundation:experiments/variant-b-why-foundation/context/delegation-why.md

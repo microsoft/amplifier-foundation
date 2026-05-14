@@ -1,0 +1,33 @@
+bundle:
+  name: goals-only-infra
+  version: 1.0.0
+  description: |
+    Delegate tool and foundation skills directory — NO delegation instruction
+    context. The model gets tool schemas and agent list but zero guidance on
+    how/when to delegate.
+
+tools:
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          enabled: true
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+        exclude_hooks: []
+
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-module-tool-skills@main
+    config:
+      skills:
+        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+
+# NO context: include section — that is the entire experiment
