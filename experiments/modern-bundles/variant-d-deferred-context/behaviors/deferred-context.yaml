@@ -1,0 +1,45 @@
+---
+bundle:
+  name: deferred-context-behavior
+  version: 1.0.0
+  description: |
+    Variant D behavior: replaces foundation:behaviors/agents.
+    Configures the delegate tool with the same features as the standard
+    foundation agents behavior, plus tool-skills for on-demand context
+    loading. The heavy delegation-instructions.md document is NOT loaded
+    at session start; instead a brief summary is loaded and the full
+    content lives behind load_skill("delegation-patterns").
+
+# Core tools added by this behavior
+tools:
+  # On-demand context loading via skills (points at this variant's skills dir)
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-module-tool-skills@main
+    config:
+      visibility:
+        enabled: true
+      # Include this variant's local skills directory in addition to defaults
+      directories:
+        - foundation:experiments/variant-d-deferred-context/skills
+  # Agent delegation
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          enabled: true
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+
+# Brief delegation context (replaces the heavy delegation-instructions.md
+# normally loaded by foundation:behaviors/agents)
+context:
+  include:
+    - foundation:experiments/variant-d-deferred-context/context/delegation-brief.md
