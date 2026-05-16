@@ -739,12 +739,18 @@ Agent usage notes:
 
         # Framework context — read from coordinator dispatch context.
         #
-        # The orchestrator sets coordinator._tool_dispatch_context =
-        # {"tool_call_id": tool_call.id, "parallel_group_id": group_id}
-        # immediately before calling tool.execute(), and clears it in a
-        # finally block afterward.  We use getattr with a fallback so this
-        # works gracefully with coordinators that predate the mechanism.
-        dispatch_ctx = getattr(self.coordinator, "_tool_dispatch_context", {})
+        # Updated orchestrators (post loop-streaming fix) store context in a
+        # task-keyed dict at coordinator._tool_dispatch_contexts so concurrent
+        # delegates running via asyncio.gather don't race on a shared attribute.
+        # Older orchestrators use the single-attribute coordinator._tool_dispatch_context.
+        # We check the new task-keyed form first and fall back to the legacy
+        # attribute so both patterns are supported.
+        _dispatch_task = asyncio.current_task()
+        dispatch_ctx = (
+            getattr(self.coordinator, "_tool_dispatch_contexts", {}).get(_dispatch_task)
+            or getattr(self.coordinator, "_tool_dispatch_context", {})
+            or {}
+        )
         tool_call_id = dispatch_ctx.get("tool_call_id", "")
         parallel_group_id = dispatch_ctx.get("parallel_group_id", None)
 
