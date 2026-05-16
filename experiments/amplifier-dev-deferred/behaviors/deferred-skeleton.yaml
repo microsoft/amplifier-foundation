@@ -1,0 +1,37 @@
+bundle:
+  name: behavior-deferred-skeleton
+  version: 0.1.0
+  description: |
+    Strategy-6 deferred-loading skeleton. Provides the load_skill tool with
+    visibility disabled, registers the variant's 15 new skills, and injects
+    the Discovery Layer plus abridged skills/modes meta.
+
+tools:
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+    config:
+      skills:
+        # Foundation's bundled skills (preserved from foundation:behaviors/agents)
+        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+        # Microsoft-curated skills (mirrors the default skills bundle)
+        - "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=skills"
+        # Variant's 15 deferred skills
+        - "git+https://github.com/microsoft/amplifier-foundation@eval/strategy-06-deferred#subdirectory=experiments/amplifier-dev-deferred/skills"
+      visibility:
+        # See §10.8: tool-skills does NOT support first-turn-only injection.
+        # Per proposal §5 + §10.9, we adopt the workaround of disabling
+        # auto-injection entirely; the model reaches for skills via the
+        # Discovery Layer + load_skill(list/search).
+        enabled: false
+
+  # Team knowledge tool only (the instructions move to the team-knowledge skill).
+  # See §10.9: deliberately NOT composing amplifier-bundle-team-knowledge-base's
+  # behavior because that would re-inject instructions-tool.md.
+  - module: tool-team-knowledge
+    source: git+https://github.com/microsoft/amplifier-bundle-team-knowledge-base@main#subdirectory=modules/tool-team-knowledge
+
+context:
+  include:
+    - experiments/amplifier-dev-deferred/context/available-knowledge.md
+    - experiments/amplifier-dev-deferred/context/skills-instructions-abridged.md
+    - experiments/amplifier-dev-deferred/context/modes-instructions-abridged.md

@@ -1,0 +1,14 @@
+bundle:
+  name: behavior-deferred-amplifier-dev
+  version: 0.1.0
+  description: |
+    Strategy-6 slim variant of foundation:behaviors/amplifier-dev. Keeps
+    the ecosystem-expert agent; drops ecosystem-map.md, dev-workflows.md,
+    testing-patterns.md from always-loaded context. Those move to:
+      ecosystem-map.md     -> skill amplifier-dev-map
+      dev-workflows.md     -> mode amplifier-dev
+      testing-patterns.md  -> skill amplifier-testing
+
+agents:
+  include:
+    - foundation:ecosystem-expert

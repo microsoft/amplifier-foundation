@@ -1,0 +1,23 @@
+bundle:
+  name: behavior-deferred-agents
+  version: 0.1.0
+  description: |
+    Strategy-6 slim variant of foundation:behaviors/agents. Same delegate
+    tool. (tool-skills registration is consolidated into
+    behaviors/deferred-skeleton.yaml to avoid double-registration; that
+    behavior re-includes foundation's skills dir alongside the variant skills.)
+    Drops always-loaded delegation-instructions.md and multi-agent-patterns.md
+    -- those move to skills (see proposal §1, §4).
+
+tools:
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation: {enabled: true}
+        session_resume: {enabled: true}
+        context_inheritance: {enabled: true, max_turns: 10}
+        provider_selection: {enabled: true}
+      settings:
+        exclude_tools: [tool-delegate]
+        exclude_hooks: []
