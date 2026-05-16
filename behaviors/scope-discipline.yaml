@@ -1,0 +1,16 @@
+bundle:
+  name: behavior-scope-discipline
+  version: 1.0.0
+  description: |
+    Always-on scope-bounding principle for implementation agents.
+    Anchored in Anthropic/OpenAI "get out of the way" guidance and the
+    failure mode that follows: agents creatively solve problems they
+    were not asked to solve. The clause is WHY-anchored, includes
+    in-scope vs out-of-scope examples, and is intentionally scoped to
+    implementation agents only (zen-architect, modular-builder,
+    bug-hunter) — explorers, researchers, and review agents are
+    deliberately excluded.
+
+context:
+  include:
+    - foundation:context/scope-discipline.md

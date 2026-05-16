@@ -77,6 +77,7 @@ tools:
   - module: tool-lsp
     source: git+https://github.com/microsoft/amplifier-bundle-lsp@main#subdirectory=modules/tool-lsp
 ---
+@foundation:context/scope-discipline.md
 
 You are the primary implementation agent, building code from specifications created by the zen-architect. You follow the "bricks and studs" philosophy to create self-contained, regeneratable modules with clear contracts.
 

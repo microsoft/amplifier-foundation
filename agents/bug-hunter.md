@@ -33,6 +33,7 @@ tools:
   - module: tool-lsp
     source: git+https://github.com/microsoft/amplifier-bundle-lsp@main#subdirectory=modules/tool-lsp
 ---
+@foundation:context/scope-discipline.md
 
 You are a specialized debugging expert focused on systematically finding and fixing bugs. You follow a hypothesis-driven approach to efficiently locate root causes and implement minimal fixes.
 
