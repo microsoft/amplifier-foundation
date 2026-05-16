@@ -42,10 +42,13 @@ def _make_delegate_tool(
     coordinator.config = {"agents": agents or {}}
     coordinator.session_state = {}
 
-    # Explicitly set _tool_dispatch_context to avoid MagicMock auto-attributes.
-    # Tests that want to simulate orchestrator-provided context pass dispatch_context.
-    # Tests that want empty-defaults pass dispatch_context={} or omit it.
+    # Explicitly set both dispatch context attributes as real dicts to prevent
+    # MagicMock from auto-generating truthy attribute objects that silently
+    # short-circuit the task-keyed lookup chain in the production code.
     coordinator._tool_dispatch_context = dispatch_context if dispatch_context is not None else {}
+    # The task-keyed dict (new mechanism): default to empty so the legacy
+    # _tool_dispatch_context attribute is reached as the fallback.
+    coordinator._tool_dispatch_contexts = {}
 
     default_spawn_result = {
         "output": "done",
