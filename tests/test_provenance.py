@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from amplifier_foundation.bundle import Bundle
+from amplifier_foundation.bundle._provenance import tag_container_provenance
 from amplifier_foundation.configurator._types import Origin
 
 
@@ -427,3 +428,167 @@ class TestSessionSpawnInstructionProvenance:
         # via_behavior captures the intermediate bundle "b"
         via_b = [o for o in chains if o.via_behavior == "b"]
         assert len(via_b) > 0, f"Expected Origin with via_behavior='b' in {chains}"
+
+
+class TestPhase2ChainPreservation:
+    """Tests for the container-provenance chain built by tag_container_provenance.
+
+    These tests verify that the registry's post-compose tagging step correctly
+    builds the origin chain entries described in the spec:
+
+        Origin(Z, None)      # direct claimant (behavior-apply-patch)
+        Origin(Y, "Z")       # Y (foundation) carries it via Z
+        Origin(X, "Y")       # X (amplifier-dev) carries it via Y
+
+    tag_container_provenance() is called by BundleRegistry._load_single after
+    _compose_includes completes.  Direct Bundle.compose() calls in tests do NOT
+    automatically invoke it — callers must call it explicitly when simulating
+    the registry flow.
+    """
+
+    def test_two_level_chain_direct_claimant_and_container(self) -> None:
+        """Direct claimant (Z) + container (Y) both appear after tag_container_provenance.
+
+        Simulates: foundation includes behavior-apply-patch.
+        After _compose_includes and tag_container_provenance("foundation"):
+          - Origin("behavior-apply-patch", None)     <- direct claimant (Phase 1)
+          - Origin("foundation", "behavior-apply-patch")  <- container (tag_container_provenance)
+        """
+        beh_ap = Bundle(name="behavior-apply-patch", tools=[{"module": "tool-T"}])
+        foundation_raw = Bundle(name="foundation")
+
+        # Simulate registry._compose_includes: included_bundle.compose(outer_raw)
+        foundation_composed = beh_ap.compose(foundation_raw)
+        # Simulate registry._load_single calling tag_container_provenance
+        tag_container_provenance(foundation_composed)
+
+        origins = foundation_composed.origins.get("tool:tool-T", [])
+        bundles = {o.bundle for o in origins}
+
+        # Direct claimant must be present
+        assert "behavior-apply-patch" in bundles, (
+            f"Expected 'behavior-apply-patch' in {origins}"
+        )
+        # Container (foundation) must also be present
+        assert "foundation" in bundles, f"Expected 'foundation' in {origins}"
+
+        # Foundation's via_behavior must point to the direct claimant
+        foundation_entry = next((o for o in origins if o.bundle == "foundation"), None)
+        assert foundation_entry is not None
+        assert foundation_entry.via_behavior == "behavior-apply-patch", (
+            f"Expected via_behavior='behavior-apply-patch', got {foundation_entry}"
+        )
+
+    def test_three_level_chain_abc(self) -> None:
+        """Three-level A→B→C: all three levels appear in the final chain.
+
+        For deeper nesting, each level adds exactly one Origin entry:
+          - Origin(C, None)    direct claimant
+          - Origin(B, "C")     B includes C, carries via C
+          - Origin(A, "B")     A includes B, carries via B
+        """
+        c = Bundle(name="C", tools=[{"module": "tool-T"}])
+        b_raw = Bundle(name="B")
+
+        # B._compose_includes: c.compose(b_raw)
+        b_composed = c.compose(b_raw)
+        tag_container_provenance(b_composed)
+
+        # Verify B level: C (direct) + B (container via C)
+        b_origins = b_composed.origins.get("tool:tool-T", [])
+        b_bundles = {o.bundle for o in b_origins}
+        assert "C" in b_bundles, f"Expected 'C' in {b_origins}"
+        assert "B" in b_bundles, f"Expected 'B' in {b_origins}"
+
+        # A._compose_includes: b_composed.compose(a_raw)
+        a_raw = Bundle(name="A")
+        a_composed = b_composed.compose(a_raw)
+        tag_container_provenance(a_composed)
+
+        a_origins = a_composed.origins.get("tool:tool-T", [])
+        a_bundles = {o.bundle for o in a_origins}
+
+        assert "C" in a_bundles, f"Expected 'C' in {a_origins}"
+        assert "B" in a_bundles, f"Expected 'B' in {a_origins}"
+        assert "A" in a_bundles, f"Expected 'A' in {a_origins}"
+
+        # Check via_behavior links form a proper chain
+        b_entry = next(o for o in a_origins if o.bundle == "B")
+        assert b_entry.via_behavior == "C", f"B's via_behavior should be 'C': {b_entry}"
+
+        a_entry = next(o for o in a_origins if o.bundle == "A")
+        assert a_entry.via_behavior == "B", f"A's via_behavior should be 'B': {a_entry}"
+
+    def test_direct_provider_not_double_tagged(self) -> None:
+        """A bundle that directly provides a tool is not tagged again as container.
+
+        When foundation itself lists tool-bash in its tools, tag_container_provenance
+        must NOT add a spurious Origin("foundation", ...) entry for tool-bash — it
+        was already attributed as Origin("foundation", None) by Phase 1.
+        """
+        beh_ap = Bundle(name="behavior-apply-patch", tools=[{"module": "tool-T"}])
+        foundation_raw = Bundle(
+            name="foundation",
+            tools=[{"module": "tool-bash"}],  # foundation directly provides tool-bash
+        )
+
+        # In _compose_includes, behaviors compose first; foundation_raw is last.
+        foundation_composed = beh_ap.compose(foundation_raw)
+        tag_container_provenance(foundation_composed)
+
+        # tool-T: behavior-apply-patch (direct) + foundation (container)
+        t_origins = foundation_composed.origins.get("tool:tool-T", [])
+        assert any(o.bundle == "behavior-apply-patch" for o in t_origins)
+        assert any(o.bundle == "foundation" for o in t_origins)
+
+        # tool-bash: foundation is the direct claimant (Origin("foundation", None)).
+        # tag_container_provenance must NOT add a duplicate/redundant foundation entry.
+        bash_origins = foundation_composed.origins.get("tool:tool-bash", [])
+        foundation_bash_entries = [o for o in bash_origins if o.bundle == "foundation"]
+        assert len(foundation_bash_entries) == 1, (
+            f"Expected exactly 1 'foundation' entry for tool-bash, "
+            f"got {foundation_bash_entries}"
+        )
+
+    def test_no_self_referential_entries_in_phase2(self) -> None:
+        """Phase 2 must not create self-referential Origin(bundle, via=bundle) entries.
+
+        When a bundle B introduces tool-y directly, and root.compose(B) runs,
+        Phase 2 previously created Origin("B", via_behavior="B") — a nonsensical
+        self-referential entry.  The Phase 2 guard must prevent this.
+        """
+        a = Bundle(name="a", tools=[{"module": "tool-x"}])
+        b_raw = Bundle(name="b", tools=[{"module": "tool-y"}])
+        b = a.compose(b_raw)
+
+        # b.origins for tool-y: only Origin("b", None) — b directly introduced it
+        assert b.origins.get("tool:tool-y") == [Origin("b", None)]
+
+        # root.compose(b): Phase 2 must NOT add Origin("b", "b")
+        root = Bundle(name="root")
+        result = root.compose(b)
+
+        y_origins = result.origins.get("tool:tool-y", [])
+        assert not any(o.bundle == "b" and o.via_behavior == "b" for o in y_origins), (
+            f"Self-referential Origin('b', 'b') must not appear: {y_origins}"
+        )
+        # Only Origin("b", None) should be present for tool-y
+        assert any(o.bundle == "b" for o in y_origins)
+
+    def test_peer_compose_does_not_tag_container(self) -> None:
+        """Peer compose (two independent behaviors) does not add container entries.
+
+        tag_container_provenance is only called by the registry after _compose_includes.
+        Direct compose() calls (as in tests and peer-bundle composition) must NOT
+        automatically add container entries for each other's items.
+        """
+        a = Bundle(name="a", tools=[{"module": "tool-x"}])
+        b_raw = Bundle(name="b", tools=[{"module": "tool-y"}])
+        b = a.compose(b_raw)
+
+        # Without tag_container_provenance, origins are exactly what Phase 1/2 set
+        x_origins = b.origins.get("tool:tool-x", [])
+        # "b" is NOT a direct claimant for tool-x (a introduced it)
+        assert not any(o.bundle == "b" and o.via_behavior is None for o in x_origins)
+        # "a" IS the direct claimant
+        assert any(o.bundle == "a" for o in x_origins)

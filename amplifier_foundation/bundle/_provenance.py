@@ -336,9 +336,94 @@ def track_provenance(
             for origin in origin_list:
                 # Preserve original bundle but set via_behavior = other.name
                 # so we capture the A→B→X chain.
+                # Guard: skip self-referential entries where origin.bundle == other.name
+                # (e.g. when a bundle that directly introduced an item is also the propagator
+                # — this happens when a bundle composes a peer bundle whose name happens to
+                # equal the original introducer's name).
+                if origin.bundle == other.name:
+                    continue
                 _prov_add(
                     result.origins,
                     prov_key,
                     origin.bundle,
                     via_behavior=other.name,
                 )
+
+
+def tag_container_provenance(bundle: "Bundle") -> None:
+    """Tag a composed bundle as a container carrying items from its sub-bundles.
+
+    Called by :func:`BundleRegistry._load_single` immediately after
+    :func:`BundleRegistry._compose_includes` returns.  For each item in
+    *bundle.origins* that was originally introduced by a sub-bundle (not directly
+    by the container bundle itself), this function inserts an additional
+    :class:`~amplifier_foundation.configurator._types.Origin` entry that records
+    the container bundle as a claimant:
+
+    ::
+
+        # Before tag_container_provenance("foundation"):
+        origins["tool:tool-apply-patch"] = [Origin("behavior-apply-patch", None)]
+
+        # After:
+        origins["tool:tool-apply-patch"] = [
+            Origin("behavior-apply-patch", None),            # direct claimant
+            Origin("foundation", "behavior-apply-patch"),    # foundation carries it
+        ]
+
+    For deeper nesting (X→Y→Z, Z provides T), the chain after each successive
+    load is::
+
+        # After _load_single("Y"):
+        [Origin(Z, None), Origin(Y, Z)]
+
+        # After _load_single("X"):
+        [Origin(Z, None), Origin(Y, Z), Origin(X, Y)]
+
+    Idempotent: items where *bundle.name* already appears as an owner are skipped
+    (preserving the "first claimant wins" invariant for bundles that directly
+    introduce an item).
+
+    Args:
+        bundle: The fully composed bundle returned by *_compose_includes*.  Its
+            ``origins`` dict is mutated in-place.  If ``bundle.name`` is empty,
+            this function is a no-op.
+    """
+    container_name = bundle.name
+    if not container_name:
+        return
+
+    # Collect entries to add first to avoid mutating the dict while iterating it.
+    entries_to_add: list[tuple[str, str, str]] = []
+
+    for prov_key, origin_list in bundle.origins.items():
+        if not origin_list:
+            continue
+
+        # If the container is already present as an owner for this item (either
+        # because it introduced the item directly via Phase 1, or because a
+        # previous tag_container_provenance call already ran), skip it.
+        if any(o.bundle == container_name for o in origin_list):
+            continue
+
+        # Require at least one "direct claimant" (via_behavior=None) from a
+        # sub-bundle.  If all origins are already chained (all have via_behavior
+        # set), skip — the item is deeply inherited and the chain is already rich.
+        has_direct_sub_claimant = any(
+            o.via_behavior is None and o.bundle != container_name for o in origin_list
+        )
+        if not has_direct_sub_claimant:
+            continue
+
+        # via_behavior points to the most-recently-tagged chain entry — the bundle
+        # that *directly* includes the sub-bundle containing this item.
+        # For a fresh chain [Origin(Z, None)], last_bundle = Z.
+        # For [Origin(Z, None), Origin(Y, Z)], last_bundle = Y.
+        last_bundle = origin_list[-1].bundle
+        if last_bundle == container_name:
+            continue  # would create a self-referential entry
+
+        entries_to_add.append((prov_key, container_name, last_bundle))
+
+    for prov_key, bname, via in entries_to_add:
+        _prov_add(bundle.origins, prov_key, bname, via_behavior=via)

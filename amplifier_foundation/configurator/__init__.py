@@ -14,6 +14,9 @@ from __future__ import annotations
 from typing import Any
 
 from amplifier_foundation.configurator._inspector import BundleInspector
+from amplifier_foundation.configurator._inspector import (
+    walk_include_chain as walk_include_chain,  # noqa: F401 — re-export for Commit 3 reuse
+)
 from amplifier_foundation.configurator._provenance_utils import (
     _PROV_CATEGORY_MAP as _PROV_CATEGORY_MAP,  # noqa: F401 — re-export
     _build_normalized_prov_lookup as _build_normalized_prov_lookup,  # noqa: F401

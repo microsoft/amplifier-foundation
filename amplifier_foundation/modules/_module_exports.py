@@ -31,8 +31,11 @@ KNOWN_MODULE_EXPORTS: dict[str, list[str]] = {
         "read_file",
         "write_file",
         "edit_file",
-        "apply_patch",
         "glob",
+    ],
+    # tool-apply-patch is a dedicated module for apply_patch (split from tool-filesystem)
+    "tool-apply-patch": [
+        "apply_patch",
     ],
     # tool-search registers grep and glob text-search tools
     "tool-search": [

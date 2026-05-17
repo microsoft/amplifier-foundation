@@ -17,6 +17,7 @@ from amplifier_foundation.bundle._provenance import (
     _prov_add as _prov_add,  # re-exported for backwards compatibility
     build_initial_provenance,
     capture_existing_ids,
+    tag_container_provenance as tag_container_provenance,  # re-exported for registry
     track_provenance,
 )
 from amplifier_foundation.configurator._types import Origin as Origin  # noqa: F401 re-export

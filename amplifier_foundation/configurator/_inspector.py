@@ -63,45 +63,107 @@ def _as_origin_list(raw: list | None) -> list[Origin]:
     return result
 
 
-def _build_include_path(
+def walk_include_chain(
     bundle_name: str,
-    source_base_paths: dict,
+    registry_dict: "dict[str, Any]",
 ) -> list[IncludeStep]:
-    """Build a best-effort include path from source_base_paths.
+    """Walk BundleRegistry._registry's included_by graph from leaf to root.
 
-    Full registry-based chain traversal is not available without BundleRegistry
-    access; this returns a flat list of all namespaces reachable through
-    source_base_paths, ordered with the given bundle_name last (leaf).
+    Returns an ordered list of :class:`IncludeStep` objects from the root
+    bundle down to *bundle_name* (root→leaf).  If the bundle appears in
+    multiple inclusion graphs (e.g., carried by two parents), the first
+    ``explicitly_requested`` or ``is_root`` parent is preferred; otherwise the
+    first parent in ``included_by`` is followed.
+
+    This is the canonical helper for building ``ItemRecord.include_path`` and
+    for rendering ``bundle show <name>`` include chains (Commit 3).
 
     Args:
-        bundle_name:       The bundle name for the item's origin.
-        source_base_paths: Bundle.source_base_paths mapping namespace → path.
+        bundle_name:   Name of the leaf bundle whose inclusion chain to trace.
+        registry_dict: The ``_registry`` dict from a
+            :class:`~amplifier_foundation.registry.BundleRegistry` instance.
 
     Returns:
-        list[IncludeStep] ordered root→leaf, version/uri left as None.
+        ``list[IncludeStep]`` ordered root→leaf.  Falls back to a single-entry
+        list ``[IncludeStep(bundle_name, None, None)]`` when the bundle is not
+        found in the registry or has no ``included_by`` data.
     """
-    if not bundle_name or not source_base_paths:
+    if not registry_dict or bundle_name not in registry_dict:
         return (
             [IncludeStep(bundle=bundle_name, version=None, uri=None)]
             if bundle_name
             else []
         )
 
-    steps: list[IncludeStep] = []
-    # Add all other namespaces as earlier steps (root → leaf order heuristic:
-    # alphabetically shorter names tend to be higher in the include tree).
-    other_ns = sorted(
-        (ns for ns in source_base_paths if ns != bundle_name),
-        key=len,
-    )
-    for ns in other_ns:
-        steps.append(IncludeStep(bundle=ns, version=None, uri=None))
+    # Walk leaf→root following included_by links.
+    chain: list[str] = []
+    visited: set[str] = set()
+    current: str | None = bundle_name
 
-    # Always append the specific bundle as the leaf
-    if bundle_name not in other_ns:
-        steps.append(IncludeStep(bundle=bundle_name, version=None, uri=None))
+    while current and current not in visited:
+        visited.add(current)
+        chain.append(current)
 
-    return steps
+        state = registry_dict.get(current)
+        if state is None:
+            break
+
+        included_by: list[str] = getattr(state, "included_by", None) or []
+        if not included_by:
+            break
+
+        # Prefer a parent that is the explicitly-requested root (the user's
+        # active bundle) or any root bundle; fall back to the first parent.
+        parent: str | None = None
+        for p in included_by:
+            p_state = registry_dict.get(p)
+            if p_state is None:
+                continue
+            if getattr(p_state, "explicitly_requested", False) or getattr(
+                p_state, "is_root", False
+            ):
+                parent = p
+                break
+        if parent is None:
+            parent = included_by[0]
+
+        current = parent
+
+    # chain is leaf→root; reverse for root→leaf display.
+    chain.reverse()
+
+    return [
+        IncludeStep(
+            bundle=name,
+            version=getattr(registry_dict.get(name), "version", None),
+            uri=getattr(registry_dict.get(name), "uri", None),
+        )
+        for name in chain
+    ]
+
+
+def _build_include_path(
+    bundle_name: str,
+    registry_dict: "dict[str, Any] | None",
+) -> list[IncludeStep]:
+    """Build the include path for *bundle_name* from BundleRegistry state.
+
+    Delegates to :func:`walk_include_chain` when *registry_dict* is provided.
+    Falls back to a single-entry list when registry data is unavailable.
+
+    Args:
+        bundle_name:  The bundle name for the item's origin.
+        registry_dict: The ``_registry`` dict from BundleRegistry, or None.
+
+    Returns:
+        list[IncludeStep] ordered root→leaf.
+    """
+    if not bundle_name:
+        return []
+    if registry_dict:
+        return walk_include_chain(bundle_name, registry_dict)
+    # Fallback: no registry access — return a single-node chain.
+    return [IncludeStep(bundle=bundle_name, version=None, uri=None)]
 
 
 def _runtime_injection_from_origins(
@@ -134,6 +196,23 @@ class BundleInspector:
         self._state = state
         # Initialised to None; set by take_snapshot() once the session is ready.
         self._original_snapshot: dict[str, Any] | None = None
+        # BundleRegistry _registry dict for include-chain resolution (Bug B fix).
+        # Loaded lazily on first access; None if unavailable (tests, edge cases).
+        self._registry_dict: dict[str, Any] | None = self._load_registry_dict()
+
+    def _load_registry_dict(self) -> dict[str, Any] | None:
+        """Load the BundleRegistry _registry dict from persisted state.
+
+        Returns the registry dict on success, or None if the registry cannot
+        be loaded (e.g. in tests or environments without a home directory).
+        """
+        try:
+            from amplifier_foundation.registry import BundleRegistry
+
+            registry = BundleRegistry()
+            return dict(registry._registry)
+        except Exception:  # noqa: BLE001
+            return None
 
     # ------------------------------------------------------------------
     # Snapshot helpers
@@ -245,7 +324,7 @@ class BundleInspector:
         bundle = self._state.bundle
         stash = self._state.stash
         origins: dict[str, list[Origin]] = getattr(bundle, "origins", {})
-        source_base_paths: dict = getattr(bundle, "source_base_paths", {}) or {}
+
         result: list[ItemRecord] = []
 
         for name, path in bundle.context.items():
@@ -253,7 +332,7 @@ class BundleInspector:
             include_path = []
             if origin_list:
                 include_path = _build_include_path(
-                    origin_list[0].bundle, source_base_paths
+                    origin_list[0].bundle, self._registry_dict
                 )
             result.append(
                 ItemRecord(
@@ -274,7 +353,7 @@ class BundleInspector:
             include_path = []
             if origin_list:
                 include_path = _build_include_path(
-                    origin_list[0].bundle, source_base_paths
+                    origin_list[0].bundle, self._registry_dict
                 )
             result.append(
                 ItemRecord(
@@ -299,7 +378,7 @@ class BundleInspector:
         coordinator = self._state.coordinator
         tool_to_module = self._state.tool_to_module
         origins: dict[str, list[Origin]] = getattr(bundle, "origins", {})
-        source_base_paths: dict = getattr(bundle, "source_base_paths", {}) or {}
+
         module_exports = self._get_module_exports()
 
         norm_prov_map = _build_normalized_prov_lookup("tool", origins)
@@ -347,7 +426,7 @@ class BundleInspector:
             include_path = []
             if origin_list:
                 include_path = _build_include_path(
-                    origin_list[0].bundle, source_base_paths
+                    origin_list[0].bundle, self._registry_dict
                 )
             result.append(
                 ItemRecord(
@@ -381,7 +460,7 @@ class BundleInspector:
             include_path = []
             if origin_list:
                 include_path = _build_include_path(
-                    origin_list[0].bundle, source_base_paths
+                    origin_list[0].bundle, self._registry_dict
                 )
             result.append(
                 ItemRecord(
@@ -407,7 +486,7 @@ class BundleInspector:
         hook_snapshot = self._state.hook_snapshot
         hook_handler_to_module = self._state.hook_handler_to_module
         origins: dict[str, list[Origin]] = getattr(bundle, "origins", {})
-        source_base_paths: dict = getattr(bundle, "source_base_paths", {}) or {}
+
         module_exports = self._get_module_exports()
 
         norm_prov_map = _build_normalized_prov_lookup("hook", origins)
@@ -440,7 +519,7 @@ class BundleInspector:
             include_path = []
             if origin_list:
                 include_path = _build_include_path(
-                    origin_list[0].bundle, source_base_paths
+                    origin_list[0].bundle, self._registry_dict
                 )
             result.append(
                 ItemRecord(
@@ -467,7 +546,7 @@ class BundleInspector:
         stash = self._state.stash
         coordinator = self._state.coordinator
         origins: dict[str, list[Origin]] = getattr(bundle, "origins", {})
-        source_base_paths: dict = getattr(bundle, "source_base_paths", {}) or {}
+
         module_exports = self._get_module_exports()
 
         from amplifier_foundation.configurator._provenance_utils import (
@@ -511,7 +590,7 @@ class BundleInspector:
                 include_path = []
                 if origin_list:
                     include_path = _build_include_path(
-                        origin_list[0].bundle, source_base_paths
+                        origin_list[0].bundle, self._registry_dict
                     )
                 result.append(
                     ItemRecord(
@@ -540,7 +619,7 @@ class BundleInspector:
                 include_path = []
                 if origin_list:
                     include_path = _build_include_path(
-                        origin_list[0].bundle, source_base_paths
+                        origin_list[0].bundle, self._registry_dict
                     )
                 result.append(
                     ItemRecord(
@@ -585,7 +664,7 @@ class BundleInspector:
                 include_path = []
                 if origin_list:
                     include_path = _build_include_path(
-                        origin_list[0].bundle, source_base_paths
+                        origin_list[0].bundle, self._registry_dict
                     )
                 result.append(
                     ItemRecord(
@@ -615,7 +694,7 @@ class BundleInspector:
                     include_path = []
                     if origin_list:
                         include_path = _build_include_path(
-                            origin_list[0].bundle, source_base_paths
+                            origin_list[0].bundle, self._registry_dict
                         )
                     result.append(
                         ItemRecord(
@@ -645,7 +724,7 @@ class BundleInspector:
         stash = self._state.stash
         coordinator = self._state.coordinator
         origins: dict[str, list[Origin]] = getattr(bundle, "origins", {})
-        source_base_paths: dict = getattr(bundle, "source_base_paths", {}) or {}
+
         result: list[ItemRecord] = []
 
         for name, cfg in coordinator.config.get("agents", {}).items():
@@ -653,7 +732,7 @@ class BundleInspector:
             include_path = []
             if origin_list:
                 include_path = _build_include_path(
-                    origin_list[0].bundle, source_base_paths
+                    origin_list[0].bundle, self._registry_dict
                 )
             result.append(
                 ItemRecord(
@@ -674,7 +753,7 @@ class BundleInspector:
             include_path = []
             if origin_list:
                 include_path = _build_include_path(
-                    origin_list[0].bundle, source_base_paths
+                    origin_list[0].bundle, self._registry_dict
                 )
             result.append(
                 ItemRecord(
