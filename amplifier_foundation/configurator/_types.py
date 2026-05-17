@@ -76,7 +76,10 @@ class ItemRecord:
         source_uri:        Source URI for the module, or None.
         config_summary:    Redacted configuration dict.
         origins:           Merge-graph chain (behaviors that contributed).
-        include_path:      Disk-graph chain (bundles on disk), root first.
+        include_paths:     Disk-graph chains (bundles on disk), one list per
+                           distinct path, each ordered root→leaf.  Empty list
+                           when no registry data is available; single-element
+                           outer list when only one path exists.
         runtime_injection: How the item arrived at runtime, or None for static.
     """
 
@@ -100,7 +103,7 @@ class ItemRecord:
     source_uri: str | None
     config_summary: dict[str, Any]
     origins: list[Origin]
-    include_path: list[IncludeStep]
+    include_paths: list[list[IncludeStep]]
     runtime_injection: Literal["static", "mode", "hook", "skills", "mcp", "task"] | None
 
 

@@ -13,8 +13,12 @@ from amplifier_foundation.configurator import (
     _lookup_prov_behavior,
     _normalize_module_name,
     walk_include_chain,
+    walk_include_chains,
 )
-from amplifier_foundation.configurator._inspector import _build_include_path
+from amplifier_foundation.configurator._inspector import (
+    _build_include_path,
+    _build_include_paths,
+)
 from amplifier_foundation.configurator._types import IncludeStep, Origin
 
 
@@ -3095,3 +3099,199 @@ class TestBuildIncludePath:
         """Empty bundle name returns empty list."""
         result = _build_include_path("", None)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for walk_include_chains (plural) and _build_include_paths
+# ---------------------------------------------------------------------------
+
+
+class TestWalkIncludeChains:
+    """Tests for the plural walk_include_chains helper."""
+
+    def test_single_parent_returns_one_path(self) -> None:
+        """Single-parent graph: one path root→leaf."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "foundation": _make_state(name="foundation", included_by=["root"]),
+        }
+
+        result = walk_include_chains("foundation", registry_dict)
+
+        assert len(result) == 1
+        names = [s.bundle for s in result[0]]
+        assert names == ["root", "foundation"]
+
+    def test_diamond_two_paths(self) -> None:
+        """Diamond graph (A→B, A→C, both→D): two paths returned for D."""
+        registry_dict: dict[str, Any] = {
+            "A": _make_state(name="A", included_by=[]),
+            "B": _make_state(name="B", included_by=["A"]),
+            "C": _make_state(name="C", included_by=["A"]),
+            "D": _make_state(name="D", included_by=["B", "C"]),
+        }
+
+        result = walk_include_chains("D", registry_dict)
+
+        assert len(result) == 2
+        path_sets = {tuple(s.bundle for s in p) for p in result}
+        assert ("A", "B", "D") in path_sets
+        assert ("A", "C", "D") in path_sets
+
+    def test_three_parent_fan_out(self) -> None:
+        """Three distinct parents, all sharing a common ancestor."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "parent1": _make_state(name="parent1", included_by=["root"]),
+            "parent2": _make_state(name="parent2", included_by=["root"]),
+            "parent3": _make_state(name="parent3", included_by=["root"]),
+            "leaf": _make_state(
+                name="leaf", included_by=["parent1", "parent2", "parent3"]
+            ),
+        }
+
+        result = walk_include_chains("leaf", registry_dict)
+
+        assert len(result) == 3
+        path_sets = {tuple(s.bundle for s in p) for p in result}
+        assert ("root", "parent1", "leaf") in path_sets
+        assert ("root", "parent2", "leaf") in path_sets
+        assert ("root", "parent3", "leaf") in path_sets
+
+    def test_root_node_returns_single_step_path(self) -> None:
+        """Root node (no parents) returns single-element path [[root]]."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+        }
+
+        result = walk_include_chains("root", registry_dict)
+
+        assert len(result) == 1
+        assert len(result[0]) == 1
+        assert result[0][0].bundle == "root"
+
+    def test_max_paths_cap(self) -> None:
+        """max_paths caps the number of paths returned."""
+        # Build a star: 5 parents all with the same root, all include leaf
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+        }
+        parents = [f"parent{i}" for i in range(5)]
+        for p in parents:
+            registry_dict[p] = _make_state(name=p, included_by=["root"])
+        registry_dict["leaf"] = _make_state(name="leaf", included_by=parents)
+
+        result = walk_include_chains("leaf", registry_dict, max_paths=3)
+
+        assert len(result) == 3
+
+    def test_missing_bundle_fallback(self) -> None:
+        """Bundle not in registry returns single-step fallback."""
+        result = walk_include_chains("nonexistent", {})
+
+        assert result == [[IncludeStep(bundle="nonexistent", version=None, uri=None)]]
+
+    def test_cycle_breaks_safely(self) -> None:
+        """Cycle in include graph does not loop infinitely."""
+        registry_dict: dict[str, Any] = {
+            "A": _make_state(name="A", included_by=["B"]),
+            "B": _make_state(name="B", included_by=["A"]),
+        }
+        # Should not raise; must return partial result
+        result = walk_include_chains("A", registry_dict)
+        assert isinstance(result, list)
+
+
+class TestMultiSourceIncludePaths:
+    """Tests for _build_include_paths — plural include-path builder."""
+
+    def test_single_origin_single_path(self) -> None:
+        """Single-origin item: returns one path for that bundle."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "foundation": _make_state(name="foundation", included_by=["root"]),
+        }
+        origins = [Origin(bundle="foundation", via_behavior=None)]
+
+        result = _build_include_paths(origins, registry_dict)
+
+        assert len(result) == 1
+        names = [s.bundle for s in result[0]]
+        assert names == ["root", "foundation"]
+
+    def test_two_distinct_claimants_diamond(self) -> None:
+        """Two different claimant bundles each with their own chain."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "bundle-A": _make_state(name="bundle-A", included_by=["root"]),
+            "bundle-B": _make_state(name="bundle-B", included_by=["root"]),
+        }
+        origins = [
+            Origin(bundle="bundle-A", via_behavior=None),
+            Origin(bundle="bundle-B", via_behavior=None),
+        ]
+
+        result = _build_include_paths(origins, registry_dict)
+
+        assert len(result) == 2
+        path_sets = {tuple(s.bundle for s in p) for p in result}
+        assert ("root", "bundle-A") in path_sets
+        assert ("root", "bundle-B") in path_sets
+
+    def test_three_parents_all_surfaces(self) -> None:
+        """Three distinct claimants produce three distinct paths."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "bA": _make_state(name="bA", included_by=["root"]),
+            "bB": _make_state(name="bB", included_by=["root"]),
+            "bC": _make_state(name="bC", included_by=["root"]),
+        }
+        origins = [
+            Origin(bundle="bA", via_behavior=None),
+            Origin(bundle="bB", via_behavior="bA"),
+            Origin(bundle="bC", via_behavior="bB"),
+        ]
+
+        result = _build_include_paths(origins, registry_dict)
+
+        assert len(result) == 3
+        path_sets = {tuple(s.bundle for s in p) for p in result}
+        assert ("root", "bA") in path_sets
+        assert ("root", "bB") in path_sets
+        assert ("root", "bC") in path_sets
+
+    def test_empty_origins_returns_empty(self) -> None:
+        """No origins ⟹ empty result."""
+        result = _build_include_paths([], None)
+        assert result == []
+
+    def test_no_registry_fallback_per_bundle(self) -> None:
+        """No registry ⟹ single-step fallback per distinct bundle."""
+        origins = [
+            Origin(bundle="foo", via_behavior=None),
+            Origin(bundle="bar", via_behavior="foo"),
+        ]
+
+        result = _build_include_paths(origins, None)
+
+        assert len(result) == 2
+        bundles = {r[0].bundle for r in result}
+        assert bundles == {"foo", "bar"}
+
+    def test_duplicate_bundle_deduplicated(self) -> None:
+        """Same bundle appearing multiple times in origins generates one path."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "foundation": _make_state(name="foundation", included_by=["root"]),
+        }
+        # Same bundle repeated
+        origins = [
+            Origin(bundle="foundation", via_behavior=None),
+            Origin(bundle="foundation", via_behavior="root"),
+        ]
+
+        result = _build_include_paths(origins, registry_dict)
+
+        assert len(result) == 1
+        names = [s.bundle for s in result[0]]
+        assert names == ["root", "foundation"]

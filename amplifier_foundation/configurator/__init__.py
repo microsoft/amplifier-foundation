@@ -16,6 +16,7 @@ from typing import Any
 from amplifier_foundation.configurator._inspector import BundleInspector
 from amplifier_foundation.configurator._inspector import (
     walk_include_chain as walk_include_chain,  # noqa: F401 — re-export for Commit 3 reuse
+    walk_include_chains as walk_include_chains,  # noqa: F401 — plural form, detailed view
 )
 from amplifier_foundation.configurator._provenance_utils import (
     _PROV_CATEGORY_MAP as _PROV_CATEGORY_MAP,  # noqa: F401 — re-export
@@ -246,4 +247,6 @@ __all__ = [
     "Origin",
     "IncludeStep",
     "ItemRecord",
+    "walk_include_chain",
+    "walk_include_chains",
 ]
