@@ -4,38 +4,52 @@ Extracted from _dataclass.py to keep Bundle.compose() focused on merge logic.
 These functions handle all provenance bookkeeping: initialisation, snapshot, and
 tagging of newly-introduced items after each merge step.
 """
+
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from amplifier_foundation.configurator._types import Origin
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle._dataclass import Bundle
 
 
-def _prov_add(provenance: dict[str, list[str]], key: str, behavior: str) -> None:
-    """Append *behavior* to the provenance list for *key*, deduplicating.
+def _prov_add(
+    origins: dict[str, list[Origin]],
+    key: str,
+    bundle: str,
+    via_behavior: str | None = None,
+) -> None:
+    """Append an Origin entry to the origins list for *key*, deduplicating.
+
+    Deduplication is by (bundle, via_behavior) tuple — the same bundle cannot
+    appear twice with the same via_behavior for the same key.
 
     Args:
-        provenance: The provenance dict to mutate.
-        key: Provenance key (e.g. 'tool:tool-bash').
-        behavior: Bundle/behavior name to record as a claimant.
+        origins:      The origins dict to mutate (Bundle.origins).
+        key:          Provenance key (e.g. 'tool:tool-bash').
+        bundle:       Bundle name that owns the claim.
+        via_behavior: Intermediate bundle that carried this item, or None if
+                      the item was self-introduced by *bundle*.
     """
-    if not behavior:  # Skip empty string or None claimants (nameless bundles)
+    if not bundle:  # Skip empty/None claimants (nameless bundles)
         return
-    if key not in provenance:
-        provenance[key] = []
-    if behavior not in provenance[key]:
-        provenance[key].append(behavior)
+    if key not in origins:
+        origins[key] = []
+    entry = Origin(bundle=bundle, via_behavior=via_behavior)
+    if entry not in origins[key]:
+        origins[key].append(entry)
 
 
 def build_initial_provenance(
     bundle: "Bundle",
     prefixed_context: dict,
     pending_context: dict,
-) -> dict[str, list[str]]:
-    """Build the initial provenance dict for a compose() operation.
+) -> dict[str, list[Origin]]:
+    """Build the initial origins dict for a compose() operation.
 
-    Preserves all prior attributions from *bundle._provenance*, then tags any
+    Preserves all prior attributions from *bundle.origins*, then tags any
     items in *bundle*'s lists that are not yet tracked (i.e. items that were
     added via the constructor rather than via a prior compose() call).
 
@@ -46,59 +60,89 @@ def build_initial_provenance(
         pending_context: The ``_pending_context`` dict copied from *bundle*.
 
     Returns:
-        A new provenance dict ready to be stored in the result bundle.
+        A new origins dict ready to be stored in the result bundle.
     """
-    initial_provenance: dict[str, list[str]] = {}
+    initial_origins: dict[str, list[Origin]] = {}
 
     # Step 1: preserve all prior attributions from self
-    for prov_key, claimants in bundle._provenance.items():
-        for claimant in claimants:
-            _prov_add(initial_provenance, prov_key, claimant)
+    for prov_key, origin_list in bundle.origins.items():
+        for origin in origin_list:
+            _prov_add(initial_origins, prov_key, origin.bundle, origin.via_behavior)
 
     # Step 2: tag only UNTRACKED items in self's lists (constructor-built bundles
-    # where _provenance starts empty).  We do NOT re-tag items that already appear
-    # in self._provenance — those were properly attributed by earlier compose() calls.
+    # where origins starts empty).  We do NOT re-tag items that already appear
+    # in self.origins — those were properly attributed by earlier compose() calls.
     for prefixed_key in prefixed_context:
         prov_key = f"context:{prefixed_key}"
-        if prov_key not in initial_provenance:
-            _prov_add(initial_provenance, prov_key, bundle.name)
+        if prov_key not in initial_origins:
+            _prov_add(initial_origins, prov_key, bundle.name)
 
     # Also tag pending context (namespace-prefixed refs deferred for resolution).
     for pending_name in pending_context:
         prov_key = f"context:{pending_name}"
-        if prov_key not in initial_provenance:
-            _prov_add(initial_provenance, prov_key, bundle.name)
+        if prov_key not in initial_origins:
+            _prov_add(initial_origins, prov_key, bundle.name)
 
     for mod in bundle.tools:
         module_id = mod.get("id") or mod.get("module")
         if module_id:
             prov_key = f"tool:{module_id}"
-            if prov_key not in initial_provenance:
-                _prov_add(initial_provenance, prov_key, bundle.name)
+            if prov_key not in initial_origins:
+                _prov_add(initial_origins, prov_key, bundle.name)
 
     for mod in bundle.providers:
         module_id = mod.get("id") or mod.get("module")
         if module_id:
             prov_key = f"provider:{module_id}"
-            if prov_key not in initial_provenance:
-                _prov_add(initial_provenance, prov_key, bundle.name)
+            if prov_key not in initial_origins:
+                _prov_add(initial_origins, prov_key, bundle.name)
 
     for mod in bundle.hooks:
         module_id = mod.get("id") or mod.get("module")
         if module_id:
             prov_key = f"hook:{module_id}"
-            if prov_key not in initial_provenance:
-                _prov_add(initial_provenance, prov_key, bundle.name)
+            if prov_key not in initial_origins:
+                _prov_add(initial_origins, prov_key, bundle.name)
 
     for agent_name in bundle.agents:
         prov_key = f"agent:{agent_name}"
-        if prov_key not in initial_provenance:
-            _prov_add(initial_provenance, prov_key, bundle.name)
+        if prov_key not in initial_origins:
+            _prov_add(initial_origins, prov_key, bundle.name)
 
-    return initial_provenance
+    # Tag session module IDs
+    session = bundle.session or {}
+    orch = session.get("orchestrator") if isinstance(session, dict) else None
+    if isinstance(orch, dict):
+        orch_id = orch.get("id") or orch.get("module")
+        if orch_id:
+            prov_key = f"session.orchestrator:{orch_id}"
+            if prov_key not in initial_origins:
+                _prov_add(initial_origins, prov_key, bundle.name)
+
+    ctx = session.get("context") if isinstance(session, dict) else None
+    if isinstance(ctx, dict):
+        ctx_id = ctx.get("id") or ctx.get("module")
+        if ctx_id:
+            prov_key = f"session.context:{ctx_id}"
+            if prov_key not in initial_origins:
+                _prov_add(initial_origins, prov_key, bundle.name)
+
+    # Tag spawn keys
+    for spawn_key in bundle.spawn or {}:
+        prov_key = f"spawn:{spawn_key}"
+        if prov_key not in initial_origins:
+            _prov_add(initial_origins, prov_key, bundle.name)
+
+    # Tag instruction presence
+    if bundle.instruction is not None:
+        prov_key = "instruction:"
+        if prov_key not in initial_origins:
+            _prov_add(initial_origins, prov_key, bundle.name)
+
+    return initial_origins
 
 
-def capture_existing_ids(result_bundle: "Bundle") -> dict[str, set]:
+def capture_existing_ids(result_bundle: "Bundle") -> dict[str, Any]:
     """Snapshot the set of IDs currently present in *result_bundle* before a merge.
 
     Called once per iteration of the compose loop, before merging *other* into
@@ -111,9 +155,25 @@ def capture_existing_ids(result_bundle: "Bundle") -> dict[str, set]:
 
     Returns:
         Dict with keys ``"tool_ids"``, ``"hook_ids"``, ``"provider_ids"``,
-        ``"agent_names"``, ``"context_keys"``, and ``"pending_keys"`` — each
-        mapping to a :class:`set` of existing item identifiers.
+        ``"agent_names"``, ``"context_keys"``, ``"pending_keys"``,
+        ``"session_keys"``, ``"spawn_keys"``, and ``"instruction_present"`` —
+        each mapping to its respective snapshot type.
     """
+    # Session module IDs
+    session = result_bundle.session or {}
+    session_keys: set[str] = set()
+    if isinstance(session, dict):
+        orch = session.get("orchestrator")
+        if isinstance(orch, dict):
+            orch_id = orch.get("id") or orch.get("module")
+            if orch_id:
+                session_keys.add(f"orchestrator:{orch_id}")
+        ctx = session.get("context")
+        if isinstance(ctx, dict):
+            ctx_id = ctx.get("id") or ctx.get("module")
+            if ctx_id:
+                session_keys.add(f"context:{ctx_id}")
+
     return {
         "tool_ids": {
             m.get("id") or m.get("module")
@@ -133,13 +193,16 @@ def capture_existing_ids(result_bundle: "Bundle") -> dict[str, set]:
         "agent_names": set(result_bundle.agents.keys()),
         "context_keys": set(result_bundle.context.keys()),
         "pending_keys": set(result_bundle._pending_context.keys()),
+        "session_keys": session_keys,
+        "spawn_keys": set((result_bundle.spawn or {}).keys()),
+        "instruction_present": result_bundle.instruction is not None,
     }
 
 
 def track_provenance(
     result: "Bundle",
     other: "Bundle",
-    existing_ids: dict[str, set],
+    existing_ids: dict[str, Any],
 ) -> None:
     """Tag newly-introduced items and overlay provenance from *other* into *result*.
 
@@ -149,14 +212,13 @@ def track_provenance(
     genuinely introduced.
 
     Two phases:
-    1. Tag new items with ``other.name`` as the claimant.
-    2. Overlay ``other._provenance`` entries for new items only, preserving the
-       original contributor chain (e.g. if tool-x was introduced by "a" inside
-       bundle "b", when "b" is composed into "c" we propagate "a" as tool-x's
-       original contributor, not "b" or "c").
+    1. Tag new items with ``other.name`` as the claimant (via_behavior=None).
+    2. Overlay ``other.origins`` entries for new items only, preserving the
+       original contributor chain: each propagated entry gets
+       ``via_behavior = other.name`` so we can see A→B→X.
 
     Args:
-        result: The accumulator bundle whose ``_provenance`` is mutated in-place.
+        result: The accumulator bundle whose ``origins`` is mutated in-place.
         other: The bundle that was just merged into *result*.
         existing_ids: Snapshot from :func:`capture_existing_ids`, taken before
             the merge of *other*.
@@ -167,6 +229,9 @@ def track_provenance(
     existing_agent_names = existing_ids["agent_names"]
     existing_context_keys = existing_ids["context_keys"]
     existing_pending_keys = existing_ids["pending_keys"]
+    existing_session_keys = existing_ids.get("session_keys", set())
+    existing_spawn_keys = existing_ids.get("spawn_keys", set())
+    existing_instruction_present = existing_ids.get("instruction_present", False)
 
     # ------------------------------------------------------------------ #
     # Phase 1: tag items directly introduced by other.name                #
@@ -176,42 +241,65 @@ def track_provenance(
     for mod in other.tools:
         module_id = mod.get("id") or mod.get("module")
         if module_id and module_id not in existing_tool_ids:
-            _prov_add(result._provenance, f"tool:{module_id}", other.name)
+            _prov_add(result.origins, f"tool:{module_id}", other.name)
 
     for mod in other.providers:
         module_id = mod.get("id") or mod.get("module")
         if module_id and module_id not in existing_provider_ids:
-            _prov_add(result._provenance, f"provider:{module_id}", other.name)
+            _prov_add(result.origins, f"provider:{module_id}", other.name)
 
     for mod in other.hooks:
         module_id = mod.get("id") or mod.get("module")
         if module_id and module_id not in existing_hook_ids:
-            _prov_add(result._provenance, f"hook:{module_id}", other.name)
+            _prov_add(result.origins, f"hook:{module_id}", other.name)
 
     # Agents: tag only NEW agent names.
     for agent_name in other.agents:
         if agent_name not in existing_agent_names:
-            _prov_add(result._provenance, f"agent:{agent_name}", other.name)
+            _prov_add(result.origins, f"agent:{agent_name}", other.name)
 
     # Context: tag new keys (compare against snapshot taken before the merge).
     for prefixed_key in result.context:
         if prefixed_key not in existing_context_keys:
-            _prov_add(result._provenance, f"context:{prefixed_key}", other.name)
+            _prov_add(result.origins, f"context:{prefixed_key}", other.name)
 
     # Pending context: tag new pending keys.
     for pending_name in result._pending_context:
         if pending_name not in existing_pending_keys:
-            _prov_add(result._provenance, f"context:{pending_name}", other.name)
+            _prov_add(result.origins, f"context:{pending_name}", other.name)
+
+    # Session: tag new orchestrator/context module IDs.
+    session = result.session or {}
+    if isinstance(session, dict):
+        orch = session.get("orchestrator")
+        if isinstance(orch, dict):
+            orch_id = orch.get("id") or orch.get("module")
+            if orch_id and f"orchestrator:{orch_id}" not in existing_session_keys:
+                _prov_add(result.origins, f"session.orchestrator:{orch_id}", other.name)
+        ctx = session.get("context")
+        if isinstance(ctx, dict):
+            ctx_id = ctx.get("id") or ctx.get("module")
+            if ctx_id and f"context:{ctx_id}" not in existing_session_keys:
+                _prov_add(result.origins, f"session.context:{ctx_id}", other.name)
+
+    # Spawn: tag new top-level keys.
+    for spawn_key in result.spawn or {}:
+        if spawn_key not in existing_spawn_keys:
+            _prov_add(result.origins, f"spawn:{spawn_key}", other.name)
+
+    # Instruction: tag if newly set.
+    if result.instruction is not None and not existing_instruction_present:
+        _prov_add(result.origins, "instruction:", other.name)
 
     # ------------------------------------------------------------------ #
     # Phase 2: overlay other's provenance for NEW items only              #
     # ------------------------------------------------------------------ #
     # This preserves the original contributor chain (e.g. tool-x was introduced
     # by "a" inside bundle "b"; when "b" is composed into "c", we propagate "a"
-    # as tool-x's original contributor).  We do NOT overlay provenance for items
-    # already in result before this merge — doing so would propagate over-attributed
-    # provenance chains from bundles that inherited those items transitively.
-    for prov_key, claimants in other._provenance.items():
+    # as tool-x's original contributor, with via_behavior="b" so we capture the
+    # A→B→X chain).  We do NOT overlay provenance for items already in result
+    # before this merge.
+    for prov_key, origin_list in other.origins.items():
         if ":" in prov_key:
             category, item_key = prov_key.split(":", 1)
         else:
@@ -231,9 +319,26 @@ def track_provenance(
                 item_key not in existing_context_keys
                 and item_key not in existing_pending_keys
             )
+        elif category in ("session.orchestrator", "session.context"):
+            # session.orchestrator:id or session.context:id
+            # item_key is the module ID; check against existing_session_keys
+            orch_or_ctx = prov_key.split(":", 1)[0]
+            subkey = f"{orch_or_ctx.split('.', 1)[1]}:{item_key}"
+            is_new = subkey not in existing_session_keys
+        elif category == "spawn":
+            is_new = item_key not in existing_spawn_keys
+        elif prov_key == "instruction:":
+            is_new = not existing_instruction_present
         else:
             is_new = True  # Unknown category: preserve all provenance
 
         if is_new:
-            for claimant in claimants:
-                _prov_add(result._provenance, prov_key, claimant)
+            for origin in origin_list:
+                # Preserve original bundle but set via_behavior = other.name
+                # so we capture the A→B→X chain.
+                _prov_add(
+                    result.origins,
+                    prov_key,
+                    origin.bundle,
+                    via_behavior=other.name,
+                )

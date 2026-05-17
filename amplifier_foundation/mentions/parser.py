@@ -29,7 +29,9 @@ def parse_mentions(text: str) -> list[str]:
     # Find @mentions
     # Pattern: @ followed by word chars, colons, slashes, dots, hyphens, tildes
     # But not email addresses (no @ followed by domain pattern)
-    pattern = r"@(?![a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})([a-zA-Z0-9_:./\~-]+)"
+    pattern = (
+        r"@(?![a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})([a-zA-Z0-9_:./\~-]+)"
+    )
 
     matches = re.findall(pattern, text_without_code)
 
@@ -57,7 +59,9 @@ def _remove_code_blocks(text: str) -> str:
     """
     # Remove fenced code blocks - ``` must be at start of line (or start of text)
     # This prevents inline mentions like "(```)" from being treated as fence starts
-    text = re.sub(r"(?:^|\n)```[^\n]*\n.*?(?:^|\n)```", "\n", text, flags=re.DOTALL | re.MULTILINE)
+    text = re.sub(
+        r"(?:^|\n)```[^\n]*\n.*?(?:^|\n)```", "\n", text, flags=re.DOTALL | re.MULTILINE
+    )
 
     # Remove inline code - single backticks with content
     # Use negative lookbehind/lookahead to avoid matching backticks that are

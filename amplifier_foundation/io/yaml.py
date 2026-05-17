@@ -41,5 +41,7 @@ async def write_yaml(path: Path, data: dict[str, Any]) -> None:
     Raises:
         OSError: If file can't be written.
     """
-    content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    content = yaml.dump(
+        data, default_flow_style=False, allow_unicode=True, sort_keys=False
+    )
     await write_with_retry(path, content)

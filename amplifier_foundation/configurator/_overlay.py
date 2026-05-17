@@ -3,7 +3,13 @@
 RuntimeOverlay sits as a peer to SessionConfigurator and drives the same live coordinator
 surfaces. Where SessionConfigurator toggles session-level items via stash/unstash,
 RuntimeOverlay adds *additive* contributions (agents, context, skills) under named scopes
-(typically 'mode:<name>') with refcount semantics:
+(typically 'mode:<name>') with refcount semantics.
+
+When a ``bundle`` argument is supplied to the constructor, RuntimeOverlay also writes
+``Origin(bundle=scope_name, via_behavior=None)`` entries directly into
+``bundle.origins`` when items are mounted, and removes them on unmount.  This gives the
+inspector the information it needs to set ``runtime_injection="mode"`` on the
+corresponding ``ItemRecord``.
 
   - session baseline contributes +1 per existing item at construction
   - each scope's apply() contributes +1 per declared item
@@ -87,6 +93,12 @@ class RuntimeOverlay:
         coordinator:    Live session coordinator (same object SessionConfigurator holds).
         success_event:  Event name emitted when apply/revoke succeeds.
         failure_event:  Event name emitted when apply fails and rolls back.
+        bundle:         Optional Bundle whose ``origins`` dict is updated when items
+                        are mounted/unmounted.  When provided, an
+                        ``Origin(bundle="mode:<scope>", via_behavior=None)`` entry is
+                        written to ``bundle.origins`` on mount and removed on unmount.
+                        The inspector then detects these entries and reports
+                        ``runtime_injection="mode"`` for the corresponding ItemRecord.
     """
 
     def __init__(
@@ -95,10 +107,12 @@ class RuntimeOverlay:
         *,
         success_event: str,
         failure_event: str,
+        bundle: Any = None,
     ) -> None:
         self._coordinator = coordinator
         self._success_event = success_event
         self._failure_event = failure_event
+        self._bundle = bundle  # Optional Bundle for origins tracking
 
         # refcounts: (category, key) → int
         self._refcounts: dict[tuple[str, str], int] = {}
@@ -107,6 +121,7 @@ class RuntimeOverlay:
         self._scope_claims: dict[str, list[tuple[str, str]]] = {}
 
         # _owned: per-category dict of items owned by this overlay
+        # Kept for _refresh_capability and dump_state compatibility.
         self._owned: dict[str, dict[str, Any]] = {
             "agents": {},
             "context": {},
@@ -214,6 +229,12 @@ class RuntimeOverlay:
             return result
 
         self._scope_claims[scope] = list(applied_in_this_call)
+
+        # Write Origin entries to bundle.origins for all newly mounted items.
+        # This allows BundleInspector to detect mode-contributed items.
+        if self._bundle is not None and applied_in_this_call:
+            self._write_origins_for_scope(scope, applied_in_this_call, add=True)
+
         await self._emit(self._success_event, scope, result)
         return result
 
@@ -249,6 +270,10 @@ class RuntimeOverlay:
                 )
                 result.success = False
                 result.error = str(exc)
+
+        # Remove Origin entries from bundle.origins for all unmounted items.
+        if self._bundle is not None and result.unmounted:
+            self._write_origins_for_scope(scope, result.unmounted, add=False)
 
         event_name = self._success_event if result.success else self._failure_event
         await self._emit(event_name, scope, result)
@@ -350,6 +375,56 @@ class RuntimeOverlay:
             self._refresh_capability(category)
         else:
             raise ValueError(f"RuntimeOverlay._unmount: unknown category {category!r}")
+
+    # ------------------------------------------------------------------
+    # Origins tracking (bundle.origins integration)
+    # ------------------------------------------------------------------
+
+    def _write_origins_for_scope(
+        self,
+        scope: str,
+        claims: list[tuple[str, str]],
+        *,
+        add: bool,
+    ) -> None:
+        """Add or remove Origin entries in bundle.origins for a scope.
+
+        Called after successful apply() (add=True) or revoke() (add=False).
+        No-op when self._bundle is None or bundle.origins is not a dict.
+
+        Args:
+            scope:  The scope identifier (e.g. ``"mode:demo"``).
+            claims: List of ``(category, key)`` pairs owned by the scope.
+            add:    True to add Origins, False to remove them.
+        """
+        if self._bundle is None:
+            return
+        bundle_origins = getattr(self._bundle, "origins", None)
+        if not isinstance(bundle_origins, dict):
+            return
+
+        from amplifier_foundation.bundle._provenance import _prov_add
+        from amplifier_foundation.configurator._types import Origin
+
+        for category, key in claims:
+            if category == "agents":
+                origins_key = f"agent:{key}"
+            elif category == "context":
+                origins_key = f"context:{key}"
+            else:
+                origins_key = f"skill:{key}"
+
+            if add:
+                _prov_add(bundle_origins, origins_key, scope, via_behavior=None)
+            else:
+                # Remove the Origin entry for this scope
+                existing = bundle_origins.get(origins_key, [])
+                target = Origin(bundle=scope, via_behavior=None)
+                updated = [o for o in existing if o != target]
+                if updated:
+                    bundle_origins[origins_key] = updated
+                elif origins_key in bundle_origins:
+                    del bundle_origins[origins_key]
 
     # ------------------------------------------------------------------
     # Capability refresh

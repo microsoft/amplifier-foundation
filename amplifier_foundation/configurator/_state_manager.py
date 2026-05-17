@@ -4,6 +4,7 @@ Extracted from SessionConfigurator so that query-only methods (BundleInspector)
 are separated from state-mutation methods.  SessionConfigurator in __init__.py
 is a thin facade that creates both objects and delegates every public method.
 """
+
 from __future__ import annotations
 
 import logging
@@ -400,12 +401,14 @@ class BundleStateManager:
         enabled: list[str] = []
         for tool_name in self._module_to_tools[module_id]:
             if tool_name in self._stash["tools"]:
+                stashed_instance = self._stash["tools"].pop(tool_name)
                 try:
-                    instance = self._stash["tools"].pop(tool_name)
-                    await self._coordinator.mount("tools", instance, name=tool_name)
+                    await self._coordinator.mount(
+                        "tools", stashed_instance, name=tool_name
+                    )
                     enabled.append(tool_name)
                 except Exception:  # noqa: BLE001
-                    self._stash["tools"].setdefault(tool_name, instance)
+                    self._stash["tools"].setdefault(tool_name, stashed_instance)
 
         return enabled
 
@@ -516,7 +519,12 @@ class BundleStateManager:
 
     async def behavior_disable(self, name: str) -> dict[str, Any]:
         """Disable all contributions from a named behavior across all categories."""
-        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
+        origins_map = getattr(self._bundle, "origins", {})
+        # Build a compatibility provenance dict: key → list of bundle names.
+        # Handles both list[Origin] (new) and list[str] (legacy test fixtures).
+        provenance: dict[str, list[str]] = {}
+        for k, v in origins_map.items():
+            provenance[k] = [o.bundle if hasattr(o, "bundle") else str(o) for o in v]
         matching_keys = [k for k, v in provenance.items() if name in v]
 
         if not matching_keys:
@@ -632,7 +640,12 @@ class BundleStateManager:
             _normalize_module_name,
         )
 
-        provenance: dict[str, list[str]] = getattr(self._bundle, "_provenance", {})
+        origins_map = getattr(self._bundle, "origins", {})
+        # Build a compatibility provenance dict: key → list of bundle names.
+        # Handles both list[Origin] (new) and list[str] (legacy test fixtures).
+        provenance: dict[str, list[str]] = {}
+        for k, v in origins_map.items():
+            provenance[k] = [o.bundle if hasattr(o, "bundle") else str(o) for o in v]
         matching_keys = [k for k, v in provenance.items() if name in v]
 
         if not matching_keys:

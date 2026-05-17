@@ -93,7 +93,9 @@ class ZipSourceHandler:
             result_path = extract_path / parsed.subpath
 
         if not result_path.exists():
-            raise BundleNotFoundError(f"Subpath not found after extraction: {parsed.subpath}")
+            raise BundleNotFoundError(
+                f"Subpath not found after extraction: {parsed.subpath}"
+            )
 
         return ResolvedSource(active_path=result_path, source_root=extract_path)
 

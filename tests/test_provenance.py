@@ -1,18 +1,19 @@
-"""Tests for Bundle._provenance field and provenance tracking in compose()."""
+"""Tests for Bundle.origins field and provenance tracking in compose()."""
 
 from pathlib import Path
 
 from amplifier_foundation.bundle import Bundle
+from amplifier_foundation.configurator._types import Origin
 
 
 class TestProvenance:
     """Tests for provenance tracking in Bundle.compose()."""
 
-    def test_fresh_bundle_empty_provenance(self) -> None:
-        """Fresh bundles have empty _provenance dict."""
+    def test_fresh_bundle_empty_origins(self) -> None:
+        """Fresh bundles have empty origins dict."""
         bundle = Bundle(name="test")
-        assert isinstance(bundle._provenance, dict)
-        assert bundle._provenance == {}
+        assert isinstance(bundle.origins, dict)
+        assert bundle.origins == {}
 
     def test_context_provenance(self) -> None:
         """compose() tracks which bundle contributed each context entry."""
@@ -20,41 +21,41 @@ class TestProvenance:
         child = Bundle(name="child", context={"guide": Path("/path/guide.md")})
         result = base.compose(child)
         # base contributed base:readme (prefixed during compose)
-        assert result._provenance["context:base:readme"] == ["base"]
+        assert result.origins["context:base:readme"] == [Origin("base", None)]
         # child contributed child:guide (prefixed during compose)
-        assert result._provenance["context:child:guide"] == ["child"]
+        assert result.origins["context:child:guide"] == [Origin("child", None)]
 
     def test_tool_provenance(self) -> None:
         """compose() tracks which bundle contributed each tool."""
         base = Bundle(name="base", tools=[{"module": "tool-bash"}])
         child = Bundle(name="child", tools=[{"module": "tool-python"}])
         result = base.compose(child)
-        assert result._provenance["tool:tool-bash"] == ["base"]
-        assert result._provenance["tool:tool-python"] == ["child"]
+        assert result.origins["tool:tool-bash"] == [Origin("base", None)]
+        assert result.origins["tool:tool-python"] == [Origin("child", None)]
 
     def test_provider_provenance(self) -> None:
         """compose() tracks which bundle contributed each provider."""
         base = Bundle(name="base", providers=[{"module": "provider-a"}])
         child = Bundle(name="child", providers=[{"module": "provider-b"}])
         result = base.compose(child)
-        assert result._provenance["provider:provider-a"] == ["base"]
-        assert result._provenance["provider:provider-b"] == ["child"]
+        assert result.origins["provider:provider-a"] == [Origin("base", None)]
+        assert result.origins["provider:provider-b"] == [Origin("child", None)]
 
     def test_hook_provenance(self) -> None:
         """compose() tracks which bundle contributed each hook."""
         base = Bundle(name="base", hooks=[{"module": "hook-logging"}])
         child = Bundle(name="child", hooks=[{"module": "hook-audit"}])
         result = base.compose(child)
-        assert result._provenance["hook:hook-logging"] == ["base"]
-        assert result._provenance["hook:hook-audit"] == ["child"]
+        assert result.origins["hook:hook-logging"] == [Origin("base", None)]
+        assert result.origins["hook:hook-audit"] == [Origin("child", None)]
 
     def test_agent_provenance(self) -> None:
         """compose() tracks which bundle contributed each agent."""
         base = Bundle(name="base", agents={"my-agent": {"name": "my-agent"}})
         child = Bundle(name="child", agents={"other-agent": {"name": "other-agent"}})
         result = base.compose(child)
-        assert result._provenance["agent:my-agent"] == ["base"]
-        assert result._provenance["agent:other-agent"] == ["child"]
+        assert result.origins["agent:my-agent"] == [Origin("base", None)]
+        assert result.origins["agent:other-agent"] == [Origin("child", None)]
 
     def test_override_updates_provenance(self) -> None:
         """Only the first bundle to introduce an item is recorded as its claimant.
@@ -68,7 +69,7 @@ class TestProvenance:
         child = Bundle(name="child", tools=[{"module": "tool-bash"}])  # same module
         result = base.compose(child)
         # Only base introduced tool-bash; child merely duplicated it
-        assert result._provenance["tool:tool-bash"] == ["base"]
+        assert result.origins["tool:tool-bash"] == [Origin("base", None)]
 
     def test_three_level_nesting_preserves_attribution(self) -> None:
         """Three-level nesting preserves original contributor in multi-claimant list.
@@ -84,17 +85,17 @@ class TestProvenance:
         b = a.compose(b_raw)
 
         # Verify b has correct provenance (single claimants)
-        assert b._provenance["tool:tool-x"] == ["a"]
-        assert b._provenance["tool:tool-y"] == ["b"]
+        assert b.origins["tool:tool-x"] == [Origin("a", None)]
+        assert b.origins["tool:tool-y"] == [Origin("b", None)]
 
         # Level 3: c composes b
         c = Bundle(name="c")
         result = c.compose(b)
 
-        # tool-x: "a" (original) and "b" (carries tool in its list) are both claimants
-        assert "a" in result._provenance["tool:tool-x"]
+        # tool-x: "a" (original) with via_behavior="b" (how it reached c through b)
+        assert any(o.bundle == "a" for o in result.origins["tool:tool-x"])
         # tool-y should be attributed to "b" (its direct contributor)
-        assert result._provenance["tool:tool-y"] == ["b"]
+        assert any(o.bundle == "b" for o in result.origins["tool:tool-y"])
 
     def test_pending_context_provenance_self(self) -> None:
         """compose() tags _pending_context entries from self with self.name.
@@ -109,7 +110,9 @@ class TestProvenance:
             _pending_context={"base:context/guide.md": "base:context/guide.md"},
         )
         result = base.compose()
-        assert result._provenance.get("context:base:context/guide.md") == ["base"]
+        assert result.origins.get("context:base:context/guide.md") == [
+            Origin("base", None)
+        ]
 
     def test_pending_context_provenance_other(self) -> None:
         """compose() tags _pending_context entries from other bundles.
@@ -124,7 +127,9 @@ class TestProvenance:
             _pending_context={"child:context/notes.md": "child:context/notes.md"},
         )
         result = base.compose(child)
-        assert result._provenance.get("context:child:context/notes.md") == ["child"]
+        assert result.origins.get("context:child:context/notes.md") == [
+            Origin("child", None)
+        ]
 
     def test_pending_context_provenance_survives_resolution(self) -> None:
         """Pending context provenance persists after resolve_pending_context() runs.
@@ -140,27 +145,29 @@ class TestProvenance:
         )
         result = base.compose(child)
         # Provenance must be set before resolution
-        assert result._provenance.get("context:child:context/notes.md") == ["child"]
+        assert result.origins.get("context:child:context/notes.md") == [
+            Origin("child", None)
+        ]
         # After resolution the key is unchanged (pending key == final context key),
         # so the provenance lookup still works
-        assert "context:child:context/notes.md" in result._provenance
+        assert "context:child:context/notes.md" in result.origins
 
 
 class TestMultiClaimantProvenance:
-    """Tests for multi-claimant provenance tracking (list[str] values)."""
+    """Tests for multi-claimant provenance tracking (list[Origin] values)."""
 
     def test_multi_claimant_provenance_type(self) -> None:
-        """_provenance values are list[str] not str."""
+        """origins values are list[Origin] not list[str]."""
         base = Bundle(name="base", tools=[{"module": "tool-bash"}])
         child = Bundle(name="child", tools=[{"module": "tool-python"}])
         result = base.compose(child)
-        for value in result._provenance.values():
+        for value in result.origins.values():
             assert isinstance(value, list), (
                 f"Expected list, got {type(value)}: {value!r}"
             )
             for item in value:
-                assert isinstance(item, str), (
-                    f"Expected str items, got {type(item)}: {item!r}"
+                assert isinstance(item, Origin), (
+                    f"Expected Origin items, got {type(item)}: {item!r}"
                 )
 
     def test_multi_claimant_shared_tool(self) -> None:
@@ -173,15 +180,16 @@ class TestMultiClaimantProvenance:
         child = Bundle(name="child", tools=[{"module": "shared-tool"}])
         result = base.compose(child)
         # Only base introduced shared-tool; child merely duplicated it
-        assert result._provenance["tool:shared-tool"] == ["base"]
+        assert result.origins["tool:shared-tool"] == [Origin("base", None)]
 
     def test_multi_claimant_no_duplicates(self) -> None:
         """Same bundle claiming same item multiple times results in no duplicates."""
         a = Bundle(name="a", tools=[{"module": "tool-x"}])
         # Compose a with itself — a claims tool-x twice
         result = a.compose(a)
-        # "a" should appear only once
-        assert result._provenance["tool:tool-x"] == ["a"]
+        # "a" should appear only once (deduplicated by (bundle, via_behavior))
+        bundles = [o.bundle for o in result.origins["tool:tool-x"]]
+        assert bundles.count("a") == 1
 
     def test_multi_claimant_context(self) -> None:
         """First introducer wins for context: only the bundle that adds the key is claimant.
@@ -199,7 +207,7 @@ class TestMultiClaimantProvenance:
             _pending_context={"shared:context/foo.md": "shared:context/foo.md"},
         )
         result = a.compose(b)
-        claimants = result._provenance["context:shared:context/foo.md"]
+        claimants = [o.bundle for o in result.origins["context:shared:context/foo.md"]]
         # Only "a" introduced this context key; "b" duplicated it
         assert "a" in claimants
         assert "b" not in claimants
@@ -213,7 +221,7 @@ class TestMultiClaimantProvenance:
         a = Bundle(name="a", agents={"shared-agent": {"name": "shared-agent"}})
         b = Bundle(name="b", agents={"shared-agent": {"name": "shared-agent"}})
         result = a.compose(b)
-        claimants = result._provenance["agent:shared-agent"]
+        claimants = [o.bundle for o in result.origins["agent:shared-agent"]]
         # Only "a" introduced shared-agent; "b" duplicated it
         assert "a" in claimants
         assert "b" not in claimants
@@ -230,16 +238,18 @@ class TestMultiClaimantProvenance:
         b_raw = Bundle(name="b", tools=[{"module": "tool-x"}])
         ab = a.compose(b_raw)
         # Only "a" introduced tool-x; "b" merely duplicated it
-        assert "a" in ab._provenance["tool:tool-x"]
-        assert "b" not in ab._provenance["tool:tool-x"]
+        bundles_ab = [o.bundle for o in ab.origins["tool:tool-x"]]
+        assert "a" in bundles_ab
+        assert "b" not in bundles_ab
 
         # Level 3: d also lists tool-x (still already in result)
         d = Bundle(name="d", tools=[{"module": "tool-x"}])
         result = ab.compose(d)
         # Still only "a" is the original introducer
-        assert "a" in result._provenance["tool:tool-x"]
-        assert "b" not in result._provenance["tool:tool-x"]
-        assert "d" not in result._provenance["tool:tool-x"]
+        bundles_result = [o.bundle for o in result.origins["tool:tool-x"]]
+        assert "a" in bundles_result
+        assert "b" not in bundles_result
+        assert "d" not in bundles_result
 
 
 class TestProvenanceNoOverAttribution:
@@ -280,11 +290,11 @@ class TestProvenanceNoOverAttribution:
         result = foundation.compose(behavior_a, behavior_b)
 
         # tool-todo: only foundation introduced it
-        assert result._provenance["tool:tool-todo"] == ["foundation"]
+        assert result.origins["tool:tool-todo"] == [Origin("foundation", None)]
         # behavior-a added a new tool
-        assert result._provenance["tool:tool-a-only"] == ["behavior-a"]
+        assert result.origins["tool:tool-a-only"] == [Origin("behavior-a", None)]
         # behavior-b added a new tool
-        assert result._provenance["tool:tool-b-only"] == ["behavior-b"]
+        assert result.origins["tool:tool-b-only"] == [Origin("behavior-b", None)]
 
     def test_only_new_tools_tagged(self) -> None:
         """Only tools that weren't in result before the merge are attributed to other.
@@ -297,9 +307,9 @@ class TestProvenanceNoOverAttribution:
         result = a.compose(b)
 
         # tool-x was already in result from a — don't attribute to b
-        assert result._provenance["tool:tool-x"] == ["a"]
+        assert result.origins["tool:tool-x"] == [Origin("a", None)]
         # tool-y is genuinely new from b
-        assert result._provenance["tool:tool-y"] == ["b"]
+        assert result.origins["tool:tool-y"] == [Origin("b", None)]
 
     def test_three_level_nesting_no_over_attribution(self) -> None:
         """Three-level nesting doesn't propagate over-attribution.
@@ -316,16 +326,104 @@ class TestProvenanceNoOverAttribution:
         b_raw = Bundle(name="b", tools=[{"module": "tool-y"}])
         b = a.compose(b_raw)
         # Verify b's provenance is correct before going to level 3
-        assert b._provenance["tool:tool-x"] == ["a"]
-        assert b._provenance["tool:tool-y"] == ["b"]
+        assert b.origins["tool:tool-x"] == [Origin("a", None)]
+        assert b.origins["tool:tool-y"] == [Origin("b", None)]
 
         # Level 3: c adds tool-z; compose with b (which carries tool-x and tool-y)
         c_raw = Bundle(name="c", tools=[{"module": "tool-z"}])
         result = b.compose(c_raw)
 
-        # tool-x: originated in a, passed through b — still only a
-        assert result._provenance["tool:tool-x"] == ["a"]
+        # tool-x: originated in a, passed through b — still only a (with via_behavior=b)
+        assert any(o.bundle == "a" for o in result.origins["tool:tool-x"])
         # tool-y: originated in b — still only b
-        assert result._provenance["tool:tool-y"] == ["b"]
+        assert any(o.bundle == "b" for o in result.origins["tool:tool-y"])
         # tool-z: new from c
-        assert result._provenance["tool:tool-z"] == ["c"]
+        assert result.origins["tool:tool-z"] == [Origin("c", None)]
+
+
+class TestSessionSpawnInstructionProvenance:
+    """New tests: session/spawn/instruction keys in origins after compose()."""
+
+    def test_session_orchestrator_provenance(self) -> None:
+        """compose() tracks which bundle introduced session.orchestrator."""
+        base = Bundle(name="base")
+        child = Bundle(
+            name="child",
+            session={
+                "orchestrator": {
+                    "module": "orchestrator-loop",
+                    "source": "git+https://...",
+                }
+            },
+        )
+        result = base.compose(child)
+        assert "session.orchestrator:orchestrator-loop" in result.origins
+        bundles = [
+            o.bundle for o in result.origins["session.orchestrator:orchestrator-loop"]
+        ]
+        assert "child" in bundles
+
+    def test_session_context_provenance(self) -> None:
+        """compose() tracks which bundle introduced session.context."""
+        base = Bundle(name="base")
+        child = Bundle(
+            name="child",
+            session={
+                "context": {"module": "context-manager", "source": "git+https://..."}
+            },
+        )
+        result = base.compose(child)
+        assert "session.context:context-manager" in result.origins
+        bundles = [o.bundle for o in result.origins["session.context:context-manager"]]
+        assert "child" in bundles
+
+    def test_spawn_key_provenance(self) -> None:
+        """compose() tracks which bundle introduced spawn keys."""
+        base = Bundle(name="base")
+        child = Bundle(name="child", spawn={"exclude_tools": ["bash"]})
+        result = base.compose(child)
+        assert "spawn:exclude_tools" in result.origins
+        bundles = [o.bundle for o in result.origins["spawn:exclude_tools"]]
+        assert "child" in bundles
+
+    def test_instruction_provenance(self) -> None:
+        """compose() tracks which bundle introduced the instruction."""
+        base = Bundle(name="base")
+        child = Bundle(name="child", instruction="You are a helpful assistant.")
+        result = base.compose(child)
+        assert "instruction:" in result.origins
+        bundles = [o.bundle for o in result.origins["instruction:"]]
+        assert "child" in bundles
+
+    def test_origin_chain_transitive(self) -> None:
+        """Three-level: Origin chain captures A→B→X via via_behavior.
+
+        When root.compose(ab) is called (root is the base, ab is composed in),
+        and ab was itself composed from a (which introduced tool-x),
+        the origins chain should contain Origin("a", via_behavior="b") — capturing
+        that tool-x came from "a" via the intermediate bundle "b" (ab.name="b").
+
+        Key: root must be the BASE (self), ab must be the OTHER being composed.
+        Phase 2 overlay is only triggered when tool-x is NEW to root.
+        """
+        a = Bundle(name="a", tools=[{"module": "tool-x"}])
+        b_raw = Bundle(name="b", tools=[{"module": "tool-y"}])
+        b = a.compose(b_raw)
+
+        # b.origins should have tool-x attributed to "a" with no via_behavior
+        assert b.origins["tool:tool-x"] == [Origin("a", None)]
+
+        # root.compose(b): root is the base (empty), b is composed in as "other".
+        # tool-x is new to root, so phase 2 overlays b.origins["tool:tool-x"]
+        # with via_behavior = b.name = "b".
+        root = Bundle(name="root", tools=[])
+        result = root.compose(b)
+
+        # The origin chain for tool-x should contain "a" with via_behavior="b"
+        chains = result.origins.get("tool:tool-x", [])
+        assert any(o.bundle == "a" for o in chains), (
+            f"Expected Origin with bundle='a' in {chains}"
+        )
+        # via_behavior captures the intermediate bundle "b"
+        via_b = [o for o in chains if o.via_behavior == "b"]
+        assert len(via_b) > 0, f"Expected Origin with via_behavior='b' in {chains}"

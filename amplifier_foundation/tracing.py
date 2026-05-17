@@ -95,7 +95,11 @@ def generate_sub_session_id(
 
     # If no parent span found and we have a trace ID, derive parent span from trace
     # Extract middle 16 chars (positions 8-24) from 32-char trace ID
-    if parent_span == _DEFAULT_PARENT_SPAN and parent_trace_id and _TRACE_ID_PATTERN.fullmatch(parent_trace_id):
+    if (
+        parent_span == _DEFAULT_PARENT_SPAN
+        and parent_trace_id
+        and _TRACE_ID_PATTERN.fullmatch(parent_trace_id)
+    ):
         # Take middle 16 characters (8-24) of the 32-char trace ID
         parent_span = parent_trace_id[8:24]
 

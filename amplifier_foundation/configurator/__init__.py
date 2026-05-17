@@ -25,6 +25,11 @@ from amplifier_foundation.configurator._overlay import (
     TransitionResult as TransitionResult,
 )  # noqa: F401 — re-export
 from amplifier_foundation.configurator._state_manager import BundleStateManager
+from amplifier_foundation.configurator._types import (
+    IncludeStep as IncludeStep,  # noqa: F401 — re-export
+    ItemRecord as ItemRecord,  # noqa: F401 — re-export
+    Origin as Origin,  # noqa: F401 — re-export
+)
 
 
 class SessionConfigurator:
@@ -206,22 +211,22 @@ class SessionConfigurator:
     # List methods — dashboard views
     # ------------------------------------------------------------------
 
-    def context_list(self) -> list[dict]:
+    def context_list(self) -> list[ItemRecord]:
         return self._inspector.context_list()
 
-    def tools_list(self) -> list[dict]:
+    def tools_list(self) -> list[ItemRecord]:
         return self._inspector.tools_list()
 
-    def hooks_list(self) -> list[dict]:
+    def hooks_list(self) -> list[ItemRecord]:
         return self._inspector.hooks_list()
 
-    def providers_list(self) -> list[dict]:
+    def providers_list(self) -> list[ItemRecord]:
         return self._inspector.providers_list()
 
-    def agents_list(self) -> list[dict]:
+    def agents_list(self) -> list[ItemRecord]:
         return self._inspector.agents_list()
 
-    def behaviors_list(self) -> list[dict]:
+    def behaviors_list(self) -> list[ItemRecord]:
         return self._inspector.behaviors_list()
 
 
@@ -235,4 +240,7 @@ __all__ = [
     "_normalize_module_name",
     "_build_normalized_prov_lookup",
     "_lookup_prov_behavior",
+    "Origin",
+    "IncludeStep",
+    "ItemRecord",
 ]
