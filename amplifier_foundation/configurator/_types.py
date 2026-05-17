@@ -50,11 +50,18 @@ class IncludeStep:
         bundle:  Bundle name at this step in the chain.
         version: Bundle version string, or None if not recorded.
         uri:     Source URI (git+https://..., file://...), or None if not known.
+        is_root: True when this bundle is a topological root in the included_by
+                 graph — i.e., it has no further ancestors (included_by is
+                 empty or None).  These are the user-explicit entry points into
+                 the composition (e.g., the active bundle set via ``bundle use``
+                 or a behavior added via the ``app:`` list).  Rendered as ``*``
+                 prefix in CLI output.  Part of the experimental JSON schema.
     """
 
     bundle: str
     version: str | None
     uri: str | None
+    is_root: bool = False
 
 
 # Type alias for the runtime_injection field — exported for reuse in inspector helpers.

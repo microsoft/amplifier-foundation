@@ -135,14 +135,20 @@ def walk_include_chain(
     # chain is leaf→root; reverse for root→leaf display.
     chain.reverse()
 
-    return [
-        IncludeStep(
+    def _step_for(name: str) -> IncludeStep:
+        state = registry_dict.get(name)
+        included_by = getattr(state, "included_by", None)
+        return IncludeStep(
             bundle=name,
-            version=getattr(registry_dict.get(name), "version", None),
-            uri=getattr(registry_dict.get(name), "uri", None),
+            version=getattr(state, "version", None),
+            uri=getattr(state, "uri", None),
+            # is_root=True when the bundle has no further ancestors — it is a
+            # topological root in the included_by graph (user-explicit entry
+            # point such as the active bundle or an app-list behavior).
+            is_root=state is not None and not bool(included_by),
         )
-        for name in chain
-    ]
+
+    return [_step_for(name) for name in chain]
 
 
 def walk_include_chains(
@@ -178,10 +184,14 @@ def walk_include_chains(
 
     def _make_step(name: str) -> IncludeStep:
         state = registry_dict.get(name)
+        included_by = getattr(state, "included_by", None)
         return IncludeStep(
             bundle=name,
             version=getattr(state, "version", None),
             uri=getattr(state, "uri", None),
+            # is_root=True when the bundle is a topological root (no further
+            # ancestors in included_by).  These are user-explicit entry points.
+            is_root=state is not None and not bool(included_by),
         )
 
     def _all_paths_to_root(current: str, visited: frozenset[str]) -> list[list[str]]:

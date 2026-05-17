@@ -3201,6 +3201,122 @@ class TestWalkIncludeChains:
         result = walk_include_chains("A", registry_dict)
         assert isinstance(result, list)
 
+    def test_is_root_flag_on_topological_root(self) -> None:
+        """Root bundle (no included_by) gets is_root=True; non-root gets False."""
+        registry_dict: dict[str, Any] = {
+            "amplifier-dev": _make_state(
+                name="amplifier-dev",
+                included_by=[],
+                is_root=True,
+                explicitly_requested=True,
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["amplifier-dev"],
+            ),
+            "behavior-apply-patch": _make_state(
+                name="behavior-apply-patch",
+                included_by=["foundation"],
+            ),
+        }
+
+        result = walk_include_chains("behavior-apply-patch", registry_dict)
+
+        assert len(result) == 1
+        path = result[0]
+        # amplifier-dev is the topological root (no included_by) → is_root=True
+        assert path[0].bundle == "amplifier-dev"
+        assert path[0].is_root is True
+        # foundation has a parent → is_root=False
+        assert path[1].bundle == "foundation"
+        assert path[1].is_root is False
+        # behavior-apply-patch has a parent → is_root=False
+        assert path[2].bundle == "behavior-apply-patch"
+        assert path[2].is_root is False
+
+    def test_is_root_flag_with_behavior_root(self) -> None:
+        """Behavior bundle with no included_by is a topological root (is_root=True)
+        even when BundleState.is_root is False (it's structurally nested)."""
+        # reality-check-behavior is a subdirectory bundle (is_root=False structurally)
+        # but has no included_by → it IS a topological root → IncludeStep.is_root=True
+        registry_dict: dict[str, Any] = {
+            "reality-check-behavior": _make_state(
+                name="reality-check-behavior",
+                included_by=[],  # no parents → topological root
+                is_root=False,   # structural: it's a nested bundle
+            ),
+            "terminal-tester": _make_state(
+                name="terminal-tester",
+                included_by=["reality-check-behavior"],
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["terminal-tester"],
+            ),
+        }
+
+        result = walk_include_chains("foundation", registry_dict)
+
+        assert len(result) == 1
+        path = result[0]
+        # reality-check-behavior: no included_by → topological root → is_root=True
+        assert path[0].bundle == "reality-check-behavior"
+        assert path[0].is_root is True
+        # terminal-tester has a parent → is_root=False
+        assert path[1].bundle == "terminal-tester"
+        assert path[1].is_root is False
+
+    def test_is_root_flag_multiple_roots(self) -> None:
+        """Multiple chains: each chain-start (no parents) gets is_root=True."""
+        registry_dict: dict[str, Any] = {
+            "amplifier-dev": _make_state(name="amplifier-dev", included_by=[]),
+            "modes": _make_state(name="modes", included_by=[]),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["amplifier-dev", "modes"],
+            ),
+        }
+
+        result = walk_include_chains("foundation", registry_dict)
+
+        assert len(result) == 2
+        # Collect all (bundle, is_root) pairs from chain starts
+        chain_starts = {path[0].bundle: path[0].is_root for path in result}
+        assert chain_starts["amplifier-dev"] is True
+        assert chain_starts["modes"] is True
+        # foundation is not a root in any chain
+        for path in result:
+            foundation_step = next(s for s in path if s.bundle == "foundation")
+            assert foundation_step.is_root is False
+
+    def test_is_root_flag_node_with_parents_is_false(self) -> None:
+        """A node that has parents in included_by gets is_root=False even if it
+        appears at the start of a cycle-broken chain path."""
+        # terminal-tester self-references in included_by: the cycle-broken path
+        # starts with terminal-tester but it still has parents → is_root=False.
+        registry_dict: dict[str, Any] = {
+            "terminal-tester": _make_state(
+                name="terminal-tester",
+                included_by=["terminal-tester"],  # self-cycle
+                is_root=True,  # structural root
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["terminal-tester"],
+            ),
+        }
+
+        result = walk_include_chains("foundation", registry_dict)
+
+        # All terminal-tester steps must have is_root=False (it has included_by)
+        for path in result:
+            for step in path:
+                if step.bundle == "terminal-tester":
+                    assert step.is_root is False, (
+                        f"terminal-tester has parents so is_root must be False, "
+                        f"path={[s.bundle for s in path]}"
+                    )
+
 
 class TestMultiSourceIncludePaths:
     """Tests for _build_include_paths — plural include-path builder."""
