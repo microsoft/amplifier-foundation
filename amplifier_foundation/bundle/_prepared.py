@@ -62,7 +62,9 @@ async def bridge_child_cost(
     a warning and swallowed so the caller always sees a clean return.
     """
     try:
-        child_contributions = await child_coordinator.collect_contributions("session.cost")
+        child_contributions = await child_coordinator.collect_contributions(
+            "session.cost"
+        )
         child_total = sum_cost_usd(child_contributions)
 
         if child_total is not None:
@@ -228,6 +230,11 @@ class PreparedBundle:
         bundle_package_paths: Paths to bundle src/ directories added to sys.path.
             These need to be shared with child sessions during spawning to ensure
             bundle packages (like amplifier_bundle_python_dev) remain importable.
+        module_exports: Maps module_id to the list of tool/hook names that module
+            registers in the coordinator.  Used by BundleInspector for deterministic
+            provenance lookup (tool name → module_id → origins).  Built from the
+            static KNOWN_MODULE_EXPORTS map as a v1 stopgap; activator introspection
+            is the correct long-term source.
     """
 
     mount_plan: dict[str, Any]
@@ -235,6 +242,7 @@ class PreparedBundle:
     bundle: Bundle
     bundle_package_paths: list[str] = field(default_factory=list)
     mode_warnings: list[str] = field(default_factory=list)
+    module_exports: dict[str, list[str]] = field(default_factory=dict)
 
     def _build_bundles_for_resolver(self, bundle: "Bundle") -> dict[str, "Bundle"]:
         """Build bundle registry for mention resolution.

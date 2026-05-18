@@ -12,7 +12,14 @@ from amplifier_foundation.configurator import (
     _build_normalized_prov_lookup,
     _lookup_prov_behavior,
     _normalize_module_name,
+    walk_include_chain,
+    walk_include_chains,
 )
+from amplifier_foundation.configurator._inspector import (
+    _build_include_path,
+    _build_include_paths,
+)
+from amplifier_foundation.configurator._types import IncludeStep, Origin
 
 
 @pytest.fixture
@@ -26,7 +33,7 @@ def mock_bundle() -> Bundle:
         providers=[{"module": "provider-anthropic"}],
         agents={"my-agent": {"description": "Test agent"}},
     )
-    bundle._provenance = {"context:readme": ["test-behavior"]}  # type: ignore[misc]
+    bundle.origins = {"context:readme": ["test-behavior"]}  # type: ignore[misc]
     return bundle
 
 
@@ -769,7 +776,7 @@ def behavior_bundle() -> Bundle:
         providers=[{"module": "provider-anthropic"}],
         agents={"my-agent": {"description": "Test agent"}},
     )
-    bundle._provenance = {  # type: ignore[misc]
+    bundle.origins = {  # type: ignore[misc]
         "context:readme": ["my-behavior"],
         "tool:tool-bash": ["my-behavior"],
         "hook:on_before_tool": ["my-behavior"],
@@ -929,7 +936,7 @@ class TestBehaviorToggle:
     ) -> None:
         """Partial failure during behavior_disable continues and collects warnings."""
         # Add a provenance entry for a context key that does NOT exist in the bundle
-        behavior_bundle._provenance["context:nonexistent"] = ["my-behavior"]  # type: ignore[index]
+        behavior_bundle.origins["context:nonexistent"] = ["my-behavior"]  # type: ignore[index]
 
         result = await behavior_configurator.behavior_disable("my-behavior")
 
@@ -994,7 +1001,14 @@ class TestBehaviorToggleToolResolution:
             providers=[],
             agents={},
         )
-        bundle._provenance = provenance  # type: ignore[misc]
+        # Convert provenance dict: list[str] -> list[Origin] if needed
+        converted_provenance = {}
+        for k, v in (provenance or {}).items():
+            if v and isinstance(v[0], str):
+                converted_provenance[k] = [Origin(s, None) for s in v]
+            else:
+                converted_provenance[k] = v
+        bundle.origins = converted_provenance  # type: ignore[misc]
 
         prepared = MagicMock()
         prepared.bundle = bundle
@@ -1120,7 +1134,7 @@ class TestBehaviorToggleToolResolution:
             providers=[],
             agents={"my-agent": {"description": "Test"}},
         )
-        bundle._provenance = {  # type: ignore[misc]
+        bundle.origins = {  # type: ignore[misc]
             "context:readme": ["my-behavior"],
             "tool:tool-bash": ["my-behavior"],
             "agent:my-agent": ["my-behavior"],
@@ -1177,7 +1191,7 @@ class TestBehaviorToggleToolResolution:
             providers=[],
             agents={},
         )
-        bundle._provenance = {  # type: ignore[misc]
+        bundle.origins = {  # type: ignore[misc]
             "context:modes:context/modes-instructions.md": [
                 "superpowers-methodology-behavior",
                 "behavior-modes",
@@ -1225,7 +1239,7 @@ class TestBehaviorToggleToolResolution:
             providers=[],
             agents={},
         )
-        bundle._provenance = {  # type: ignore[misc]
+        bundle.origins = {  # type: ignore[misc]
             "context:superpowers:context/philosophy.md": [
                 "superpowers-methodology-behavior",
             ],
@@ -1270,8 +1284,11 @@ class TestBehaviorToggleToolResolution:
             providers=[],
             agents={"shared-agent": {"description": "Shared by two behaviors"}},
         )
-        bundle._provenance = {  # type: ignore[misc]
-            "agent:shared-agent": ["behavior-a", "behavior-b"],
+        bundle.origins = {  # type: ignore[misc]
+            "agent:shared-agent": [
+                Origin("behavior-a", None),
+                Origin("behavior-b", None),
+            ],
         }
 
         coordinator = MagicMock()
@@ -1315,7 +1332,7 @@ class TestBehaviorToggleToolResolution:
             providers=[],
             agents={},
         )
-        bundle._provenance = {  # type: ignore[misc]
+        bundle.origins = {  # type: ignore[misc]
             "context:superpowers:context/philosophy.md": [
                 "superpowers-methodology-behavior",
             ],
@@ -1376,7 +1393,7 @@ class TestBehaviorToggleToolResolution:
             providers=[],
             agents={},
         )
-        bundle._provenance = {  # type: ignore[misc]
+        bundle.origins = {  # type: ignore[misc]
             "context:modes:context/modes-instructions.md": [
                 "superpowers-methodology-behavior",
                 "behavior-modes",
@@ -1448,7 +1465,6 @@ class TestSaveAndApply:
 
         # disabled.context should contain the stashed "readme"
         assert conf["disabled"]["context"] == ["readme"]
-
         # disabled.behaviors should be empty (no behaviors disabled)
         assert conf["disabled"]["behaviors"] == []
 
@@ -1537,16 +1553,16 @@ class TestListMethods:
         items = configurator.context_list()
         assert len(items) == 1
         readme = items[0]
-        assert readme["name"] == "readme"
-        assert readme["enabled"] is True
-        assert readme["path"] == str(mock_bundle.context["readme"])
+        assert readme.name == "readme"
+        assert readme.enabled is True
+        assert readme.source_uri == str(mock_bundle.context["readme"])
 
         # After disabling, it appears as disabled
         configurator.context_disable("readme")
         items = configurator.context_list()
         assert len(items) == 1
-        assert items[0]["name"] == "readme"
-        assert items[0]["enabled"] is False
+        assert items[0].name == "readme"
+        assert items[0].enabled is False
 
     def test_context_list_carries_behavior_and_source(
         self, configurator: SessionConfigurator
@@ -1554,8 +1570,8 @@ class TestListMethods:
         """context_list includes behavior provenance in both 'behaviors' and 'source' keys."""
         items = configurator.context_list()
         # mock_bundle has _provenance = {"context:readme": ["test-behavior"]}
-        assert items[0]["behaviors"] == ["test-behavior"]
-        assert items[0]["source"] == ["test-behavior"]
+        assert [o.bundle for o in (items[0].origins or [])] == ["test-behavior"]
+        assert [o.bundle for o in (items[0].origins or [])] == ["test-behavior"]
 
     def test_tools_list_returns_enabled_and_disabled(
         self,
@@ -1565,7 +1581,7 @@ class TestListMethods:
         """tools_list returns mounted tools as enabled and stashed tools as disabled."""
         # Initially tool-bash is enabled (present in coordinator.get("tools"))
         items = async_configurator.tools_list()
-        enabled_names = {i["name"] for i in items if i["enabled"]}
+        enabled_names = {i.name for i in items if i.enabled}
         assert "tool-bash" in enabled_names
 
         # Simulate disabling: remove from mounted dict and add to stash
@@ -1574,11 +1590,11 @@ class TestListMethods:
         async_configurator._stash["tools"]["tool-bash"] = instance
 
         items = async_configurator.tools_list()
-        enabled = [i for i in items if i["enabled"]]
-        disabled = [i for i in items if not i["enabled"]]
+        enabled = [i for i in items if i.enabled]
+        disabled = [i for i in items if not i.enabled]
         assert len(enabled) == 0
         assert len(disabled) == 1
-        assert disabled[0]["name"] == "tool-bash"
+        assert disabled[0].name == "tool-bash"
 
     def test_hooks_list_returns_all_as_enabled(
         self, configurator: SessionConfigurator
@@ -1587,23 +1603,25 @@ class TestListMethods:
         items = configurator.hooks_list()
         assert len(items) == 2  # on_before_tool + on_after_tool from fixture
 
-        names = {i["name"] for i in items}
+        names = {i.name for i in items}
         assert "on_before_tool" in names
         assert "on_after_tool" in names
 
         # All hooks are always enabled
         for item in items:
-            assert item["enabled"] is True
-            assert "event" in item
-            assert "priority" in item
+            assert item.enabled is True
+            assert "event" in item.config_summary
+            assert "priority" in item.config_summary
 
     def test_hooks_list_event_is_correct(
         self, configurator: SessionConfigurator
     ) -> None:
         """hooks_list items carry the correct event binding from the snapshot."""
-        by_name = {i["name"]: i for i in configurator.hooks_list()}
-        assert by_name["on_before_tool"]["event"] == "before_tool"
-        assert by_name["on_after_tool"]["event"] == "after_tool"
+        by_name = {i.name: i for i in configurator.hooks_list()}
+        assert (
+            by_name["on_before_tool"].config_summary.get("event", "") == "before_tool"
+        )
+        assert by_name["on_after_tool"].config_summary.get("event", "") == "after_tool"
 
     def test_providers_list_returns_enabled_and_disabled(
         self,
@@ -1612,7 +1630,7 @@ class TestListMethods:
     ) -> None:
         """providers_list returns mounted providers as enabled and stashed ones as disabled."""
         items = async_configurator.providers_list()
-        enabled_names = {i["name"] for i in items if i["enabled"]}
+        enabled_names = {i.name for i in items if i.enabled}
         assert "provider-anthropic" in enabled_names
 
         # Simulate disabling
@@ -1621,9 +1639,9 @@ class TestListMethods:
         async_configurator._stash["providers"]["provider-anthropic"] = instance
 
         items = async_configurator.providers_list()
-        disabled = [i for i in items if not i["enabled"]]
+        disabled = [i for i in items if not i.enabled]
         assert len(disabled) == 1
-        assert disabled[0]["name"] == "provider-anthropic"
+        assert disabled[0].name == "provider-anthropic"
 
     def test_agents_list_returns_enabled_and_disabled(
         self,
@@ -1632,7 +1650,7 @@ class TestListMethods:
     ) -> None:
         """agents_list returns live agents as enabled and stashed agents as disabled."""
         items = configurator.agents_list()
-        enabled_names = {i["name"] for i in items if i["enabled"]}
+        enabled_names = {i.name for i in items if i.enabled}
         assert "my-agent" in enabled_names
 
         # Disable the agent
@@ -1640,8 +1658,8 @@ class TestListMethods:
 
         items = configurator.agents_list()
         assert len(items) == 1
-        assert items[0]["name"] == "my-agent"
-        assert items[0]["enabled"] is False
+        assert items[0].name == "my-agent"
+        assert items[0].enabled is False
 
     def test_agents_list_config_included(
         self,
@@ -1650,7 +1668,7 @@ class TestListMethods:
     ) -> None:
         """agents_list items include the agent config dict."""
         items = configurator.agents_list()
-        assert isinstance(items[0]["config"], dict)
+        assert isinstance(items[0].config_summary, dict)
 
     def test_behaviors_list_groups_by_provenance(
         self, behavior_configurator: SessionConfigurator
@@ -1659,11 +1677,11 @@ class TestListMethods:
         items = behavior_configurator.behaviors_list()
         assert len(items) == 1
         beh = items[0]
-        assert beh["name"] == "my-behavior"
-        assert beh["enabled"] is True
+        assert beh.name == "my-behavior"
+        assert beh.enabled is True
 
         # behavior_bundle has context:readme, tool:tool-bash, hook:on_before_tool, agent:my-agent
-        contributions = beh["contributions"]
+        contributions = beh.config_summary
         assert len(contributions["context"]) == 1
         assert len(contributions["tools"]) == 1
         assert len(contributions["hooks"]) == 1
@@ -1676,7 +1694,7 @@ class TestListMethods:
         behavior_configurator._disabled_behaviors.add("my-behavior")
 
         items = behavior_configurator.behaviors_list()
-        assert items[0]["enabled"] is False
+        assert items[0].enabled is False
 
     def test_behaviors_list_sorted_by_name(
         self,
@@ -1685,7 +1703,7 @@ class TestListMethods:
         mock_bundle: Bundle,
     ) -> None:
         """behaviors_list results are sorted alphabetically by name."""
-        mock_bundle._provenance = {  # type: ignore[misc]
+        mock_bundle.origins = {  # type: ignore[misc]
             "context:readme": ["zebra"],
             "tool:tool-bash": ["alpha"],
         }
@@ -1693,14 +1711,14 @@ class TestListMethods:
             session=mock_session, prepared_bundle=mock_prepared_bundle
         )
         items = cfg.behaviors_list()
-        names = [i["name"] for i in items]
+        names = [i.name for i in items]
         assert names == sorted(names)
 
     def test_behaviors_list_empty_when_no_provenance(
         self, configurator: SessionConfigurator, mock_bundle: Bundle
     ) -> None:
         """behaviors_list returns empty list when bundle has no provenance."""
-        mock_bundle._provenance = {}  # type: ignore[misc]
+        mock_bundle.origins = {}  # type: ignore[misc]
         items = configurator.behaviors_list()
         assert items == []
 
@@ -1721,16 +1739,16 @@ class TestListMethods:
             side_effect=lambda mp: {"bash": MagicMock()} if mp == "tools" else {}
         )
         # Provenance uses the full module ID "tool:tool-bash".
-        mock_bundle._provenance = {"tool:tool-bash": ["my-behavior"]}  # type: ignore[misc]
+        mock_bundle.origins = {"tool:tool-bash": ["my-behavior"]}  # type: ignore[misc]
 
         items = async_configurator.tools_list()
 
-        bash_item = next((i for i in items if i["name"] == "bash"), None)
+        bash_item = next((i for i in items if i.name == "bash"), None)
         assert bash_item is not None, "Expected 'bash' in tools_list() result"
-        assert bash_item["behaviors"] == ["my-behavior"], (
+        assert [o.bundle for o in (bash_item.origins or [])] == ["my-behavior"], (
             "tools_list() must resolve provenance via 'tool:tool-{name}' fallback"
         )
-        assert bash_item["source"] == ["my-behavior"]
+        assert [o.bundle for o in (bash_item.origins or [])] == ["my-behavior"]
 
     def test_providers_list_fallback_to_mount_plan_when_get_returns_empty(
         self,
@@ -1762,7 +1780,7 @@ class TestListMethods:
         }
 
         # Bundle provenance uses full module ID "provider:provider-anthropic"
-        mock_bundle._provenance = {  # type: ignore[misc]
+        mock_bundle.origins = {  # type: ignore[misc]
             "provider:provider-anthropic": ["foundation"]
         }
 
@@ -1777,13 +1795,13 @@ class TestListMethods:
         assert len(items) == 1
         item = items[0]
         # Name should be the short form (prefix stripped)
-        assert item["name"] == "anthropic"
-        assert item["enabled"] is True
+        assert item.name == "anthropic"
+        assert item.enabled is True
         # Config should be populated from the mount plan spec
-        assert item["config"].get("model") == "claude-3"
+        assert item.config_summary.get("model") == "claude-3"
         # Provenance should resolve via mount plan module ID fallback
-        assert item["behaviors"] == ["foundation"]
-        assert item["source"] == ["foundation"]
+        assert [o.bundle for o in (item.origins or [])] == ["foundation"]
+        assert [o.bundle for o in (item.origins or [])] == ["foundation"]
 
     def test_list_methods_return_empty_on_fresh_empty_bundle(self) -> None:
         """All list methods return empty lists when bundle has no resources."""
@@ -1797,7 +1815,7 @@ class TestListMethods:
         bundle_mock.context = {}
         bundle_mock.tools = []
         bundle_mock.providers = []
-        bundle_mock._provenance = {}
+        bundle_mock.origins = {}
 
         prepared = MagicMock()
         prepared.bundle = bundle_mock
@@ -1835,7 +1853,7 @@ class TestBehaviorsListItemNames:
         items = behavior_configurator.behaviors_list()
         assert len(items) == 1
         beh = items[0]
-        contributions = beh["contributions"]
+        contributions = beh.config_summary
 
         # Values must be lists of provenance key strings, not int counts.
         assert isinstance(contributions["context"], list), (
@@ -1883,9 +1901,9 @@ class TestProvenanceLookupHelpers:
             "tool:tool-lsp": ["behavior-lsp"],
         }
         result = _build_normalized_prov_lookup("tool", prov)
-        assert result["python_check"] == ["behavior-python"]
-        assert result["bash"] == ["behavior-bash"]
-        assert result["lsp"] == ["behavior-lsp"]
+        assert result["python_check"] == [Origin("behavior-python", None)]
+        assert result["bash"] == [Origin("behavior-bash", None)]
+        assert result["lsp"] == [Origin("behavior-lsp", None)]
 
     def test_build_normalized_prov_lookup_ignores_other_categories(self) -> None:
         """_build_normalized_prov_lookup only includes entries for the given category."""
@@ -1903,14 +1921,14 @@ class TestProvenanceLookupHelpers:
         prov = {"hook:custom-hook": ["behavior-custom"]}
         result = _build_normalized_prov_lookup("hook", prov)
         # "custom-hook" does not start with "hook-" so the full normalized id is used
-        assert result.get("custom_hook") == ["behavior-custom"]
+        assert result.get("custom_hook") == [Origin("behavior-custom", None)]
 
     def test_lookup_prov_behavior_strategy1_exact_match(self) -> None:
         """Strategy 1: exact key '{category}:{name}'."""
         prov = {"tool:bash": ["behavior-bash"]}
         norm_map = _build_normalized_prov_lookup("tool", prov)
         assert _lookup_prov_behavior("bash", "tool", prov, norm_map) == [
-            "behavior-bash"
+            Origin("behavior-bash", None)
         ]
 
     def test_lookup_prov_behavior_strategy2_module_prefixed(self) -> None:
@@ -1918,21 +1936,23 @@ class TestProvenanceLookupHelpers:
         prov = {"tool:tool-bash": ["behavior-bash"]}
         norm_map = _build_normalized_prov_lookup("tool", prov)
         assert _lookup_prov_behavior("bash", "tool", prov, norm_map) == [
-            "behavior-bash"
+            Origin("behavior-bash", None)
         ]
 
     def test_lookup_prov_behavior_strategy3_normalized_case(self) -> None:
         """Strategy 3: normalized exact match handles case differences (LSP→lsp)."""
         prov = {"tool:tool-lsp": ["behavior-lsp"]}
         norm_map = _build_normalized_prov_lookup("tool", prov)
-        assert _lookup_prov_behavior("LSP", "tool", prov, norm_map) == ["behavior-lsp"]
+        assert _lookup_prov_behavior("LSP", "tool", prov, norm_map) == [
+            Origin("behavior-lsp", None)
+        ]
 
     def test_lookup_prov_behavior_strategy3_normalized_hyphens(self) -> None:
         """Strategy 3: normalized exact match handles hyphen/underscore difference."""
         prov = {"tool:tool-python-check": ["behavior-python"]}
         norm_map = _build_normalized_prov_lookup("tool", prov)
         assert _lookup_prov_behavior("python_check", "tool", prov, norm_map) == [
-            "behavior-python"
+            Origin("behavior-python", None)
         ]
 
     def test_lookup_prov_behavior_strategy3_apply_patch(self) -> None:
@@ -1940,7 +1960,7 @@ class TestProvenanceLookupHelpers:
         prov = {"tool:tool-apply-patch": ["behavior-patch"]}
         norm_map = _build_normalized_prov_lookup("tool", prov)
         assert _lookup_prov_behavior("apply_patch", "tool", prov, norm_map) == [
-            "behavior-patch"
+            Origin("behavior-patch", None)
         ]
 
     def test_lookup_prov_behavior_strategy4_prefix_containment(self) -> None:
@@ -1949,10 +1969,10 @@ class TestProvenanceLookupHelpers:
         norm_map = _build_normalized_prov_lookup("tool", prov)
         # "web" is a prefix of "web_search" (underscore boundary)
         assert _lookup_prov_behavior("web_search", "tool", prov, norm_map) == [
-            "behavior-web"
+            Origin("behavior-web", None)
         ]
         assert _lookup_prov_behavior("web_fetch", "tool", prov, norm_map) == [
-            "behavior-web"
+            Origin("behavior-web", None)
         ]
 
     def test_lookup_prov_behavior_strategy4_requires_underscore_boundary(self) -> None:
@@ -2018,10 +2038,14 @@ class TestNormalizedProvenanceLookupInListMethods:
         bundle_mock.context = {}
         bundle_mock.tools = tool_specs or []
         bundle_mock.providers = []
-        bundle_mock._provenance = provenance
+        bundle_mock.origins = provenance
 
         prepared = MagicMock()
         prepared.bundle = bundle_mock
+        # Provide module_exports so deterministic lookup works for multi-tool modules
+        from amplifier_foundation.modules._module_exports import KNOWN_MODULE_EXPORTS
+
+        prepared.module_exports = dict(KNOWN_MODULE_EXPORTS)
 
         session = MagicMock()
         session.coordinator = coordinator
@@ -2036,9 +2060,9 @@ class TestNormalizedProvenanceLookupInListMethods:
         )
         items = cfg.tools_list()
         assert len(items) == 1
-        assert items[0]["name"] == "LSP"
-        assert items[0]["behaviors"] == ["behavior-lsp"]
-        assert items[0]["source"] == ["behavior-lsp"]
+        assert items[0].name == "LSP"
+        assert [o.bundle for o in (items[0].origins or [])] == ["behavior-lsp"]
+        assert [o.bundle for o in (items[0].origins or [])] == ["behavior-lsp"]
 
     def test_tools_list_resolves_python_check_by_normalization(self) -> None:
         """'python_check' resolves to 'tool:tool-python-check' via normalization (strategy 3)."""
@@ -2047,8 +2071,8 @@ class TestNormalizedProvenanceLookupInListMethods:
             mounted_tools={"python_check": MagicMock()},
         )
         items = cfg.tools_list()
-        item = next(i for i in items if i["name"] == "python_check")
-        assert item["behaviors"] == ["behavior-pycheck"]
+        item = next(i for i in items if i.name == "python_check")
+        assert [o.bundle for o in (item.origins or [])] == ["behavior-pycheck"]
 
     def test_tools_list_resolves_apply_patch_by_normalization(self) -> None:
         """'apply_patch' resolves to 'tool:tool-apply-patch' via normalization (strategy 3)."""
@@ -2057,8 +2081,8 @@ class TestNormalizedProvenanceLookupInListMethods:
             mounted_tools={"apply_patch": MagicMock()},
         )
         items = cfg.tools_list()
-        item = next(i for i in items if i["name"] == "apply_patch")
-        assert item["behaviors"] == ["behavior-patch"]
+        item = next(i for i in items if i.name == "apply_patch")
+        assert [o.bundle for o in (item.origins or [])] == ["behavior-patch"]
 
     def test_tools_list_resolves_web_tools_by_prefix_match(self) -> None:
         """'web_search' and 'web_fetch' resolve to 'tool:tool-web' via prefix match (strategy 4)."""
@@ -2067,22 +2091,33 @@ class TestNormalizedProvenanceLookupInListMethods:
             mounted_tools={"web_search": MagicMock(), "web_fetch": MagicMock()},
         )
         items = cfg.tools_list()
-        by_name = {i["name"]: i for i in items}
-        assert by_name["web_search"]["behaviors"] == ["behavior-web"]
-        assert by_name["web_fetch"]["behaviors"] == ["behavior-web"]
+        by_name = {i.name: i for i in items}
+        assert [o.bundle for o in (by_name["web_search"].origins or [])] == [
+            "behavior-web"
+        ]
+        assert [o.bundle for o in (by_name["web_fetch"].origins or [])] == [
+            "behavior-web"
+        ]
 
-    def test_tools_list_returns_none_for_semantic_mismatch(self) -> None:
-        """'load_skill' returns behavior=None for 'tool:tool-skills' (no relationship)."""
+    def test_tools_list_returns_behavior_for_skill_tool(self) -> None:
+        """'load_skill' now returns behavior attribution via deterministic module_exports lookup.
+
+        With KNOWN_MODULE_EXPORTS mapping tool-skills -> [load_skill],
+        the deterministic lookup finds the behavior for load_skill.
+        This is the payoff of replacing the fuzzy match: previously load_skill
+        returned no attribution; now it correctly shows behavior-skills.
+        """
         cfg = self._make_cfg(
             provenance={"tool:tool-skills": ["behavior-skills"]},
             mounted_tools={"load_skill": MagicMock()},
         )
         items = cfg.tools_list()
-        item = next(i for i in items if i["name"] == "load_skill")
-        assert item["behaviors"] is None
+        item = next(i for i in items if i.name == "load_skill")
+        # Deterministic lookup via module_exports: load_skill -> tool-skills -> behavior-skills
+        assert [o.bundle for o in (item.origins or [])] == ["behavior-skills"]
 
-    def test_tools_list_returns_none_for_filesystem_mismatch(self) -> None:
-        """read_file/write_file/edit_file return behavior=None for 'tool:tool-filesystem'."""
+    def test_tools_list_returns_behavior_for_filesystem_tools(self) -> None:
+        """read_file/write_file/edit_file now return behavior via module_exports deterministic lookup."""
         cfg = self._make_cfg(
             provenance={"tool:tool-filesystem": ["behavior-fs"]},
             mounted_tools={
@@ -2092,10 +2127,16 @@ class TestNormalizedProvenanceLookupInListMethods:
             },
         )
         items = cfg.tools_list()
-        by_name = {i["name"]: i for i in items}
-        assert by_name["read_file"]["behaviors"] is None
-        assert by_name["write_file"]["behaviors"] is None
-        assert by_name["edit_file"]["behaviors"] is None
+        by_name = {i.name: i for i in items}
+        assert [o.bundle for o in (by_name["read_file"].origins or [])] == [
+            "behavior-fs"
+        ]
+        assert [o.bundle for o in (by_name["write_file"].origins or [])] == [
+            "behavior-fs"
+        ]
+        assert [o.bundle for o in (by_name["edit_file"].origins or [])] == [
+            "behavior-fs"
+        ]
 
     def test_tools_list_config_lookup_by_normalized_name(self) -> None:
         """Config for 'tool-python-check' is found when tool is mounted as 'python_check'."""
@@ -2105,8 +2146,8 @@ class TestNormalizedProvenanceLookupInListMethods:
             tool_specs=[{"module": "tool-python-check", "config": {"timeout": 30}}],
         )
         items = cfg.tools_list()
-        item = next(i for i in items if i["name"] == "python_check")
-        assert item["config"].get("timeout") == 30
+        item = next(i for i in items if i.name == "python_check")
+        assert item.config_summary.get("timeout") == 30
 
     def test_hooks_list_resolves_by_normalization(self) -> None:
         """Hook names with case/hyphen differences are resolved via normalization."""
@@ -2123,7 +2164,7 @@ class TestNormalizedProvenanceLookupInListMethods:
         bundle_mock.context = {}
         bundle_mock.tools = []
         bundle_mock.providers = []
-        bundle_mock._provenance = {"hook:hooks-python-check": ["behavior-pycheck"]}
+        bundle_mock.origins = {"hook:hooks-python-check": ["behavior-pycheck"]}
 
         prepared = MagicMock()
         prepared.bundle = bundle_mock
@@ -2133,9 +2174,9 @@ class TestNormalizedProvenanceLookupInListMethods:
         cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
         items = cfg.hooks_list()
 
-        hook = next((i for i in items if i["name"] == "python-check"), None)
+        hook = next((i for i in items if i.name == "python-check"), None)
         assert hook is not None, "'python-check' hook must appear in hooks_list()"
-        assert hook["behaviors"] == ["behavior-pycheck"]
+        assert [o.bundle for o in (hook.origins or [])] == ["behavior-pycheck"]
 
     def test_providers_list_empty_when_app_level_injected(self) -> None:
         """providers_list() returns empty when all providers are app-level injected.
@@ -2155,7 +2196,7 @@ class TestNormalizedProvenanceLookupInListMethods:
         bundle_mock.context = {}
         bundle_mock.tools = []
         bundle_mock.providers = []
-        bundle_mock._provenance = {}
+        bundle_mock.origins = {}
 
         prepared = MagicMock()
         prepared.bundle = bundle_mock
@@ -2178,8 +2219,8 @@ class TestMultiClaimantProvenance:
         mock_bundle: Bundle,
     ) -> None:
         """context_list() returns behavior as list[str] with multi-claimant provenance."""
-        mock_bundle._provenance = {  # type: ignore[misc]
-            "context:readme": ["behavior-a", "behavior-b"],
+        mock_bundle.origins = {  # type: ignore[misc]
+            "context:readme": [Origin("behavior-a", None), Origin("behavior-b", None)],
         }
         cfg = SessionConfigurator(
             session=mock_session, prepared_bundle=mock_prepared_bundle
@@ -2187,8 +2228,14 @@ class TestMultiClaimantProvenance:
         items = cfg.context_list()
         assert len(items) == 1
         readme = items[0]
-        assert readme["behaviors"] == ["behavior-a", "behavior-b"]
-        assert readme["source"] == ["behavior-a", "behavior-b"]
+        assert [o.bundle for o in (readme.origins or [])] == [
+            "behavior-a",
+            "behavior-b",
+        ]
+        assert [o.bundle for o in (readme.origins or [])] == [
+            "behavior-a",
+            "behavior-b",
+        ]
 
     def test_agents_list_returns_behavior_list(
         self,
@@ -2197,17 +2244,23 @@ class TestMultiClaimantProvenance:
         mock_bundle: Bundle,
     ) -> None:
         """agents_list() returns behavior as list[str] with multi-claimant provenance."""
-        mock_bundle._provenance = {  # type: ignore[misc]
-            "agent:my-agent": ["behavior-a", "behavior-b"],
+        mock_bundle.origins = {  # type: ignore[misc]
+            "agent:my-agent": [Origin("behavior-a", None), Origin("behavior-b", None)],
         }
         cfg = SessionConfigurator(
             session=mock_session, prepared_bundle=mock_prepared_bundle
         )
         items = cfg.agents_list()
-        agent_item = next((i for i in items if i["name"] == "my-agent"), None)
+        agent_item = next((i for i in items if i.name == "my-agent"), None)
         assert agent_item is not None, "Expected 'my-agent' in agents_list()"
-        assert agent_item["behaviors"] == ["behavior-a", "behavior-b"]
-        assert agent_item["source"] == ["behavior-a", "behavior-b"]
+        assert [o.bundle for o in (agent_item.origins or [])] == [
+            "behavior-a",
+            "behavior-b",
+        ]
+        assert [o.bundle for o in (agent_item.origins or [])] == [
+            "behavior-a",
+            "behavior-b",
+        ]
 
     def test_behaviors_list_counts_multi_claimant_items(
         self,
@@ -2217,28 +2270,28 @@ class TestMultiClaimantProvenance:
     ) -> None:
         """behaviors_list() correctly counts contributions across multi-claimant items.
 
-        When tool:tool-bash claims ["behavior-a", "behavior-b"] and
+        When tool:tool-bash claims [Origin("behavior-a", None), Origin("behavior-b", None)] and
         context:readme claims ["behavior-a"], behaviors_list should show:
         - behavior-a: tools=1, context=1
         - behavior-b: tools=1, context=0
         """
-        mock_bundle._provenance = {  # type: ignore[misc]
-            "tool:tool-bash": ["behavior-a", "behavior-b"],
+        mock_bundle.origins = {  # type: ignore[misc]
+            "tool:tool-bash": [Origin("behavior-a", None), Origin("behavior-b", None)],
             "context:readme": ["behavior-a"],
         }
         cfg = SessionConfigurator(
             session=mock_session, prepared_bundle=mock_prepared_bundle
         )
         items = cfg.behaviors_list()
-        by_name = {i["name"]: i for i in items}
+        by_name = {i.name: i for i in items}
 
         assert "behavior-a" in by_name
         assert "behavior-b" in by_name
 
-        assert len(by_name["behavior-a"]["contributions"]["tools"]) == 1
-        assert len(by_name["behavior-a"]["contributions"]["context"]) == 1
-        assert len(by_name["behavior-b"]["contributions"]["tools"]) == 1
-        assert len(by_name["behavior-b"]["contributions"]["context"]) == 0
+        assert len(by_name["behavior-a"].config_summary["tools"]) == 1
+        assert len(by_name["behavior-a"].config_summary["context"]) == 1
+        assert len(by_name["behavior-b"].config_summary["tools"]) == 1
+        assert len(by_name["behavior-b"].config_summary["context"]) == 0
 
 
 class TestTopLevelImport:
@@ -2290,7 +2343,7 @@ class TestModuleToToolMapping:
         bundle_mock.context = {}
         bundle_mock.tools = tool_specs
         bundle_mock.providers = []
-        bundle_mock._provenance = {}
+        bundle_mock.origins = {}
 
         prepared = MagicMock()
         prepared.bundle = bundle_mock
@@ -2334,8 +2387,8 @@ class TestModuleToToolMapping:
         items = cfg.tools_list()
         assert len(items) == 1
         item = items[0]
-        assert "module_id" in item, "tools_list() items must have a 'module_id' field"
-        assert item["module_id"] == "tool-bash"
+        assert True  # ItemRecord always has module_id field, "tools_list() items must have a 'module_id' field"
+        assert item.module_id == "tool-bash"
 
     def test_tools_list_module_unknown_when_no_spec(self) -> None:
         """tools_list() 'module_id' field is 'unknown' when no spec matches the tool.
@@ -2351,8 +2404,8 @@ class TestModuleToToolMapping:
         items = cfg.tools_list()
         assert len(items) == 1
         item = items[0]
-        assert "module_id" in item, "tools_list() items must have a 'module_id' field"
-        assert item["module_id"] == "unknown"
+        assert True  # ItemRecord always has module_id field, "tools_list() items must have a 'module_id' field"
+        assert item.module_id == "unknown"
 
 
 class TestModuleLevelToolDisable:
@@ -2390,7 +2443,7 @@ class TestModuleLevelToolDisable:
         bundle_mock.context = {}
         bundle_mock.tools = [{"module": "tool-filesystem"}]
         bundle_mock.providers = []
-        bundle_mock._provenance = {}
+        bundle_mock.origins = {}
 
         prepared = MagicMock()
         prepared.bundle = bundle_mock
@@ -2535,7 +2588,7 @@ class TestSourceUriInListMethods:
         bundle_mock.context = {}
         bundle_mock.tools = coordinator.config["tools"]
         bundle_mock.providers = []
-        bundle_mock._provenance = {}
+        bundle_mock.origins = {}
 
         prepared = MagicMock()
         prepared.bundle = bundle_mock
@@ -2548,11 +2601,9 @@ class TestSourceUriInListMethods:
 
         assert len(items) == 1
         item = items[0]
-        assert "source_uri" in item, (
-            "tools_list() items must include 'source_uri' field"
-        )
-        assert item["source_uri"] is not None
-        assert "example.com" in item["source_uri"]
+        assert True  # ItemRecord always has source_uri field
+        assert item.source_uri is not None
+        assert "example.com" in item.source_uri
 
     def test_providers_list_includes_source_uri(self) -> None:
         """providers_list() items include source_uri from the spec's 'source' field.
@@ -2583,7 +2634,7 @@ class TestSourceUriInListMethods:
         bundle_mock.context = {}
         bundle_mock.tools = []
         bundle_mock.providers = coordinator.config["providers"]
-        bundle_mock._provenance = {}
+        bundle_mock.origins = {}
 
         prepared = MagicMock()
         prepared.bundle = bundle_mock
@@ -2596,11 +2647,9 @@ class TestSourceUriInListMethods:
 
         assert len(items) == 1
         item = items[0]
-        assert "source_uri" in item, (
-            "providers_list() items must include 'source_uri' field"
-        )
-        assert item["source_uri"] is not None
-        assert "example.com" in item["source_uri"]
+        assert True  # ItemRecord always has source_uri field
+        assert item.source_uri is not None
+        assert "example.com" in item.source_uri
 
 
 class TestGetBehaviorRootNamespace:
@@ -2620,7 +2669,7 @@ class TestGetBehaviorRootNamespace:
         bundle_mock.context = {}
         bundle_mock.tools = []
         bundle_mock.providers = []
-        bundle_mock._provenance = provenance or {}
+        bundle_mock.origins = provenance or {}
         bundle_mock.source_base_paths = sbp
 
         prepared = MagicMock()
@@ -2722,7 +2771,7 @@ class TestGetBehaviorRootNamespace:
         bundle_mock.context = {}
         bundle_mock.tools = []
         bundle_mock.providers = []
-        bundle_mock._provenance = {
+        bundle_mock.origins = {
             "agent:setup-digital-twin": ["amplifier-tester"],
             "agent:validator": ["amplifier-tester"],
         }
@@ -2740,9 +2789,9 @@ class TestGetBehaviorRootNamespace:
         cfg = SessionConfigurator(session=session, prepared_bundle=prepared)
         items = cfg.behaviors_list()
 
-        item = next((i for i in items if i["name"] == "amplifier-tester"), None)
+        item = next((i for i in items if i.name == "amplifier-tester"), None)
         assert item is not None, "amplifier-tester should appear in behaviors_list()"
-        assert item["root_namespace"] == "amplifier-tester", (
+        assert item.config_summary.get("root_namespace") == "amplifier-tester", (
             "amplifier-tester behavior's root_namespace should be 'amplifier-tester' "
             "(self-as-namespace fallback)"
         )
@@ -2792,7 +2841,7 @@ class TestConfigurationChangedEvent:
             providers=[],
             agents={"my-agent": {"description": "Test"}},
         )
-        bundle._provenance = provenance or {  # type: ignore[misc]
+        bundle.origins = provenance or {  # type: ignore[misc]
             "context:readme": ["my-behavior"],
             "tool:tool-bash": ["my-behavior"],
             "agent:my-agent": ["my-behavior"],
@@ -2879,3 +2928,486 @@ class TestConfigurationChangedEvent:
         assert payload["action"] == "settings_applied"
         assert payload["target"] == "saved"
         assert payload["changes"] == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for walk_include_chain and _build_include_path (Bug B fix)
+# ---------------------------------------------------------------------------
+
+
+def _make_state(
+    *,
+    name: str,
+    included_by: list[str] | None = None,
+    is_root: bool = False,
+    explicitly_requested: bool = False,
+    version: str | None = None,
+    uri: str | None = None,
+) -> Any:
+    """Create a minimal BundleState-like object for registry_dict tests."""
+    obj = MagicMock()
+    obj.name = name
+    obj.included_by = included_by or []
+    obj.is_root = is_root
+    obj.explicitly_requested = explicitly_requested
+    obj.version = version
+    obj.uri = uri
+    return obj
+
+
+class TestWalkIncludeChain:
+    """Tests for the walk_include_chain helper (Bug B fix).
+
+    walk_include_chain traverses BundleRegistry._registry's included_by graph
+    from a leaf bundle up to the root, returning an ordered root→leaf list.
+    """
+
+    def test_short_chain_three_nodes(self) -> None:
+        """Three-node chain: root → foundation → behavior-apply-patch."""
+        registry_dict: dict[str, Any] = {
+            "amplifier-dev": _make_state(
+                name="amplifier-dev",
+                included_by=[],
+                is_root=True,
+                explicitly_requested=True,
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["amplifier-dev"],
+            ),
+            "behavior-apply-patch": _make_state(
+                name="behavior-apply-patch",
+                included_by=["foundation"],
+            ),
+        }
+
+        result = walk_include_chain("behavior-apply-patch", registry_dict)
+
+        names = [s.bundle for s in result]
+        assert names == ["amplifier-dev", "foundation", "behavior-apply-patch"], (
+            f"Expected short 3-node chain, got {names}"
+        )
+
+    def test_root_direct_item(self) -> None:
+        """Item directly provided by root: include_path is just [root]."""
+        registry_dict: dict[str, Any] = {
+            "amplifier-dev": _make_state(
+                name="amplifier-dev",
+                included_by=[],
+                explicitly_requested=True,
+            ),
+        }
+
+        result = walk_include_chain("amplifier-dev", registry_dict)
+
+        names = [s.bundle for s in result]
+        assert names == ["amplifier-dev"]
+
+    def test_missing_bundle_fallback(self) -> None:
+        """Bundle not in registry → fallback single-entry list."""
+        registry_dict: dict[str, Any] = {}
+
+        result = walk_include_chain("unknown-bundle", registry_dict)
+
+        assert len(result) == 1
+        assert result[0].bundle == "unknown-bundle"
+        assert result[0].version is None
+        assert result[0].uri is None
+
+    def test_multiple_parents_prefers_explicitly_requested(self) -> None:
+        """When a bundle has multiple parents, the explicitly_requested parent wins."""
+        registry_dict: dict[str, Any] = {
+            "root-a": _make_state(
+                name="root-a",
+                included_by=[],
+                explicitly_requested=True,
+            ),
+            "root-b": _make_state(
+                name="root-b",
+                included_by=[],
+                explicitly_requested=False,
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["root-b", "root-a"],  # root-a is second but preferred
+            ),
+            "leaf": _make_state(
+                name="leaf",
+                included_by=["foundation"],
+            ),
+        }
+
+        result = walk_include_chain("leaf", registry_dict)
+
+        names = [s.bundle for s in result]
+        # root-a is explicitly_requested, so it should win
+        assert names[0] == "root-a", f"Expected root-a first, got {names}"
+        assert names[-1] == "leaf"
+
+    def test_include_step_has_version_and_uri(self) -> None:
+        """IncludeStep objects carry version and uri from the registry."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(
+                name="root",
+                included_by=[],
+                is_root=True,
+                version="2.0.0",
+                uri="git+https://example.com/root@main",
+            ),
+            "leaf": _make_state(
+                name="leaf",
+                included_by=["root"],
+                version="1.1.0",
+                uri="git+https://example.com/leaf@main",
+            ),
+        }
+
+        result = walk_include_chain("leaf", registry_dict)
+
+        assert len(result) == 2
+        root_step = result[0]
+        leaf_step = result[1]
+        assert root_step.bundle == "root"
+        assert root_step.version == "2.0.0"
+        assert root_step.uri == "git+https://example.com/root@main"
+        assert leaf_step.bundle == "leaf"
+        assert leaf_step.version == "1.1.0"
+
+
+class TestBuildIncludePath:
+    """Tests for _build_include_path with registry_dict (Bug B fix)."""
+
+    def test_uses_registry_when_available(self) -> None:
+        """_build_include_path delegates to walk_include_chain when registry is set."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[], explicitly_requested=True),
+            "leaf": _make_state(name="leaf", included_by=["root"]),
+        }
+
+        result = _build_include_path("leaf", registry_dict)
+
+        names = [s.bundle for s in result]
+        assert names == ["root", "leaf"]
+
+    def test_fallback_when_no_registry(self) -> None:
+        """_build_include_path returns single-entry fallback when registry is None."""
+        result = _build_include_path("some-bundle", None)
+
+        assert result == [IncludeStep(bundle="some-bundle", version=None, uri=None)]
+
+    def test_empty_bundle_name_returns_empty(self) -> None:
+        """Empty bundle name returns empty list."""
+        result = _build_include_path("", None)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for walk_include_chains (plural) and _build_include_paths
+# ---------------------------------------------------------------------------
+
+
+class TestWalkIncludeChains:
+    """Tests for the plural walk_include_chains helper."""
+
+    def test_single_parent_returns_one_path(self) -> None:
+        """Single-parent graph: one path root→leaf."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "foundation": _make_state(name="foundation", included_by=["root"]),
+        }
+
+        result = walk_include_chains("foundation", registry_dict)
+
+        assert len(result) == 1
+        names = [s.bundle for s in result[0]]
+        assert names == ["root", "foundation"]
+
+    def test_diamond_two_paths(self) -> None:
+        """Diamond graph (A→B, A→C, both→D): two paths returned for D."""
+        registry_dict: dict[str, Any] = {
+            "A": _make_state(name="A", included_by=[]),
+            "B": _make_state(name="B", included_by=["A"]),
+            "C": _make_state(name="C", included_by=["A"]),
+            "D": _make_state(name="D", included_by=["B", "C"]),
+        }
+
+        result = walk_include_chains("D", registry_dict)
+
+        assert len(result) == 2
+        path_sets = {tuple(s.bundle for s in p) for p in result}
+        assert ("A", "B", "D") in path_sets
+        assert ("A", "C", "D") in path_sets
+
+    def test_three_parent_fan_out(self) -> None:
+        """Three distinct parents, all sharing a common ancestor."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "parent1": _make_state(name="parent1", included_by=["root"]),
+            "parent2": _make_state(name="parent2", included_by=["root"]),
+            "parent3": _make_state(name="parent3", included_by=["root"]),
+            "leaf": _make_state(
+                name="leaf", included_by=["parent1", "parent2", "parent3"]
+            ),
+        }
+
+        result = walk_include_chains("leaf", registry_dict)
+
+        assert len(result) == 3
+        path_sets = {tuple(s.bundle for s in p) for p in result}
+        assert ("root", "parent1", "leaf") in path_sets
+        assert ("root", "parent2", "leaf") in path_sets
+        assert ("root", "parent3", "leaf") in path_sets
+
+    def test_root_node_returns_single_step_path(self) -> None:
+        """Root node (no parents) returns single-element path [[root]]."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+        }
+
+        result = walk_include_chains("root", registry_dict)
+
+        assert len(result) == 1
+        assert len(result[0]) == 1
+        assert result[0][0].bundle == "root"
+
+    def test_max_paths_cap(self) -> None:
+        """max_paths caps the number of paths returned."""
+        # Build a star: 5 parents all with the same root, all include leaf
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+        }
+        parents = [f"parent{i}" for i in range(5)]
+        for p in parents:
+            registry_dict[p] = _make_state(name=p, included_by=["root"])
+        registry_dict["leaf"] = _make_state(name="leaf", included_by=parents)
+
+        result = walk_include_chains("leaf", registry_dict, max_paths=3)
+
+        assert len(result) == 3
+
+    def test_missing_bundle_fallback(self) -> None:
+        """Bundle not in registry returns single-step fallback."""
+        result = walk_include_chains("nonexistent", {})
+
+        assert result == [[IncludeStep(bundle="nonexistent", version=None, uri=None)]]
+
+    def test_cycle_breaks_safely(self) -> None:
+        """Cycle in include graph does not loop infinitely."""
+        registry_dict: dict[str, Any] = {
+            "A": _make_state(name="A", included_by=["B"]),
+            "B": _make_state(name="B", included_by=["A"]),
+        }
+        # Should not raise; must return partial result
+        result = walk_include_chains("A", registry_dict)
+        assert isinstance(result, list)
+
+    def test_is_root_flag_on_topological_root(self) -> None:
+        """Root bundle (no included_by) gets is_root=True; non-root gets False."""
+        registry_dict: dict[str, Any] = {
+            "amplifier-dev": _make_state(
+                name="amplifier-dev",
+                included_by=[],
+                is_root=True,
+                explicitly_requested=True,
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["amplifier-dev"],
+            ),
+            "behavior-apply-patch": _make_state(
+                name="behavior-apply-patch",
+                included_by=["foundation"],
+            ),
+        }
+
+        result = walk_include_chains("behavior-apply-patch", registry_dict)
+
+        assert len(result) == 1
+        path = result[0]
+        # amplifier-dev is the topological root (no included_by) → is_root=True
+        assert path[0].bundle == "amplifier-dev"
+        assert path[0].is_root is True
+        # foundation has a parent → is_root=False
+        assert path[1].bundle == "foundation"
+        assert path[1].is_root is False
+        # behavior-apply-patch has a parent → is_root=False
+        assert path[2].bundle == "behavior-apply-patch"
+        assert path[2].is_root is False
+
+    def test_is_root_flag_with_behavior_root(self) -> None:
+        """Behavior bundle with no included_by is a topological root (is_root=True)
+        even when BundleState.is_root is False (it's structurally nested)."""
+        # reality-check-behavior is a subdirectory bundle (is_root=False structurally)
+        # but has no included_by → it IS a topological root → IncludeStep.is_root=True
+        registry_dict: dict[str, Any] = {
+            "reality-check-behavior": _make_state(
+                name="reality-check-behavior",
+                included_by=[],  # no parents → topological root
+                is_root=False,   # structural: it's a nested bundle
+            ),
+            "terminal-tester": _make_state(
+                name="terminal-tester",
+                included_by=["reality-check-behavior"],
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["terminal-tester"],
+            ),
+        }
+
+        result = walk_include_chains("foundation", registry_dict)
+
+        assert len(result) == 1
+        path = result[0]
+        # reality-check-behavior: no included_by → topological root → is_root=True
+        assert path[0].bundle == "reality-check-behavior"
+        assert path[0].is_root is True
+        # terminal-tester has a parent → is_root=False
+        assert path[1].bundle == "terminal-tester"
+        assert path[1].is_root is False
+
+    def test_is_root_flag_multiple_roots(self) -> None:
+        """Multiple chains: each chain-start (no parents) gets is_root=True."""
+        registry_dict: dict[str, Any] = {
+            "amplifier-dev": _make_state(name="amplifier-dev", included_by=[]),
+            "modes": _make_state(name="modes", included_by=[]),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["amplifier-dev", "modes"],
+            ),
+        }
+
+        result = walk_include_chains("foundation", registry_dict)
+
+        assert len(result) == 2
+        # Collect all (bundle, is_root) pairs from chain starts
+        chain_starts = {path[0].bundle: path[0].is_root for path in result}
+        assert chain_starts["amplifier-dev"] is True
+        assert chain_starts["modes"] is True
+        # foundation is not a root in any chain
+        for path in result:
+            foundation_step = next(s for s in path if s.bundle == "foundation")
+            assert foundation_step.is_root is False
+
+    def test_is_root_flag_node_with_parents_is_false(self) -> None:
+        """A node that has parents in included_by gets is_root=False even if it
+        appears at the start of a cycle-broken chain path."""
+        # terminal-tester self-references in included_by: the cycle-broken path
+        # starts with terminal-tester but it still has parents → is_root=False.
+        registry_dict: dict[str, Any] = {
+            "terminal-tester": _make_state(
+                name="terminal-tester",
+                included_by=["terminal-tester"],  # self-cycle
+                is_root=True,  # structural root
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["terminal-tester"],
+            ),
+        }
+
+        result = walk_include_chains("foundation", registry_dict)
+
+        # All terminal-tester steps must have is_root=False (it has included_by)
+        for path in result:
+            for step in path:
+                if step.bundle == "terminal-tester":
+                    assert step.is_root is False, (
+                        f"terminal-tester has parents so is_root must be False, "
+                        f"path={[s.bundle for s in path]}"
+                    )
+
+
+class TestMultiSourceIncludePaths:
+    """Tests for _build_include_paths — plural include-path builder."""
+
+    def test_single_origin_single_path(self) -> None:
+        """Single-origin item: returns one path for that bundle."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "foundation": _make_state(name="foundation", included_by=["root"]),
+        }
+        origins = [Origin(bundle="foundation", via_behavior=None)]
+
+        result = _build_include_paths(origins, registry_dict)
+
+        assert len(result) == 1
+        names = [s.bundle for s in result[0]]
+        assert names == ["root", "foundation"]
+
+    def test_two_distinct_claimants_diamond(self) -> None:
+        """Two different claimant bundles each with their own chain."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "bundle-A": _make_state(name="bundle-A", included_by=["root"]),
+            "bundle-B": _make_state(name="bundle-B", included_by=["root"]),
+        }
+        origins = [
+            Origin(bundle="bundle-A", via_behavior=None),
+            Origin(bundle="bundle-B", via_behavior=None),
+        ]
+
+        result = _build_include_paths(origins, registry_dict)
+
+        assert len(result) == 2
+        path_sets = {tuple(s.bundle for s in p) for p in result}
+        assert ("root", "bundle-A") in path_sets
+        assert ("root", "bundle-B") in path_sets
+
+    def test_three_parents_all_surfaces(self) -> None:
+        """Three distinct claimants produce three distinct paths."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "bA": _make_state(name="bA", included_by=["root"]),
+            "bB": _make_state(name="bB", included_by=["root"]),
+            "bC": _make_state(name="bC", included_by=["root"]),
+        }
+        origins = [
+            Origin(bundle="bA", via_behavior=None),
+            Origin(bundle="bB", via_behavior="bA"),
+            Origin(bundle="bC", via_behavior="bB"),
+        ]
+
+        result = _build_include_paths(origins, registry_dict)
+
+        assert len(result) == 3
+        path_sets = {tuple(s.bundle for s in p) for p in result}
+        assert ("root", "bA") in path_sets
+        assert ("root", "bB") in path_sets
+        assert ("root", "bC") in path_sets
+
+    def test_empty_origins_returns_empty(self) -> None:
+        """No origins ⟹ empty result."""
+        result = _build_include_paths([], None)
+        assert result == []
+
+    def test_no_registry_fallback_per_bundle(self) -> None:
+        """No registry ⟹ single-step fallback per distinct bundle."""
+        origins = [
+            Origin(bundle="foo", via_behavior=None),
+            Origin(bundle="bar", via_behavior="foo"),
+        ]
+
+        result = _build_include_paths(origins, None)
+
+        assert len(result) == 2
+        bundles = {r[0].bundle for r in result}
+        assert bundles == {"foo", "bar"}
+
+    def test_duplicate_bundle_deduplicated(self) -> None:
+        """Same bundle appearing multiple times in origins generates one path."""
+        registry_dict: dict[str, Any] = {
+            "root": _make_state(name="root", included_by=[]),
+            "foundation": _make_state(name="foundation", included_by=["root"]),
+        }
+        # Same bundle repeated
+        origins = [
+            Origin(bundle="foundation", via_behavior=None),
+            Origin(bundle="foundation", via_behavior="root"),
+        ]
+
+        result = _build_include_paths(origins, registry_dict)
+
+        assert len(result) == 1
+        names = [s.bundle for s in result[0]]
+        assert names == ["root", "foundation"]

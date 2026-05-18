@@ -58,10 +58,14 @@ class SourceStatus:
         if not self.cached_ref:
             return False
         # If ref looks like a full commit SHA, it's pinned
-        if len(self.cached_ref) == 40 and all(c in "0123456789abcdef" for c in self.cached_ref.lower()):
+        if len(self.cached_ref) == 40 and all(
+            c in "0123456789abcdef" for c in self.cached_ref.lower()
+        ):
             return True
         # If ref starts with 'v' and contains numbers, likely a version tag
-        return self.cached_ref.startswith("v") and any(c.isdigit() for c in self.cached_ref)
+        return self.cached_ref.startswith("v") and any(
+            c.isdigit() for c in self.cached_ref
+        )
 
 
 class SourceResolverProtocol(Protocol):

@@ -573,6 +573,15 @@ class BundleRegistry:
                 bundle = await self._compose_includes(
                     bundle, parent_name=bundle.name, _loading_chain=new_chain
                 )
+                # Tag the composed bundle as a container for its sub-bundle items.
+                # This builds the provenance chain:
+                #   [Origin(Z, None), Origin(Y, Z), Origin(X, Y), ...]
+                # where each outer bundle is recorded as carrying sub-bundle items.
+                from amplifier_foundation.bundle._provenance import (
+                    tag_container_provenance,
+                )
+
+                tag_container_provenance(bundle)
 
             # Store source URI for update checking (used by check_bundle_status)
             # Must be set AFTER composition since compose() returns a new Bundle

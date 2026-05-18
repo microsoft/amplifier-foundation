@@ -14,6 +14,10 @@ from __future__ import annotations
 from typing import Any
 
 from amplifier_foundation.configurator._inspector import BundleInspector
+from amplifier_foundation.configurator._inspector import (
+    walk_include_chain as walk_include_chain,  # noqa: F401 — re-export for Commit 3 reuse
+    walk_include_chains as walk_include_chains,  # noqa: F401 — plural form, detailed view
+)
 from amplifier_foundation.configurator._provenance_utils import (
     _PROV_CATEGORY_MAP as _PROV_CATEGORY_MAP,  # noqa: F401 — re-export
     _build_normalized_prov_lookup as _build_normalized_prov_lookup,  # noqa: F401
@@ -25,6 +29,11 @@ from amplifier_foundation.configurator._overlay import (
     TransitionResult as TransitionResult,
 )  # noqa: F401 — re-export
 from amplifier_foundation.configurator._state_manager import BundleStateManager
+from amplifier_foundation.configurator._types import (
+    IncludeStep as IncludeStep,  # noqa: F401 — re-export
+    ItemRecord as ItemRecord,  # noqa: F401 — re-export
+    Origin as Origin,  # noqa: F401 — re-export
+)
 
 
 class SessionConfigurator:
@@ -206,22 +215,22 @@ class SessionConfigurator:
     # List methods — dashboard views
     # ------------------------------------------------------------------
 
-    def context_list(self) -> list[dict]:
+    def context_list(self) -> list[ItemRecord]:
         return self._inspector.context_list()
 
-    def tools_list(self) -> list[dict]:
+    def tools_list(self) -> list[ItemRecord]:
         return self._inspector.tools_list()
 
-    def hooks_list(self) -> list[dict]:
+    def hooks_list(self) -> list[ItemRecord]:
         return self._inspector.hooks_list()
 
-    def providers_list(self) -> list[dict]:
+    def providers_list(self) -> list[ItemRecord]:
         return self._inspector.providers_list()
 
-    def agents_list(self) -> list[dict]:
+    def agents_list(self) -> list[ItemRecord]:
         return self._inspector.agents_list()
 
-    def behaviors_list(self) -> list[dict]:
+    def behaviors_list(self) -> list[ItemRecord]:
         return self._inspector.behaviors_list()
 
 
@@ -235,4 +244,9 @@ __all__ = [
     "_normalize_module_name",
     "_build_normalized_prov_lookup",
     "_lookup_prov_behavior",
+    "Origin",
+    "IncludeStep",
+    "ItemRecord",
+    "walk_include_chain",
+    "walk_include_chains",
 ]

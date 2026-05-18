@@ -121,7 +121,10 @@ def _collect_source_uris(bundle: Bundle) -> list[str]:
 
     # Session config
     session = bundle.session or {}
-    if isinstance(session.get("orchestrator"), dict) and "source" in session["orchestrator"]:
+    if (
+        isinstance(session.get("orchestrator"), dict)
+        and "source" in session["orchestrator"]
+    ):
         sources.add(session["orchestrator"]["source"])
     if isinstance(session.get("context"), dict) and "source" in session["context"]:
         sources.add(session["context"]["source"])

@@ -17,8 +17,10 @@ from amplifier_foundation.bundle._provenance import (
     _prov_add as _prov_add,  # re-exported for backwards compatibility
     build_initial_provenance,
     capture_existing_ids,
+    tag_container_provenance as tag_container_provenance,  # re-exported for registry
     track_provenance,
 )
+from amplifier_foundation.configurator._types import Origin as Origin  # noqa: F401 re-export
 from amplifier_foundation.dicts.merge import deep_merge
 from amplifier_foundation.dicts.merge import merge_module_lists
 from amplifier_foundation.exceptions import BundleValidationError
@@ -110,9 +112,9 @@ class Bundle:
     _pending_context: dict[str, str] = field(
         default_factory=dict
     )  # Context refs needing namespace resolution
-    _provenance: dict[str, list[str]] = field(
+    origins: dict[str, list[Origin]] = field(
         default_factory=dict
-    )  # Tracks which behaviors contributed each item: 'category:name' -> ['behavior_name', ...]
+    )  # Tracks which behaviors contributed each item: 'category:name' -> [Origin(...), ...]
 
     def __post_init__(self) -> None:
         """Ensure collection fields are never None.
@@ -128,8 +130,8 @@ class Bundle:
             self.source_base_paths = {}
         if self._pending_context is None:
             self._pending_context = {}
-        if self._provenance is None:
-            self._provenance = {}
+        if self.origins is None:
+            self.origins = {}
 
     def compose(self, *others: Bundle) -> Bundle:
         """Compose this bundle with others (later overrides earlier).
@@ -187,7 +189,7 @@ class Bundle:
             agents=dict(self.agents),
             context=initial_context,
             _pending_context=initial_pending_context,
-            _provenance=initial_provenance,
+            origins=initial_provenance,
             instruction=self.instruction,
             base_path=self.base_path,
             source_base_paths=initial_base_paths,
@@ -223,14 +225,15 @@ class Bundle:
             if other.description:
                 result.description = other.description
 
+            # Snapshot BEFORE any merge so track_provenance() can detect new items,
+            # including session/spawn/instruction changes introduced by *other*.
+            existing_ids = capture_existing_ids(result)
+
             # Session: deep merge
             result.session = deep_merge(result.session, other.session)
 
             # Spawn config: deep merge (later overrides)
             result.spawn = deep_merge(result.spawn, other.spawn)
-
-            # Snapshot BEFORE the merge so track_provenance() can detect new items.
-            existing_ids = capture_existing_ids(result)
 
             # Module lists: merge by module ID
             result.providers = merge_module_lists(result.providers, other.providers)
@@ -262,7 +265,7 @@ class Bundle:
             if other.base_path:
                 result.base_path = other.base_path
 
-            # Tag provenance for all newly introduced items and overlay other's chain.
+            # Tag origins for all newly introduced items and overlay other's chain.
             track_provenance(result, other, existing_ids)
 
         return result
@@ -450,12 +453,19 @@ class Bundle:
         # Get bundle package paths for inheritance by child sessions
         bundle_package_paths = activator.bundle_package_paths
 
+        # Build module_exports map for deterministic provenance lookup.
+        # Uses the hand-maintained KNOWN_MODULE_EXPORTS map (v1 stopgap).
+        from amplifier_foundation.modules._module_exports import KNOWN_MODULE_EXPORTS
+
+        module_exports: dict[str, list[str]] = dict(KNOWN_MODULE_EXPORTS)
+
         return PreparedBundle(
             mount_plan=mount_plan,
             resolver=resolver,
             bundle=self,
             bundle_package_paths=bundle_package_paths,
             mode_warnings=mode_warnings,
+            module_exports=module_exports,
         )
 
     def resolve_context_path(self, name: str) -> Path | None:
