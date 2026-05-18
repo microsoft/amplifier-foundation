@@ -367,7 +367,32 @@ context:
 context:
   include:
     - my-bundle:context/awareness.md    # 30 lines: "domain exists, delegate"
+
+# ✅ EVEN BETTER: No always-on context at all when an expert agent owns the domain
+agents:
+  include:
+    - my-bundle:my-expert    # Agent meta.description IS the discovery surface
+# (no context.include block needed — the agent catalog tells the LLM "this exists")
 ```
+
+### Hard policy: behavior `context.include` token budget
+
+**Rules (enforced by `foundation:recipes/validate-bundle-repo.yaml`):**
+
+| Per-file size | Verdict |
+|---|---|
+| < 500 tokens | OK — qualifies as lightweight awareness, may stay |
+| 500–1,000 tokens | WARNING — must justify; consider moving to agent body |
+| > 1,000 tokens | ERROR — must move to agent body (context-sink), mode contribution, or skill |
+
+**The default for any behavior `context.include` entry >1,000 tokens is: this is NOT a behavior context.include candidate. Find another mechanism.** Mechanisms ranked by load semantics:
+
+1. **Expert agent body** (`@-mention` in agent `.md`) — loads only when delegated to. Best for reference docs that fit a domain specialist.
+2. **Mode contribution** (`@-mention` in mode body OR `contributes.context` in mode frontmatter) — loads only when mode is active. Best for workflow-specific reference.
+3. **Skill** (`load_skill` on demand) — loads only when explicitly invoked. Best for procedural guidance, not reference catalogs.
+4. **Soft reference** (plain path in prose, no `@`) — agent must `read_file` it. Useful for files the root session may need inline but rarely.
+
+Only put a file in behavior `context.include` if you can clearly defend "this must be in every session that composes this behavior, because it announces a capability or runtime convention the LLM will need universally." If the answer is "well, sometimes the LLM benefits from knowing this" — that's not enough. Move it.
 
 ---
 

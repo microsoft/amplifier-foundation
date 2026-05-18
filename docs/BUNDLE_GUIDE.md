@@ -1031,6 +1031,69 @@ If you use `@mentions` in a behavior:
 
 **The pattern exists for a reason**: Behaviors use `context.include` because they WANT their context to propagate. Root bundles use `@mentions` because they're the final instruction.
 
+### Behavior `context.include` Policy — Lightweight Awareness Only
+
+The "context propagates to including bundles" property of `context.include` is the reason it's powerful — and exactly the reason it must be used sparingly. **Anything you put in a behavior's `context.include` lands in the always-on system prompt for every session that composes that behavior.** Heavy reference docs in `context.include` are the single most common source of session prompt bloat in the ecosystem.
+
+**Policy** (also enforced by `foundation:recipes/validate-bundle-repo.yaml`):
+
+| Per-file size in `context.include` | Status |
+|---|---|
+| < 500 tokens | OK if it's a genuine awareness pointer ("X exists; delegate to Y for the heavy work") |
+| 500–1,000 tokens | WARNING — must justify universal relevance, or move to a context-sink mechanism |
+| > 1,000 tokens | ERROR — move it. Period. |
+
+**The right home for heavy content:**
+
+- **Expert agent body** (`@-mention` in agent `.md`) — loaded only when the agent is delegated to. This is the canonical "context-sink" pattern foundation recommends. See AGENT_AUTHORING.md §"Agents as Context Sinks."
+- **Mode contribution** (`@-mention` in mode `.md` body OR `contributes.context` in mode YAML frontmatter) — loaded only when the mode is active. Best for workflow-specific reference docs.
+- **Skill** (`load_skill` on demand) — loaded only when explicitly invoked. Best for procedural workflows.
+- **Soft reference in prose** (no `@` prefix, just the path) — agent must `read_file` it when needed. Useful for occasional inline lookup.
+
+**Worked example (good):**
+
+```yaml
+# behaviors/my-domain.yaml
+bundle:
+  name: my-domain-behavior
+  version: 1.0.0
+
+agents:
+  include:
+    - my-bundle:my-domain-expert    # Heavy domain knowledge lives in the agent body
+
+# context.include is intentionally empty.
+# The agent's meta.description is the discovery surface; the LLM finds it in the
+# delegate tool catalog and delegates when the domain matches.
+```
+
+```yaml
+# behaviors/my-domain-with-awareness.yaml
+# Acceptable variant: a tiny breadcrumb if delegation isn't reliable enough
+# in the target audience of this behavior. Keep it under 500 tokens.
+
+context:
+  include:
+    - my-bundle:context/my-domain-awareness.md    # ~30 lines, "domain exists, delegate"
+```
+
+**Worked example (bad — anti-pattern):**
+
+```yaml
+# ❌ DON'T DO THIS
+context:
+  include:
+    - my-bundle:docs/FULL_REFERENCE.md          # 2,000 tokens loaded every session
+    - my-bundle:docs/METHODOLOGY.md             # 3,000 tokens loaded every session
+    - my-bundle:docs/CASE_STUDIES.md            # 5,000 tokens loaded every session
+```
+
+These belong in `agents/my-domain-expert.md` as `@-mention` lines, OR behind a mode's `contributes.context`. They do NOT belong in always-on context.
+
+**The audit pattern:** any file you'd consider putting in behavior `context.include` must justify "every session that uses this behavior NEEDS this content always loaded." If the answer is "well, sometimes…" — find another mechanism. The default for files >1,000 tokens is **not** behavior `context.include`.
+
+This policy was added after several real bundles (systems-design, superpowers, parallax-discovery, rust-dev, python-dev, foundation/amplifier-dev, core, notify, containers, dot-graph, lsp) shipped with heavy `context.include` lists that turned out to be loading in every session for users who never used the affected workflow. The cumulative cost was ~15-20K tokens per session prompt. Migration shipped May 2026 to enforce the policy. See those bundles' commit history for worked migration examples.
+
 ### ❌ force-include Shadowing Python Namespace
 
 ```toml

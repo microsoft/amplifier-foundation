@@ -386,3 +386,9 @@ For design, modeling, and implementation, delegate to foundation:bundle-design-e
 @foundation:context/ISSUE_HANDLING.md
 
 @foundation:context/shared/common-agent-base.md
+
+@foundation:context/amplifier-dev/ecosystem-map.md
+
+@foundation:context/amplifier-dev/dev-workflows.md
+
+@foundation:context/amplifier-dev/testing-patterns.md

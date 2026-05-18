@@ -80,7 +80,16 @@
 # 5. Consistent namespace across bundles (if multiple bundles)
 # 6. Python packaging builds successfully (if pyproject.toml present)
 # 7. Behaviors don't include root bundles (context sink anti-pattern)
-# 8. Behaviors have reasonable context.include token counts (<2000 ERROR, <1000 WARNING)
+# 8. Behaviors have reasonable context.include token counts.
+#    Updated 2026-05-17 to match the policy in foundation/docs/BUNDLE_GUIDE.md
+#    §"Behavior context.include Policy" and foundation/docs/AGENT_AUTHORING.md
+#    §"Anti-Pattern: Heavy Context in Behaviors".
+#    Per-file thresholds:
+#      <500 tokens   OK     (lightweight awareness, may stay)
+#      500-1000      WARNING (must justify universal relevance)
+#      >1000         ERROR  (move to agent body / mode contribution / skill)
+#    Prior thresholds (<2000 ERROR, <1000 WARNING) were too lenient and allowed
+#    methodology, philosophy, and reference docs to ship in always-on context.
 # 9. Standalone bundles in /bundles/ have complete session configuration
 # 10. Experimental bundles follow naming conventions
 # 11. Behaviors don't include cross-repo root bundles without #subdirectory= fragment
@@ -1336,24 +1345,29 @@ steps:
                   
                   detail["context_total_tokens"] = total_context_tokens
                   
-                  # ERROR: >2000 tokens
-                  if total_context_tokens > 2000:
+                  # ERROR: >1000 tokens (tightened 2026-05-17 per
+                  # foundation/docs/BUNDLE_GUIDE.md §"Behavior context.include Policy"
+                  # and AGENT_AUTHORING.md §"Hard policy: behavior context.include
+                  # token budget").
+                  if total_context_tokens > 1000:
                       results["errors"].append({
                           "behavior": behavior_name,
                           "type": "context_tokens_excessive",
-                          "message": f"context.include totals ~{total_context_tokens} tokens (>2000 ERROR threshold)",
+                          "message": f"context.include totals ~{total_context_tokens} tokens (>1000 ERROR threshold)",
                           "severity": "ERROR",
-                          "fix": "Move heavy context to agents (context sink pattern). Behaviors should have minimal awareness-only context."
+                          "fix": "Move heavy context to one of: expert agent body (@-mention in agent .md), mode contribution (contributes.context in mode YAML or @-mention in mode body), or skill (load_skill on demand). Behaviors should only carry lightweight awareness <500 tokens."
                       })
                       detail["issues"].append("context_tokens_excessive")
-                  # WARNING: >1000 tokens
-                  elif total_context_tokens > 1000:
+                  # WARNING: >500 tokens (tightened 2026-05-17 — only genuine awareness
+                  # files (introducing a capability, telling LLM when to delegate) qualify
+                  # for behavior context.include).
+                  elif total_context_tokens > 500:
                       results["warnings"].append({
                           "behavior": behavior_name,
                           "type": "context_tokens_high",
-                          "message": f"context.include totals ~{total_context_tokens} tokens (>1000 WARNING threshold)",
+                          "message": f"context.include totals ~{total_context_tokens} tokens (>500 WARNING threshold)",
                           "severity": "WARNING",
-                          "fix": "Consider moving heavy context to agents. Behaviors should be thin."
+                          "fix": "Justify universal relevance, or move to a context-sink mechanism (agent body, mode contribution, skill). The 500-token bar is for awareness pointers only."
                       })
                       detail["issues"].append("context_tokens_high")
 

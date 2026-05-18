@@ -1,14 +1,13 @@
 bundle:
   name: behavior-amplifier-dev
-  version: 1.0.0
+  version: 1.1.0
   description: Amplifier ecosystem development behavior - multi-repo workflows, testing patterns, and ecosystem expertise
 
 agents:
   include:
     - foundation:ecosystem-expert
 
-context:
-  include:
-    - foundation:context/amplifier-dev/ecosystem-map.md
-    - foundation:context/amplifier-dev/dev-workflows.md
-    - foundation:context/amplifier-dev/testing-patterns.md
+# The three amplifier-dev/* reference docs (ecosystem-map, dev-workflows,
+# testing-patterns; ~4.6K tokens combined) are loaded via the foundation-expert
+# agent body (context-sink pattern). Delegate to foundation-expert for cross-repo
+# Amplifier development questions — it carries the full reference.
