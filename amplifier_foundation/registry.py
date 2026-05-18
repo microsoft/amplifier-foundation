@@ -769,23 +769,46 @@ class BundleRegistry:
     ) -> None:
         """Record which bundles include which other bundles.
 
-        Updates both parent's 'includes' and children's 'included_by' fields.
+        REPLACES (not appends) parent's 'includes' list with *child_names* so
+        that stale entries from previous loads or renames are removed.  When a
+        dependency is renamed (e.g. 'terminal-tester' behavior → 'terminal-
+        tester-behavior'), the old name must be evicted; append-only logic would
+        leave the self-reference that creates a graph cycle.
+
+        Side-effects on the ``included_by`` lists:
+        - Bundles that were in the OLD includes list but are absent from the new
+          *child_names* have *parent_name* removed from their ``included_by``.
+        - Bundles in *child_names* gain *parent_name* in their ``included_by``
+          (idempotent — won't duplicate if already present).
+
         Persists registry state after recording.
 
         Args:
             parent_name: Name of the parent bundle.
-            child_names: Names of bundles included by parent.
+            child_names: Authoritative list of bundle names included by parent.
         """
-        # Update parent's includes list
         parent_state = self._registry.get(parent_name)
-        if parent_state:
-            if parent_state.includes is None:
-                parent_state.includes = []
-            for child_name in child_names:
-                if child_name not in parent_state.includes:
-                    parent_state.includes.append(child_name)
 
-        # Update each child's included_by list
+        # --- Clean up stale includes ------------------------------------------
+        # Identify which children were recorded in the *previous* load so we
+        # can remove this parent from their included_by when they drop out.
+        old_child_names: list[str] = (
+            list(parent_state.includes or []) if parent_state else []
+        )
+        removed_children = [c for c in old_child_names if c not in child_names]
+
+        for removed_name in removed_children:
+            removed_state = self._registry.get(removed_name)
+            if removed_state and removed_state.included_by:
+                removed_state.included_by = [
+                    n for n in removed_state.included_by if n != parent_name
+                ]
+
+        # --- Replace parent's includes list (not append) ----------------------
+        if parent_state:
+            parent_state.includes = list(child_names)
+
+        # --- Update each child's included_by list (idempotent append) ---------
         for child_name in child_names:
             child_state = self._registry.get(child_name)
             if child_state:
