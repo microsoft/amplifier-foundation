@@ -1,7 +1,27 @@
 ---
 meta:
   name: git-ops
-  description: "**ALWAYS delegate git and GitHub operations to this agent.** It enforces safety protocols, produces consistent conventional commit messages with Amplifier co-author attribution, and generates well-structured PR descriptions. DO NOT run git or gh commands directly — this agent has guardrails you lack.\n\n**Authoritative on:** commits, commit messages, PRs, branches, git push, merge, rebase, conflicts, GitHub Issues, GitHub Releases, GitHub Actions checks, gh CLI, repo discovery, conventional commits, co-author attribution\n\nMUST be used for:\n- Creating commits (generates proper messages with Amplifier co-author)\n- Creating and managing PRs\n- Branch operations and conflict resolution\n- GitHub API interactions (issues, checks, releases)\n- Repository discovery (gh repo list — finds user's repos including private ones)\n- Multi-repo sync operations (fetch, pull, status)\n\n**CRITICAL — provide semantic context:** git-ops sees WHAT changed (git diff); you provide WHY. Always summarize what was accomplished. Use context_depth='recent' for commits; context_depth='all', context_scope='agents' for PRs.\n\n<example>\nContext: Agent just completed a multi-file implementation task.\nuser: 'Commit this work'\nassistant: 'I'll delegate to git-ops with a summary of what we accomplished and context_depth=recent so it has conversation history for a quality commit message.'\n<commentary>Always tell git-ops WHAT was accomplished semantically, not just what files changed. Pass context_depth so it receives conversation history.</commentary>\n</example>\n\n<example>\nContext: Feature branch complete, ready for PR.\nuser: 'Create a PR for this feature'\nassistant: 'I'll delegate to git-ops with the full summary and context_depth=all, context_scope=agents so it can write a comprehensive PR description.'\n<commentary>PRs need the full story. Use context_depth=all so git-ops sees the entire conversation arc. Include issue refs and draft/ready preference.</commentary>\n</example>\n\n<example>\nuser: 'Find my repo for lmacfy.com'\nassistant: 'I'll use git-ops to search GitHub repos — gh repo list can find private repos that web search cannot.'\n<commentary>Always try git-ops for repo discovery before web search. gh repo list sees private repos; web search does not.</commentary>\n</example>"
+  description: |
+    **ALWAYS delegate git and GitHub operations to this agent.** It enforces safety protocols, generates consistent conventional commits with Amplifier co-author attribution, and produces well-structured PR descriptions. DO NOT run git or gh commands directly.
+
+    Use PROACTIVELY when: creating commits, opening or managing PRs, branch operations, conflict resolution, GitHub Issues/Releases/Actions interactions, repo discovery, or any git/gh CLI task.
+
+    **Authoritative on:** commits, conventional commits, co-author attribution, PRs, branches, merge, rebase, conflicts, GitHub Issues, GitHub Releases, GitHub Actions, gh CLI, repo discovery
+
+    <example>
+    Context: Agent completed a multi-file implementation task.
+    user: 'Commit this work'
+    assistant: 'I\'ll delegate to git-ops with a summary of what we accomplished and context_depth=recent so it has conversation history for a quality commit message.'
+    <commentary>Always tell git-ops WHAT was accomplished semantically. Pass context_depth so it receives conversation history for richer commit messages.</commentary>
+    </example>
+
+    <example>
+    Context: Feature branch complete, ready for PR.
+    user: 'Create a PR for this feature'
+    assistant: 'I\'ll delegate to git-ops with the full summary and context_depth=all, context_scope=agents so it can write a comprehensive PR description.'
+    <commentary>PRs need the full story. Use context_depth=all so git-ops sees the entire conversation arc. Include issue refs and draft/ready preference.</commentary>
+    </example>
+
 
 model_role: fast
 

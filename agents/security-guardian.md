@@ -1,17 +1,27 @@
 ---
 meta:
   name: security-guardian
-  description: "**MUST be used for security reviews, vulnerability assessments, and security audits.** This is a REQUIRED checkpoint before production deployments. DO NOT deploy to production without this agent's review.
+  description: |
+    **MUST be used for security reviews, vulnerability assessments, and security audits.** REQUIRED checkpoint before production deployments — do not deploy to production without this agent's review.
 
-Use PROACTIVELY when:
-- Before ANY production deployment (REQUIRED checkpoint)
-- After adding features that handle user data
-- When integrating third-party services or APIs
-- After refactoring authentication/authorization code
-- When handling payment or financial data
-- For periodic security reviews
+    Use PROACTIVELY when: before any production deployment, after adding features that handle user data, when integrating third-party services or APIs, after refactoring authentication/authorization code, or when handling payment or financial data.
 
-Covers: OWASP Top 10, hardcoded secrets detection, input/output validation, cryptographic review, dependency vulnerability scanning. <example>Context: User has just implemented a new API endpoint for user data updates. user: 'I've added a new endpoint for updating user profiles. Here's the code...' assistant: 'I'll review this new endpoint for security vulnerabilities using the security-guardian agent.' <commentary>Since new user data handling functionality was added, use the security-guardian agent to check for vulnerabilities.</commentary></example> <example>Context: Preparing for a production deployment. user: 'We're ready to deploy version 2.0 to production' assistant: 'Before deploying to production, let me run a security review with the security-guardian agent.' <commentary>Pre-deployment security review is a critical checkpoint that requires the security-guardian agent.</commentary></example> <example>Context: User has integrated a payment processing service. user: 'I've integrated Stripe for payment processing in our checkout flow' assistant: 'Since this involves payment processing, I'll use the security-guardian agent to review the integration for security issues.' <commentary>Payment and financial data handling requires thorough security review from the security-guardian agent.</commentary></example>"
+    **Authoritative on:** OWASP Top 10, hardcoded secrets detection, input/output validation, cryptographic review, dependency vulnerability scanning, XSS, SQL injection, authentication failures, authorization flaws, CVE analysis
+
+    <example>
+    Context: User has just implemented a new API endpoint for user data updates.
+    user: 'I\'ve added a new endpoint for updating user profiles. Here\'s the code...'
+    assistant: 'I\'ll review this new endpoint for security vulnerabilities using the security-guardian agent.'
+    <commentary>Since new user data handling functionality was added, use security-guardian to check for vulnerabilities.</commentary>
+    </example>
+
+    <example>
+    Context: Preparing for a production deployment.
+    user: 'We\'re ready to deploy version 2.0 to production'
+    assistant: 'Before deploying to production, let me run a security review with the security-guardian agent.'
+    <commentary>Pre-deployment security review is a critical checkpoint that requires security-guardian — this is non-optional.</commentary>
+    </example>
+
 
 model_role: [security-audit, critique, general]
 

@@ -2,50 +2,25 @@
 meta:
   name: bundle-design-expert
   description: |
-    **THE authoritative expert for designing, modeling, and building Amplifier bundles.** Owns the
-    full bundle lifecycle: mechanism selection, behavioral modeling, and implementation.
+      **THE authoritative expert for designing, modeling, and BUILDING Amplifier bundles** — owns the full lifecycle from mechanism selection through behavioral modeling to YAML authoring and implementation.
 
-    MUST be consulted for:
-    - Designing a new bundle from scratch (mechanism selection, behavioral modeling)
-    - Building bundle YAML, behaviors, agent files, context architecture
-    - Understanding how any Amplifier mechanism works (modes, agents, tools, hooks, skills, recipes)
-    - Agent authoring (writing descriptions, meta.description, file structure)
-    - Context architecture decisions (context sink, thin pointer, zero poisoning)
-    - Interpreting or generating behavioral models
-    - Reviewing existing bundle designs for anti-patterns
+      Use PROACTIVELY when: designing a new bundle, selecting mechanisms, writing bundle YAML or behaviors, authoring agent files (meta.description, WHY/WHEN/WHAT/HOW), making context architecture decisions (context sink, thin pointer, zero poisoning), or running behavioral modeling recipes.
 
-    DO NOT attempt bundle design or authoring without consulting this expert first.
+      **Authoritative on:** bundle design, mechanism selection, behavioral modeling, YAML authoring, behaviors, agent file authoring, context sink pattern, thin pointer, zero poisoning, bundle lifecycle, bundle anti-patterns, objectives-to-model recipes
 
-    <example>
-    <context>User is planning a new bundle</context>
-    <user>I want to create a bundle that provides code review with different strictness modes</user>
-    <assistant>I'll delegate to the bundle-design-expert who owns the full design-through-implementation lifecycle.</assistant>
-    </example>
+      <example>
+      <context>User is planning a new bundle</context>
+      <user>I want to create a bundle that provides code review with different strictness modes</user>
+      <assistant>I'll delegate to the bundle-design-expert who owns the full design-through-implementation lifecycle.</assistant>
+      <commentary>bundle-design-expert designs AND builds bundles — mechanism selection, behavioral modeling, and YAML authoring are all in scope.</commentary>
+      </example>
 
-    <example>
-    <context>User wants to write a bundle</context>
-    <user>Help me write the behavior YAML for my code review bundle</user>
-    <assistant>Delegating to bundle-design-expert for bundle authoring -- it has the BUNDLE_GUIDE and AGENT_AUTHORING docs.</assistant>
-    </example>
-
-    <example>
-    <context>User wants to understand mechanisms</context>
-    <user>What's the right mechanism for enforcing safety rules?</user>
-    <assistant>I'll delegate to bundle-design-expert who has the full mechanism design guide.</assistant>
-    </example>
-
-    <example>
-    <context>User wants to create an agent</context>
-    <user>How do I write a good agent description?</user>
-    <assistant>Delegating to bundle-design-expert for agent authoring guidance -- it knows the WHY/WHEN/WHAT/HOW framework and context sink pattern.</assistant>
-    </example>
-
-    <example>
-    <context>User wants to run a behavioral model recipe</context>
-    <user>I have objectives -- which recipe should I use?</user>
-    <assistant>Delegating to bundle-design-expert to advise on the right recipe.</assistant>
-    </example>
-
+      <example>
+      <context>User wants to author an agent description</context>
+      <user>How do I write a good agent description?</user>
+      <assistant>Delegating to bundle-design-expert for agent authoring guidance — it knows the WHY/WHEN/WHAT/HOW framework and context sink pattern.</assistant>
+      <commentary>Agent authoring is bundle authoring. bundle-design-expert is the authority on meta.description structure, the description rubric, and context architecture.</commentary>
+      </example>
 model_role: general
 
 tools:
