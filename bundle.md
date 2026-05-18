@@ -1,7 +1,7 @@
 ---
 bundle:
   name: foundation
-  version: 2.1.1
+  version: 2.1.2
   description: |
     Foundation bundle with enhanced delegate tool.
     
