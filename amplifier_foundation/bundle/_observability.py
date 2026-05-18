@@ -26,6 +26,7 @@ _DEFAULT_SUBSCRIBER_MODULES: frozenset[str] = frozenset(
 # Rust kernel's ALL_EVENTS list.
 FOUNDATION_OBSERVABILITY_EVENTS: tuple[str, ...] = (
     "session:config",  # emitted by _session_exec.emit_raw_field_if_configured (PR #79)
+    "mentions:resolved",  # emitted by PreparedBundle system-prompt factory (PR #213)
 )
 
 
