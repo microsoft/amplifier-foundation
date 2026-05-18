@@ -1,9 +1,27 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.5.0
+# Repository-Wide Bundle Validator Recipe v3.6.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.6.0 - Mode Authoring Discipline Validation (Phase 2.7)
+#        - New Phase 2.7: mode-validation checks all modes/*.md files
+#        - Check A: Mode description token budget
+#          WARNING >500 tokens (mode_description_high)
+#          ERROR   >800 tokens (mode_description_excessive)
+#          Analogous to behavior context.include thresholds in Phase 2.1.
+#          Thresholds mirror foundation/docs/AGENT_AUTHORING.md
+#          §"Description Requirements (Critical)" and
+#          modes/.../mode-design-discipline skill.
+#        - Check B: Advertising rule (mode-design-discipline §4)
+#          Unadvertised modes (advertised: false) must not be referenced by
+#          name in any agent-readable .md file (context/, agents/, behaviors/,
+#          skills/, modes/ — excluding the mode's own file).
+#          Patterns detected: /<mode-name> and name="<mode-name>"/name='<mode-name>'
+#          ERROR: unadvertised_but_referenced
+#        - quality-classification incorporates mode_validation_issues
+#        - synthesize-report includes Mode Validation section
+#
 # v3.5.0 - Behavior Reference Hygiene Checks
 #        - New Phase 2.1.5: behavior-reference-hygiene checks behavior includes
 #        - Check A: Cross-repo root-bundle refs in behavior includes (WARNING)
@@ -94,6 +112,15 @@
 # 10. Experimental bundles follow naming conventions
 # 11. Behaviors don't include cross-repo root bundles without #subdirectory= fragment
 # 12. Behavior bundle names don't collide with root bundle name
+# 13. Mode descriptions stay within token budget
+#     <500 tokens    OK     (concise, on-point)
+#     500-800        WARNING (mode_description_high — consider trimming)
+#     >800           ERROR  (mode_description_excessive — must shorten)
+#     See foundation:docs/AGENT_AUTHORING.md §"Description Requirements (Critical)"
+# 14. Unadvertised modes (advertised: false) are not referenced by name in agent-readable files
+#     (.md files in context/, agents/, behaviors/, skills/, modes/ — excluding the mode's own file)
+#     Patterns checked: /<mode-name> and name="<mode-name>"/name='<mode-name>'
+#     ERROR: unadvertised_but_referenced — per mode-design-discipline §4 advertising rule
 #
 # QUALITY LEVELS:
 # - good: All bundles load, no errors, no orphans, proper structure, philosophy aligned
@@ -118,6 +145,8 @@ description: |
   - **NEW in v3.0.0:** Tool placement analysis (universal vs specialized)
   - **NEW in v3.5.0:** Cross-repo root-bundle reference detection in behavior includes
   - **NEW in v3.5.0:** Behavior name collision detection (behavior vs root bundle name)
+  - **NEW in v3.6.0:** Mode description token budget validation (WARNING >500, ERROR >800 tokens)
+  - **NEW in v3.6.0:** Mode advertising-rule enforcement (unadvertised modes must not be named in agent-readable files)
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Repository composition analysis (do pieces fit together correctly?)
@@ -2496,6 +2525,242 @@ steps:
     depends_on: ["validate-all-flags"]
 
   # ============================================================================
+  # PHASE 2.7: Mode Authoring Discipline Validation (NEW in v3.6.0)
+  # Walks all modes/*.md files in the repo and applies two checks:
+  #
+  # Check A — Description token budget
+  #   For each mode file's YAML frontmatter description: field:
+  #   WARNING >500 tokens  (mode_description_high)
+  #   ERROR   >800 tokens  (mode_description_excessive)
+  #   Token estimate: len(description) // 4
+  #   Analogous to behavior context.include thresholds in Phase 2.1.
+  #
+  # Check B — Advertising rule (mode-design-discipline §4)
+  #   For each mode with advertised: false in frontmatter:
+  #   Scan all agent-readable .md files in context/, agents/, behaviors/,
+  #   skills/, modes/ (excluding the mode's own file) for mentions of the
+  #   mode name via patterns: /<mode-name> and name="<mode-name>"/name='<mode-name>'
+  #   ERROR: unadvertised_but_referenced
+  # ============================================================================
+
+  - id: "mode-validation"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      import sys
+      from pathlib import Path
+
+      repo_path = "{{repo_path}}"
+      path = Path(repo_path).resolve()
+
+      results = {
+          "phase": "mode_validation",
+          "modes_checked": 0,
+          "errors": [],
+          "warnings": [],
+          "mode_details": []
+      }
+
+      # Find all modes/*.md files anywhere in the repo
+      mode_files = list(path.rglob("*/modes/*.md")) + list(path.glob("modes/*.md"))
+      # Deduplicate (rglob already covers top-level if depth allows, but be safe)
+      seen = set()
+      unique_mode_files = []
+      for mf in mode_files:
+          resolved = mf.resolve()
+          if resolved not in seen:
+              seen.add(resolved)
+              unique_mode_files.append(mf)
+
+      if not unique_mode_files:
+          results["skipped"] = True
+          results["passed"] = True
+          results["reason"] = "No modes/*.md files found"
+          print(json.dumps(results))
+          sys.exit(0)
+
+      # ── YAML parser (with graceful fallback) ───────────────────────────────
+      try:
+          import yaml as _yaml
+          def parse_yaml(text):
+              return _yaml.safe_load(text) or {}
+      except ImportError:
+          def parse_yaml(text):
+              # Minimal regex fallback — sufficient for description/advertised/mode.name
+              result = {}
+              # description: single-line or first line of block scalar
+              m = re.search(r'^description:\s*["\']?(.+?)["\']?\s*$', text, re.MULTILINE)
+              if m:
+                  result["description"] = m.group(1).strip()
+              # advertised: true/false
+              m2 = re.search(r'^advertised:\s*(true|false)', text, re.MULTILINE | re.IGNORECASE)
+              if m2:
+                  result["advertised"] = m2.group(1).lower() == "true"
+              # mode.name under a mode: block
+              m3 = re.search(r'^mode:\s*\n\s+name:\s*["\']?(.+?)["\']?\s*$', text, re.MULTILINE)
+              if m3:
+                  result["mode"] = {"name": m3.group(1).strip()}
+              return result
+
+      def extract_frontmatter(file_path):
+          """Return (parsed_yaml_dict, raw_file_content)."""
+          try:
+              content = file_path.read_text(encoding="utf-8", errors="replace")
+              match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+              if match:
+                  return parse_yaml(match.group(1)), content
+              return {}, content
+          except Exception:
+              return {}, ""
+
+      def estimate_tokens(s):
+          return len(s) // 4 if isinstance(s, str) else 0
+
+      # Directories to scan for unadvertised-mode references
+      SCAN_DIRS = ["context", "agents", "behaviors", "skills", "modes"]
+
+      def scan_for_mode_mentions(mode_name, own_file_path):
+          """Return list of relative paths where mode_name is mentioned."""
+          mentions = []
+          slash_pat = re.compile(r'`?/' + re.escape(mode_name) + r'`?')
+          name_pat  = re.compile(r'name=["\']' + re.escape(mode_name) + r'["\']')
+          own_resolved = Path(own_file_path).resolve()
+          for dir_name in SCAN_DIRS:
+              scan_dir = path / dir_name
+              if not scan_dir.exists():
+                  continue
+              for md_file in scan_dir.rglob("*.md"):
+                  if md_file.resolve() == own_resolved:
+                      continue  # skip the mode's own file
+                  try:
+                      file_content = md_file.read_text(encoding="utf-8", errors="replace")
+                      if slash_pat.search(file_content) or name_pat.search(file_content):
+                          mentions.append(str(md_file.relative_to(path)))
+                  except Exception:
+                      continue
+          return mentions
+
+      # ── Walk mode files ────────────────────────────────────────────────────
+      for mode_file in sorted(unique_mode_files):
+          fm, _ = extract_frontmatter(mode_file)
+
+          # Skip if no mode: block — probably unrelated markdown
+          if "mode" not in fm:
+              continue
+
+          mode_section = fm.get("mode", {})
+          if not isinstance(mode_section, dict):
+              continue
+
+          mode_name = str(mode_section.get("name", "")).strip()
+          if not mode_name:
+              continue
+
+          rel_path = str(mode_file.relative_to(path))
+          results["modes_checked"] += 1
+          detail = {
+              "mode": mode_name,
+              "file": rel_path,
+              "issues": []
+          }
+
+          # ── Check A: Description token budget ────────────────────────────
+          description = fm.get("description", "")
+          # Handle YAML block scalars that parse as None or non-string
+          if not isinstance(description, str):
+              description = str(description) if description else ""
+          token_count = estimate_tokens(description)
+          detail["description_tokens"] = token_count
+
+          if token_count > 800:
+              results["errors"].append({
+                  "type": "mode_description_excessive",
+                  "mode": mode_name,
+                  "file": rel_path,
+                  "tokens": token_count,
+                  "severity": "ERROR",
+                  "message": (
+                      f"Mode '{mode_name}' description is {token_count} tokens "
+                      f"(>{800} threshold — must shorten)."
+                  ),
+                  "fix": (
+                      "Shorten the description to <500 tokens. "
+                      "See foundation:docs/AGENT_AUTHORING.md "
+                      "\u00a7'Description Requirements (Critical)' and "
+                      "modes/.../mode-design-discipline skill."
+                  )
+              })
+              detail["issues"].append("mode_description_excessive")
+          elif token_count > 500:
+              results["warnings"].append({
+                  "type": "mode_description_high",
+                  "mode": mode_name,
+                  "file": rel_path,
+                  "tokens": token_count,
+                  "severity": "WARNING",
+                  "message": (
+                      f"Mode '{mode_name}' description is {token_count} tokens "
+                      f"(>500 threshold — consider trimming)."
+                  ),
+                  "fix": (
+                      "Trim description toward <500 tokens. "
+                      "See foundation:docs/AGENT_AUTHORING.md "
+                      "\u00a7'Description Requirements (Critical)' and "
+                      "modes/.../mode-design-discipline skill."
+                  )
+              })
+              detail["issues"].append("mode_description_high")
+
+          # ── Check B: Advertising rule ─────────────────────────────────────
+          # Default advertised: True if key absent (opt-in to non-advertising is explicit)
+          advertised = fm.get("advertised", True)
+          detail["advertised"] = advertised
+
+          if advertised is False:
+              mentions = scan_for_mode_mentions(mode_name, mode_file)
+              if mentions:
+                  results["errors"].append({
+                      "type": "unadvertised_but_referenced",
+                      "mode": mode_name,
+                      "file": rel_path,
+                      "references_found_in": mentions,
+                      "severity": "ERROR",
+                      "message": (
+                          f"Mode '{mode_name}' has advertised: false but is referenced "
+                          f"by name in: {', '.join(mentions)}"
+                      ),
+                      "fix": (
+                          "Either set 'advertised: true' OR remove the references. "
+                          "Per mode-design-discipline \u00a74: agent-readable docs that "
+                          "mention a mode by name must have the mode advertised, because "
+                          "the LLM will infer the mode exists and attempt to invoke it."
+                      )
+                  })
+                  detail["issues"].append("unadvertised_but_referenced")
+
+          results["mode_details"].append(detail)
+
+      results["passed"] = len(results["errors"]) == 0
+      results["summary"] = {
+          "modes_checked": results["modes_checked"],
+          "errors": len(results["errors"]),
+          "warnings": len(results["warnings"]),
+          "clean_modes": results["modes_checked"] - len(
+              set(e["mode"] for e in results["errors"])
+          )
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "mode_validation_results"
+    parse_json: true
+    timeout: 120
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
   # PHASE 2.6: Quality Classification (Deterministic)
   # Enhanced in v3.0.0 to incorporate all new validation phases
   # ============================================================================
@@ -2575,6 +2840,13 @@ steps:
           structure_lint = json.loads(structure_lint_raw)
       except (json.JSONDecodeError, ValueError):
           structure_lint = {"passed": True, "skipped": True, "errors": []}
+
+      # v3.6.0: Parse mode validation results
+      mode_validation_raw = '''{{mode_validation_results}}'''
+      try:
+          mode_validation = json.loads(mode_validation_raw)
+      except (json.JSONDecodeError, ValueError):
+          mode_validation = {"passed": True, "skipped": True, "errors": [], "warnings": []}
 
       # Handle case where individual validation was skipped
       if individual.get("skipped", False):
@@ -2688,6 +2960,7 @@ steps:
               "tool_placement_issues": [],
               "structure_lint_issues": [],  # v3.4.0
               "behavior_reference_hygiene_issues": [],  # v3.5.0
+              "mode_validation_issues": [],  # v3.6.0
               # v3.2.0: Environment status tracking
               "environment_status": {
                   "validation_mode": env_check.get("validation_mode", "unknown"),
@@ -2852,6 +3125,27 @@ steps:
                       "fix": warning.get("fix", "")
                   })
 
+          # v3.6.0: Mode validation errors and warnings
+          if not mode_validation.get("skipped", False):
+              for error in mode_validation.get("errors", []):
+                  results["mode_validation_issues"].append({
+                      "type": error.get("type"),
+                      "mode": error.get("mode"),
+                      "file": error.get("file"),
+                      "message": error.get("message"),
+                      "severity": "ERROR",
+                      "fix": error.get("fix", "")
+                  })
+              for warning in mode_validation.get("warnings", []):
+                  results["mode_validation_issues"].append({
+                      "type": warning.get("type"),
+                      "mode": warning.get("mode"),
+                      "file": warning.get("file"),
+                      "message": warning.get("message"),
+                      "severity": "WARNING",
+                      "fix": warning.get("fix", "")
+                  })
+
           # Determine overall quality level
           # Priority: critical > needs_work > polish > good
           
@@ -2861,6 +3155,7 @@ steps:
           critical_count += len([i for i in results["hygiene_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["completeness_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["experiment_issues"] if i.get("severity") == "ERROR"])
+          critical_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"])  # v3.6.0
 
           # Recipe validation impact
           recipe_quality = recipe_validation.get("quality_level", "good")
@@ -2877,6 +3172,7 @@ steps:
           warning_count += len([i for i in results["context_sink_issues"] if i.get("severity") == "WARNING"])
           warning_count += len([i for i in results["experiment_issues"] if i.get("severity") == "WARNING"])
           warning_count += len(results["behavior_reference_hygiene_issues"])  # v3.5.0: all are WARNING
+          warning_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"])  # v3.6.0
           if recipe_quality == "polish":
               warning_count += 1
           
@@ -2919,7 +3215,9 @@ steps:
               "context_sink_warnings": len([i for i in results["context_sink_issues"] if i.get("severity") == "WARNING"]),
               "tool_placement_suggestions": len(results["tool_placement_issues"]),
               "structure_lint_errors": len(results["structure_lint_issues"]),
-              "behavior_ref_hygiene_warnings": len(results["behavior_reference_hygiene_issues"])  # v3.5.0
+              "behavior_ref_hygiene_warnings": len(results["behavior_reference_hygiene_issues"]),  # v3.5.0
+              "mode_validation_errors": len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"]),  # v3.6.0
+              "mode_validation_warnings": len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"])  # v3.6.0
           }
 
           # v3.3.0: Recipe validation summary
@@ -2946,7 +3244,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
-    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint"]
+    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation"]
 
   # ============================================================================
   # PHASE 2.75: Initialize Optional Outputs
@@ -3595,6 +3893,11 @@ steps:
       {{behavior_reference_hygiene_results}}
       ```
 
+      **Mode Validation (v3.6.0):**
+      ```json
+      {{mode_validation_results}}
+      ```
+
       **Bundle Doc Freshness (Phase 6 v3):**
       ```json
       {{bundle_doc_freshness}}
@@ -3618,7 +3921,7 @@ steps:
 
       **Generate this report structure:**
 
-      # Bundle Repository Validation Report v3.2.0
+      # Bundle Repository Validation Report v3.6.0
 
       ## Executive Summary
       - **Overall Verdict**: [✅ PASS | ✅ PASS WITH SUGGESTIONS | ⚠️ PASS WITH WARNINGS | ℹ️ LIMITED VALIDATION | ❌ FAIL]
@@ -3698,6 +4001,23 @@ steps:
       - [WARNING] cross_repo_root_bundle_ref: behavior includes bare git URL without #subdirectory=
       - [WARNING] name_collision_with_root: behavior bundle name equals root bundle name
 
+      ### Mode Validation (v3.6.0)
+      Use mode_validation_results to report:
+      - modes_checked: total number of modes/*.md files with a mode: block
+      - For each ERROR of type mode_description_excessive (>800 tokens):
+        - [ERROR] "Mode '<name>' description is N tokens — must shorten to <500"
+        - Refer author to foundation:docs/AGENT_AUTHORING.md §"Description Requirements (Critical)"
+          and modes/.../mode-design-discipline skill
+      - For each WARNING of type mode_description_high (>500 tokens):
+        - [WARNING] "Mode '<name>' description is N tokens — consider trimming toward <500"
+        - Same reference links as above
+      - For each ERROR of type unadvertised_but_referenced:
+        - [ERROR] "Mode '<name>' has advertised: false but is named in: <file list>"
+        - The fix: either set advertised: true OR remove the /<name> / name="<name>" references
+        - Per mode-design-discipline §4 advertising rule: the LLM infers modes by name
+      - If no issues: "Mode validation: all N modes passed description budget and advertising checks"
+      - If mode_validation_results.skipped == true: "Mode validation: skipped (no modes/*.md files found)"
+
       ### Standalone Completeness
       | Bundle | Orchestrator | Context | Provider | Status |
       |--------|--------------|---------|----------|--------|
@@ -3769,7 +4089,7 @@ steps:
 
       ## Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v3.5.0
+      - Recipe: validate-bundle-repo v3.6.0
       - Validation Mode: [mode from env_check]
       - Foundation: [version or "not available"]
       - Quality Thresholds:
@@ -3778,6 +4098,8 @@ steps:
         - Standalones must be complete (orchestrator + context)
         - Context sink pattern enforced (heavy context → agents)
         - Python packaging must build successfully (if present)
+        - Mode descriptions: <500 tokens OK / 500-800 WARNING / >800 ERROR (v3.6.0)
+        - Unadvertised modes must not be referenced in agent-readable files (v3.6.0)
     output: "final_report"
     timeout: 300
     on_error: "fail"
