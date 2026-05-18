@@ -1,7 +1,25 @@
 ---
 meta:
   name: session-analyst
-  description: "REQUIRED agent for analyzing, debugging, searching, and REPAIRING Amplifier sessions. Performs transcript surgery to recover sessions with orphaned tool calls, ordering violations, or incomplete assistant turns. MUST be used when:\\n- Session has orphaned tool_calls (tool_use without matching tool_result)\\n- Session has ordering violations (consecutive same-role messages)\\n- Session has incomplete assistant turns (missing content or tool_calls)\\n- Resume fails with provider rejection errors (400/422 from API)\\n- Investigating why a session failed or won't resume\\n- Analyzing events.jsonl files (contains 100k+ token lines that WILL crash other tools)\\n- Diagnosing API errors, missing tool results, or corrupted transcripts\\n- Understanding what happened in a past conversation\\n- Searching for sessions by ID, project, date, or topic\\n- REWINDING a session to a prior point (truncating history to retry from a clean state)\\n\\nDefaults to REPAIR (inject synthetic entries to complete broken turns) rather than REWIND (truncate to before the issue). Rewind only when explicitly requested.\\n\\nThis agent has specialized knowledge for safely extracting data from large session logs without context overflow. DO NOT attempt to read events.jsonl directly - delegate to this agent.\\n\\nExamples:\\n\\n<example>\\nuser: 'Why did my session fail?' or 'Session X won't resume'\\nassistant: 'I'll use the session-analyst agent to investigate the failure - it has specialized tools for safely analyzing large event logs.'\\n<commentary>MUST delegate session debugging to this agent. It knows how to handle 100k+ token event lines safely.</commentary>\\n</example>\\n\\n<example>\\nuser: 'What's in events.jsonl?' or asks about session event logs\\nassistant: 'I'll delegate this to session-analyst - events.jsonl files can have lines with 100k+ tokens that require special handling.'\\n<commentary>NEVER attempt to read events.jsonl directly. Always delegate to session-analyst.</commentary>\\n</example>\\n\\n<example>\\nuser: 'Find the conversation where I worked on authentication'\\nassistant: 'I'll use the session-analyst agent to search through your Amplifier sessions for authentication-related conversations.'\\n<commentary>The agent searches session metadata and transcripts for relevant conversations.</commentary>\\n</example>\\n\\n<example>\\nuser: 'What sessions do I have from last week in the azure project?'\\nassistant: 'Let me use the session-analyst agent to locate sessions from the azure project directory from last week.'\\n<commentary>The agent scopes search to specific project and timeframe.</commentary>\\n</example>\\n\\n<example>\\nuser: 'My session won't resume - I get a 400 error about message ordering'\\nassistant: 'I'll use the session-analyst agent to diagnose and repair the transcript - it can perform surgery on the events.jsonl to fix ordering violations and orphaned tool calls, injecting synthetic entries to complete broken turns.'\\n<commentary>The agent defaults to REPAIR (injecting synthetic entries) rather than REWIND. It fixes the transcript in place so no history is lost.</commentary>\\n</example>\\n\\n<example>\\nuser: 'Rewind session X to before my last message' or 'Fix my broken session by removing the problematic exchange'\\nassistant: 'I'll use the session-analyst agent to rewind that session - it can safely truncate the events.jsonl to remove history from a specific point so you can retry.'\\n<commentary>Rewind is used only when explicitly requested. The agent creates backups before any modification.</commentary>\\n</example>"
+  description: |
+    REQUIRED agent for analyzing, debugging, searching, and repairing Amplifier sessions — specializing in transcript surgery to recover broken sessions and safely reading events.jsonl files that would crash other tools.
+
+    MUST be used when: session has orphaned tool_calls, ordering violations, or incomplete assistant turns; resume fails with 400/422 provider errors; analyzing events.jsonl (100k+ token lines); searching sessions by ID, project, date, or topic; rewinding a session to a prior checkpoint.
+
+    **Authoritative on:** session repair, transcript surgery, rewind/rollback, orphaned tool_calls, ordering violations, events.jsonl analysis, session search, transcript.jsonl, provider rejection errors, session history
+
+    <example>
+    user: 'Session X won\'t resume' or 'Why did my session fail?'
+    assistant: 'I\'ll delegate to session-analyst — it has specialized tools for safely diagnosing transcript issues and reading events.jsonl without crashing the session.'
+    <commentary>MUST delegate session debugging here. Never attempt to read events.jsonl directly — a single grep on it will crash your session.</commentary>
+    </example>
+
+    <example>
+    user: 'Find the session where we built the caching layer'
+    assistant: 'I\'ll use session-analyst to search your session history — it can query by project, date, keyword, or partial session ID.'
+    <commentary>Use for any session search or history investigation, not just failures. session-analyst safely handles all session file operations.</commentary>
+    </example>
+
 
 model_role: fast
 

@@ -2,49 +2,22 @@
 meta:
   name: modular-builder
   description: |
-    Implementation-only agent. REQUIRES: complete spec with file paths, interfaces, pattern, criteria.
-    If ANY missing → use zen-architect first to create specification.
-    Will STOP and ask if specification incomplete - do NOT delegate under-specified tasks.
-    
-    **WHEN TO USE:**
-    - You have a clear specification or design from zen-architect
-    - Task is "implement X from spec" or "build Y per design"
-    - Module boundaries and contracts are defined
-    - File paths and interfaces are specified
-    
-    **WHEN NOT TO USE:**
-    - Need to figure out what to build → use zen-architect first
-    - Need to explore/understand codebase → use explorer
-    - Need to debug issues → use bug-hunter
-    - Requirements unclear → clarify with user or zen-architect first
-    
-    **PREREQUISITES:**
-    - Clear file paths to create/modify
-    - Complete function signatures with types
-    - Pattern reference or explicit design freedom
-    - Success criteria defined
-    
-    **HANDOFF PATTERN:**
-    zen-architect (creates specs) → modular-builder (implements) → zen-architect (reviews)
-    
-    Examples:
-    
+    Implementation-only agent that translates complete specifications into working code. REQUIRES a complete spec (file paths, interfaces, pattern reference, success criteria) — if ANY element is missing, use zen-architect first to create the specification.
+
+    Use when: you have a clear specification from zen-architect, the task is "implement X from spec" or "build Y per design", and module boundaries and contracts are already established.
+
+    **Authoritative on:** module implementation, bricks-and-studs pattern, self-contained modules, test writing, LSP-assisted code navigation, contract-based development, spec-to-code translation
+
     <example>
     user: 'Implement the CacheService from the spec in specs/cache-spec.md'
-    assistant: 'I'll use modular-builder to implement the CacheService.'
-    <commentary>Clear specification exists with all details - perfect for modular-builder.</commentary>
+    assistant: 'I\'ll use modular-builder to implement the CacheService.'
+    <commentary>Clear specification exists with all required details — perfect for modular-builder. No design work needed.</commentary>
     </example>
-    
+
     <example>
     user: 'Add a caching layer to improve performance'
-    assistant: 'I'll first use zen-architect to analyze and design the caching approach, then modular-builder will implement it.'
-    <commentary>Under-specified task needs design first. Two-phase: architect → builder.</commentary>
-    </example>
-    
-    <example>
-    user: 'Figure out how to improve the authentication system'
-    assistant: 'I'll use zen-architect to analyze the auth system and design improvements.'
-    <commentary>Analysis/design task - NOT for modular-builder. Zen-architect only.</commentary>
+    assistant: 'I\'ll first use zen-architect to analyze and design the caching approach, then modular-builder will implement it.'
+    <commentary>Under-specified task needs design first. Two-phase: architect → builder. Never send ambiguous or under-specified tasks directly to modular-builder.</commentary>
     </example>
 
 model_role: [coding, general]
