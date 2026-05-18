@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from amplifier_foundation.registry import BundleRegistry
+from amplifier_foundation.registry import BundleRegistry, BundleState
 
 
 class TestFindNearestBundleFile:
@@ -317,9 +317,10 @@ class TestSubdirectoryBundleLoading:
             # NOT to the checkout root.  Agents and context for 'recipes:' live under
             # behaviors/recipes/agents/ and behaviors/recipes/context/, not root/agents/.
             assert bundle.name == "recipes"
-            assert bundle.source_base_paths.get("recipes") == (
-                base / "behaviors" / "recipes"
-            ).resolve()
+            assert (
+                bundle.source_base_paths.get("recipes")
+                == (base / "behaviors" / "recipes").resolve()
+            )
 
     @pytest.mark.asyncio
     async def test_root_bundle_no_extra_source_base_paths(self) -> None:
@@ -464,7 +465,9 @@ class TestSubdirectoryBundleLoading:
             # Bug: with source_base_paths['subns'] = root/, it returned root/agents/foo.md (decoy)
             bundle.load_agent_metadata()
             agent_path = bundle.resolve_agent_path("subns:foo")
-            assert agent_path is not None, "resolve_agent_path('subns:foo') returned None"
+            assert agent_path is not None, (
+                "resolve_agent_path('subns:foo') returned None"
+            )
             assert agent_path.resolve() == (sub / "agents" / "foo.md").resolve(), (
                 f"resolve_agent_path('subns:foo') = {agent_path!r}, "
                 f"expected {(sub / 'agents' / 'foo.md').resolve()!r} — got the checkout-root decoy?"
@@ -499,16 +502,19 @@ class TestSubdirectoryBundleLoading:
             sub_behaviors = sub / "behaviors"
             sub_behaviors.mkdir()
             (sub_behaviors / "config.yaml").write_text(
-                "bundle:\n"
-                "  name: myns\n"
-                "  version: 1.0.0\n"
-                "  namespace_root: ..\n"
+                "bundle:\n  name: myns\n  version: 1.0.0\n  namespace_root: ..\n"
             )
 
             from amplifier_foundation.bundle._dataclass import Bundle
 
             bundle = Bundle.from_dict(
-                {"bundle": {"name": "myns", "version": "1.0.0", "namespace_root": ".."}},
+                {
+                    "bundle": {
+                        "name": "myns",
+                        "version": "1.0.0",
+                        "namespace_root": "..",
+                    }
+                },
                 base_path=sub_behaviors,
             )
 
@@ -571,7 +577,9 @@ class TestSubdirectoryBundleLoading:
             # Agent at behaviors/agents/bar.md resolves correctly with default
             agent_path = bundle.resolve_agent_path("subns:bar")
             assert agent_path is not None
-            assert agent_path.resolve() == (sub_behaviors / "agents" / "bar.md").resolve(), (
+            assert (
+                agent_path.resolve() == (sub_behaviors / "agents" / "bar.md").resolve()
+            ), (
                 f"Expected {(sub_behaviors / 'agents' / 'bar.md').resolve()!r}, "
                 f"got {agent_path!r}"
             )
@@ -619,7 +627,9 @@ class TestSubdirectoryBundleLoading:
                 "resolve_agent_path('foundation:bug-hunter') returned None for a root bundle. "
                 "The namespace==self.name fallback in resolve_agent_path() is broken."
             )
-            assert agent_path.resolve() == (base / "agents" / "bug-hunter.md").resolve(), (
+            assert (
+                agent_path.resolve() == (base / "agents" / "bug-hunter.md").resolve()
+            ), (
                 f"Expected {(base / 'agents' / 'bug-hunter.md').resolve()!r}, "
                 f"got {agent_path!r}"
             )
@@ -1530,3 +1540,178 @@ class TestIncludeSourceResolver:
             result = registry._resolve_include_source("plain-bundle-name")
             assert "plain-bundle-name" in resolver_calls
             assert result == "overridden://plain-bundle-name"
+
+
+# ---------------------------------------------------------------------------
+# Tests for Bug B — registry self-include edge / stale include relationships
+# ---------------------------------------------------------------------------
+
+
+class TestRecordIncludeRelationshipsIdempotent:
+    """_record_include_relationships replaces stale include edges, not appends.
+
+    Root cause: When a bundle dependency is renamed (e.g., terminal-tester's
+    behavior file was renamed from 'terminal-tester' to 'terminal-tester-behavior'),
+    _record_include_relationships used to APPEND to the existing includes list,
+    leaving stale self-references that created graph cycles.
+
+    After the fix, calling _record_include_relationships with the new child names
+    should REPLACE the old includes list and clean up stale included_by entries.
+    """
+
+    def test_replaces_stale_self_reference_in_includes(self) -> None:
+        """Stale self-reference is removed when _record_include_relationships is
+        called with the corrected child names (Bug B exact scenario)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = BundleRegistry(home=Path(tmpdir) / "home")
+
+            # Simulate stale registry state after old behavior name 'terminal-tester'
+            registry.register(
+                {
+                    "terminal-tester": "git+https://github.com/example/terminal-tester@main",
+                    "foundation": "git+https://github.com/example/foundation@main",
+                    "terminal-tester-behavior": "git+https://github.com/example/terminal-tester@main#subdirectory=behaviors/terminal-tester.yaml",
+                }
+            )
+
+            tt_state = registry.get_state("terminal-tester")
+            assert isinstance(tt_state, BundleState)
+            fnd_state = registry.get_state("foundation")
+            assert isinstance(fnd_state, BundleState)
+
+            # Stale state: terminal-tester included itself (old behavior name was 'terminal-tester')
+            tt_state.includes = ["foundation", "terminal-tester"]  # self-reference!
+            tt_state.included_by = [
+                "terminal-tester",
+                "reality-check-behavior",
+            ]  # self-ref!
+            fnd_state.included_by = ["terminal-tester"]
+
+            # Now the bundle is re-loaded and the behavior is correctly identified
+            # as 'terminal-tester-behavior'. Record the corrected relationships.
+            registry._record_include_relationships(
+                "terminal-tester",
+                ["foundation", "terminal-tester-behavior"],
+            )
+
+            # The includes list should be the NEW list — no stale self-reference
+            assert tt_state.includes == ["foundation", "terminal-tester-behavior"], (
+                f"Expected ['foundation', 'terminal-tester-behavior'], "
+                f"got {tt_state.includes}"
+            )
+
+            # terminal-tester should NOT include itself
+            assert "terminal-tester" not in tt_state.includes, (
+                "Self-reference must be removed from includes"
+            )
+
+    def test_stale_included_by_cleaned_from_old_child(self) -> None:
+        """When a parent's includes change, old children's included_by is cleaned."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = BundleRegistry(home=Path(tmpdir) / "home")
+
+            registry.register(
+                {
+                    "parent": "git+https://github.com/example/parent@main",
+                    "old-child": "git+https://github.com/example/old@main",
+                    "new-child": "git+https://github.com/example/new@main",
+                }
+            )
+
+            parent_state = registry.get_state("parent")
+            assert isinstance(parent_state, BundleState)
+            old_child_state = registry.get_state("old-child")
+            assert isinstance(old_child_state, BundleState)
+
+            # Stale state: parent included 'old-child' (now renamed to 'new-child')
+            parent_state.includes = ["old-child"]
+            old_child_state.included_by = ["parent"]
+
+            # Register 'new-child' so it has state
+            new_child_state = registry.get_state("new-child")
+            assert isinstance(new_child_state, BundleState)
+            new_child_state.included_by = []
+
+            # Record the corrected relationships
+            registry._record_include_relationships("parent", ["new-child"])
+
+            # parent.includes should now be ['new-child'] — stale 'old-child' removed
+            assert parent_state.includes == ["new-child"], (
+                f"Expected ['new-child'], got {parent_state.includes}"
+            )
+
+            # old-child.included_by should no longer contain 'parent'
+            assert "parent" not in (old_child_state.included_by or []), (
+                f"old-child.included_by should not contain 'parent', "
+                f"got {old_child_state.included_by}"
+            )
+
+            # new-child.included_by should contain 'parent'
+            assert "parent" in (new_child_state.included_by or []), (
+                f"new-child.included_by should contain 'parent', "
+                f"got {new_child_state.included_by}"
+            )
+
+    def test_no_self_reference_in_includes_after_reload(self) -> None:
+        """After fix, terminal-tester.includes must not contain 'terminal-tester'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = BundleRegistry(home=Path(tmpdir) / "home")
+
+            registry.register(
+                {
+                    "terminal-tester": "git+https://github.com/example/tt@main",
+                    "foundation": "git+https://github.com/example/foundation@main",
+                    "terminal-tester-behavior": "git+https://example.com/tt@main#subdirectory=behaviors/tt.yaml",
+                }
+            )
+
+            tt_state = registry.get_state("terminal-tester")
+            assert isinstance(tt_state, BundleState)
+            tt_state.includes = ["foundation", "terminal-tester"]  # stale self-ref
+            tt_state.included_by = ["terminal-tester"]  # stale self-ref
+
+            # Simulate reload: record the true includes
+            registry._record_include_relationships(
+                "terminal-tester", ["foundation", "terminal-tester-behavior"]
+            )
+
+            assert "terminal-tester" not in (tt_state.includes or []), (
+                "terminal-tester must not be in its own includes after reload"
+            )
+
+    def test_multiple_parents_for_same_child_preserved(self) -> None:
+        """Multiple distinct parents can both include the same child; each parent's
+        reload only clears that parent's stale entries, not others'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = BundleRegistry(home=Path(tmpdir) / "home")
+
+            registry.register(
+                {
+                    "parent-a": "git+https://github.com/example/a@main",
+                    "parent-b": "git+https://github.com/example/b@main",
+                    "child": "git+https://github.com/example/child@main",
+                }
+            )
+
+            child_state = registry.get_state("child")
+            assert isinstance(child_state, BundleState)
+
+            # Both parents include child; record parent-a first
+            registry._record_include_relationships("parent-a", ["child"])
+            registry._record_include_relationships("parent-b", ["child"])
+
+            # child.included_by should have BOTH parents
+            assert set(child_state.included_by or []) == {"parent-a", "parent-b"}, (
+                f"Both parents should appear in child.included_by, "
+                f"got {child_state.included_by}"
+            )
+
+            # Now parent-a is reloaded with the same child (idempotent)
+            registry._record_include_relationships("parent-a", ["child"])
+
+            # Still both parents; no duplication
+            assert set(child_state.included_by or []) == {"parent-a", "parent-b"}
+            assert child_state.included_by is not None
+            assert child_state.included_by.count("parent-a") == 1, (
+                "parent-a must not be duplicated in child.included_by"
+            )
