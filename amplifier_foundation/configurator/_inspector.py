@@ -27,6 +27,28 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Cycle-warning deduplication
+# ---------------------------------------------------------------------------
+
+# A cycle is a structural property of the include graph, not of individual
+# traversals.  walk_include_chains is called once per config item (~100-250
+# items per session), so a single cycle node would otherwise produce hundreds
+# of duplicate warnings.  This module-level set ensures each unique cycle node
+# is reported at most once per process lifetime.
+_WARNED_CYCLE_NODES: set[str] = set()
+
+
+def _reset_cycle_warnings_for_testing() -> None:
+    """Clear the deduplication set so cycle warnings can be re-emitted.
+
+    Intended for use in tests only — call this before each test case that
+    checks the cycle-warning emission count to prevent state from leaking
+    between test runs.
+    """
+    _WARNED_CYCLE_NODES.clear()
+
+
+# ---------------------------------------------------------------------------
 # Sentinel for redaction
 # ---------------------------------------------------------------------------
 
@@ -197,10 +219,16 @@ def walk_include_chains(
     def _all_paths_to_root(current: str, visited: frozenset[str]) -> list[list[str]]:
         """Return all root→leaf paths ending at *current* as lists of bundle names."""
         if current in visited:
-            _logger.warning(
-                "Cycle detected in bundle include graph at %r; breaking chain.",
-                current,
-            )
+            # Deduplicate: a cycle is a graph property, not a per-traversal event.
+            # walk_include_chains is called for every config item (~100-250 items),
+            # so without deduplication the same cycle node would produce hundreds of
+            # identical warnings.  Emit at most once per unique cycle node.
+            if current not in _WARNED_CYCLE_NODES:
+                _WARNED_CYCLE_NODES.add(current)
+                _logger.warning(
+                    "Cycle detected in bundle include graph at %r; breaking chain.",
+                    current,
+                )
             return [[current]]
 
         state = registry_dict.get(current)

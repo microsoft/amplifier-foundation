@@ -18,6 +18,7 @@ from amplifier_foundation.configurator import (
 from amplifier_foundation.configurator._inspector import (
     _build_include_path,
     _build_include_paths,
+    _reset_cycle_warnings_for_testing,
 )
 from amplifier_foundation.configurator._types import IncludeStep, Origin
 
@@ -3243,7 +3244,7 @@ class TestWalkIncludeChains:
             "reality-check-behavior": _make_state(
                 name="reality-check-behavior",
                 included_by=[],  # no parents → topological root
-                is_root=False,   # structural: it's a nested bundle
+                is_root=False,  # structural: it's a nested bundle
             ),
             "terminal-tester": _make_state(
                 name="terminal-tester",
@@ -3411,3 +3412,127 @@ class TestMultiSourceIncludePaths:
         assert len(result) == 1
         names = [s.bundle for s in result[0]]
         assert names == ["root", "foundation"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for Bug A — cycle warning deduplication
+# ---------------------------------------------------------------------------
+
+
+class TestWalkIncludeChainsCycleWarningDedupe:
+    """walk_include_chains emits the cycle warning at most once per unique cycle node.
+
+    A cycle in the include graph is a property of the graph structure, not of
+    individual traversals.  With ~241 items each triggering their own traversal,
+    a single cycle node was previously logged hundreds of times.  After the fix,
+    each unique cycle node should produce exactly one WARNING per session.
+    """
+
+    def test_cycle_warning_emitted_exactly_once_for_single_cycle(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Calling walk_include_chains many times on the same cycle emits the
+        warning exactly once — not once per call."""
+        # Reset the deduplication set before the test so state from other tests
+        # does not interfere.
+        _reset_cycle_warnings_for_testing()
+
+        registry_dict: dict[str, Any] = {
+            # terminal-tester self-cycle (the real-world scenario)
+            "terminal-tester": _make_state(
+                name="terminal-tester",
+                included_by=["terminal-tester"],  # self-cycle
+                is_root=True,
+            ),
+            "foundation": _make_state(
+                name="foundation",
+                included_by=["terminal-tester"],
+            ),
+        }
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            # Simulate ~100 items each triggering a traversal through the cycle
+            for _ in range(100):
+                walk_include_chains("foundation", registry_dict)
+
+        # Exactly one warning about "terminal-tester" should appear
+        cycle_warnings = [
+            r
+            for r in caplog.records
+            if "Cycle detected" in r.message and "terminal-tester" in r.message
+        ]
+        assert len(cycle_warnings) == 1, (
+            f"Expected exactly 1 cycle warning for 'terminal-tester', "
+            f"got {len(cycle_warnings)}: {[r.message for r in cycle_warnings]}"
+        )
+
+    def test_cycle_warning_once_per_unique_cycle_node(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two distinct cycle nodes each produce exactly one warning (not N each)."""
+        _reset_cycle_warnings_for_testing()
+
+        registry_dict: dict[str, Any] = {
+            "A": _make_state(name="A", included_by=["B"]),
+            "B": _make_state(name="B", included_by=["A"]),
+            "leaf": _make_state(name="leaf", included_by=["A"]),
+        }
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(50):
+                walk_include_chains("leaf", registry_dict)
+
+        cycle_warnings = [r for r in caplog.records if "Cycle detected" in r.message]
+        # Two distinct cycle-entry nodes (A and B), each warned at most once
+        warned_nodes = {r.message for r in cycle_warnings}
+        assert len(warned_nodes) <= 2, (
+            f"Expected ≤2 unique cycle warnings, got {len(warned_nodes)}"
+        )
+        # Each node warned at most once (no duplicates)
+        assert len(cycle_warnings) == len(warned_nodes), (
+            f"Duplicate warnings detected: {[r.message for r in cycle_warnings]}"
+        )
+
+    def test_reset_cycle_warnings_allows_re_emission(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """After _reset_cycle_warnings_for_testing(), the warning can be emitted again."""
+        _reset_cycle_warnings_for_testing()
+
+        registry_dict: dict[str, Any] = {
+            "X": _make_state(name="X", included_by=["X"]),  # self-cycle
+            "leaf": _make_state(name="leaf", included_by=["X"]),
+        }
+
+        import logging
+
+        # First traversal — should produce 1 warning
+        with caplog.at_level(logging.WARNING):
+            walk_include_chains("leaf", registry_dict)
+
+        first_count = sum(
+            1
+            for r in caplog.records
+            if "Cycle detected" in r.message and "'X'" in r.message
+        )
+        assert first_count == 1
+
+        # Reset and re-traverse — should produce 1 warning again
+        _reset_cycle_warnings_for_testing()
+        caplog.clear()
+
+        with caplog.at_level(logging.WARNING):
+            walk_include_chains("leaf", registry_dict)
+
+        second_count = sum(
+            1
+            for r in caplog.records
+            if "Cycle detected" in r.message and "'X'" in r.message
+        )
+        assert second_count == 1, (
+            "After reset, warning should be emitted again (exactly once)"
+        )
