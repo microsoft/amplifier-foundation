@@ -1,9 +1,25 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.4.0
+# Repository-Wide Bundle Validator Recipe v3.5.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.5.0 - Behavior Reference Hygiene Checks
+#        - New Phase 2.1.5: behavior-reference-hygiene checks behavior includes
+#        - Check A: Cross-repo root-bundle refs in behavior includes (WARNING)
+#          Detects git+https:// refs without #subdirectory= fragment — bare root refs
+#          that pull entire foreign repos instead of the intended behavior file
+#          Motivated by amplifier-bundle-reality-check/behaviors/reality-check.yaml
+#          referencing amplifier-bundle-terminal-tester@main (root) instead of
+#          amplifier-bundle-terminal-tester@main#subdirectory=behaviors/terminal-tester.yaml
+#        - Check B: Behavior name collisions with root bundle name (WARNING)
+#          Detects behavior.bundle.name == root bundle.bundle.name — causes
+#          self-referential BundleState registry entries and confusing chain rendering
+#          Motivated by amplifier-bundle-terminal-tester having both bundle.md
+#          (name: terminal-tester) and behaviors/terminal-tester.yaml (name: terminal-tester)
+#        - quality-classification incorporates behavior_reference_hygiene_issues
+#        - synthesize-report includes Behavior Reference Hygiene section
+#
 # v3.4.0 - YAML Structure Lint for silent-failure detection
 #        - New Phase 1.5: yaml-structure-lint checks ALL discovered bundles
 #        - Detects includes: nested under bundle: (silently dropped by parser)
@@ -67,6 +83,8 @@
 # 8. Behaviors have reasonable context.include token counts (<2000 ERROR, <1000 WARNING)
 # 9. Standalone bundles in /bundles/ have complete session configuration
 # 10. Experimental bundles follow naming conventions
+# 11. Behaviors don't include cross-repo root bundles without #subdirectory= fragment
+# 12. Behavior bundle names don't collide with root bundle name
 #
 # QUALITY LEVELS:
 # - good: All bundles load, no errors, no orphans, proper structure, philosophy aligned
@@ -89,6 +107,8 @@ description: |
   - **NEW in v3.0.0:** Experiments validation (naming, completeness)
   - **NEW in v3.0.0:** Context sink compliance (root bundle context bloat)
   - **NEW in v3.0.0:** Tool placement analysis (universal vs specialized)
+  - **NEW in v3.5.0:** Cross-repo root-bundle reference detection in behavior includes
+  - **NEW in v3.5.0:** Behavior name collision detection (behavior vs root bundle name)
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Repository composition analysis (do pieces fit together correctly?)
@@ -132,7 +152,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.4.0"
+version: "3.5.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -1383,6 +1403,221 @@ steps:
     depends_on: ["validate-all-bundles"]
 
   # ============================================================================
+  # PHASE 2.1.5: Behavior Reference Hygiene (NEW in v3.5.0)
+  # Two cross-cutting checks on behavior includes:
+  #
+  # Check A — Cross-repo root-bundle references
+  #   For each behavior YAML in behaviors/, examine includes: entries.
+  #   If any entry is git+https://...@<ref> WITHOUT a #subdirectory= fragment,
+  #   warn — the behavior is pulling an entire foreign root bundle instead of
+  #   the specific behavior file it needs.
+  #   Severity: WARNING (allow override for intentional monorepo cases)
+  #
+  # Check B — Name collision between root bundle and behaviors
+  #   If behavior.bundle.name == root_bundle.bundle.name, warn.
+  #   Collision causes self-referential BundleState registry entries
+  #   (BundleState["X"].included_by = ['X', ...]) and confusing chain rendering.
+  #   Severity: WARNING
+  # ============================================================================
+
+  - id: "behavior-reference-hygiene"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      import sys
+      from pathlib import Path
+
+      repo_path = "{{repo_path}}"
+      path = Path(repo_path).resolve()
+      behaviors_dir = path / "behaviors"
+
+      results = {
+          "phase": "behavior_reference_hygiene",
+          "behaviors_checked": 0,
+          "root_bundle_name": None,
+          "errors": [],
+          "warnings": [],
+          "behavior_details": []
+      }
+
+      if not behaviors_dir.exists():
+          results["skipped"] = True
+          results["passed"] = True
+          results["reason"] = "No behaviors/ directory"
+          print(json.dumps(results))
+          sys.exit(0)
+
+      # ── YAML parser (with graceful fallback) ──────────────────────────────
+      try:
+          import yaml as _yaml
+          def parse_yaml(text: str) -> dict:
+              return _yaml.safe_load(text) or {}
+      except ImportError:
+          def parse_yaml(text: str) -> dict:
+              # Minimal regex fallback — good enough for name extraction
+              result = {}
+              m = re.search(r'^  name:\s*(.+)', text, re.MULTILINE)
+              if m:
+                  result["_name_fallback"] = m.group(1).strip().strip('"').strip("'")
+              return result
+
+      def extract_frontmatter_yaml(path: Path) -> dict:
+          """Read a bundle file and return its parsed YAML dict."""
+          try:
+              content = path.read_text()
+              if path.suffix == ".md":
+                  match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+                  yaml_text = match.group(1) if match else ""
+              else:
+                  yaml_text = content
+              return parse_yaml(yaml_text)
+          except Exception:
+              return {}
+
+      def get_bundle_name(data: dict) -> str | None:
+          """Extract bundle name from parsed YAML data."""
+          bundle_section = data.get("bundle", {})
+          if isinstance(bundle_section, dict):
+              name = bundle_section.get("name")
+              if name:
+                  return str(name).strip()
+          # Fallback for regex parse path
+          return data.get("_name_fallback")
+
+      def is_bare_git_ref(bundle_ref: str) -> bool:
+          """True if ref is a git+https URL WITHOUT a #subdirectory= fragment."""
+          if not isinstance(bundle_ref, str):
+              return False
+          if not bundle_ref.startswith(("git+https://", "git+http://")):
+              return False
+          if "#subdirectory=" in bundle_ref:
+              return False
+          # Must have a ref pin (@branch / @tag / @sha)
+          if "@" not in bundle_ref.split("://", 1)[-1]:
+              return False
+          return True
+
+      # ── Read root bundle name (prerequisite for Check B) ─────────────────
+      root_bundle_name: str | None = None
+      for root_filename in ("bundle.md", "bundle.yaml"):
+          root_file = path / root_filename
+          if root_file.exists():
+              root_data = extract_frontmatter_yaml(root_file)
+              root_bundle_name = get_bundle_name(root_data)
+              if root_bundle_name:
+                  break
+      results["root_bundle_name"] = root_bundle_name
+
+      # ── Collect behavior files ─────────────────────────────────────────────
+      behavior_files: list[Path] = []
+      for item in behaviors_dir.iterdir():
+          if item.is_file() and item.suffix in (".md", ".yaml", ".yml"):
+              behavior_files.append(item)
+          elif item.is_dir():
+              for sub_name in ("bundle.md", "bundle.yaml"):
+                  sub_file = item / sub_name
+                  if sub_file.exists():
+                      behavior_files.append(sub_file)
+
+      for behavior_path in sorted(behavior_files):
+          results["behaviors_checked"] += 1
+          behavior_name = (
+              behavior_path.stem
+              if behavior_path.name not in ("bundle.md", "bundle.yaml")
+              else behavior_path.parent.name
+          )
+
+          detail: dict = {
+              "path": str(behavior_path),
+              "name": behavior_name,
+              "bundle_name": None,
+              "issues": []
+          }
+
+          data = extract_frontmatter_yaml(behavior_path)
+          behavior_bundle_name = get_bundle_name(data)
+          detail["bundle_name"] = behavior_bundle_name
+
+          # ── Check A: Cross-repo root-bundle reference ─────────────────────
+          includes = data.get("includes", [])
+          if isinstance(includes, list):
+              for inc in includes:
+                  if isinstance(inc, dict):
+                      bundle_ref = inc.get("bundle", "")
+                  else:
+                      bundle_ref = str(inc) if inc is not None else ""
+
+                  if is_bare_git_ref(bundle_ref):
+                      # Extract the repo name for a helpful message
+                      repo_part = bundle_ref.split("@")[0].rstrip("/")
+                      repo_name = repo_part.split("/")[-1]
+                      results["warnings"].append({
+                          "behavior": behavior_name,
+                          "type": "cross_repo_root_bundle_ref",
+                          "reference": bundle_ref,
+                          "message": (
+                              f"Behavior '{behavior_name}' includes bare root-bundle ref "
+                              f"'{bundle_ref}' without #subdirectory= fragment — "
+                              f"should reference '{repo_name}' behavior file instead "
+                              f"(e.g. '{bundle_ref}#subdirectory=behaviors/<name>.yaml')"
+                          ),
+                          "severity": "WARNING",
+                          "fix": (
+                              f"Append #subdirectory=behaviors/<behavior-name>.yaml "
+                              f"to: {bundle_ref}"
+                          )
+                      })
+                      detail["issues"].append("cross_repo_root_bundle_ref")
+
+          # ── Check B: Name collision with root bundle ───────────────────────
+          if (
+              behavior_bundle_name
+              and root_bundle_name
+              and behavior_bundle_name == root_bundle_name
+          ):
+              results["warnings"].append({
+                  "behavior": behavior_name,
+                  "type": "name_collision_with_root",
+                  "name": behavior_bundle_name,
+                  "message": (
+                      f"Behavior bundle name '{behavior_bundle_name}' collides with "
+                      f"root bundle name '{root_bundle_name}' — rename behavior to "
+                      f"'{behavior_bundle_name}-behavior' for clarity"
+                  ),
+                  "severity": "WARNING",
+                  "fix": (
+                      f"Change the behavior's bundle.name from '{behavior_bundle_name}' "
+                      f"to '{behavior_bundle_name}-behavior'"
+                  )
+              })
+              detail["issues"].append("name_collision_with_root")
+
+          results["behavior_details"].append(detail)
+
+      results["passed"] = len(results["errors"]) == 0
+      results["summary"] = {
+          "behaviors_checked": results["behaviors_checked"],
+          "root_bundle_name": root_bundle_name,
+          "warnings": len(results["warnings"]),
+          "cross_repo_root_refs": sum(
+              1 for w in results["warnings"] if w["type"] == "cross_repo_root_bundle_ref"
+          ),
+          "name_collisions": sum(
+              1 for w in results["warnings"] if w["type"] == "name_collision_with_root"
+          )
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "behavior_reference_hygiene_results"
+    parse_json: true
+    timeout: 60
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
   # PHASE 2.2: Standalone Completeness Validation (NEW in v3.0.0)
   # Validates bundles in /bundles/ have complete session configuration
   # (orchestrator + context module) either directly or via includes chain
@@ -2283,6 +2518,13 @@ steps:
       except (json.JSONDecodeError, ValueError):
           behavior_hygiene = {"passed": True, "skipped": True}
 
+      # NEW in v3.5.0: Parse behavior reference hygiene results
+      behavior_ref_hygiene_raw = '''{{behavior_reference_hygiene_results}}'''
+      try:
+          behavior_ref_hygiene = json.loads(behavior_ref_hygiene_raw)
+      except (json.JSONDecodeError, ValueError):
+          behavior_ref_hygiene = {"passed": True, "skipped": True, "warnings": []}
+
       standalone_raw = '''{{standalone_completeness_results}}'''
       try:
           standalone = json.loads(standalone_raw)
@@ -2431,6 +2673,7 @@ steps:
               "context_sink_issues": [],
               "tool_placement_issues": [],
               "structure_lint_issues": [],  # v3.4.0
+              "behavior_reference_hygiene_issues": [],  # v3.5.0
               # v3.2.0: Environment status tracking
               "environment_status": {
                   "validation_mode": env_check.get("validation_mode", "unknown"),
@@ -2584,6 +2827,17 @@ steps:
                       "fix": error.get("fix", "")
                   })
 
+          # v3.5.0: Behavior reference hygiene warnings
+          if not behavior_ref_hygiene.get("skipped", False):
+              for warning in behavior_ref_hygiene.get("warnings", []):
+                  results["behavior_reference_hygiene_issues"].append({
+                      "type": warning.get("type"),
+                      "behavior": warning.get("behavior"),
+                      "message": warning.get("message"),
+                      "severity": "WARNING",
+                      "fix": warning.get("fix", "")
+                  })
+
           # Determine overall quality level
           # Priority: critical > needs_work > polish > good
           
@@ -2608,6 +2862,7 @@ steps:
           warning_count += len([i for i in results["hygiene_issues"] if i.get("severity") == "WARNING"])
           warning_count += len([i for i in results["context_sink_issues"] if i.get("severity") == "WARNING"])
           warning_count += len([i for i in results["experiment_issues"] if i.get("severity") == "WARNING"])
+          warning_count += len(results["behavior_reference_hygiene_issues"])  # v3.5.0: all are WARNING
           if recipe_quality == "polish":
               warning_count += 1
           
@@ -2649,7 +2904,8 @@ steps:
               "total_hygiene_errors": len(results["hygiene_issues"]) + len(results["completeness_issues"]) + len(results["experiment_issues"]),
               "context_sink_warnings": len([i for i in results["context_sink_issues"] if i.get("severity") == "WARNING"]),
               "tool_placement_suggestions": len(results["tool_placement_issues"]),
-              "structure_lint_errors": len(results["structure_lint_issues"])
+              "structure_lint_errors": len(results["structure_lint_issues"]),
+              "behavior_ref_hygiene_warnings": len(results["behavior_reference_hygiene_issues"])  # v3.5.0
           }
 
           # v3.3.0: Recipe validation summary
@@ -2676,7 +2932,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
-    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint"]
+    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint"]
 
   # ============================================================================
   # PHASE 2.75: Initialize Optional Outputs
@@ -2763,8 +3019,9 @@ steps:
       {{build_check}}
       ```
 
-      **Hygiene Summary (v3.0.0):**
+      **Hygiene Summary (v3.0.0 + v3.5.0):**
       - Behavior hygiene: {{quality_classification.hygiene_summary.behavior_hygiene_passed}}
+      - Behavior reference hygiene warnings: {{quality_classification.hygiene_summary.behavior_ref_hygiene_warnings}}
       - Standalone completeness: {{quality_classification.hygiene_summary.standalone_completeness_passed}}
       - Experiments: {{quality_classification.hygiene_summary.experiments_passed}}
 
@@ -2840,6 +3097,11 @@ steps:
       {{tool_placement_results}}
       ```
 
+      **Behavior Reference Hygiene (v3.5.0):**
+      ```json
+      {{behavior_reference_hygiene_results}}
+      ```
+
       **IMPORTANT: Focus on actual issues identified in the validation phases above.**
 
       **v3.0.0 Hygiene Rules to Enforce:**
@@ -2872,6 +3134,13 @@ steps:
          - Agent tool declarations checked against inheritance:
            - Tools in exclude_tools (default: ["delegate"]) → agent MUST declare (CORRECT)
            - Tools NOT in exclude_tools → agent declaration is REDUNDANT (SUGGESTION to remove)
+
+      6. **Behavior Reference Hygiene (WARNING) - v3.5.0:**
+         - Behaviors must NOT include cross-repo root bundles via bare git+https URL without #subdirectory= fragment
+           Example of bug:  (no #subdirectory)
+           Example of fix: 
+         - Behavior bundle.name must NOT equal root bundle.name
+           (causes BundleState self-referential registry entries like BundleState["X"].included_by = ["X", ...])
 
       **What is NOT an Issue:**
       - Using /bundles/ vs /behaviors/ is a LOCATION choice
@@ -3307,6 +3576,11 @@ steps:
       {{structure_lint}}
       ```
 
+      **Behavior Reference Hygiene (v3.5.0):**
+      ```json
+      {{behavior_reference_hygiene_results}}
+      ```
+
       **Bundle Doc Freshness (Phase 6 v3):**
       ```json
       {{bundle_doc_freshness}}
@@ -3402,6 +3676,14 @@ steps:
       - [WARNING] >3 context.include files
       - [WARNING] >2 tools
 
+      ### Behavior Reference Hygiene (v3.5.0)
+      | Behavior | Issue Type | Reference/Name | Status |
+      |----------|------------|----------------|--------|
+      
+      Issues:
+      - [WARNING] cross_repo_root_bundle_ref: behavior includes bare git URL without #subdirectory=
+      - [WARNING] name_collision_with_root: behavior bundle name equals root bundle name
+
       ### Standalone Completeness
       | Bundle | Orchestrator | Context | Provider | Status |
       |--------|--------------|---------|----------|--------|
@@ -3448,6 +3730,18 @@ steps:
       If structure_lint.passed == true:
       - Note: "All bundles passed YAML structure lint — no silent-failure patterns detected"
 
+      ### Behavior Reference Hygiene (v3.5.0)
+      Use behavior_reference_hygiene_results to report:
+      - Root bundle name checked for name collision
+      - For each WARNING of type cross_repo_root_bundle_ref:
+        - [WARNING] "Behavior X includes bare root-bundle ref Y — should reference Y#subdirectory=behaviors/<name>.yaml"
+        - The fix: add #subdirectory=behaviors/<name>.yaml to pin the specific behavior file
+        - This prevents pulling the entire foreign repo root bundle into the behavior's include chain
+      - For each WARNING of type name_collision_with_root:
+        - [WARNING] "Behavior name 'X' collides with root bundle name 'X' — rename to X-behavior"
+        - Effect: causes BundleState["X"].included_by = ["X", ...] self-referential registry entry
+      - If no warnings: "Behavior reference hygiene: no cross-repo root refs or name collisions detected"
+
       ### Bundle Doc Freshness (Phase 6 v3)
       If `bundle_doc_freshness.dot_available` is true, report:
       - bundle.dot status: fresh/stale/missing
@@ -3461,7 +3755,7 @@ steps:
 
       ## Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v3.4.0
+      - Recipe: validate-bundle-repo v3.5.0
       - Validation Mode: [mode from env_check]
       - Foundation: [version or "not available"]
       - Quality Thresholds:
