@@ -102,6 +102,9 @@ from amplifier_foundation.sources.resolver import SimpleSourceResolver
 # Tracing utilities
 from amplifier_foundation.tracing import generate_sub_session_id
 
+# Observability event injection (for app layers that add their own events)
+from amplifier_foundation.bundle._observability import inject_additional_events
+
 # Cost bridge utilities (for app-layer spawn wrappers)
 from amplifier_foundation.bundle._prepared import bridge_child_cost
 from amplifier_foundation.bundle._prepared import sum_cost_usd
@@ -197,6 +200,8 @@ __all__ = [
     # Cost bridge utilities
     "bridge_child_cost",
     "sum_cost_usd",
+    # Observability event injection (app layers add their own events here)
+    "inject_additional_events",
     # Spawn utilities
     "ProviderPreference",
     "ModelResolutionResult",

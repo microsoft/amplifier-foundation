@@ -403,6 +403,16 @@ class PreparedBundle:
             async with prepared.create_session() as session:
                 response = await session.execute("Hello!")
         """
+        # Subscribe foundation-owned event names that are emitted by
+        # amplifier-core but not in the Rust kernel's ALL_EVENTS list.
+        # Idempotent and a no-op if no subscriber hooks are configured.
+        from amplifier_foundation.bundle._observability import (
+            FOUNDATION_OBSERVABILITY_EVENTS,
+            inject_additional_events,
+        )
+
+        inject_additional_events(self.mount_plan, FOUNDATION_OBSERVABILITY_EVENTS)
+
         from amplifier_core import AmplifierSession
 
         session = AmplifierSession(
@@ -631,6 +641,20 @@ class PreparedBundle:
                 # Pass parent session's coordinator for model resolution if available
                 parent_session.coordinator if parent_session else None,
             )
+
+        # Subscribe foundation-owned event names that are emitted by
+        # amplifier-core but not in the Rust kernel's ALL_EVENTS list.
+        # Idempotent and a no-op if no subscriber hooks are configured.
+        # NOTE: This mirrors the injection in create_session() because spawn()
+        # produces a fresh child_mount_plan directly from to_mount_plan() and
+        # never passes through create_session().  Without this, resolve-backend
+        # spawn sessions would silently drop session:config events.
+        from amplifier_foundation.bundle._observability import (
+            FOUNDATION_OBSERVABILITY_EVENTS,
+            inject_additional_events,
+        )
+
+        inject_additional_events(child_mount_plan, FOUNDATION_OBSERVABILITY_EVENTS)
 
         from amplifier_core import AmplifierSession
 
