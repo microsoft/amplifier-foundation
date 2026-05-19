@@ -224,7 +224,9 @@ async def mount(
     hooks = ProgressMonitorHooks(monitor_config)
 
     # Register hook - runs after tool execution to track operations
-    coordinator.hooks.register("tool:post", hooks.handle_tool_post, priority=50)
+    coordinator.hooks.register(
+        "tool:post", hooks.handle_tool_post, priority=50, name="hooks-progress-monitor"
+    )
 
     return {
         "name": "hooks-progress-monitor",
