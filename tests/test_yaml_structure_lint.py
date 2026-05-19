@@ -437,11 +437,11 @@ class TestSingleBundleRecipeStructure:
 class TestBundleRepoRecipeStructure:
     """Verify validate-bundle-repo.yaml has the yaml-structure-lint step."""
 
-    def test_version_is_3_5_0(self, bundle_repo_recipe):
-        """Version must be bumped to 3.5.0 (currently at v3.5.0)."""
+    def test_version_is_3_6_0(self, bundle_repo_recipe):
+        """Version must be bumped to 3.6.0 (currently at v3.6.0)."""
         data, _ = bundle_repo_recipe
-        assert data["version"] == "3.5.0", (
-            f"Expected version '3.5.0', got '{data['version']}'"
+        assert data["version"] == "3.6.0", (
+            f"Expected version '3.6.0', got '{data['version']}'"
         )
 
     def test_yaml_structure_lint_step_exists(self, bundle_repo_steps):
