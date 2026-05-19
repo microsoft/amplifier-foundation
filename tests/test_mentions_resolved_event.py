@@ -4,14 +4,21 @@ Evidence-driven test suite that proves:
 
 1. MentionResult.failure_reason — new field, backward-compatible default.
 2. _resolve_mention — failure_reason is populated at every failure site.
-3. _extract_bundle_attribution — correctly maps @mention syntax and cache
-   paths to (bundle_namespace, source_type) pairs.
-4. _build_resolutions — constructs the event payload from ContextFile objects.
-5. Factory emission — the system-prompt factory emits mentions:resolved on
+3. _determine_source_type — classifies the syntax form of a mention string
+   into one of: bundle_namespace, bundle_context_decl, user_shortcut,
+   project_shortcut, home_shortcut, relative_path.
+4. _to_origins_key — normalises @mention strings to the
+   "context:{ns}:{name}" key form used by Bundle.origins.
+5. _lookup_origins — retrieves the full attribution chain from Bundle.origins;
+   synthesises a single-entry chain from the namespace prefix when the key is
+   absent; returns [] for user-owned paths (no bundle attribution).
+6. _build_resolutions — constructs the event payload from ContextFile objects,
+   emitting origins: list[{bundle, via}] instead of a flat bundle: str | None.
+7. Factory emission — the system-prompt factory emits mentions:resolved on
    the first turn that loads context, and is silent on subsequent turns
    when nothing new has been added.
-6. Observability registration — create_session() registers the event on the
-   coordinator's observability.events contribution channel.
+8. Observability registration — create_session() and spawn() register the
+   event on the coordinator's observability.events contribution channel.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from amplifier_foundation.bundle import Bundle
+from amplifier_foundation.configurator._types import Origin
 from amplifier_foundation.mentions.deduplicator import ContentDeduplicator
 from amplifier_foundation.mentions.loader import load_mentions
 from amplifier_foundation.mentions.models import ContextFile, MentionResult
@@ -35,7 +43,7 @@ from amplifier_foundation.mentions.resolver import BaseMentionResolver
 _prep = importlib.import_module("amplifier_foundation.bundle._prepared")
 PreparedBundle: Any = _prep.PreparedBundle
 BundleModuleResolver: Any = _prep.BundleModuleResolver
-_extract_bundle_attribution: Any = _prep._extract_bundle_attribution
+_determine_source_type: Any = _prep._determine_source_type
 _build_resolutions: Any = _prep._build_resolutions
 MENTIONS_RESOLVED: str = _prep._MENTIONS_RESOLVED_EVENT
 
@@ -215,74 +223,44 @@ class TestLoaderFailureReason:
         assert getattr(results[0], "failure_reason") is None  # type: ignore[attr-defined]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. _extract_bundle_attribution
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────
+# 3. _determine_source_type — syntax label only (no attribution)
+# ──────────────────────────────────────────────────────────────────────────
 
 
-class TestExtractBundleAttribution:
-    """Attribution logic maps @mention syntax and cache paths to (bundle, source_type)."""
+class TestDetermineSourceType:
+    """_determine_source_type classifies the syntactic form of a mention.
 
-    def _any_path(self) -> Path:
-        return Path("/tmp/dummy.md")
+    It returns ONLY the source_type label (str). Bundle attribution lives in
+    Bundle.origins and is looked up by _lookup_origins — not by parsing paths.
+    """
 
     @pytest.mark.parametrize(
-        "mention, want_bundle, want_type",
+        "mention, want_type",
         [
-            ("@foundation:context/foo.md", "foundation", "bundle_namespace"),
-            ("@recipes:agents/coder.md", "recipes", "bundle_namespace"),
-            ("@my-bundle:path/doc.md", "my-bundle", "bundle_namespace"),
-            ("@user:settings.md", "user", "user_shortcut"),
-            ("@project:custom.md", "project", "project_shortcut"),
+            ("@foundation:context/foo.md", "bundle_namespace"),
+            ("@recipes:agents/coder.md", "bundle_namespace"),
+            ("@my-bundle:path/doc.md", "bundle_namespace"),
+            ("@user:settings.md", "user_shortcut"),
+            ("@project:custom.md", "project_shortcut"),
         ],
     )
-    def test_namespaced_mentions(
-        self, mention: str, want_bundle: str, want_type: str
-    ) -> None:
-        bundle, source_type = _extract_bundle_attribution(mention, self._any_path())
-        assert bundle == want_bundle
-        assert source_type == want_type
+    def test_namespaced_mentions(self, mention: str, want_type: str) -> None:
+        assert _determine_source_type(mention) == want_type
 
     @pytest.mark.parametrize("mention", ["@~/my-notes.md", "@~/.amplifier/cfg.md"])
     def test_home_shortcut(self, mention: str) -> None:
-        bundle, source_type = _extract_bundle_attribution(mention, self._any_path())
-        assert bundle is None
-        assert source_type == "home_shortcut"
+        assert _determine_source_type(mention) == "home_shortcut"
 
     @pytest.mark.parametrize(
         "mention", ["@AGENTS.md", "@./subdir/file.md", "@docs/guide.md"]
     )
     def test_relative_path(self, mention: str) -> None:
-        bundle, source_type = _extract_bundle_attribution(mention, self._any_path())
-        assert bundle is None
-        assert source_type == "relative_path"
+        assert _determine_source_type(mention) == "relative_path"
 
-    def test_cache_path_extracts_slug(self) -> None:
-        """Bundle cache paths yield the slug as attribution."""
-        cache_path = Path(
-            "/home/user/.amplifier/cache"
-            "/amplifier-foundation-c909465861f9d6ce"
-            "/context/bundle-awareness.md"
-        )
-        bundle, source_type = _extract_bundle_attribution(None, cache_path)
-        assert bundle == "foundation"
-        assert source_type == "bundle_context_decl"
-
-    def test_cache_path_hyphenated_slug(self) -> None:
-        cache_path = Path(
-            "/home/user/.amplifier/cache"
-            "/amplifier-context-intelligence-abc123def456"
-            "/context/awareness.md"
-        )
-        bundle, source_type = _extract_bundle_attribution(None, cache_path)
-        assert bundle == "context-intelligence"
-        assert source_type == "bundle_context_decl"
-
-    def test_local_path_no_cache_pattern(self, tmp_path: Path) -> None:
-        """A local file path with no cache pattern → bundle=None."""
-        bundle, source_type = _extract_bundle_attribution(None, tmp_path / "local.md")
-        assert bundle is None
-        assert source_type == "bundle_context_decl"
+    def test_no_mention_is_bundle_context_decl(self) -> None:
+        """mention=None (a ContextFile from the context: YAML section) → bundle_context_decl."""
+        assert _determine_source_type(None) == "bundle_context_decl"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -302,12 +280,14 @@ class TestBuildResolutions:
     def test_all_required_fields_present(self, tmp_path: Path) -> None:
         f = tmp_path / "file.md"
         f.write_text("hello")
-        resolutions = _build_resolutions([self._make_cf(f)], {"@file.md": f})
+        resolutions = _build_resolutions(
+            [self._make_cf(f)], {"@file.md": f}, bundle_origins={}
+        )
         assert len(resolutions) == 1
         assert set(resolutions[0].keys()) == {
             "mention",
             "resolved_path",
-            "bundle",
+            "origins",
             "source_type",
             "content_hash",
             "is_new",
@@ -317,7 +297,9 @@ class TestBuildResolutions:
         f = tmp_path / "file.md"
         f.write_text("content")
         cf = self._make_cf(f)
-        resolutions = _build_resolutions([cf], {"@file.md": f}, seen_hashes=set())
+        resolutions = _build_resolutions(
+            [cf], {"@file.md": f}, bundle_origins={}, seen_hashes=set()
+        )
         assert resolutions[0]["is_new"] is True
 
     def test_is_new_false_when_hash_already_seen(self, tmp_path: Path) -> None:
@@ -325,32 +307,222 @@ class TestBuildResolutions:
         f.write_text("content")
         cf = self._make_cf(f)
         resolutions = _build_resolutions(
-            [cf], {"@file.md": f}, seen_hashes={cf.content_hash}
+            [cf], {"@file.md": f}, bundle_origins={}, seen_hashes={cf.content_hash}
         )
         assert resolutions[0]["is_new"] is False
-
-    def test_bundle_namespace_in_payload(self, tmp_path: Path) -> None:
-        """@foundation:ctx/x.md → bundle='foundation' in the resolution entry."""
-        f = tmp_path / "x.md"
-        f.write_text("x")
-        cf = self._make_cf(f, "x")
-        resolutions = _build_resolutions(
-            [cf], {"@foundation:ctx/x.md": f}, seen_hashes=set()
-        )
-        assert resolutions[0]["bundle"] == "foundation"
-        assert resolutions[0]["source_type"] == "bundle_namespace"
 
     def test_untracked_path_gets_mention_none(self, tmp_path: Path) -> None:
         """A ContextFile whose path has no entry in mention_to_path → mention=None."""
         f = tmp_path / "orphan.md"
         f.write_text("orphan")
-        resolutions = _build_resolutions([self._make_cf(f, "orphan")], {})
+        resolutions = _build_resolutions(
+            [self._make_cf(f, "orphan")], {}, bundle_origins={}
+        )
         assert resolutions[0]["mention"] is None
 
+    def test_origins_shape_direct_introducer(self, tmp_path: Path) -> None:
+        """Bundle.origins has [Origin('foundation', None)] → payload origins
+        list has a single entry with bundle='foundation' and via=None."""
+        f = tmp_path / "x.md"
+        f.write_text("x")
+        cf = self._make_cf(f, "x")
+        bundle_origins = {
+            "context:foundation:ctx/x.md": [
+                Origin(bundle="foundation", via_behavior=None)
+            ]
+        }
+        resolutions = _build_resolutions(
+            [cf],
+            {"@foundation:ctx/x.md": f},
+            bundle_origins=bundle_origins,
+            seen_hashes=set(),
+        )
+        assert resolutions[0]["origins"] == [{"bundle": "foundation", "via": None}]
+        assert resolutions[0]["source_type"] == "bundle_namespace"
+
+    def test_full_chain_via_behavior(self, tmp_path: Path) -> None:
+        """A two-entry origin chain is preserved in order in the payload."""
+        f = tmp_path / "g.md"
+        f.write_text("g")
+        cf = self._make_cf(f, "g")
+        bundle_origins = {
+            "context:foundation:ctx/g.md": [
+                Origin(bundle="behavior-x", via_behavior=None),
+                Origin(bundle="foundation", via_behavior="behavior-x"),
+            ]
+        }
+        resolutions = _build_resolutions(
+            [cf],
+            {"@foundation:ctx/g.md": f},
+            bundle_origins=bundle_origins,
+            seen_hashes=set(),
+        )
+        assert resolutions[0]["origins"] == [
+            {"bundle": "behavior-x", "via": None},
+            {"bundle": "foundation", "via": "behavior-x"},
+        ]
+
+    def test_fallback_for_mention_not_in_origins(self, tmp_path: Path) -> None:
+        """@foundation:ctx/foo.md not present in bundle_origins → synthesise
+        a single-entry chain from the namespace prefix."""
+        f = tmp_path / "foo.md"
+        f.write_text("foo")
+        cf = self._make_cf(f, "foo")
+        resolutions = _build_resolutions(
+            [cf],
+            {"@foundation:ctx/foo.md": f},
+            bundle_origins={},  # mention missing from origins
+            seen_hashes=set(),
+        )
+        assert resolutions[0]["origins"] == [{"bundle": "foundation", "via": None}]
+
+    def test_user_owned_file_has_empty_origins(self, tmp_path: Path) -> None:
+        """A relative-path mention (@./local.md) → origins=[] (never null)."""
+        f = tmp_path / "local.md"
+        f.write_text("local")
+        cf = self._make_cf(f, "local")
+        resolutions = _build_resolutions(
+            [cf],
+            {"@./local.md": f},
+            bundle_origins={},
+            seen_hashes=set(),
+        )
+        assert resolutions[0]["origins"] == []
+        assert resolutions[0]["source_type"] == "relative_path"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. Factory emission  (primary behavioural evidence)
+# 4b. _to_origins_key — normalise mention to Bundle.origins key form
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestToOriginsKey:
+    """_to_origins_key normalises a mention to the Bundle.origins key form."""
+
+    def _fn(self):
+        return getattr(_prep, "_to_origins_key")
+
+    def test_bundle_namespace_mention_produces_context_key(self) -> None:
+        """@foundation:context/foo.md → 'context:foundation:context/foo.md'."""
+        fn = self._fn()
+        assert fn("@foundation:context/foo.md") == "context:foundation:context/foo.md"
+
+    def test_strips_leading_at(self) -> None:
+        """The leading @ is stripped before building the key."""
+        fn = self._fn()
+        assert fn("@recipes:agents/coder.md") == "context:recipes:agents/coder.md"
+
+    def test_mention_without_at_also_normalised(self) -> None:
+        """A context-name key without @ prefix (from context: YAML) is normalised."""
+        fn = self._fn()
+        assert (
+            fn("foundation:context/guide.md") == "context:foundation:context/guide.md"
+        )
+
+    def test_none_returns_none(self) -> None:
+        """mention=None (bundle_context_decl) → None."""
+        fn = self._fn()
+        assert fn(None) is None
+
+    def test_bare_relative_path_returns_none(self) -> None:
+        """@AGENTS.md has no namespace colon → None."""
+        fn = self._fn()
+        assert fn("@AGENTS.md") is None
+
+    def test_relative_dot_path_returns_none(self) -> None:
+        """@./subdir/file.md has no namespace → None."""
+        fn = self._fn()
+        assert fn("@./subdir/file.md") is None
+
+    def test_user_shortcut_returns_none(self) -> None:
+        """@user:settings.md → None (user-owned, no bundle origins entry)."""
+        fn = self._fn()
+        assert fn("@user:settings.md") is None
+
+    def test_project_shortcut_returns_none(self) -> None:
+        """@project:custom.md → None (user-owned)."""
+        fn = self._fn()
+        assert fn("@project:custom.md") is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4c. _lookup_origins — resolve mention to bundle attribution chain
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestLookupOrigins:
+    """_lookup_origins returns a list of {bundle, via} dicts from Bundle.origins."""
+
+    def _fn(self):
+        return getattr(_prep, "_lookup_origins")
+
+    def test_returns_chain_from_origins(self) -> None:
+        """Key found in bundle_origins → projected chain returned."""
+        fn = self._fn()
+        origins = {
+            "context:foundation:ctx/a.md": [
+                Origin(bundle="foundation", via_behavior=None)
+            ]
+        }
+        result = fn("@foundation:ctx/a.md", origins)
+        assert result == [{"bundle": "foundation", "via": None}]
+
+    def test_returns_full_chain_order_preserved(self) -> None:
+        """Multi-entry chain is returned in order."""
+        fn = self._fn()
+        origins = {
+            "context:foundation:ctx/b.md": [
+                Origin(bundle="behavior-x", via_behavior=None),
+                Origin(bundle="foundation", via_behavior="behavior-x"),
+            ]
+        }
+        result = fn("@foundation:ctx/b.md", origins)
+        assert result == [
+            {"bundle": "behavior-x", "via": None},
+            {"bundle": "foundation", "via": "behavior-x"},
+        ]
+
+    def test_synthesises_single_entry_when_not_in_origins(self) -> None:
+        """@foundation:ctx/missing.md not in origins → single synthesised entry."""
+        fn = self._fn()
+        result = fn("@foundation:ctx/missing.md", {})
+        assert result == [{"bundle": "foundation", "via": None}]
+
+    def test_relative_path_returns_empty(self) -> None:
+        """@AGENTS.md (no namespace) → []."""
+        fn = self._fn()
+        assert fn("@AGENTS.md", {}) == []
+
+    def test_none_mention_returns_empty(self) -> None:
+        """mention=None → []."""
+        fn = self._fn()
+        assert fn(None, {}) == []
+
+    def test_user_shortcut_returns_empty(self) -> None:
+        """@user:settings.md → []."""
+        fn = self._fn()
+        assert fn("@user:settings.md", {}) == []
+
+    def test_project_shortcut_returns_empty(self) -> None:
+        """@project:custom.md → []."""
+        fn = self._fn()
+        assert fn("@project:custom.md", {}) == []
+
+    def test_via_behavior_projected_as_via(self) -> None:
+        """Origin.via_behavior is returned under the 'via' key."""
+        fn = self._fn()
+        origins = {
+            "context:ns:doc.md": [
+                Origin(bundle="ns", via_behavior="some-behavior"),
+            ]
+        }
+        result = fn("@ns:doc.md", origins)
+        assert result[0]["via"] == "some-behavior"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 5. Factory emission  (primary behavioural evidence)
+# ──────────────────────────────────────────────────────────────────────────
 
 
 class TestFactoryEmission:
@@ -502,6 +674,52 @@ class TestFactoryEmission:
             assert entry["reason"] in valid_reasons, (
                 f"Unexpected failure reason: {entry['reason']!r}"
             )
+
+    @pytest.mark.asyncio
+    async def test_bundle_origins_propagated_to_resolution_payload(
+        self, tmp_path: Path
+    ) -> None:
+        """captured_bundle.origins is passed to _build_resolutions (not {}).
+
+        When a bundle has origins with a non-None via_behavior, that value must
+        appear in the resolution payload.  Passing {} instead of
+        captured_bundle.origins discards this information.
+
+        Setup: bundle with context key '@mybundle:guide.md' and origins dict
+        that carries via_behavior='behavior-x' for that key.  The factory must
+        emit a resolution whose origins chain reflects the real via value.
+        """
+        guide_file = tmp_path / "guide.md"
+        guide_file.write_text("# Guide")
+
+        from amplifier_foundation.configurator._types import Origin
+
+        bundle = Bundle(
+            name="mybundle",
+            context={"@mybundle:guide.md": guide_file},
+            origins={
+                "context:mybundle:guide.md": [
+                    Origin(bundle="mybundle", via_behavior="behavior-x")
+                ]
+            },
+        )
+        prepared = _make_prepared(bundle)
+        session = _make_mock_session()
+
+        factory = prepared._create_system_prompt_factory(bundle, session)
+        await factory()
+
+        _, payload = session.coordinator.hooks.emit.call_args.args
+        assert payload["resolutions"], (
+            "No resolutions emitted — bundle context not loaded"
+        )
+
+        origins_in_payload = payload["resolutions"][0]["origins"]
+        assert origins_in_payload == [{"bundle": "mybundle", "via": "behavior-x"}], (
+            f"Expected via_behavior to be 'behavior-x' but got: {origins_in_payload!r}. "
+            f"Likely cause: _build_resolutions was called with {{}} instead of "
+            f"captured_bundle.origins, discarding the actual origin chain."
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

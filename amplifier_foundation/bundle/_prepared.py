@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from dataclasses import dataclass
 from dataclasses import field
 from decimal import Decimal
@@ -34,62 +33,107 @@ logger = logging.getLogger(__name__)
 #: Event name registered via the observability.events contribution channel.
 _MENTIONS_RESOLVED_EVENT = "mentions:resolved"
 
-#: Pattern to extract bundle slug from cache paths like
-#: ``/…/.amplifier/cache/amplifier-foundation-c9094…/context/foo.md``
-_CACHE_SLUG_RE = re.compile(r"[/\\]amplifier-([a-zA-Z0-9_-]+)-[a-f0-9]{8,}[/\\]")
 
+def _determine_source_type(mention: str | None) -> str:
+    """Classify the syntactic form of a mention; return only the source_type label.
 
-def _extract_bundle_attribution(
-    mention: str | None,
-    path: Path,
-) -> tuple[str | None, str]:
-    """Return ``(bundle_namespace, source_type)`` for a resolved mention/path.
+    Bundle attribution is handled separately by ``_lookup_origins`` against
+    ``Bundle.origins``.  This function does *not* parse paths and does *not*
+    use any cache-directory heuristic.
 
-    The *mention* string determines source type when present (e.g.
-    ``@foundation:context/foo.md``).  For context files declared in the
-    ``context:`` YAML section without an ``@`` prefix, the cache path is
-    parsed to recover the bundle slug.
-
-    Returns:
-        A ``(bundle, source_type)`` tuple where ``bundle`` is ``None`` for
-        user-owned paths (home shortcut, relative path).
+    Returns one of:
+        - "bundle_namespace"       — e.g. ``@foundation:context/foo.md``
+        - "user_shortcut"          — e.g. ``@user:settings.md``
+        - "project_shortcut"       — e.g. ``@project:custom.md``
+        - "home_shortcut"          — e.g. ``@~/notes.md``
+        - "relative_path"          — e.g. ``@AGENTS.md`` or ``@./sub/file.md``
+        - "bundle_context_decl"    — ``mention is None`` (entry came from the
+                                     ``context:`` YAML section, not an @mention)
     """
-    if mention is not None:
-        stripped = mention.lstrip("@")
+    if mention is None:
+        return "bundle_context_decl"
+    stripped = mention.lstrip("@")
+    if ":" in stripped:
+        namespace = stripped.split(":")[0]
+        if namespace == "user":
+            return "user_shortcut"
+        if namespace == "project":
+            return "project_shortcut"
+        return "bundle_namespace"
+    if stripped.startswith("~/") or stripped.startswith("~\\") or stripped == "~":
+        return "home_shortcut"
+    return "relative_path"
+
+
+def _to_origins_key(mention: str | None) -> str | None:
+    """Normalise a mention or context-key string to the ``Bundle.origins`` key form.
+
+    ``Bundle.origins`` keys for context files look like
+    ``"context:{namespace}:{name}"`` (e.g. ``"context:foundation:context/guide.md"``).
+    This helper strips a leading ``@`` and prepends ``"context:"`` so callers
+    can use plain ``dict.get`` against the origins map.
+
+    Returns ``None`` for user-owned mentions (home shortcut, relative path,
+    or ``mention is None``) — there is no corresponding origins key for these.
+    """
+    if mention is None:
+        return None
+    stripped = mention.lstrip("@")
+    if ":" not in stripped:
+        return None  # bare relative path — no namespace, no origins key
+    namespace = stripped.split(":")[0]
+    if namespace in ("user", "project") or namespace.startswith("~"):
+        return None  # user-owned shortcuts have no Bundle.origins entry
+    return f"context:{stripped}"
+
+
+def _lookup_origins(mention: str | None, bundle_origins: dict) -> list[dict]:
+    """Look up the bundle-attribution chain for a resolved mention.
+
+    Strategy (matches the design doc Section "Attribution wiring"):
+
+    1. Normalise the mention to a ``Bundle.origins`` key via ``_to_origins_key``.
+    2. If the key is present in ``bundle_origins``, project each ``Origin`` into
+       ``{"bundle": str, "via": str | None}`` and return the chain.
+    3. If the mention has a bundle namespace prefix but is missing from
+       ``bundle_origins`` (common for @mentions in the instruction text that
+       are not declared in ``context:`` YAML), synthesise a single-entry chain
+       from the namespace.
+    4. Otherwise (user-owned file, ``mention is None``, no namespace) return ``[]``.
+
+    The empty list is the explicit "no bundle attribution" signal — distinct
+    from "bundle unknown" (which uses the synthesised single-entry chain).
+    """
+    key = _to_origins_key(mention)
+    if key is not None:
+        chain = bundle_origins.get(key, [])
+        if chain:
+            return [{"bundle": o.bundle, "via": o.via_behavior} for o in chain]
+        # Synthesise from the namespace prefix when the @mention is not in origins.
+        stripped = (mention or "").lstrip("@")
         if ":" in stripped:
             namespace = stripped.split(":")[0]
-            if namespace == "user":
-                return "user", "user_shortcut"
-            if namespace == "project":
-                return "project", "project_shortcut"
-            # Any other "namespace:" form — treat as bundle namespace
-            return namespace, "bundle_namespace"
-        if stripped.startswith("~/") or stripped.startswith("~\\") or stripped == "~":
-            return None, "home_shortcut"
-        # Bare filename or relative path
-        return None, "relative_path"
-
-    # No @mention string: this is a bundle_context_decl (from the context: YAML
-    # section).  Recover attribution from the cache path pattern.
-    m = _CACHE_SLUG_RE.search(str(path))
-    if m:
-        return m.group(1), "bundle_context_decl"
-    return None, "bundle_context_decl"
+            return [{"bundle": namespace, "via": None}]
+    return []
 
 
 def _build_resolutions(
     context_files: list,  # list[ContextFile]
     mention_to_path: dict[str, Path],
+    bundle_origins: dict,  # Bundle.origins: dict[str, list[Origin]]
     seen_hashes: set[str] | None = None,
 ) -> list[dict]:
     """Build the ``resolutions`` list for the ``mentions:resolved`` event payload.
 
     Args:
-        context_files: ContextFile objects to include in the payload.
+        context_files:   ContextFile objects to include in the payload.
         mention_to_path: Maps @mention strings (or context-name keys) to their
-            resolved paths.  Used for reverse look-up (path → mention).
-        seen_hashes: Set of content hashes already emitted in earlier turns.
-            When provided, ``is_new`` is ``False`` for matching entries.
+                         resolved paths.  Used for reverse look-up (path → mention).
+        bundle_origins:  ``Bundle.origins`` from the prepared bundle — the source
+                         of truth for who introduced each context file.  See
+                         ``_lookup_origins`` for the lookup rule.
+        seen_hashes:     Set of content hashes already emitted in earlier turns.
+                         When provided, ``is_new`` is ``False`` for matching entries.
 
     Returns:
         List of resolution dicts matching the ``mentions:resolved`` schema.
@@ -107,12 +151,13 @@ def _build_resolutions(
             path_key = str(p.resolve())
             mentions_for_path: list[str | None] = path_to_mentions.get(path_key, [None])
             for mention in mentions_for_path:
-                bundle, source_type = _extract_bundle_attribution(mention, p)
+                source_type = _determine_source_type(mention)
+                origins = _lookup_origins(mention, bundle_origins)
                 results.append(
                     {
                         "mention": mention,
                         "resolved_path": str(p),
-                        "bundle": bundle,
+                        "origins": origins,
                         "source_type": source_type,
                         "content_hash": cf.content_hash,
                         "is_new": is_new,
@@ -478,7 +523,7 @@ class PreparedBundle:
 
             if new_files or failed_entries:
                 resolutions = _build_resolutions(
-                    new_files, mention_to_path, _seen_hashes
+                    new_files, mention_to_path, captured_bundle.origins, _seen_hashes
                 )
                 deduplicated_count = len(all_unique) - len(new_files)
                 try:
