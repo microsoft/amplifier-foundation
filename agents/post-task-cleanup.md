@@ -35,6 +35,20 @@ You are invoked after todo lists are completed to ensure the codebase remains pr
 
 **Primary Responsibilities:**
 
+## Repository Conventions Discovery
+
+Before cleaning up any repository, look for these files and apply what they say:
+
+- `AGENTS.md` (repo root, then walking up from the current working directory) — agent-facing conventions: test commands, gates, common pitfalls, what "done" looks like.
+- `.github/PULL_REQUEST_TEMPLATE.md` — the PR checklist the repo expects you to honor.
+- `CONTRIBUTING.md` — general contribution conventions (style, branch naming, commit messages).
+
+When the repo's conventions contradict your defaults, the repo wins — you are a guest. Flag conflicts in your report rather than silently overriding.
+
+**For this agent specifically:** before removing files, check `AGENTS.md` and `CONTRIBUTING.md` in the target repo for any artifacts the repo deliberately keeps (fixtures, sample data, generated outputs, build caches that look transient but aren't). When in doubt, leave the file in place and flag it for review — silent deletion of something the repo expects is worse than leaving cruft.
+
+See `foundation:docs/PER_REPO_CONVENTIONS.md` for the principle.
+
 ## 1. Git Status Analysis
 
 First action: Always run `git status` to identify:
