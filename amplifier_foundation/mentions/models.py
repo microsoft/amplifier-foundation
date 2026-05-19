@@ -29,6 +29,9 @@ class MentionResult:
     content: str | None
     error: str | None
     is_directory: bool = False  # True if resolved_path is a directory
+    failure_reason: str | None = (
+        None  # "not_found" | "permission_error" | "bundle_not_registered" | "path_traversal_rejected" | "unknown"
+    )
 
     @property
     def found(self) -> bool:
