@@ -10,12 +10,24 @@ Verifies:
 - version metadata is up-to-date
 """
 
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 RECIPE_PATH = Path(__file__).parent.parent / "recipes" / "validate-bundle-repo.yaml"
+
+
+def _parse_header_version(content: str) -> str:
+    """Extract version from recipe header comment.
+
+    Header convention: '# Repository-Wide Bundle Validator Recipe vX.Y.Z'
+    """
+    match = re.search(r"Recipe v(\d+\.\d+\.\d+)", content)
+    if not match:
+        raise ValueError(f"Header version not found in: {content.splitlines()[0]}")
+    return match.group(1)
 
 
 @pytest.fixture(scope="module")
@@ -64,31 +76,43 @@ class TestYAMLValidity:
 
 
 class TestVersionMetadata:
-    def test_version_is_3_6_0(self, recipe_data):
-        """version field must be '3.6.0' to reflect v3.6.0 changes."""
-        data, _ = recipe_data
-        assert data["version"] == "3.6.0", (
-            f"Expected version '3.6.0', got '{data['version']}'. "
-            "The version field must be bumped when significant changes are made."
+    def test_version_field_matches_header_version(self, recipe_data):
+        """YAML version field and header comment must always agree.
+
+        Detects the exact bug that broke CI: bumping the header comment
+        without also updating the YAML version: field (or vice versa).
+        """
+        data, content = recipe_data
+        header_version = _parse_header_version(content)
+        yaml_version = data["version"]
+        assert header_version == yaml_version, (
+            f"Header version '{header_version}' does not match YAML version "
+            f"field '{yaml_version}'. Both must be updated on every recipe bump."
         )
 
-    def test_header_comment_references_v3_6_0(self, recipe_data):
-        """File header comment must reference v3.6.0."""
+    def test_current_version_in_changelog(self, recipe_data):
+        """Current version must have a changelog entry.
+
+        Detects a bump where the version field was updated but no changelog
+        entry was written for the new version.
+        """
+        data, content = recipe_data
+        version = data["version"]
+        assert f"v{version}" in content, (
+            f"Recipe is at version '{version}' but no 'v{version}' entry "
+            f"found in CHANGELOG. Bump the version field OR add a changelog entry."
+        )
+
+    def test_header_format_is_canonical(self, recipe_data):
+        """Header comment must follow the canonical format '# ... Recipe vX.Y.Z'.
+
+        Ensures the version is machine-parseable for version-agnostic tests.
+        """
         _, content = recipe_data
-        # The first few lines should mention v3.6.0
         header_lines = content.split("\n")[:5]
         header = "\n".join(header_lines)
-        assert "3.6.0" in header, (
-            "Header comment must be updated to reference v3.6.0. "
-            f"Found header:\n{header}"
-        )
-
-    def test_changelog_has_v3_6_0_entry(self, recipe_data):
-        """Changelog section must contain a v3.6.0 entry."""
-        _, content = recipe_data
-        assert "v3.6.0" in content, (
-            "Changelog must contain a v3.6.0 entry describing the behavior "
-            "reference hygiene changes."
+        assert re.search(r"^# .* Recipe v\d+\.\d+\.\d+$", header, re.MULTILINE), (
+            f"Header must contain a line matching '# ... Recipe vX.Y.Z'. Found:\n{header}"
         )
 
     def test_changelog_still_has_v3_4_0_entry(self, recipe_data):
