@@ -324,7 +324,9 @@ class BundleRegistry:
             - None: Dict of name → Bundle for all registered
         """
         if name_or_uri is None:
-            # Load all registered bundles concurrently
+            # Load all registered bundles concurrently.
+            # Batch loads do NOT mark bundles as explicitly_requested — only a
+            # specific named load represents a user's deliberate choice.
             names = self.list_registered()
             if not names:
                 return {}
@@ -343,7 +345,13 @@ class BundleRegistry:
 
             return bundles
 
-        return await self._load_single(name_or_uri, auto_register=auto_register)
+        # Single-bundle load: the caller explicitly named this bundle, so it
+        # should be marked as explicitly_requested in the registry.
+        return await self._load_single(
+            name_or_uri,
+            auto_register=auto_register,
+            _explicitly_requested=True,
+        )
 
     async def _load_single(
         self,
@@ -353,6 +361,7 @@ class BundleRegistry:
         auto_include: bool = True,
         refresh: bool = False,  # noqa: ARG002 - Reserved for future cache bypass
         _loading_chain: frozenset[str] | None = None,
+        _explicitly_requested: bool = False,
     ) -> Bundle:
         """Load a single bundle by name or URI.
 
@@ -536,10 +545,12 @@ class BundleRegistry:
                     local_path=str(local_path),
                     is_root=is_root_bundle,
                     root_name=root_bundle_name,
+                    explicitly_requested=_explicitly_requested,
                 )
                 logger.debug(
                     f"Registered bundle for namespace resolution: {bundle.name} "
-                    f"(is_root={is_root_bundle}, root_name={root_bundle_name})"
+                    f"(is_root={is_root_bundle}, root_name={root_bundle_name}, "
+                    f"explicitly_requested={_explicitly_requested})"
                 )
 
             # Update state for known bundle (pre-registered via well-known bundles, etc.)
@@ -567,6 +578,14 @@ class BundleRegistry:
                     state.version = bundle.version
                     state.loaded_at = datetime.now()
                     state.local_path = str(local_path)
+                    # Sticky update: never downgrade explicitly_requested from True→False.
+                    # A bundle previously added via `bundle use`/`bundle add` keeps its
+                    # True status even when loaded transitively in another session.
+                    if _explicitly_requested and not state.explicitly_requested:
+                        state.explicitly_requested = True
+                        logger.debug(
+                            f"Marked '{update_name}' as explicitly_requested=True"
+                        )
 
             # Load includes and compose (pass the chain for per-chain cycle detection)
             if auto_include and bundle.includes:
@@ -586,6 +605,17 @@ class BundleRegistry:
             # Store source URI for update checking (used by check_bundle_status)
             # Must be set AFTER composition since compose() returns a new Bundle
             bundle._source_uri = uri  # type: ignore[attr-defined]
+
+            # Persist registry if this was an explicitly-requested top-level load
+            # and the bundle has no includes (bundles with includes are saved via
+            # _record_include_relationships → save()).  Without this, a bundle
+            # with an empty includes: list would never write its
+            # explicitly_requested=True flag to disk, leaving the inspector
+            # unable to surface the root-bundle marker.
+            if _explicitly_requested:
+                already_saved = bool(auto_include and getattr(bundle, "includes", None))
+                if not already_saved:
+                    self.save()
 
             # Cache the loaded bundle and complete the future
             self._loaded_bundles[uri] = bundle
