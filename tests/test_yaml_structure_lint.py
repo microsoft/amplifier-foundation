@@ -9,6 +9,7 @@ These tests validate BOTH:
 2. The recipe structure (integration tests on the recipe YAML files)
 """
 
+import re
 import textwrap
 from pathlib import Path
 
@@ -434,14 +435,57 @@ class TestSingleBundleRecipeStructure:
 # =============================================================================
 
 
+def _parse_header_version(content: str) -> str:
+    """Extract version from recipe header comment.
+
+    Header convention: '# Repository-Wide Bundle Validator Recipe vX.Y.Z'
+    """
+    match = re.search(r"Recipe v(\d+\.\d+\.\d+)", content)
+    if not match:
+        raise ValueError(f"Header version not found in: {content.splitlines()[0]}")
+    return match.group(1)
+
+
 class TestBundleRepoRecipeStructure:
     """Verify validate-bundle-repo.yaml has the yaml-structure-lint step."""
 
-    def test_version_is_3_6_0(self, bundle_repo_recipe):
-        """Version must be bumped to 3.6.0 (currently at v3.6.0)."""
-        data, _ = bundle_repo_recipe
-        assert data["version"] == "3.6.0", (
-            f"Expected version '3.6.0', got '{data['version']}'"
+    def test_version_field_matches_header_version(self, bundle_repo_recipe):
+        """YAML version field and header comment must always agree.
+
+        Detects the exact bug that broke CI: bumping the header comment
+        without also updating the YAML version: field (or vice versa).
+        """
+        data, content = bundle_repo_recipe
+        header_version = _parse_header_version(content)
+        yaml_version = data["version"]
+        assert header_version == yaml_version, (
+            f"Header version '{header_version}' does not match YAML version "
+            f"field '{yaml_version}'. Both must be updated on every recipe bump."
+        )
+
+    def test_current_version_in_changelog(self, bundle_repo_recipe):
+        """Current version must have a changelog entry.
+
+        Detects a bump where the version field was updated but no changelog
+        entry was written for the new version.
+        """
+        data, content = bundle_repo_recipe
+        version = data["version"]
+        assert f"v{version}" in content, (
+            f"Recipe is at version '{version}' but no 'v{version}' entry "
+            f"found in CHANGELOG. Bump the version field OR add a changelog entry."
+        )
+
+    def test_header_format_is_canonical(self, bundle_repo_recipe):
+        """Header comment must follow the canonical format '# ... Recipe vX.Y.Z'.
+
+        Ensures the version is machine-parseable for version-agnostic tests.
+        """
+        _, content = bundle_repo_recipe
+        header_lines = content.split("\n")[:5]
+        header = "\n".join(header_lines)
+        assert re.search(r"^# .* Recipe v\d+\.\d+\.\d+$", header, re.MULTILINE), (
+            f"Header must contain a line matching '# ... Recipe vX.Y.Z'. Found:\n{header}"
         )
 
     def test_yaml_structure_lint_step_exists(self, bundle_repo_steps):
