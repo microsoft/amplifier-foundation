@@ -1715,3 +1715,185 @@ class TestRecordIncludeRelationshipsIdempotent:
             assert child_state.included_by.count("parent-a") == 1, (
                 "parent-a must not be duplicated in child.included_by"
             )
+
+
+class TestExplicitlyRequestedFlag:
+    """Tests for BundleState.explicitly_requested wiring.
+
+    explicitly_requested=True is set when the user directly loads a bundle
+    (via load() or _load_single(_explicitly_requested=True)).
+    Transitively-included bundles get False.
+    """
+
+    @pytest.mark.asyncio
+    async def test_top_level_load_sets_explicitly_requested(self) -> None:
+        """A bundle loaded via load() gets explicitly_requested=True."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create a simple root bundle with no includes
+            bundle_dir = base / "my-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.yaml").write_text(
+                "bundle:\n  name: my-bundle\n  version: 1.0.0\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            registry.register({"my-bundle": f"file://{bundle_dir}"})
+
+            # load() with a specific name → explicitly_requested=True
+            await registry.load("my-bundle")
+
+            raw_state = registry.get_state("my-bundle")
+            assert isinstance(raw_state, BundleState), (
+                f"Expected BundleState, got {type(raw_state)}"
+            )
+            assert raw_state.explicitly_requested is True, (
+                "load(name) must set explicitly_requested=True on the loaded bundle"
+            )
+
+    @pytest.mark.asyncio
+    async def test_transitive_include_gets_false(self) -> None:
+        """A bundle loaded via _compose_includes gets explicitly_requested=False."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create child bundle
+            child_dir = base / "child-bundle"
+            child_dir.mkdir()
+            (child_dir / "bundle.yaml").write_text(
+                "bundle:\n  name: child-bundle\n  version: 1.0.0\n"
+            )
+
+            # Create parent bundle that includes child
+            parent_dir = base / "parent-bundle"
+            parent_dir.mkdir()
+            (parent_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: parent-bundle\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{child_dir}\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            registry.register({"parent-bundle": f"file://{parent_dir}"})
+
+            # Load parent explicitly → parent gets True, child gets False
+            await registry.load("parent-bundle")
+
+            raw_parent = registry.get_state("parent-bundle")
+            raw_child = registry.get_state("child-bundle")
+
+            assert isinstance(raw_parent, BundleState)
+            assert raw_parent.explicitly_requested is True, (
+                "The directly-loaded parent bundle must have explicitly_requested=True"
+            )
+
+            assert isinstance(raw_child, BundleState)
+            assert raw_child.explicitly_requested is False, (
+                "A transitively-included child bundle must have explicitly_requested=False"
+            )
+
+    @pytest.mark.asyncio
+    async def test_explicitly_requested_never_downgraded(self) -> None:
+        """A bundle with explicitly_requested=True is never overwritten with False."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create bundle A (will be loaded explicitly first)
+            bundle_a_dir = base / "bundle-a"
+            bundle_a_dir.mkdir()
+            (bundle_a_dir / "bundle.yaml").write_text(
+                "bundle:\n  name: bundle-a\n  version: 1.0.0\n"
+            )
+
+            # Create bundle B that includes A (A loaded transitively here)
+            bundle_b_dir = base / "bundle-b"
+            bundle_b_dir.mkdir()
+            (bundle_b_dir / "bundle.yaml").write_text(
+                "bundle:\n"
+                "  name: bundle-b\n"
+                "  version: 1.0.0\n"
+                "includes:\n"
+                f"  - file://{bundle_a_dir}\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            registry.register(
+                {
+                    "bundle-a": f"file://{bundle_a_dir}",
+                    "bundle-b": f"file://{bundle_b_dir}",
+                }
+            )
+
+            # Load A explicitly first → explicitly_requested=True
+            await registry.load("bundle-a")
+            raw_a = registry.get_state("bundle-a")
+            assert isinstance(raw_a, BundleState)
+            assert raw_a.explicitly_requested is True
+
+            # Load B explicitly (which transitively includes A again)
+            # This must NOT downgrade A's explicitly_requested to False
+            await registry.load("bundle-b")
+
+            raw_a_after = registry.get_state("bundle-a")
+            assert isinstance(raw_a_after, BundleState)
+            assert raw_a_after.explicitly_requested is True, (
+                "explicitly_requested must not be downgraded from True to False "
+                "when a bundle is loaded transitively after being explicitly requested"
+            )
+
+    @pytest.mark.asyncio
+    async def test_batch_load_does_not_set_explicitly_requested(self) -> None:
+        """Loading all bundles via load(None) must NOT mark them explicitly_requested."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            bundle_dir = base / "my-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.yaml").write_text(
+                "bundle:\n  name: my-bundle\n  version: 1.0.0\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            registry.register({"my-bundle": f"file://{bundle_dir}"})
+
+            # Batch load (load all) → should NOT set explicitly_requested=True
+            await registry.load(None)
+
+            raw_state = registry.get_state("my-bundle")
+            assert isinstance(raw_state, BundleState)
+            assert raw_state.explicitly_requested is False, (
+                "Batch load(None) must not set explicitly_requested=True; "
+                "only a specific named load should mark a bundle as explicit"
+            )
+
+    @pytest.mark.asyncio
+    async def test_explicitly_requested_persisted_to_disk(self) -> None:
+        """explicitly_requested=True is saved to registry.json and reloaded correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            bundle_dir = base / "my-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "bundle.yaml").write_text(
+                "bundle:\n  name: my-bundle\n  version: 1.0.0\n"
+            )
+
+            registry = BundleRegistry(home=base / "home")
+            registry.register({"my-bundle": f"file://{bundle_dir}"})
+            await registry.load("my-bundle")
+
+            # Verify it's in memory
+            raw_state = registry.get_state("my-bundle")
+            assert isinstance(raw_state, BundleState)
+            assert raw_state.explicitly_requested is True
+
+            # Create a fresh registry reading from disk
+            registry2 = BundleRegistry(home=base / "home")
+            raw_state2 = registry2.get_state("my-bundle")
+            assert isinstance(raw_state2, BundleState)
+            assert raw_state2.explicitly_requested is True, (
+                "explicitly_requested=True must survive a registry.json round-trip"
+            )

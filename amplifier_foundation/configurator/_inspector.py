@@ -945,6 +945,14 @@ class BundleInspector:
             if root_ns is not None:
                 contributions["root_namespace"] = root_ns
 
+            # Look up explicitly_requested from the persisted registry so the
+            # renderer can mark bundles the user explicitly activated with "*".
+            explicitly_req = False
+            if self._registry_dict:
+                reg_state = self._registry_dict.get(name)
+                if reg_state is not None:
+                    explicitly_req = getattr(reg_state, "explicitly_requested", False)
+
             # Build a minimal ItemRecord for each behavior.
             # The origins here reflect what claimants THAT behavior itself
             # introduced — for behaviors, there's no separate origins chain,
@@ -960,6 +968,7 @@ class BundleInspector:
                     origins=[],
                     include_paths=[],
                     runtime_injection=None,
+                    explicitly_requested=explicitly_req,
                 )
             )
 

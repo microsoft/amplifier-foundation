@@ -112,6 +112,9 @@ class ItemRecord:
     origins: list[Origin]
     include_paths: list[list[IncludeStep]]
     runtime_injection: Literal["static", "mode", "hook", "skills", "mcp", "task"] | None
+    explicitly_requested: bool = (
+        False  # True when this bundle was the user's explicit entry point
+    )
 
 
 __all__ = ["Origin", "IncludeStep", "ItemRecord"]
