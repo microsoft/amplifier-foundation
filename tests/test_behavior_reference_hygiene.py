@@ -1,4 +1,4 @@
-"""Tests for Behavior Reference Hygiene checks (v3.5.0).
+"""Tests for Behavior Reference Hygiene checks (v3.6.0).
 
 Verifies that the hygiene logic correctly detects:
 - Check A: Cross-repo root-bundle references in behavior includes
@@ -412,11 +412,11 @@ class TestBothChecks:
 class TestBundleRepoRecipeStructure:
     """Verify validate-bundle-repo.yaml has the behavior-reference-hygiene step."""
 
-    def test_version_is_3_5_0(self, bundle_repo_recipe):
-        """Version must be bumped to 3.5.0."""
+    def test_version_is_3_6_0(self, bundle_repo_recipe):
+        """Version must be bumped to 3.6.0."""
         data, _ = bundle_repo_recipe
-        assert data["version"] == "3.5.0", (
-            f"Expected version '3.5.0', got '{data['version']}'"
+        assert data["version"] == "3.6.0", (
+            f"Expected version '3.6.0', got '{data['version']}'"
         )
 
     def test_behavior_reference_hygiene_step_exists(self, bundle_repo_steps):
@@ -508,14 +508,14 @@ class TestBundleRepoRecipeStructure:
         _, content = bundle_repo_recipe
         assert "Behavior Reference Hygiene" in content
 
-    def test_changelog_has_v3_5_0(self, bundle_repo_recipe):
-        """Changelog must mention v3.5.0."""
+    def test_changelog_has_v3_6_0(self, bundle_repo_recipe):
+        """Changelog must mention v3.6.0."""
         _, content = bundle_repo_recipe
-        assert "v3.5.0" in content
+        assert "v3.6.0" in content
 
-    def test_header_references_v3_5_0(self, bundle_repo_recipe):
-        """File header comment must reference v3.5.0."""
+    def test_header_references_v3_6_0(self, bundle_repo_recipe):
+        """File header comment must reference v3.6.0."""
         _, content = bundle_repo_recipe
         header_lines = content.split("\n")[:5]
         header = "\n".join(header_lines)
-        assert "3.5.0" in header, f"Header must reference v3.5.0. Found:\n{header}"
+        assert "3.6.0" in header, f"Header must reference v3.6.0. Found:\n{header}"

@@ -190,7 +190,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.5.0"
+version: "3.6.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
