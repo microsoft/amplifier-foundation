@@ -281,6 +281,78 @@ If you're just adding agents + maybe a tool, a behavior might be all you need.
 
 ---
 
+## Bundle Review Invariants
+
+When reviewing an existing bundle repo, run these checks mechanically **before forming any verdict**. A bundle that fails any of them is broken at the wiring layer regardless of how clean its design looks.
+
+### First, classify the file you're reviewing
+
+The classification is determined by the file's *shape*, not its location:
+
+- **Standalone bundle** — the file declares enough that a bundle loader can resolve it into a full/complete/useful mount plan. Typically the root `bundle.md`/`bundle.yaml` of a repo, but a repo may also ship additional standalones under `/bundles/`.
+- **Partial bundle** — the file contributes capability that composes onto a standalone. Most common: behavior bundles at `behaviors/<bundle-name>.yaml`. Other uses: provider partials, extension behaviors that include and extend another behavior.
+
+The **thin standalone** is the most common shape for bundle repos:
+
+```yaml
+includes:
+  - bundle: <another standalone — almost always foundation or a foundation-including bundle>
+  - bundle: <name>:behaviors/<name>
+```
+
+Anything more is fine but stops being "thin" — it's a richer standalone.
+
+### Invariant 1 — Every artifact in the repo has a runtime path from the standalone
+
+The standalone's `includes:` is the **only** runtime entry surface. For every file or declaration that exists in the repo, trace the path from the standalone to it. If no path exists, the artifact is **dead** — it loads silently and contributes nothing.
+
+| Artifact in repo | Required wiring |
+|---|---|
+| `context/*.md` | `@-mention` in standalone's body **or** `context.include:` in an included behavior partial |
+| `agents/*.md` | `agents:` block in standalone or included partial (no auto-discovery for agents) |
+| `modules/tool-*` | `tools:` block in standalone or included partial |
+| `modules/hook-*` | `hooks:` block in standalone or included partial |
+| `modes/*.md` | Auto-discovered by the modes bundle's hook *only if* the modes bundle is composed in. Verify the prerequisite. |
+| `recipes/*.yaml`, `skills/*` | Auto-discovered by their respective mechanisms — verify those mechanisms are composed in |
+
+### Invariant 2 — If a `behaviors/<name>.yaml` partial exists, the standalone MUST include it
+
+The behavior partial is inert until included. The convention is `- bundle: <name>:behaviors/<name>` in the standalone's `includes:` block. Without that line the behavior file is dead code.
+
+### Invariant 3 — If `context/` files exist, they must be reachable
+
+Two options:
+
+- `@-mention` in the standalone's body
+- `context.include:` entry in an included behavior partial
+
+Neither = dead context.
+
+**The two channels are independent and not deduplicated against each other.** Do not list the same file in both — it loads twice into every session prompt. The `ContentDeduplicator` only operates within recursive `@-mention` resolution; it does not bridge the body-instruction and `context.include` channels.
+
+### Invariant 4 — "Pure-mode bundle" exemption is rare and explicit
+
+Modes auto-discover from `modes/`. **Nothing else does.** A bundle that ships `modes/` *plus* `context/` still needs a behavior partial to wire the context. The "no behavior needed" exemption applies only when:
+
+- `ls context/ agents/ modules/ hooks/` is empty
+- The standalone has no top-level `context:`, `tools:`, `hooks:`, or `agents:` blocks
+
+If any of those exist, the behavior partial is required.
+
+### Invariant 5 — Validator gate-mode matters
+
+`validate-bundle-repo` and similar tools have multiple gate sets. When `amplifier_foundation` is not installed in the runner, the recipe runs in `hygiene_only` mode and skips the `BundleRegistry` resolution that would catch orphaned context, missing behaviors, and broken includes. **A PASS in `hygiene_only` is not a PASS on structural invariants.** Check which gates ran before citing the verdict.
+
+### Verdict policy
+
+- **CRITICAL** — Invariants 1, 2, or 3 fail. Do not issue any PASS verdict (including PASS-WITH-WARN).
+- **WARN** — Invariant 4 or 5 concerns, or stylistic concerns once structural invariants pass.
+- **PASS** — All five invariants pass and design-level concerns are addressed.
+
+Run the invariants first. Design judgment comes after.
+
+---
+
 ## Bundle Composition Patterns
 
 Key patterns (details in BUNDLE_GUIDE.md):

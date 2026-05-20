@@ -345,9 +345,9 @@ Bundle repos follow **conventions** that enable maximum reusability and composit
 
 ### The Recommended Pattern
 
-1. **Put your main value in `/behaviors/`** - this is what others compose onto their bundles
-2. **Root bundle includes its own behavior** - DRY, root bundle stays thin
-3. **`/bundles/` offers pre-composed variants** - convenience for users who want ready-to-run combinations
+1. **Put your main value in `/behaviors/`** — this is what others compose onto their bundles (a "partial" bundle)
+2. **The standalone bundle MUST include its own behavior** — this is the wiring path that makes the behavior's `context:`, `tools:`, and `hooks:` reachable at runtime. The behavior file is inert until included. DRY is a secondary benefit; reachability is the primary one.
+3. **`/bundles/` offers pre-composed variants** — additional standalone bundles for users who want ready-to-run combinations
 
 ```yaml
 # bundle.md (root) - thin, includes own behavior
@@ -1611,6 +1611,7 @@ This fires when `mount()` returns `None` without calling `coordinator.mount()`. 
 
 ### Behavior not applying
 
+- Verify the standalone bundle's `includes:` list contains `- bundle: <name>:behaviors/<name>`. A behavior file on disk that is never included is silently inert — the most common cause of "my behavior isn't loading."
 - Verify behavior YAML syntax is correct
 - Check include path: `my-bundle:behaviors/name` (not `my-bundle:behaviors/name.yaml`)
 - Ensure behavior declares `agents:` and/or `context:` sections
