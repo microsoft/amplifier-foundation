@@ -7,18 +7,13 @@ Evidence-driven test suite that proves:
 3. _determine_source_type — classifies the syntax form of a mention string
    into one of: bundle_namespace, bundle_context_decl, user_shortcut,
    project_shortcut, home_shortcut, relative_path.
-4. _to_origins_key — normalises @mention strings to the
-   "context:{ns}:{name}" key form used by Bundle.origins.
-5. _lookup_origins — retrieves the full attribution chain from Bundle.origins;
-   synthesises a single-entry chain from the namespace prefix when the key is
-   absent; returns [] for user-owned paths (no bundle attribution).
-6. _build_resolutions — constructs the event payload from ContextFile objects,
-   emitting origins: list[{bundle, via}] instead of a flat bundle: str | None.
-7. Factory emission — the system-prompt factory emits mentions:resolved on
+4. _build_resolutions — constructs the event payload (NO origins field,
+   schema is {mention, resolved_path, source_type, content_hash, is_new}).
+5. Factory emission — the system-prompt factory emits mentions:resolved on
    the first turn that loads context, and is silent on subsequent turns
    when nothing new has been added.
-8. Observability registration — create_session() and spawn() register the
-   event on the coordinator's observability.events contribution channel.
+6. Observability registration — create_session() and spawn() register when
+   the bundle has content.
 """
 
 from __future__ import annotations
@@ -31,7 +26,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from amplifier_foundation.bundle import Bundle
-from amplifier_foundation.configurator._types import Origin
 from amplifier_foundation.mentions.deduplicator import ContentDeduplicator
 from amplifier_foundation.mentions.loader import load_mentions
 from amplifier_foundation.mentions.models import ContextFile, MentionResult
@@ -68,9 +62,15 @@ def _make_mock_session() -> MagicMock:
     list_handlers() is the only synchronous method on HookRegistry called by
     create_session(), so it is explicitly made a MagicMock (not AsyncMock) to
     avoid RuntimeWarning about unawaited coroutines.
+
+    execute() and cleanup() are AsyncMock so that spawn() can await them.
     """
     mock_hooks = AsyncMock()
     mock_hooks.list_handlers = MagicMock(return_value={})  # sync on real HookRegistry
+    # register() is called synchronously (not awaited) and its return value is
+    # called as unregister().  Pin it to a plain MagicMock so spawn() can call
+    # the returned value without hitting "coroutine object is not callable".
+    mock_hooks.register = MagicMock(return_value=MagicMock())
     coordinator = MagicMock()
     coordinator.hooks = mock_hooks
     coordinator.register_contributor = MagicMock()
@@ -80,6 +80,8 @@ def _make_mock_session() -> MagicMock:
     session = MagicMock()
     session.coordinator = coordinator
     session.initialize = AsyncMock()
+    session.execute = AsyncMock()
+    session.cleanup = AsyncMock()
     return session
 
 
@@ -223,16 +225,17 @@ class TestLoaderFailureReason:
         assert getattr(results[0], "failure_reason") is None  # type: ignore[attr-defined]
 
 
-# ──────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # 3. _determine_source_type — syntax label only (no attribution)
-# ──────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestDetermineSourceType:
     """_determine_source_type classifies the syntactic form of a mention.
 
-    It returns ONLY the source_type label (str). Bundle attribution lives in
-    Bundle.origins and is looked up by _lookup_origins — not by parsing paths.
+    It returns ONLY the source_type label (str).
+    This function returns only the syntax label. Bundle attribution is handled
+    separately by `context:include`.
     """
 
     @pytest.mark.parametrize(
@@ -281,13 +284,12 @@ class TestBuildResolutions:
         f = tmp_path / "file.md"
         f.write_text("hello")
         resolutions = _build_resolutions(
-            [self._make_cf(f)], {"@file.md": f}, bundle_origins={}
+            [self._make_cf(f)], {"@file.md": f}
         )
         assert len(resolutions) == 1
         assert set(resolutions[0].keys()) == {
             "mention",
             "resolved_path",
-            "origins",
             "source_type",
             "content_hash",
             "is_new",
@@ -298,7 +300,7 @@ class TestBuildResolutions:
         f.write_text("content")
         cf = self._make_cf(f)
         resolutions = _build_resolutions(
-            [cf], {"@file.md": f}, bundle_origins={}, seen_hashes=set()
+            [cf], {"@file.md": f}, seen_hashes=set()
         )
         assert resolutions[0]["is_new"] is True
 
@@ -307,7 +309,7 @@ class TestBuildResolutions:
         f.write_text("content")
         cf = self._make_cf(f)
         resolutions = _build_resolutions(
-            [cf], {"@file.md": f}, bundle_origins={}, seen_hashes={cf.content_hash}
+            [cf], {"@file.md": f}, seen_hashes={cf.content_hash}
         )
         assert resolutions[0]["is_new"] is False
 
@@ -316,213 +318,14 @@ class TestBuildResolutions:
         f = tmp_path / "orphan.md"
         f.write_text("orphan")
         resolutions = _build_resolutions(
-            [self._make_cf(f, "orphan")], {}, bundle_origins={}
+            [self._make_cf(f, "orphan")], {}
         )
         assert resolutions[0]["mention"] is None
 
-    def test_origins_shape_direct_introducer(self, tmp_path: Path) -> None:
-        """Bundle.origins has [Origin('foundation', None)] → payload origins
-        list has a single entry with bundle='foundation' and via=None."""
-        f = tmp_path / "x.md"
-        f.write_text("x")
-        cf = self._make_cf(f, "x")
-        bundle_origins = {
-            "context:foundation:ctx/x.md": [
-                Origin(bundle="foundation", via_behavior=None)
-            ]
-        }
-        resolutions = _build_resolutions(
-            [cf],
-            {"@foundation:ctx/x.md": f},
-            bundle_origins=bundle_origins,
-            seen_hashes=set(),
-        )
-        assert resolutions[0]["origins"] == [{"bundle": "foundation", "via": None}]
-        assert resolutions[0]["source_type"] == "bundle_namespace"
-
-    def test_full_chain_via_behavior(self, tmp_path: Path) -> None:
-        """A two-entry origin chain is preserved in order in the payload."""
-        f = tmp_path / "g.md"
-        f.write_text("g")
-        cf = self._make_cf(f, "g")
-        bundle_origins = {
-            "context:foundation:ctx/g.md": [
-                Origin(bundle="behavior-x", via_behavior=None),
-                Origin(bundle="foundation", via_behavior="behavior-x"),
-            ]
-        }
-        resolutions = _build_resolutions(
-            [cf],
-            {"@foundation:ctx/g.md": f},
-            bundle_origins=bundle_origins,
-            seen_hashes=set(),
-        )
-        assert resolutions[0]["origins"] == [
-            {"bundle": "behavior-x", "via": None},
-            {"bundle": "foundation", "via": "behavior-x"},
-        ]
-
-    def test_fallback_for_mention_not_in_origins(self, tmp_path: Path) -> None:
-        """@foundation:ctx/foo.md not present in bundle_origins → synthesise
-        a single-entry chain from the namespace prefix."""
-        f = tmp_path / "foo.md"
-        f.write_text("foo")
-        cf = self._make_cf(f, "foo")
-        resolutions = _build_resolutions(
-            [cf],
-            {"@foundation:ctx/foo.md": f},
-            bundle_origins={},  # mention missing from origins
-            seen_hashes=set(),
-        )
-        assert resolutions[0]["origins"] == [{"bundle": "foundation", "via": None}]
-
-    def test_user_owned_file_has_empty_origins(self, tmp_path: Path) -> None:
-        """A relative-path mention (@./local.md) → origins=[] (never null)."""
-        f = tmp_path / "local.md"
-        f.write_text("local")
-        cf = self._make_cf(f, "local")
-        resolutions = _build_resolutions(
-            [cf],
-            {"@./local.md": f},
-            bundle_origins={},
-            seen_hashes=set(),
-        )
-        assert resolutions[0]["origins"] == []
-        assert resolutions[0]["source_type"] == "relative_path"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4b. _to_origins_key — normalise mention to Bundle.origins key form
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestToOriginsKey:
-    """_to_origins_key normalises a mention to the Bundle.origins key form."""
-
-    def _fn(self):
-        return getattr(_prep, "_to_origins_key")
-
-    def test_bundle_namespace_mention_produces_context_key(self) -> None:
-        """@foundation:context/foo.md → 'context:foundation:context/foo.md'."""
-        fn = self._fn()
-        assert fn("@foundation:context/foo.md") == "context:foundation:context/foo.md"
-
-    def test_strips_leading_at(self) -> None:
-        """The leading @ is stripped before building the key."""
-        fn = self._fn()
-        assert fn("@recipes:agents/coder.md") == "context:recipes:agents/coder.md"
-
-    def test_mention_without_at_also_normalised(self) -> None:
-        """A context-name key without @ prefix (from context: YAML) is normalised."""
-        fn = self._fn()
-        assert (
-            fn("foundation:context/guide.md") == "context:foundation:context/guide.md"
-        )
-
-    def test_none_returns_none(self) -> None:
-        """mention=None (bundle_context_decl) → None."""
-        fn = self._fn()
-        assert fn(None) is None
-
-    def test_bare_relative_path_returns_none(self) -> None:
-        """@AGENTS.md has no namespace colon → None."""
-        fn = self._fn()
-        assert fn("@AGENTS.md") is None
-
-    def test_relative_dot_path_returns_none(self) -> None:
-        """@./subdir/file.md has no namespace → None."""
-        fn = self._fn()
-        assert fn("@./subdir/file.md") is None
-
-    def test_user_shortcut_returns_none(self) -> None:
-        """@user:settings.md → None (user-owned, no bundle origins entry)."""
-        fn = self._fn()
-        assert fn("@user:settings.md") is None
-
-    def test_project_shortcut_returns_none(self) -> None:
-        """@project:custom.md → None (user-owned)."""
-        fn = self._fn()
-        assert fn("@project:custom.md") is None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4c. _lookup_origins — resolve mention to bundle attribution chain
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestLookupOrigins:
-    """_lookup_origins returns a list of {bundle, via} dicts from Bundle.origins."""
-
-    def _fn(self):
-        return getattr(_prep, "_lookup_origins")
-
-    def test_returns_chain_from_origins(self) -> None:
-        """Key found in bundle_origins → projected chain returned."""
-        fn = self._fn()
-        origins = {
-            "context:foundation:ctx/a.md": [
-                Origin(bundle="foundation", via_behavior=None)
-            ]
-        }
-        result = fn("@foundation:ctx/a.md", origins)
-        assert result == [{"bundle": "foundation", "via": None}]
-
-    def test_returns_full_chain_order_preserved(self) -> None:
-        """Multi-entry chain is returned in order."""
-        fn = self._fn()
-        origins = {
-            "context:foundation:ctx/b.md": [
-                Origin(bundle="behavior-x", via_behavior=None),
-                Origin(bundle="foundation", via_behavior="behavior-x"),
-            ]
-        }
-        result = fn("@foundation:ctx/b.md", origins)
-        assert result == [
-            {"bundle": "behavior-x", "via": None},
-            {"bundle": "foundation", "via": "behavior-x"},
-        ]
-
-    def test_synthesises_single_entry_when_not_in_origins(self) -> None:
-        """@foundation:ctx/missing.md not in origins → single synthesised entry."""
-        fn = self._fn()
-        result = fn("@foundation:ctx/missing.md", {})
-        assert result == [{"bundle": "foundation", "via": None}]
-
-    def test_relative_path_returns_empty(self) -> None:
-        """@AGENTS.md (no namespace) → []."""
-        fn = self._fn()
-        assert fn("@AGENTS.md", {}) == []
-
-    def test_none_mention_returns_empty(self) -> None:
-        """mention=None → []."""
-        fn = self._fn()
-        assert fn(None, {}) == []
-
-    def test_user_shortcut_returns_empty(self) -> None:
-        """@user:settings.md → []."""
-        fn = self._fn()
-        assert fn("@user:settings.md", {}) == []
-
-    def test_project_shortcut_returns_empty(self) -> None:
-        """@project:custom.md → []."""
-        fn = self._fn()
-        assert fn("@project:custom.md", {}) == []
-
-    def test_via_behavior_projected_as_via(self) -> None:
-        """Origin.via_behavior is returned under the 'via' key."""
-        fn = self._fn()
-        origins = {
-            "context:ns:doc.md": [
-                Origin(bundle="ns", via_behavior="some-behavior"),
-            ]
-        }
-        result = fn("@ns:doc.md", origins)
-        assert result[0]["via"] == "some-behavior"
-
-
-# ──────────────────────────────────────────────────────────────────────────
 # 5. Factory emission  (primary behavioural evidence)
-# ──────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestFactoryEmission:
@@ -675,52 +478,6 @@ class TestFactoryEmission:
                 f"Unexpected failure reason: {entry['reason']!r}"
             )
 
-    @pytest.mark.asyncio
-    async def test_bundle_origins_propagated_to_resolution_payload(
-        self, tmp_path: Path
-    ) -> None:
-        """captured_bundle.origins is passed to _build_resolutions (not {}).
-
-        When a bundle has origins with a non-None via_behavior, that value must
-        appear in the resolution payload.  Passing {} instead of
-        captured_bundle.origins discards this information.
-
-        Setup: bundle with context key '@mybundle:guide.md' and origins dict
-        that carries via_behavior='behavior-x' for that key.  The factory must
-        emit a resolution whose origins chain reflects the real via value.
-        """
-        guide_file = tmp_path / "guide.md"
-        guide_file.write_text("# Guide")
-
-        from amplifier_foundation.configurator._types import Origin
-
-        bundle = Bundle(
-            name="mybundle",
-            context={"@mybundle:guide.md": guide_file},
-            origins={
-                "context:mybundle:guide.md": [
-                    Origin(bundle="mybundle", via_behavior="behavior-x")
-                ]
-            },
-        )
-        prepared = _make_prepared(bundle)
-        session = _make_mock_session()
-
-        factory = prepared._create_system_prompt_factory(bundle, session)
-        await factory()
-
-        _, payload = session.coordinator.hooks.emit.call_args.args
-        assert payload["resolutions"], (
-            "No resolutions emitted — bundle context not loaded"
-        )
-
-        origins_in_payload = payload["resolutions"][0]["origins"]
-        assert origins_in_payload == [{"bundle": "mybundle", "via": "behavior-x"}], (
-            f"Expected via_behavior to be 'behavior-x' but got: {origins_in_payload!r}. "
-            f"Likely cause: _build_resolutions was called with {{}} instead of "
-            f"captured_bundle.origins, discarding the actual origin chain."
-        )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Observability registration
@@ -740,7 +497,7 @@ class TestObservabilityRegistration:
         self,
     ) -> None:
         """create_session() calls register_contributor('observability.events', ...)."""
-        bundle = Bundle(name="test")
+        bundle = Bundle(name="test", instruction="Do something")
         prepared = _make_prepared(bundle)
         mock_session = _make_mock_session()
 
@@ -759,7 +516,7 @@ class TestObservabilityRegistration:
     @pytest.mark.asyncio
     async def test_mentions_resolved_in_contributed_event_list(self) -> None:
         """The contributor lambda returns a list containing 'mentions:resolved'."""
-        bundle = Bundle(name="test")
+        bundle = Bundle(name="test", instruction="Do something")
         prepared = _make_prepared(bundle)
         mock_session = _make_mock_session()
 
@@ -784,7 +541,7 @@ class TestObservabilityRegistration:
         self,
     ) -> None:
         """The contributor name is 'foundation:mention-resolver'."""
-        bundle = Bundle(name="test")
+        bundle = Bundle(name="test", instruction="Do something")
         prepared = _make_prepared(bundle)
         mock_session = _make_mock_session()
 
@@ -798,3 +555,136 @@ class TestObservabilityRegistration:
         ]
         contributor_name = obs_calls[0].args[1]
         assert contributor_name == "foundation:mention-resolver"
+
+    @pytest.mark.asyncio
+    async def test_empty_bundle_does_not_register(self) -> None:
+        """An empty bundle (no instruction, context, or pending_context) must NOT
+        register on observability.events — it never emits the event."""
+        bundle = Bundle(name="empty")  # no instruction, no context
+        prepared = _make_prepared(bundle)
+        mock_session = _make_mock_session()
+
+        with patch("amplifier_core.AmplifierSession", return_value=mock_session):
+            await prepared.create_session()
+
+        registered_channels = [
+            c.args[0]
+            for c in mock_session.coordinator.register_contributor.call_args_list
+        ]
+        assert "observability.events" not in registered_channels, (
+            "Empty bundle registered observability.events — event never fires for empty bundles"
+        )
+
+    @pytest.mark.asyncio
+    async def test_spawn_registers_when_child_has_content(self) -> None:
+        """spawn() registers observability.events when the child bundle has content.
+        This is a different code path from create_session()."""
+        parent_bundle = Bundle(name="parent")
+        child_bundle = Bundle(name="child", instruction="Do something")
+        prepared = _make_prepared(parent_bundle)
+        mock_child = _make_mock_session()
+
+        with patch("amplifier_core.AmplifierSession", return_value=mock_child):
+            await prepared.spawn(child_bundle, "Do something", compose=False)
+
+        registered_channels = [
+            c.args[0]
+            for c in mock_child.coordinator.register_contributor.call_args_list
+        ]
+        assert "observability.events" in registered_channels, (
+            "spawn() did not register observability.events for child session with content"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Reviewer findings — edge-case contracts
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestReviewerFindings:
+    """Targeted tests for specific reviewer-requested contracts."""
+
+    def _make_cf(self, path: Path, content: str = "body") -> ContextFile:
+        import hashlib
+
+        h = hashlib.sha256(content.encode()).hexdigest()
+        return ContextFile(content=content, content_hash=h, paths=[path])
+
+    def test_build_resolutions_resolved_path_is_always_absolute(
+        self, tmp_path: Path
+    ) -> None:
+        """resolved_path in _build_resolutions output is always an absolute string."""
+        f = tmp_path / "doc.md"
+        f.write_text("doc")
+        resolutions = _build_resolutions([self._make_cf(f, "doc")], {"@doc.md": f})
+        assert len(resolutions) == 1
+        assert Path(resolutions[0]["resolved_path"]).is_absolute(), (
+            f"resolved_path is not absolute: {resolutions[0]['resolved_path']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_spawn_registers_observability_events(self) -> None:
+        """spawn() registers observability.events on the child session coordinator."""
+        parent_bundle = Bundle(name="parent")
+        child_bundle = Bundle(name="child", instruction="Do something")
+        prepared = _make_prepared(parent_bundle)
+        mock_child = _make_mock_session()
+
+        with patch("amplifier_core.AmplifierSession", return_value=mock_child):
+            await prepared.spawn(child_bundle, "Do something", compose=False)
+
+        registered_channels = [
+            c.args[0]
+            for c in mock_child.coordinator.register_contributor.call_args_list
+        ]
+        assert "observability.events" in registered_channels, (
+            "spawn() did not register observability.events — event not discoverable"
+        )
+
+    @pytest.mark.asyncio
+    async def test_permission_error_on_file_appears_in_failed_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PermissionError during file read → mention appears in failed[] with
+        reason='permission_error'.
+
+        The factory includes a MentionResult in failed_entries only when
+        mr.failure_reason is not None.  A PermissionError sets
+        failure_reason='permission_error' in loader.py, so the entry correctly
+        appears in the event payload under the new filter.
+        """
+        target = tmp_path / "locked.md"
+        target.write_text("classified")
+
+        import amplifier_foundation.mentions.loader as loader_module
+
+        async def _raise_permission(*_args: Any, **_kwargs: Any) -> str:
+            raise PermissionError("access denied")
+
+        monkeypatch.setattr(loader_module, "read_with_retry", _raise_permission)
+
+        bundle = Bundle(
+            name="test",
+            instruction="See @locked.md for details",
+            base_path=tmp_path,
+        )
+        prepared = _make_prepared(bundle)
+        session = _make_mock_session()
+
+        factory = prepared._create_system_prompt_factory(bundle, session)
+        await factory()
+
+        # The event should be emitted because there is a failed entry
+        assert session.coordinator.hooks.emit.called, (
+            "emit not called — failed entry did not trigger event emission"
+        )
+        _, payload = session.coordinator.hooks.emit.call_args.args
+        failed_mentions = [f["mention"] for f in payload["failed"]]
+        assert "@locked.md" in failed_mentions, (
+            f"@locked.md not in failed list: {failed_mentions}"
+        )
+        for entry in payload["failed"]:
+            if entry["mention"] == "@locked.md":
+                assert entry["reason"] == "permission_error", (
+                    f"Expected reason='permission_error' but got {entry['reason']!r}"
+                )

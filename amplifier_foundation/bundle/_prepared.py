@@ -37,9 +37,8 @@ _MENTIONS_RESOLVED_EVENT = "mentions:resolved"
 def _determine_source_type(mention: str | None) -> str:
     """Classify the syntactic form of a mention; return only the source_type label.
 
-    Bundle attribution is handled separately by ``_lookup_origins`` against
-    ``Bundle.origins``.  This function does *not* parse paths and does *not*
-    use any cache-directory heuristic.
+    This function does *not* parse paths and does *not* use any
+    cache-directory heuristic.  Bundle attribution belongs on ``context:include``.
 
     Returns one of:
         - "bundle_namespace"       — e.g. ``@foundation:context/foo.md``
@@ -65,62 +64,9 @@ def _determine_source_type(mention: str | None) -> str:
     return "relative_path"
 
 
-def _to_origins_key(mention: str | None) -> str | None:
-    """Normalise a mention or context-key string to the ``Bundle.origins`` key form.
-
-    ``Bundle.origins`` keys for context files look like
-    ``"context:{namespace}:{name}"`` (e.g. ``"context:foundation:context/guide.md"``).
-    This helper strips a leading ``@`` and prepends ``"context:"`` so callers
-    can use plain ``dict.get`` against the origins map.
-
-    Returns ``None`` for user-owned mentions (home shortcut, relative path,
-    or ``mention is None``) — there is no corresponding origins key for these.
-    """
-    if mention is None:
-        return None
-    stripped = mention.lstrip("@")
-    if ":" not in stripped:
-        return None  # bare relative path — no namespace, no origins key
-    namespace = stripped.split(":")[0]
-    if namespace in ("user", "project") or namespace.startswith("~"):
-        return None  # user-owned shortcuts have no Bundle.origins entry
-    return f"context:{stripped}"
-
-
-def _lookup_origins(mention: str | None, bundle_origins: dict) -> list[dict]:
-    """Look up the bundle-attribution chain for a resolved mention.
-
-    Strategy (matches the design doc Section "Attribution wiring"):
-
-    1. Normalise the mention to a ``Bundle.origins`` key via ``_to_origins_key``.
-    2. If the key is present in ``bundle_origins``, project each ``Origin`` into
-       ``{"bundle": str, "via": str | None}`` and return the chain.
-    3. If the mention has a bundle namespace prefix but is missing from
-       ``bundle_origins`` (common for @mentions in the instruction text that
-       are not declared in ``context:`` YAML), synthesise a single-entry chain
-       from the namespace.
-    4. Otherwise (user-owned file, ``mention is None``, no namespace) return ``[]``.
-
-    The empty list is the explicit "no bundle attribution" signal — distinct
-    from "bundle unknown" (which uses the synthesised single-entry chain).
-    """
-    key = _to_origins_key(mention)
-    if key is not None:
-        chain = bundle_origins.get(key, [])
-        if chain:
-            return [{"bundle": o.bundle, "via": o.via_behavior} for o in chain]
-        # Synthesise from the namespace prefix when the @mention is not in origins.
-        stripped = (mention or "").lstrip("@")
-        if ":" in stripped:
-            namespace = stripped.split(":")[0]
-            return [{"bundle": namespace, "via": None}]
-    return []
-
-
 def _build_resolutions(
     context_files: list,  # list[ContextFile]
     mention_to_path: dict[str, Path],
-    bundle_origins: dict,  # Bundle.origins: dict[str, list[Origin]]
     seen_hashes: set[str] | None = None,
 ) -> list[dict]:
     """Build the ``resolutions`` list for the ``mentions:resolved`` event payload.
@@ -129,9 +75,6 @@ def _build_resolutions(
         context_files:   ContextFile objects to include in the payload.
         mention_to_path: Maps @mention strings (or context-name keys) to their
                          resolved paths.  Used for reverse look-up (path → mention).
-        bundle_origins:  ``Bundle.origins`` from the prepared bundle — the source
-                         of truth for who introduced each context file.  See
-                         ``_lookup_origins`` for the lookup rule.
         seen_hashes:     Set of content hashes already emitted in earlier turns.
                          When provided, ``is_new`` is ``False`` for matching entries.
 
@@ -151,14 +94,11 @@ def _build_resolutions(
             path_key = str(p.resolve())
             mentions_for_path: list[str | None] = path_to_mentions.get(path_key, [None])
             for mention in mentions_for_path:
-                source_type = _determine_source_type(mention)
-                origins = _lookup_origins(mention, bundle_origins)
                 results.append(
                     {
                         "mention": mention,
-                        "resolved_path": str(p),
-                        "origins": origins,
-                        "source_type": source_type,
+                        "resolved_path": str(p.resolve()),
+                        "source_type": _determine_source_type(mention),
                         "content_hash": cf.content_hash,
                         "is_new": is_new,
                     }
@@ -518,12 +458,12 @@ class PreparedBundle:
                     "reason": getattr(mr, "failure_reason", None) or "not_found",
                 }
                 for mr in mention_results
-                if not mr.found and mr.resolved_path is None
+                if not mr.found and getattr(mr, "failure_reason", None) is not None
             ]
 
             if new_files or failed_entries:
                 resolutions = _build_resolutions(
-                    new_files, mention_to_path, captured_bundle.origins, _seen_hashes
+                    new_files, mention_to_path, _seen_hashes
                 )
                 deduplicated_count = len(all_unique) - len(new_files)
                 try:
@@ -643,18 +583,6 @@ class PreparedBundle:
         # Resolve any pending namespaced context references now that source_base_paths is available
         self.bundle.resolve_pending_context()
 
-        # Register the mentions:resolved event so that observability hooks
-        # (hooks-logging, hook-context-intelligence, …) discover it via
-        # collect_contributions("observability.events") — the same mechanism used
-        # by tool-delegate.  Registering here (post-initialize) ensures the
-        # contributor list is populated before any hook queries it.
-        # See: core:docs/specs/CONTRIBUTION_CHANNELS.md
-        session.coordinator.register_contributor(
-            "observability.events",
-            "foundation:mention-resolver",
-            lambda: [_MENTIONS_RESOLVED_EVENT],
-        )
-
         # Capture hook metadata for SessionConfigurator using the public list_handlers() API.
         # This records which hooks are registered and which event each is bound to.
         #
@@ -693,6 +621,15 @@ class PreparedBundle:
             or self.bundle.context
             or self.bundle._pending_context
         ):
+            # Register mentions:resolved on the observability.events channel.
+            # Guarded so empty-bundle sessions don't advertise an event that never fires.
+            # See: core:docs/specs/CONTRIBUTION_CHANNELS.md
+            session.coordinator.register_contributor(
+                "observability.events",
+                "foundation:mention-resolver",
+                lambda: [_MENTIONS_RESOLVED_EVENT],
+            )
+
             from amplifier_foundation.mentions import BaseMentionResolver
             from amplifier_foundation.mentions import ContentDeduplicator
 
@@ -900,6 +837,16 @@ class PreparedBundle:
         )
 
         await child_session.initialize()
+
+        # Register mentions:resolved on observability.events for child sessions.
+        # spawn() bypasses create_session(), so the registration must be duplicated
+        # here — guarded the same way as in create_session().
+        if effective_bundle.instruction or effective_bundle.context:
+            child_session.coordinator.register_contributor(
+                "observability.events",
+                "foundation:mention-resolver",
+                lambda: [_MENTIONS_RESOLVED_EVENT],
+            )
 
         # Register self_delegation_depth as a coordinator capability
         # tool-delegate reads this via coordinator.get_capability("self_delegation_depth")
