@@ -26,6 +26,88 @@ from amplifier_foundation.bundle._dataclass import Bundle
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# mentions:resolved event helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Event name registered via the observability.events contribution channel.
+_MENTIONS_RESOLVED_EVENT = "mentions:resolved"
+
+
+def _determine_source_type(mention: str | None) -> str:
+    """Classify the syntactic form of a mention; return only the source_type label.
+
+    This function does *not* parse paths and does *not* use any
+    cache-directory heuristic.  Bundle attribution belongs on ``context:include``.
+
+    Returns one of:
+        - "bundle_namespace"       — e.g. ``@foundation:context/foo.md``
+        - "user_shortcut"          — e.g. ``@user:settings.md``
+        - "project_shortcut"       — e.g. ``@project:custom.md``
+        - "home_shortcut"          — e.g. ``@~/notes.md``
+        - "relative_path"          — e.g. ``@AGENTS.md`` or ``@./sub/file.md``
+        - "bundle_context_decl"    — ``mention is None`` (entry came from the
+                                     ``context:`` YAML section, not an @mention)
+    """
+    if mention is None:
+        return "bundle_context_decl"
+    stripped = mention.lstrip("@")
+    if ":" in stripped:
+        namespace = stripped.split(":")[0]
+        if namespace == "user":
+            return "user_shortcut"
+        if namespace == "project":
+            return "project_shortcut"
+        return "bundle_namespace"
+    if stripped.startswith("~/") or stripped.startswith("~\\") or stripped == "~":
+        return "home_shortcut"
+    return "relative_path"
+
+
+def _build_resolutions(
+    context_files: list,  # list[ContextFile]
+    mention_to_path: dict[str, Path],
+    seen_hashes: set[str] | None = None,
+) -> list[dict]:
+    """Build the ``resolutions`` list for the ``mentions:resolved`` event payload.
+
+    Args:
+        context_files:   ContextFile objects to include in the payload.
+        mention_to_path: Maps @mention strings (or context-name keys) to their
+                         resolved paths.  Used for reverse look-up (path → mention).
+        seen_hashes:     Set of content hashes already emitted in earlier turns.
+                         When provided, ``is_new`` is ``False`` for matching entries.
+
+    Returns:
+        List of resolution dicts matching the ``mentions:resolved`` schema.
+    """
+    # Build reverse map: resolved path string → mention string(s)
+    path_to_mentions: dict[str, list[str | None]] = {}
+    for mention, p in mention_to_path.items():
+        key = str(p.resolve())
+        path_to_mentions.setdefault(key, []).append(mention)
+
+    results: list[dict] = []
+    for cf in context_files:
+        is_new = seen_hashes is None or cf.content_hash not in seen_hashes
+        for p in cf.paths:
+            path_key = str(p.resolve())
+            mentions_for_path: list[str | None] = path_to_mentions.get(path_key, [None])
+            for mention in mentions_for_path:
+                results.append(
+                    {
+                        "mention": mention,
+                        "resolved_path": str(p.resolve()),
+                        "source_type": _determine_source_type(mention),
+                        "content_hash": cf.content_hash,
+                        "is_new": is_new,
+                    }
+                )
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # Collects cost_usd contributions from a session.cost channel and returns the
 # total as Decimal, or None when no cost data is present (e.g. self-hosted models).
@@ -305,6 +387,11 @@ class PreparedBundle:
         # Use session_cwd if provided, otherwise fall back to bundle's base_path
         captured_base_path = session_cwd or bundle.base_path or Path.cwd()
 
+        # Tracks content hashes emitted via mentions:resolved across factory calls.
+        # Persists across turns so we only emit each file once per session
+        # (the guard "if new_context_files or failed" skips silent turns).
+        _seen_hashes: set[str] = set()
+
         async def factory() -> str:
             # Main instruction stays separate from context files
             main_instruction = captured_bundle.instruction or ""
@@ -354,6 +441,52 @@ class PreparedBundle:
             # format_context_block uses deduplicator for unique content and
             # mention_to_path for attribution (showing name → resolved path)
             all_context = format_context_block(deduplicator, mention_to_path)
+
+            # ── mentions:resolved event emission ─────────────────────────────
+            # Determine which files are new to this session (not yet emitted).
+            all_unique = deduplicator.get_unique_files()
+            new_files = [cf for cf in all_unique if cf.content_hash not in _seen_hashes]
+
+            # Collect failed resolutions from the @mention pass.
+            # Bundle context files that don't exist are silently skipped above;
+            # only @mention failures carry a failure_reason.
+            failed_entries = [
+                {
+                    "mention": mr.mention,
+                    # failure_reason was added to MentionResult in amplifier_foundation ≥ current;
+                    # getattr provides backward compatibility with older installed stubs.
+                    "reason": getattr(mr, "failure_reason", None) or "not_found",
+                }
+                for mr in mention_results
+                if not mr.found and getattr(mr, "failure_reason", None) is not None
+            ]
+
+            if new_files or failed_entries:
+                resolutions = _build_resolutions(
+                    new_files, mention_to_path, _seen_hashes
+                )
+                deduplicated_count = len(all_unique) - len(new_files)
+                try:
+                    await session.coordinator.hooks.emit(
+                        _MENTIONS_RESOLVED_EVENT,
+                        {
+                            "source": "bundle_context",
+                            "resolutions": resolutions,
+                            "failed": failed_entries,
+                            "deduplicated_count": deduplicated_count,
+                            "turn": None,
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to emit %s event",
+                        _MENTIONS_RESOLVED_EVENT,
+                        exc_info=True,
+                    )
+                # Update the cross-turn seen-hash tracker after a successful pass.
+                for cf in new_files:
+                    _seen_hashes.add(cf.content_hash)
+            # ── end mentions:resolved ────────────────────────────────────────
 
             # Final structure: main instruction FIRST, then all context files
             if all_context:
@@ -488,6 +621,15 @@ class PreparedBundle:
             or self.bundle.context
             or self.bundle._pending_context
         ):
+            # Register mentions:resolved on the observability.events channel.
+            # Guarded so empty-bundle sessions don't advertise an event that never fires.
+            # See: core:docs/specs/CONTRIBUTION_CHANNELS.md
+            session.coordinator.register_contributor(
+                "observability.events",
+                "foundation:mention-resolver",
+                lambda: [_MENTIONS_RESOLVED_EVENT],
+            )
+
             from amplifier_foundation.mentions import BaseMentionResolver
             from amplifier_foundation.mentions import ContentDeduplicator
 
@@ -695,6 +837,16 @@ class PreparedBundle:
         )
 
         await child_session.initialize()
+
+        # Register mentions:resolved on observability.events for child sessions.
+        # spawn() bypasses create_session(), so the registration must be duplicated
+        # here — guarded the same way as in create_session().
+        if effective_bundle.instruction or effective_bundle.context:
+            child_session.coordinator.register_contributor(
+                "observability.events",
+                "foundation:mention-resolver",
+                lambda: [_MENTIONS_RESOLVED_EVENT],
+            )
 
         # Register self_delegation_depth as a coordinator capability
         # tool-delegate reads this via coordinator.get_capability("self_delegation_depth")

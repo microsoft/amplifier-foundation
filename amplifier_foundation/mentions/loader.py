@@ -134,6 +134,7 @@ async def _resolve_mention(
             resolved_path=None,
             content=None,
             error=None,  # Opportunistic - no error for not found
+            failure_reason="not_found",
         )
 
     # Handle directories: generate listing as content
@@ -148,25 +149,43 @@ async def _resolve_mention(
                 error=None,
                 is_directory=True,
             )
-        except (PermissionError, OSError):
-            # Can't list directory - return without content
+        except PermissionError:
             return MentionResult(
                 mention=mention,
                 resolved_path=path,
                 content=None,
                 error=None,
                 is_directory=True,
+                failure_reason="permission_error",
+            )
+        except OSError:
+            return MentionResult(
+                mention=mention,
+                resolved_path=path,
+                content=None,
+                error=None,
+                is_directory=True,
+                failure_reason="not_found",
             )
 
     # Read file
     try:
         content = await read_with_retry(path)
+    except PermissionError:
+        return MentionResult(
+            mention=mention,
+            resolved_path=path,
+            content=None,
+            error=None,
+            failure_reason="permission_error",
+        )
     except (FileNotFoundError, OSError):
         return MentionResult(
             mention=mention,
             resolved_path=path,
             content=None,
             error=None,  # Opportunistic - no error for read failure
+            failure_reason="not_found",
         )
 
     # Check for duplicate content
