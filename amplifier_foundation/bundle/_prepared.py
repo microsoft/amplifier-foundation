@@ -899,6 +899,43 @@ class PreparedBundle:
             name="_spawn_completion_capture",
         )
 
+        # Expand @-mentions in the delegation instruction and inject resolved content as
+        # developer messages before executing.  The agent body is already handled by the
+        # system prompt factory above; this covers the runtime task text sent by
+        # tool-delegate or any other caller of spawn().
+        if instruction:
+            from amplifier_foundation.mentions import BaseMentionResolver
+            from amplifier_foundation.mentions import ContentDeduplicator
+            from amplifier_foundation.mentions import load_mentions
+            from amplifier_foundation.mentions import parse_mentions
+
+            if parse_mentions(instruction):
+                _instr_bundles = self._build_bundles_for_resolver(effective_bundle)
+                _instr_resolver = BaseMentionResolver(
+                    bundles=_instr_bundles,
+                    base_path=effective_child_cwd,
+                )
+                _instr_dedup = ContentDeduplicator()
+                _mention_results = await load_mentions(
+                    instruction,
+                    resolver=_instr_resolver,
+                    deduplicator=_instr_dedup,
+                    relative_to=effective_child_cwd,
+                )
+                _instr_ctx = child_session.coordinator.get("context")
+                if _instr_ctx and hasattr(_instr_ctx, "add_message"):
+                    for _mr in _mention_results:
+                        if _mr.content is not None:
+                            _paths_str = (
+                                f"{_mr.mention} → {_mr.resolved_path}"
+                                if _mr.resolved_path
+                                else _mr.mention
+                            )
+                            _content = f"[Context from {_paths_str}]\n\n{_mr.content}"
+                            await _instr_ctx.add_message(
+                                {"role": "developer", "content": _content}
+                            )
+
         # Execute instruction and cleanup
         try:
             response = await child_session.execute(instruction)
