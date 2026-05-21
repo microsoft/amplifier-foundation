@@ -117,6 +117,61 @@ async def load_mentions(
     return results
 
 
+async def expand_mentions_in_instruction(
+    instruction: str,
+    *,
+    resolver: MentionResolverProtocol,
+    deduplicator: ContentDeduplicator | None = None,
+    relative_to: Path | None = None,
+) -> str:
+    """Return instruction with <context_file> XML blocks prepended for any @mentions.
+
+    The @mentions in the instruction body are preserved verbatim as semantic references.
+    Resolved file contents are formatted as XML <context_file> blocks and prepended.
+
+    Returns instruction unchanged if it is empty, contains no @mentions, or no @mentions
+    resolve to readable content.
+
+    This is the single source of truth for @mention expansion of LLM-bound text strings.
+
+    Args:
+        instruction: The text to expand. May contain @mention tokens.
+        resolver: Resolver to convert @mentions to file paths.
+        deduplicator: Optional deduplicator for content. If None, creates a fresh one.
+        relative_to: Base path for relative mentions (defaults to cwd).
+
+    Returns:
+        Instruction with <context_file> blocks prepended, or the original instruction
+        unchanged when no mentions resolve to readable content.
+
+    Example:
+        >>> result = await expand_mentions_in_instruction(
+        ...     "Check @AGENTS.md and proceed.",
+        ...     resolver=resolver,
+        ... )
+        >>> # result starts with <context_file paths="@AGENTS.md -> /abs/path">
+    """
+    if not instruction:
+        return instruction
+    if deduplicator is None:
+        deduplicator = ContentDeduplicator()
+    results = await load_mentions(
+        instruction,
+        resolver=resolver,
+        deduplicator=deduplicator,
+        relative_to=relative_to,
+    )
+    if not results:
+        return instruction
+    mention_to_path = {
+        r.mention: r.resolved_path for r in results if r.resolved_path is not None
+    }
+    block = format_context_block(deduplicator, mention_to_path)
+    if not block:
+        return instruction
+    return f"{block}\n\n{instruction}"
+
+
 async def _resolve_mention(
     mention: str,
     resolver: MentionResolverProtocol,

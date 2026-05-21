@@ -592,7 +592,22 @@ async def _run_child_session(config_path: str) -> str:
 
     logger.debug("Subprocess child session initialized, capabilities registered")
 
-    # (7) Wrap execute/cleanup in try/finally
+    # (7) Expand @mentions in the prompt before execute. Mirrors PreparedBundle.spawn.
+    from amplifier_foundation.mentions import expand_mentions_in_instruction
+
+    _mention_resolver = session.coordinator.get_capability("mention_resolver")
+    _mention_dedup = session.coordinator.get_capability("mention_deduplicator")
+    _working_dir = session.coordinator.get_capability("session.working_dir")
+    _relative_to = Path(_working_dir) if _working_dir else None
+    if _mention_resolver is not None:
+        prompt = await expand_mentions_in_instruction(
+            prompt,
+            resolver=_mention_resolver,
+            deduplicator=_mention_dedup,
+            relative_to=_relative_to,
+        )
+
+    # (8) Wrap execute/cleanup in try/finally
     try:
         result: str = await session.execute(prompt)
         return result
