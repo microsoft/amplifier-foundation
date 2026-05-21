@@ -3368,7 +3368,6 @@ steps:
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
     condition: "{{quality_classification.requires_llm_analysis}} == true"
-    depends_on: ["set-default-composition-analysis"]
     prompt: |
       Analyze the composition of this bundle repository with focus on hygiene violations.
 
@@ -3468,7 +3467,7 @@ steps:
     output: "composition_analysis"
     timeout: 300
     on_error: "continue"
-    depends_on: ["quality-classification"]
+    depends_on: ["set-default-composition-analysis", "quality-classification"]
 
   # ============================================================================
   # PHASE 4.5: Convention Compliance (Conditional)
@@ -3478,7 +3477,6 @@ steps:
     agent: "foundation:zen-architect"
     mode: "REVIEW"
     condition: "{{quality_classification.requires_llm_analysis}} == true"
-    depends_on: ["set-default-repo-conventions", "composition-analysis"]
     prompt: |
       Review repository-wide convention compliance, incorporating v3.0.0 hygiene findings.
 
@@ -3528,7 +3526,7 @@ steps:
     output: "repo_conventions"
     timeout: 300
     on_error: "continue"
-    depends_on: ["composition-analysis"]
+    depends_on: ["set-default-repo-conventions", "composition-analysis"]
 
   # ============================================================================
   # PHASE 6: Bundle Doc Freshness Check (v3)

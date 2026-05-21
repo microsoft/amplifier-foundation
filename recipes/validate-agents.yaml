@@ -856,7 +856,6 @@ steps:
     agent: "foundation:zen-architect"
     mode: "REVIEW"
     condition: "{{quality_classification.requires_llm_analysis}} == true"
-    depends_on: ["set-default-quality-results"]
     prompt: |
       Analyze agent description quality for agents that need work in this repository.
 
@@ -965,7 +964,7 @@ steps:
     output: "quality_results"
     timeout: 600
     on_error: "continue"
-    depends_on: ["quality-classification"]
+    depends_on: ["set-default-quality-results", "quality-classification"]
 
   # ============================================================================
   # PHASE 5: Tool Access Analysis (Agent-Based, Conditional)
@@ -978,7 +977,6 @@ steps:
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
     condition: "{{quality_classification.requires_llm_analysis}} == true"
-    depends_on: ["set-default-tool-analysis", "description-quality-check"]
     prompt: |
       Analyze tool access patterns for agents that need work in this repository.
 
@@ -1055,7 +1053,7 @@ steps:
     output: "tool_analysis"
     timeout: 600
     on_error: "continue"
-    depends_on: ["description-quality-check"]
+    depends_on: ["set-default-tool-analysis", "description-quality-check"]
 
   # ============================================================================
   # PHASE 6: Final Report Synthesis
