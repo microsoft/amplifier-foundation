@@ -59,6 +59,7 @@ from amplifier_foundation.io.yaml import write_yaml
 
 # Mention utilities
 from amplifier_foundation.mentions.deduplicator import ContentDeduplicator
+from amplifier_foundation.mentions.loader import expand_mentions_in_instruction
 from amplifier_foundation.mentions.loader import load_mentions
 from amplifier_foundation.mentions.models import ContextFile
 from amplifier_foundation.mentions.models import MentionResult
@@ -165,6 +166,7 @@ __all__ = [
     # Mentions
     "parse_mentions",
     "load_mentions",
+    "expand_mentions_in_instruction",
     "ContentDeduplicator",
     "ContextFile",
     "MentionResult",
