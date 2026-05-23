@@ -40,6 +40,21 @@ If a repo has no `AGENTS.md`, no PR template, no `CONTRIBUTING.md` — that is i
 
 ---
 
+## JIT-Loaded Files: `PRINCIPLES.md` and `SMOKE_TESTS.md`
+
+Some files are read **only at specific phases of work**, not on every operation. They earn their own file — rather than a section in `AGENTS.md` — because force-loading their content into every agent operation would tax context for content that is only sometimes relevant. The convention is to keep `AGENTS.md` thin (always-on) and push phase-specific material to dedicated files that the agent loads when the phase fires.
+
+| File | Loading scope | When to read |
+|------|---------------|--------------|
+| `PRINCIPLES.md` | Just-in-time, design phase | Before planning or designing a change. Captures philosophical context, architectural invariants, upstream-spec linkage, intentional deltas, and pointers to deeper material (ADRs, design docs). |
+| `SMOKE_TESTS.md` | Just-in-time, verification phase | Before declaring work done. Names the repo's own smoke runnable(s) and any cross-repo smokes that must also run when changes touch dependent repos. |
+
+If a repo has either file, its `AGENTS.md` should point at them with explicit triggers ("Before designing changes, read `PRINCIPLES.md`. Before verifying, read `SMOKE_TESTS.md`."). The agent loads them when the phase fires; otherwise they stay out of context.
+
+These files are optional. A repo without either is signalling that everything an agent needs at design or verification time is already in `AGENTS.md` or self-evident from the codebase. Author them when the gap is real, not pre-emptively.
+
+---
+
 ## The Discovery Pattern (Concrete)
 
 **Before writing code in a repo:**
