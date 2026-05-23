@@ -16,6 +16,7 @@ from amplifier_foundation.session.store import (
     load_transcript,
     load_transcript_with_lines,
     read_jsonl,
+    redact_secrets,
     write_jsonl,
     write_metadata,
     write_transcript,
@@ -322,3 +323,162 @@ class TestBackup:
         # Name should match: transcript.jsonl.bak-pre-rewind-YYYYMMDDHHMMSS
         pattern = r"^transcript\.jsonl\.bak-pre-rewind-\d{14}$"
         assert re.match(pattern, result.name), f"Unexpected backup name: {result.name}"
+
+
+# =============================================================================
+# TestRedactSecrets
+# =============================================================================
+
+
+class TestRedactSecrets:
+    """Verify redact_secrets walks dicts/lists and redacts known secret-bearing keys."""
+
+    def test_redacts_top_level_api_key(self):
+        result = redact_secrets({"api_key": "sk-ant-real-key"})
+        assert result == {"api_key": "[REDACTED]"}
+
+    def test_redacts_nested_api_key(self):
+        """Reproduces the sub-agent metadata.json leak: providers[].config.api_key."""
+        leaked = {
+            "session_id": "abc123",
+            "config": {
+                "providers": [
+                    {"module": "provider-anthropic", "config": {"api_key": "sk-ant-leak"}},
+                    {"module": "provider-openai", "config": {"api_key": "sk-proj-leak"}},
+                ]
+            },
+        }
+        result = redact_secrets(leaked)
+        assert result["config"]["providers"][0]["config"]["api_key"] == "[REDACTED]"
+        assert result["config"]["providers"][1]["config"]["api_key"] == "[REDACTED]"
+        # Non-secret fields are preserved
+        assert result["session_id"] == "abc123"
+        assert result["config"]["providers"][0]["module"] == "provider-anthropic"
+
+    def test_input_not_mutated(self):
+        original = {"api_key": "sk-ant-real", "name": "foo"}
+        snapshot = {"api_key": "sk-ant-real", "name": "foo"}
+        _ = redact_secrets(original)
+        assert original == snapshot
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "api_key",
+            "apiKey",
+            "API_KEY",
+            "api-key",
+            "api_keys",
+            "password",
+            "passwd",
+            "token",
+            "tokens",
+            "secret",
+            "secrets",
+            "credential",
+            "credentials",
+            "bearer",
+            "access_token",
+            "access-token",
+            "refresh_token",
+            "private_key",
+            "private-key",
+        ],
+    )
+    def test_recognizes_common_secret_keys(self, key: str):
+        result = redact_secrets({key: "actual-secret"})
+        assert result[key] == "[REDACTED]"
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "module",
+            "name",
+            "description",
+            "api_base_url",  # contains "api" but isn't a key
+            "tokenize",      # contains "token" but isn't a key
+            "secretive",     # contains "secret" but isn't a key
+            "api_key_name",  # describes the key, doesn't carry it
+        ],
+    )
+    def test_does_not_redact_non_secret_keys(self, key: str):
+        result = redact_secrets({key: "innocent-value"})
+        assert result[key] == "innocent-value"
+
+    def test_walks_into_lists(self):
+        result = redact_secrets(
+            [
+                {"api_key": "sk-1"},
+                {"api_key": "sk-2"},
+                {"nested": {"token": "tk"}},
+            ]
+        )
+        assert result == [
+            {"api_key": "[REDACTED]"},
+            {"api_key": "[REDACTED]"},
+            {"nested": {"token": "[REDACTED]"}},
+        ]
+
+    def test_primitives_pass_through(self):
+        assert redact_secrets("plain") == "plain"
+        assert redact_secrets(42) == 42
+        assert redact_secrets(None) is None
+        assert redact_secrets(True) is True
+
+
+# =============================================================================
+# TestWriteMetadataRedaction
+# =============================================================================
+
+
+class TestWriteMetadataRedaction:
+    """Verify write_metadata applies redaction before serialization (defence in depth)."""
+
+    def test_api_key_never_lands_on_disk(self, tmp_path: Path):
+        """Regression: sub-agent metadata.json was persisting real provider API keys
+        at config.providers[].config.api_key."""
+        metadata = {
+            "session_id": "regression-test",
+            "config": {
+                "providers": [
+                    {
+                        "module": "provider-anthropic",
+                        "config": {"api_key": "sk-ant-api03-REAL-LEAKED-KEY"},
+                    },
+                    {
+                        "module": "provider-openai",
+                        "config": {"api_key": "sk-proj-REAL-LEAKED-KEY"},
+                    },
+                ]
+            },
+        }
+        write_metadata(tmp_path, metadata)
+        on_disk = (tmp_path / METADATA_FILENAME).read_text()
+        # Hard assertion: no recognisable key prefix can appear on disk.
+        assert "sk-ant-" not in on_disk
+        assert "sk-proj-" not in on_disk
+        # And the redaction marker IS present where keys used to be.
+        loaded = load_metadata(tmp_path)
+        assert loaded["config"]["providers"][0]["config"]["api_key"] == "[REDACTED]"
+        assert loaded["config"]["providers"][1]["config"]["api_key"] == "[REDACTED]"
+
+    def test_caller_dict_not_mutated_after_write(self, tmp_path: Path):
+        """write_metadata must not mutate the dict the caller passed in."""
+        metadata = {"config": {"providers": [{"config": {"api_key": "sk-ant-real"}}]}}
+        write_metadata(tmp_path, metadata)
+        # Caller's dict still has the original (the on-disk copy is the redacted one)
+        assert metadata["config"]["providers"][0]["config"]["api_key"] == "sk-ant-real"
+
+    def test_non_secret_fields_pass_through(self, tmp_path: Path):
+        """Redaction must not touch ordinary metadata fields."""
+        metadata = {
+            "session_id": "abc",
+            "parent_id": "def",
+            "bundle": "amplifier-dev",
+            "model": "claude-opus-4-7",
+            "turn_count": 7,
+            "config": {"providers": [{"module": "provider-anthropic", "base_url": "https://x"}]},
+        }
+        write_metadata(tmp_path, metadata)
+        loaded = load_metadata(tmp_path)
+        assert loaded == metadata

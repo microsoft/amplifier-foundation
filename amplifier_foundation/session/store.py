@@ -4,6 +4,7 @@ This module provides:
 - Filename constants for standard session files
 - Generic JSONL read/write utilities
 - Session-specific I/O functions for transcripts, metadata, and backups
+- Defence-in-depth secret redaction on metadata writes
 
 It operates purely on Path objects and has no knowledge of where sessions live
 on disk or how directories are structured.
@@ -12,6 +13,7 @@ on disk or how directories are structured.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -149,14 +151,76 @@ def write_metadata(session_dir: Path, metadata: dict[str, Any]) -> None:
     Uses ``indent=2`` for human-readable pretty-printing and ``ensure_ascii=False``
     to preserve Unicode characters literally.
 
+    Applies defence-in-depth secret redaction before serialization: any dict key
+    matching the secret-name pattern (api_key, password, token, secret,
+    credentials, bearer, access_token, refresh_token, private_key) at any depth
+    is replaced with the literal string ``"[REDACTED]"``. This prevents
+    inadvertent leaks of resolved provider config into on-disk session metadata.
+    The original dict passed in is not mutated.
+
     Args:
         session_dir: Path to the session directory.
         metadata: Metadata dict to write.
     """
+    safe = redact_secrets(metadata)
     (session_dir / METADATA_FILENAME).write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False),
+        json.dumps(safe, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction
+# ---------------------------------------------------------------------------
+
+# Case-insensitive match against well-known secret-bearing dict keys. Matches
+# exact key names only; does not attempt value-shape detection (too flaky).
+_SECRET_KEY_PATTERN = re.compile(
+    r"^("
+    r"api[_-]?keys?|"
+    r"password|passwd|"
+    r"tokens?|"
+    r"secrets?|"
+    r"credentials?|"
+    r"bearer|"
+    r"access[_-]?tokens?|"
+    r"refresh[_-]?tokens?|"
+    r"private[_-]?keys?"
+    r")$",
+    re.IGNORECASE,
+)
+
+_REDACTED = "[REDACTED]"
+
+
+def redact_secrets(obj: Any) -> Any:
+    """Return a copy of *obj* with secret-bearing dict keys redacted.
+
+    Walks dicts and lists recursively. For any dict key whose name matches the
+    secret-name pattern, the corresponding value is replaced with the literal
+    string ``"[REDACTED]"`` regardless of the value's type. All other values
+    are recursively copied through unchanged.
+
+    The input object is not mutated; a new structure is returned. Primitive
+    values (strings, ints, bools, None) are returned as-is.
+
+    Args:
+        obj: Arbitrary JSON-like value to redact.
+
+    Returns:
+        A new value of the same shape with secrets replaced.
+    """
+    if isinstance(obj, dict):
+        result: dict[str, Any] = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and _SECRET_KEY_PATTERN.match(k):
+                result[k] = _REDACTED
+            else:
+                result[k] = redact_secrets(v)
+        return result
+    if isinstance(obj, list):
+        return [redact_secrets(v) for v in obj]
+    return obj
 
 
 def backup(filepath: Path, label: str) -> Path | None:
