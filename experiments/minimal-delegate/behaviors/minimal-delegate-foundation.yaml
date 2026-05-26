@@ -1,0 +1,141 @@
+---
+bundle:
+  # Namespace: agents and context registered via this bundle resolve under
+  # `minimal-delegate:` (e.g. `minimal-delegate:context/...`).
+  # This YAML lives in experiments/minimal-delegate/behaviors/ but the context/
+  # directory lives one level up at experiments/minimal-delegate/.
+  # namespace_root: .. tells the registry to set
+  #   source_base_paths['minimal-delegate'] = experiments/minimal-delegate/
+  # rather than the default (this file's own behaviors/ directory).
+  name: minimal-delegate
+  version: 0.2.0
+  namespace_root: ..
+  description: |
+    Minimal-delegate foundation behavior. The parent session is a pure
+    orchestrator — it has ONLY `delegate`, `todo`, and `load_skill`.
+    NO direct tools (no filesystem, bash, web, search, LSP, etc.).
+    Every concrete action goes through a specialized sub-agent.
+    Token budget: 64k (context-simple max_tokens).
+
+    History:
+      0.1.0 — Self-contained .md, no foundation behavior includes, no
+              session.raw, no events.jsonl. Run #1 of optimize_bundle
+              produced HARNESS_BROKEN on all 6 runs — amplifier ran
+              successfully but wrote no events.jsonl for harness metrics.
+      0.2.0 — Refactored to mirror build-up v3 structure: thin pointer +
+              behavior YAML + foundation behavior includes. Added session.raw,
+              logging.yaml (events.jsonl writer), redaction, streaming-ui,
+              status-context, and productivity hooks. Experimental "minimal"
+              stays at the policy level; platform scaffolding is now correct.
+
+# Session configuration
+session:
+  raw: true
+  orchestrator:
+    module: loop-streaming
+    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    # NOTE: extended_thinking intentionally omitted. Under a 64k token budget,
+    # extended thinking competes with context. Sub-agents can still use it
+    # independently inside their own sessions.
+  context:
+    module: context-simple
+    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+    config:
+      max_tokens: 64000
+
+# ONLY meta-tools — these gate access to other capabilities.
+# CRITICAL: NO direct tools. Specifically absent:
+#   tool-filesystem (read_file, write_file, edit_file, glob)
+#   tool-bash
+#   tool-web (web_fetch, web_search)
+#   tool-search (grep)
+#   tool-lsp
+#   tool-python-check
+#   Any other tool that performs real work directly.
+tools:
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
+    config:
+      features:
+        self_delegation:
+          # Disabled at the parent level: orchestrator with only
+          # todo + delegate + skills spawning itself produces a sub-instance
+          # with no real tools (no bash/filesystem/search/etc.) that can only
+          # thrash mode/todo until context overflows.
+          enabled: false
+        session_resume:
+          enabled: true
+        context_inheritance:
+          enabled: true
+          max_turns: 10
+        provider_selection:
+          enabled: true
+      settings:
+        exclude_tools: [tool-delegate]
+  - module: tool-todo
+    source: git+https://github.com/microsoft/amplifier-module-tool-todo@main
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+
+# Foundation behaviors — provide essential platform infrastructure.
+# logging.yaml is the critical one: it registers hooks-logging which writes
+# events.jsonl to ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
+# Without it the eval harness cannot extract metrics (tokens, requests, wall_clock).
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/streaming-ui.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/status-context.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/redaction.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/logging.yaml
+
+# Productivity hooks (no per-turn context cost)
+hooks:
+  - module: hooks-todo-reminder
+    source: git+https://github.com/microsoft/amplifier-module-hooks-todo-reminder@main
+    config:
+      inject_role: user
+      priority: 10
+  - module: hooks-todo-display
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-todo-display
+    config:
+      show_progress_bar: true
+      show_border: true
+  - module: hooks-session-naming
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-session-naming
+    config:
+      initial_trigger_turn: 2
+      update_interval_turns: 5
+
+# Agents available for delegation: broader pool than build-up (which ships
+# 4 custom agents). Foundation specialists cover the full task surface;
+# python-dev specialists handle code-heavy scenarios.
+agents:
+  include:
+    - foundation:explorer          # multi-file read-only reconnaissance
+    - foundation:file-ops          # read, write, edit, search files
+    - foundation:web-research      # web search and fetch
+    - foundation:git-ops           # git, GitHub CLI, PRs
+    - foundation:bug-hunter        # root-cause analysis, debugging
+    - foundation:modular-builder   # implementation from spec
+    - foundation:zen-architect     # design, architecture, spec writing
+    - foundation:session-analyst   # review session history and outcomes
+    - foundation:test-coverage     # tests, coverage, verification
+    - foundation:security-guardian # security review and audit
+    - foundation:ecosystem-expert  # Amplifier ecosystem knowledge
+    - foundation:integration-specialist  # cross-repo integration work
+  # Python-specific specialists (for code-heavy scenarios):
+  code-intel:
+    name: code-intel
+    description: >
+      Code intelligence specialist. LSP operations: go-to-definition,
+      find-references, symbol lookup, call hierarchies, diagnostics.
+      Use for: finding where something is defined, tracing all callers,
+      understanding type signatures, cross-file semantic navigation.
+    source: git+https://github.com/microsoft/amplifier-bundle-python-dev@main
+  python-dev:
+    name: python-dev
+    description: >
+      Python development specialist. Implementation, debugging, testing,
+      type-checked code, packaging, and Python ecosystem patterns.
+      Use for: writing Python code, fixing Python bugs, reviewing Python
+      implementations, pyright/ruff compliance, pytest authoring.
+    source: git+https://github.com/microsoft/amplifier-bundle-python-dev@main
