@@ -6,6 +6,7 @@ Agents are specialized AI configurations that run as sub-sessions for focused ta
 
 → For file format, tool/provider configuration, @mentions, and composition, see **[BUNDLE_GUIDE.md](BUNDLE_GUIDE.md)**
 → For agent spawning and resolution patterns, see **[PATTERNS.md](PATTERNS.md)**
+→ For how the agent discovers and applies per-repo conventions *once it is spawned* (the other half of the delegation loop), see **[PER_REPO_CONVENTIONS.md](PER_REPO_CONVENTIONS.md)**
 
 This guide covers only what's **unique to agents**.
 
@@ -425,3 +426,4 @@ Put heavy @mentions in agent files (context sink), not in behavior context.inclu
 | Agent spawning patterns | [PATTERNS.md](PATTERNS.md) |
 | Agent resolution | [PATTERNS.md](PATTERNS.md) |
 | Bundle composition | [CONCEPTS.md](CONCEPTS.md) |
+| Per-repo conventions an agent reads at runtime | [PER_REPO_CONVENTIONS.md](PER_REPO_CONVENTIONS.md) |
