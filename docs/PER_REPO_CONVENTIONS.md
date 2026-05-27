@@ -47,9 +47,11 @@ Some files are read **only at specific phases of work**, not on every operation.
 | File | Loading scope | When to read |
 |------|---------------|--------------|
 | `PRINCIPLES.md` | Just-in-time, design phase | Before planning or designing a change. Captures philosophical context, architectural invariants, upstream-spec linkage, intentional deltas, and pointers to deeper material (ADRs, design docs). |
-| `SMOKE_TESTS.md` | Just-in-time, verification phase | Before declaring work done. Names the repo's own smoke runnable(s) and any cross-repo smokes that must also run when changes touch dependent repos. |
+| `SMOKE_TESTS.md` | Just-in-time, planning **and** verification phases | **Twice.** At planning, to know the scenarios this change will be graded against — design *to* the rubric. At verification, to run the smokes and confirm. Names the repo's own smoke runnable(s) and any cross-repo smokes that must also run when changes touch dependent repos. |
 
-If a repo has either file, its `AGENTS.md` should point at them with explicit triggers ("Before designing changes, read `PRINCIPLES.md`. Before verifying, read `SMOKE_TESTS.md`."). The agent loads them when the phase fires; otherwise they stay out of context.
+If a repo has either file, its `AGENTS.md` should point at them with explicit triggers ("Before designing changes, read `PRINCIPLES.md`. Before verifying, read `SMOKE_TESTS.md`.").
+
+On `SMOKE_TESTS.md` specifically: read it at **both** planning and verification. The point of phase-specific files is not "do not load until the phase fires" — it is "load when their content is relevant to the work at hand." Discovering the grading rubric only at verification means you designed without knowing what excellence looked like. The agent loads them when the phase fires; otherwise they stay out of context.
 
 These files are optional. A repo without either is signalling that everything an agent needs at design or verification time is already in `AGENTS.md` or self-evident from the codebase. Author them when the gap is real, not pre-emptively.
 
