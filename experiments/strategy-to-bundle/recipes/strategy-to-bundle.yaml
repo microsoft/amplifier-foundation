@@ -1,0 +1,395 @@
+name: "strategy-to-bundle"
+description: "Strategy -> JSON spec -> bundle files -> converge to lowest tokens. No human needed after design approval."
+version: "6.0.0"
+tags: ["eval", "bundle", "strategy", "generation"]
+
+context:
+  strategy_name: ""
+  strategy_description: ""
+  output_dir: ""
+  repo_root: ""
+  domain_context_path: "bundle-creation-process.md"
+  has_harness: "false"
+  token_count: "0"
+  previous_token_count: "0"
+  converged: "false"
+  iteration: "0"
+  convergence_threshold: "3"
+  max_compression_iterations: "4"
+  measurement_provider: "anthropic"
+  measurement_model: "claude-opus-4-7"
+
+stages:
+  # -- Stage 1: Design -----------------------------------------------
+  # LLM produces a JSON mechanism spec. Human approves before generation.
+  - name: "design"
+    steps:
+      - id: "read-domain-context"
+        type: "bash"
+        command: |
+          if [ ! -f "{{domain_context_path}}" ]; then
+            echo "ERROR: Domain context file not found: {{domain_context_path}}" >&2
+            exit 1
+          fi
+          cat "{{domain_context_path}}"
+        output: "domain_context"
+        timeout: 30
+
+      - id: "mechanism-analysis"
+        agent: "foundation:bundle-design-expert"
+        model_role: "reasoning"
+        prompt: |
+          Design mechanisms for this eval bundle.
+
+          STRATEGY: {{strategy_name}}
+
+          STRATEGY THESIS:
+          {{strategy_description}}
+
+          DOMAIN CONSTRAINTS:
+          {{domain_context}}
+
+          OUTPUT FORMAT: Return ONLY a JSON object. No markdown fences. No explanation text.
+
+          JSON SCHEMA (follow exactly):
+          {
+            "strategy_name": "{{strategy_name}}",
+            "description": "one-line summary of the strategy",
+            "system_prompt": "full system prompt text — under 200 words — imperative sentences — protocol and rules only",
+            "root_tools": ["tool-module-names for root level"],
+            "optional_includes": ["apply-patch"],
+            "delegate_config": {
+              "exclude_tools": ["tool-delegate"],
+              "context_inheritance_max_turns": 10
+            },
+            "tool_sources": {"tool-module-name": "git+https://...source-url"},
+            "agents": [
+              {
+                "name": "lowercase-hyphenated agent name",
+                "role": "one sentence describing what this agent does",
+                "model_role": ["primary-role", "fallback-role"],
+                "tools": ["tool-module-names this agent needs in its frontmatter"],
+                "use_when": "one sentence",
+                "not_when": "one sentence",
+                "rules": ["imperative sentence 1", "imperative sentence 2"],
+                "output_contract": "what the agent returns — under 20 words"
+              }
+            ]
+          }
+
+          CONSTRAINTS:
+          1. Agent names and roles come from the STRATEGY THESIS. Do NOT rename, merge,
+             add, or remove agents. The strategy defines architecture; you select mechanisms.
+          2. system_prompt: under 200 words. Imperative sentences. Describes the pipeline
+             protocol. Includes rules for the root session (when to dispatch, how to handle
+             results). No filler, no pleasantries.
+          3. Each agent: 3-5 rules, each an imperative sentence under 30 words.
+          4. output_contract: what the agent returns. E.g., "APPROVED or NEEDS_REVISION
+             with file:line evidence". Under 20 words.
+          5. root_tools: tools available to ALL agents at root level. Include only what the strategy needs.
+             Agent-level tools: only tools a SPECIFIC agent needs beyond root. tool_sources: map every
+             module name (from root_tools AND agent tools) to its git source URL from the Reference Catalog.
+          6. model_role: pick from [general, fast, coding, ui-coding, security-audit, reasoning, critique, creative, writing, research, vision, image-gen, critical-ops]. List as [primary, fallback].
+          7. Return ONLY the JSON object. Any text outside the JSON will cause a parse failure.
+        output: "mechanism_spec"
+        timeout: 900
+
+      - id: "save-and-validate-spec"
+        type: "bash"
+        command: |
+          BUNDLE_DIR="{{output_dir}}/{{strategy_name}}"
+          mkdir -p "$BUNDLE_DIR"
+          cat > "$BUNDLE_DIR/_spec.json" << 'SPECEOF'
+          {{mechanism_spec}}
+          SPECEOF
+          # Validate JSON structure and required fields
+          python3 << PYEOF
+          import json, sys, textwrap, re
+          path = "$BUNDLE_DIR/_spec.json"
+          with open(path) as f:
+              text = textwrap.dedent(f.read()).strip()
+          # Strip markdown fences if LLM wrapped the JSON
+          text = re.sub(r'^```(?:json)?\s*\n', '', text)
+          text = re.sub(r'\n```\s*$', '', text)
+          # Strip any text before the first { or after the last }
+          first_brace = text.find('{')
+          last_brace = text.rfind('}')
+          if first_brace >= 0 and last_brace >= 0:
+              text = text[first_brace:last_brace+1]
+          try:
+              spec = json.loads(text)
+          except json.JSONDecodeError as e:
+              print(f"ERROR: Invalid JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+          # Check required top-level fields
+          for k in ["strategy_name", "description", "system_prompt", "agents"]:
+              if k not in spec:
+                  print(f"ERROR: Missing field: {k}", file=sys.stderr)
+                  sys.exit(1)
+          # Check each agent
+          for i, a in enumerate(spec["agents"]):
+              for k in ["name", "role", "rules", "output_contract"]:
+                  if k not in a:
+                      print(f"ERROR: Agent {i} missing: {k}", file=sys.stderr)
+                      sys.exit(1)
+          # Re-write clean JSON
+          with open(path, "w") as f:
+              json.dump(spec, f, indent=2)
+          print(f"Spec saved and validated: {path}")
+          print(f"Agents: {', '.join(a['name'] for a in spec['agents'])}")
+          print(f"System prompt words: {len(spec['system_prompt'].split())}")
+          PYEOF
+        output: "spec_save_result"
+        timeout: 30
+
+    approval:
+      required: true
+      prompt: |
+        Mechanism spec for "{{strategy_name}}" saved to {{output_dir}}/{{strategy_name}}/_spec.json.
+
+        Review the JSON spec. Reply 'approve' to generate bundle files.
+      timeout: 0
+      default: "deny"
+
+  # -- Stage 2: Generate ---------------------------------------------
+  # Python script writes all bundle files. No LLM. Deterministic.
+  - name: "generate"
+    steps:
+      - id: "write-boilerplate"
+        type: "bash"
+        command: |
+          BUNDLE_DIR="{{output_dir}}/{{strategy_name}}"
+          mkdir -p "$BUNDLE_DIR/context" "$BUNDLE_DIR/agents"
+
+          cat > "$BUNDLE_DIR/bundle.md.header" << 'BOILERPLATE'
+          includes:
+            - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/streaming-ui.yaml
+            - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/status-context.yaml
+            - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/redaction.yaml
+            - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/logging.yaml
+
+          session:
+            raw: true
+            orchestrator:
+              module: loop-streaming
+              source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+              config:
+                extended_thinking: true
+            context:
+              module: context-simple
+              source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+              config:
+                max_tokens: 300000
+                compact_threshold: 0.8
+                auto_compact: true
+
+          hooks:
+            - module: hooks-session-naming
+              source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-session-naming
+              config:
+                initial_trigger_turn: 2
+                update_interval_turns: 5
+            - module: hooks-approval
+              source: git+https://github.com/microsoft/amplifier-module-hooks-approval
+              config:
+                rules: []
+                default_action: continue
+                policy_driven_only: true
+          BOILERPLATE
+
+          echo "Boilerplate written"
+        output: "boilerplate_result"
+        timeout: 30
+
+      - id: "run-generator"
+        type: "bash"
+        command: |
+          BUNDLE_DIR="{{output_dir}}/{{strategy_name}}"
+          # Locate the generator script relative to domain context
+          CONTEXT_DIR="$(cd "$(dirname "{{domain_context_path}}")" && pwd)"
+          SCRIPT="$CONTEXT_DIR/recipes/generate_bundle.py"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "ERROR: Generator script not found at $SCRIPT" >&2
+            exit 1
+          fi
+          python3 "$SCRIPT" \
+            "$BUNDLE_DIR/_spec.json" \
+            "$BUNDLE_DIR/bundle.md.header" \
+            "$BUNDLE_DIR"
+        output: "generator_result"
+        timeout: 60
+
+      - id: "detect-harness"
+        type: "bash"
+        command: |
+          if [ -n "{{repo_root}}" ] && [ -f "{{repo_root}}/fingerprints/run.sh" ]; then
+            echo "true"
+          else
+            echo "false"
+          fi
+        output: "has_harness"
+        timeout: 10
+
+  # -- Stage 3: Compress and Converge --------------------------------
+  # While loop at STEP level (not stage). Loops compress->measure->check
+  # until delta < 3% or max 3 iterations. Without harness: 1 pass.
+  - name: "compress-and-converge"
+    steps:
+      - id: "compress-loop"
+        while_condition: "not {{converged}}"
+        max_while_iterations: 4
+        update_context:
+          iteration: "{{_loop_iteration}}"
+          previous_token_count: "{{token_count}}"
+        steps:
+          - id: "compress"
+            agent: "foundation:file-ops"
+            model_role: "coding"
+            prompt: |
+              ITERATION: {{iteration}}
+
+              The bundle at {{output_dir}}/{{strategy_name}} needs to use the fewest tokens possible.
+
+              Read ALL files: context/system.md, bundle.md, and every file under agents/.
+
+              Compress text to reduce token count while preserving:
+              - All numbered rules (keep the rule, shorten the sentence)
+              - All output contracts
+              - All USE WHEN / DO NOT USE WHEN constraints
+              - The agent architecture (do NOT remove, merge, or add agents)
+              - The bundle.md frontmatter YAML (do NOT change includes, tools, hooks, session config)
+
+              Compression targets (in priority order):
+              1. system.md: shorten sentences to imperative fragments, remove filler
+              2. Agent descriptions: compress to minimum viable text
+              3. Agent rules: shorter imperative sentences (keep all rules)
+              4. Remove markdown formatting that adds tokens without meaning (extra blank lines, horizontal rules)
+
+              Write compressed versions back to the SAME file paths.
+              Report what you changed and estimated word savings.
+            output: "compression_result"
+            timeout: 600
+
+          - id: "measure-tokens"
+            type: "bash"
+            command: |
+              if [ "{{has_harness}}" != "true" ]; then
+                printf "unmeasured"
+                exit 0
+              fi
+
+              BUNDLE_DIR="$(cd "{{output_dir}}/{{strategy_name}}" && pwd)"
+              MEAS_DIR="{{repo_root}}/fingerprints/measurements"
+              mkdir -p "$MEAS_DIR"
+
+              cat > "$MEAS_DIR/_temp-{{strategy_name}}.yaml" << EOF
+              name: _temp-{{strategy_name}}
+              bundle_name: {{strategy_name}}
+              bundle: "file://${BUNDLE_DIR}"
+              amplifier_cli_ref: main
+              provider: {{measurement_provider}}
+              model: {{measurement_model}}
+              scenarios:
+                - baseline
+              EOF
+
+              # Run harness — redirect all progress output to stderr
+              cd "{{repo_root}}"
+              bash fingerprints/run.sh "_temp-{{strategy_name}}" >&2
+
+              LATEST=$(ls -td "{{repo_root}}/fingerprints/runs/_temp-{{strategy_name}}"/*/ 2>/dev/null | head -1)
+              if [ -z "$LATEST" ]; then
+                echo "ERROR: No run directory found" >&2
+                exit 1
+              fi
+              FP="${LATEST}baseline.fingerprint.json"
+              if [ ! -f "$FP" ]; then
+                echo "ERROR: No fingerprint at $FP" >&2
+                exit 1
+              fi
+              TOKENS=$(jq -r '.prompt_tokens_unique_total' "$FP")
+
+              # Cleanup temp run data immediately
+              rm -rf "{{repo_root}}/fingerprints/runs/_temp-{{strategy_name}}"
+
+              # Output ONLY the token count number
+              printf "%s" "$TOKENS"
+            output: "token_count"
+            timeout: 600
+
+          - id: "check-convergence"
+            type: "bash"
+            command: |
+              CURRENT=$(printf '%s' "{{token_count}}" | tr -d '[:space:]')
+              PREVIOUS=$(printf '%s' "{{previous_token_count}}" | tr -d '[:space:]')
+
+              # If no harness, converge after 1 pass
+              if [ "$CURRENT" = "unmeasured" ]; then
+                echo "true"
+                exit 0
+              fi
+
+              # First iteration — no previous to compare
+              if [ "$PREVIOUS" = "0" ]; then
+                echo "false"
+                exit 0
+              fi
+
+              # Converged if delta < threshold%
+              python3 -c "
+              curr = int('$CURRENT')
+              prev = int('$PREVIOUS')
+              threshold = int('{{convergence_threshold}}')
+              if prev == 0:
+                  print('true')
+              else:
+                  delta_pct = ((prev - curr) / prev) * 100
+                  print('true' if delta_pct < threshold else 'false')
+              "
+            output: "converged"
+            timeout: 10
+
+  # -- Stage 4: Deliver -----------------------------------------------
+  # Clean up ALL temporary artifacts. Report final status.
+  - name: "deliver"
+    steps:
+      - id: "final-cleanup"
+        type: "bash"
+        command: |
+          # Remove temporary measurement artifacts (if harness was used)
+          if [ -n "{{repo_root}}" ]; then
+            rm -rf "{{repo_root}}/fingerprints/runs/_temp-{{strategy_name}}"
+            rm -f "{{repo_root}}/fingerprints/measurements/_temp-{{strategy_name}}.yaml"
+          fi
+          # Remove intermediate build artifacts from bundle dir
+          rm -f "{{output_dir}}/{{strategy_name}}/_spec.json"
+          rm -f "{{output_dir}}/{{strategy_name}}/_mechanism_spec.md"
+          rm -f "{{output_dir}}/{{strategy_name}}/bundle.md.header"
+          echo "All temporary artifacts removed"
+        output: "final_cleanup"
+        timeout: 30
+
+      - id: "summary"
+        type: "bash"
+        command: |
+          echo "=== Bundle Generation Complete ==="
+          echo ""
+          echo "Bundle:     {{output_dir}}/{{strategy_name}}"
+          echo "Tokens:     {{token_count}}"
+          echo "Iterations: {{iteration}} compression passes"
+          echo ""
+          if [ "{{token_count}}" = "unmeasured" ]; then
+            echo "TOKEN MEASUREMENT: Unavailable (fingerprint harness not found at repo_root)"
+            echo "Install the fingerprint harness for real token measurement."
+          elif [ "{{converged}}" = "true" ]; then
+            echo "STATUS: CONVERGED — compression plateau reached"
+            echo "Previous: {{previous_token_count}} -> Final: {{token_count}}"
+          else
+            echo "STATUS: MAX ITERATIONS — stopped after {{iteration}} passes"
+            echo "Further manual compression may be possible."
+          fi
+          echo ""
+          echo "Files:"
+          find "{{output_dir}}/{{strategy_name}}" -type f | sort
+        output: "summary"
+        timeout: 30
