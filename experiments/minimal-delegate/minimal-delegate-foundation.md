@@ -25,3 +25,9 @@ includes:
 ---
 
 @foundation:experiments/minimal-delegate/context/system-base.md
+
+## Agent Selection Guidance
+For multi-part audits, prefer ONE foundation:explorer survey over fanning out
+to multiple specialists. Use python-dev:code-intel only when LSP/call-graph
+analysis is required. Use foundation:file-ops only for targeted single-file
+reads with known paths. Consolidate related sub-questions into one agent call.
