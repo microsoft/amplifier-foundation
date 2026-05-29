@@ -5,18 +5,25 @@ import json
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
-# Load session-repair.py as a module (it's a script, not a package)
+# Load session-repair.py as a module (it's a script, not a package).
+# The script emits a DeprecationWarning on import (it has been superseded by
+# scripts/amplifier-session.py). The test file deliberately keeps the old
+# script under test, so we suppress that warning at load to keep test output
+# clean. If the script itself is ever removed, this whole test file goes too.
 _script_path = Path(__file__).resolve().parent.parent / "scripts" / "session-repair.py"
 _project_root = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("session_repair", _script_path)
 if _spec is None or _spec.loader is None:
     raise ImportError(f"Could not load {_script_path}")
 _mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    _spec.loader.exec_module(_mod)
 
 parse_transcript = _mod.parse_transcript
 build_tool_index = _mod.build_tool_index
