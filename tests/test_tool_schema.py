@@ -169,19 +169,10 @@ class TestEstimateModuleToolTokens:
         assert result["tool_count"] == 1
         assert result["tools"][0]["name"] == "my-tool"
 
-    # ── 10. Real tool-recipes module (@property name) ─────────────────────────
-
-    def test_real_recipes_tool_module(self) -> None:
-        """Real tool-recipes module (uses @property name) should produce results."""
-        import pytest  # noqa: PLC0415
-
-        recipes_mod = Path(
-            "/home/bkrabach/dev/recipe-dot-docs"
-            "/amplifier-bundle-recipes/modules/tool-recipes"
-        )
-        if not recipes_mod.exists():
-            pytest.skip("recipes repo not available")
-        result = estimate_module_tool_tokens(recipes_mod)
-        assert result is not None
-        assert result["tool_count"] >= 1
-        assert any("recipes" in t["name"] for t in result["tools"])
+    # Note: a former test 10 hardcoded an absolute path to a specific
+    # developer's local clone of amplifier-bundle-recipes to exercise
+    # `estimate_module_tool_tokens` against a "real" tool-recipes module.
+    # It always skipped on CI and on every other machine. The @property-name
+    # extraction path is fully covered by test 9 (test_property_name_extraction)
+    # which uses a tmp_path-based inline stub of the same shape. Test 10
+    # was redundant in any environment where it actually ran.

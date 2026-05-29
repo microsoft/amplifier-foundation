@@ -578,6 +578,7 @@ class TestRunSessionInSubprocess:
         mock_process.wait.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     async def test_timeout_wait_guarded_logs_warning_if_wait_hangs(
         self, tmp_path: Any, caplog: Any
     ) -> None:
@@ -586,6 +587,11 @@ class TestRunSessionInSubprocess:
         If the process doesn't exit after SIGKILL (zombie, kernel hang), the
         code should log a warning and still raise TimeoutError rather than
         blocking indefinitely.
+
+        filterwarnings: the patched asyncio.wait_for raises TimeoutError before
+        any awaitable returned by AsyncMock-patched asyncio.create_subprocess_exec
+        is consumed. That's the intended test path — the un-awaited coroutine
+        is an artifact of mock plumbing, not a defect.
         """
         import logging
 
@@ -597,7 +603,11 @@ class TestRunSessionInSubprocess:
         mock_process = MagicMock()
         mock_process.pid = 12345
         mock_process.kill = MagicMock()
-        mock_process.wait = AsyncMock()
+        # MagicMock (not AsyncMock) intentional: the patched asyncio.wait_for
+        # raises TimeoutError before any await happens, so the wait() return
+        # value is never consumed. AsyncMock here would leak an un-awaited
+        # coroutine and emit RuntimeWarning.
+        mock_process.wait = MagicMock()
 
         # First asyncio.wait_for call (process.communicate) times out.
         # Second asyncio.wait_for call (process.wait guard) also times out,
@@ -1307,7 +1317,9 @@ class TestBundleModuleResolverExceptionClass:
         The amplifier_core loader checks isinstance(e, core.ModuleNotFoundError), so the
         entry-point fallback never fires when the wrong exception class is raised.
         """
-        from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFoundError
+        from amplifier_core.module_sources import (
+            ModuleNotFoundError as CoreModuleNotFoundError,
+        )
 
         from amplifier_foundation.bundle import BundleModuleResolver
 
@@ -1320,7 +1332,9 @@ class TestBundleModuleResolverExceptionClass:
         self,
     ) -> None:
         """BundleModuleResolver.async_resolve() raises CoreModuleNotFoundError when no activator."""
-        from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFoundError
+        from amplifier_core.module_sources import (
+            ModuleNotFoundError as CoreModuleNotFoundError,
+        )
 
         from amplifier_foundation.bundle import BundleModuleResolver
 
