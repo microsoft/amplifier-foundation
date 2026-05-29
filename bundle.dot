@@ -1,125 +1,129 @@
+// Amplifier "foundation" bundle repository: the shared starter kit that gives an
+// AI assistant its core team of expert helpers, safe working habits, and the ability
+// to plug into other toolkits. Everything here can be mixed, matched, and reused by
+// other projects that build on top of foundation.
 digraph foundation {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="foundation v2.0.0 — bundle repo"
+    label="Foundation Bundle (v2.1.2)\nThe shared starter kit of AI helpers, safe habits, and toolkit connections"
     labelloc=t
     labeljust=c
     nodesep=0.6
     ranksep=0.7
     bgcolor="white"
-    source_hash="27908e2fbe06bdcaca5deb5bd71d3a35ae692c3399a4c031a81f69c5c03065a7"
+    source_hash="0488d60b3fde4cc9582c390a7a87732b640330f16034032364f223f0f7529aa0"
 
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root_foundation [label="foundation v2.0.0\n4 tools · 11 agents\n~11539 tok aggregate", shape=box, fillcolor="#80cbc4", style="filled,rounded,bold", penwidth=2]
+    root_foundation [label="Foundation — the main kit\nBundles the default helpers & habits\nv2.1.2\n4 tools · 11 agents\n~11175 tok aggregate", shape=box, fillcolor="#80cbc4", style="filled,rounded,bold", penwidth=2]
 
     subgraph cluster_behaviors {
-        label="Behaviors"
+        label="Behaviors — reusable habits & capabilities"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        beh_behavior_agents [label="behavior-agents\n2 tools · 2 ctx\n~5590 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_amplifier_dev [label="behavior-amplifier-dev\n3 ctx\n~4933 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_foundation_expert_behavior [label="foundation-expert-behavior\n1 ctx\n~1202 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_logging [label="behavior-logging\n1 tools\n~85 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_progress_monitor [label="behavior-progress-monitor\n1 tools\n~190 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_redaction [label="behavior-redaction\n1 tools\n~82 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_sessions [label="behavior-sessions\n1 tools\n~1027 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_status_context [label="behavior-status-context\n1 tools\n~83 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_streaming_ui [label="behavior-streaming-ui\n1 tools\n~95 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_tasks [label="behavior-tasks\n1 tools · 2 ctx\n~5370 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
-        beh_behavior_todo_reminder [label="behavior-todo-reminder\n3 tools\n~232 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_agents [label="Agent Delegation & Context\nHand work to specialist helpers\n2 tools · 2 ctx\n~5590 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_amplifier_dev [label="Amplifier Dev Helper\nTools for building Amplifier itself\n~507 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_bundle_design [label="Bundle Design Helper\nGuidance for building bundles\n1 ctx\n~1258 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_foundation_expert_behavior [label="Foundation Expert Helper\nKnows the foundation kit inside out\n1 ctx\n~1113 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_logging [label="Activity Logging\nRecords what happens\n1 tools\n~85 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_progress_monitor [label="Progress Monitor\nWatches long-running work\n1 tools\n~190 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_redaction [label="Sensitive-Data Redaction\nHides secrets from output\n1 tools\n~82 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_sessions [label="Session Management\nNames & tracks work sessions\n1 tools\n~515 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_status_context [label="Status Context\nShares current environment info\n1 tools\n~83 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_streaming_ui [label="Live Streaming Display\nShows responses as they form\n1 tools\n~95 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_tasks [label="Task Coordination\nBreaks work into delegated tasks\n1 tools · 2 ctx\n~5370 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_behavior_todo_reminder [label="To-Do Reminders\nKeeps a running task list\n3 tools\n~232 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
     }
 
     subgraph cluster_standalones {
-        label="Standalone Bundles"
+        label="Ready-to-Use Bundles — complete kits you can run as-is"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        sta_amplifier_dev [label="amplifier-dev", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
-        sta_foundation_minimal [label="foundation-minimal", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
-        sta_foundation_anthropic [label="foundation-anthropic", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
-        sta_foundation_openai [label="foundation-openai", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        sta_amplifier_dev [label="Amplifier Dev Kit\nFor building Amplifier", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        sta_foundation_minimal [label="Minimal Kit\nBare-bones starting point", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        sta_foundation_anthropic [label="Anthropic Kit\nPreset for Claude models", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
+        sta_foundation_openai [label="OpenAI Kit\nPreset for GPT models", shape=box, fillcolor="#80cbc4", style="filled,rounded"]
     }
 
     subgraph cluster_agents {
-        label="Agents"
+        label="Agents — specialist AI helpers you can hand work to"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        agt_bug_hunter [label="bug-hunter\n~190 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_ecosystem_expert [label="ecosystem-expert\n~367 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_explorer [label="explorer\n~289 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_file_ops [label="file-ops\n~371 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_foundation_expert [label="foundation-expert\n~504 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_git_ops [label="git-ops\n~568 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_integration_specialist [label="integration-specialist\n~296 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_modular_builder [label="modular-builder\n~458 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_post_task_cleanup [label="post-task-cleanup\n~367 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_security_guardian [label="security-guardian\n~459 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_session_analyst [label="session-analyst\n~887 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_shell_exec [label="shell-exec\n~365 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_test_coverage [label="test-coverage\n~190 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_web_research [label="web-research\n~376 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_zen_architect [label="zen-architect\n~342 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_bug_hunter [label="Bug Hunter\nTracks down & fixes errors\n~190 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_bundle_design_expert [label="Bundle Design Expert\nDesigns & builds bundles\n~414 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_ecosystem_expert [label="Ecosystem Expert\nCoordinates across repos\n~373 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_explorer [label="Explorer\nSurveys code & documents\n~289 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_file_ops [label="File Operations\nReads, writes & searches files\n~371 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_foundation_expert [label="Foundation Expert\nNavigates the foundation kit\n~400 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_git_ops [label="Git Operations\nHandles commits & pull requests\n~373 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_integration_specialist [label="Integration Specialist\nConnects external services & APIs\n~296 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_modular_builder [label="Modular Builder\nWrites code from specs\n~325 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_post_task_cleanup [label="Post-Task Cleanup\nTidies up after work is done\n~367 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_security_guardian [label="Security Guardian\nReviews for vulnerabilities\n~365 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_session_analyst [label="Session Analyst\nAnalyzes & repairs sessions\n~375 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_shell_exec [label="Shell Runner\nRuns command-line tasks\n~365 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_test_coverage [label="Test Coverage\nFinds gaps in testing\n~190 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_web_research [label="Web Research\nSearches & summarizes the web\n~376 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_zen_architect [label="Zen Architect\nPlans & reviews designs\n~342 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
     }
 
     subgraph cluster_modules {
-        label="Modules"
+        label="Modules — the working code behind the habits"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        mod_hooks_deprecation [label="hooks-deprecation", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-        mod_hooks_process_guard [label="hooks-process-guard", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-        mod_hooks_progress_monitor [label="hooks-progress-monitor", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-        mod_hooks_session_naming [label="hooks-session-naming", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-        mod_hooks_todo_display [label="hooks-todo-display", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-        mod_tool_delegate [label="tool-delegate\n1 tool · ~695 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_hooks_deprecation [label="Deprecation Notices\nWarns about retiring features", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_hooks_process_guard [label="Process Guard\nLimits runaway processes", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_hooks_progress_monitor [label="Progress Tracker\nReports work-in-progress", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_hooks_session_naming [label="Session Namer\nAuto-names work sessions", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_hooks_todo_display [label="To-Do Display\nShows the task list", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_tool_delegate [label="Delegate Tool\nSends tasks to other helpers\n1 tool · ~695 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
     }
 
     subgraph cluster_providers {
-        label="Providers"
+        label="Providers — the AI models that power the helpers"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        prv_anthropic_opus [label="anthropic-opus", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
-        prv_anthropic_sonnet [label="anthropic-sonnet", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
-        prv_openai_gpt_5 [label="openai-gpt-5", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
-        prv_openai_gpt_codex [label="openai-gpt-codex", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
-        prv_openai_gpt [label="openai-gpt", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+        prv_anthropic_opus [label="Claude Opus\nAnthropic's most capable model", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+        prv_anthropic_sonnet [label="Claude Sonnet\nAnthropic's balanced model", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+        prv_openai_gpt_5 [label="GPT-5\nOpenAI flagship model", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+        prv_openai_gpt_codex [label="GPT Codex\nOpenAI coding model", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
+        prv_openai_gpt [label="GPT\nOpenAI general model", shape=box, fillcolor="#e0e0e0", style="filled,rounded"]
     }
 
     subgraph cluster_experiments {
-        label="Experiments"
+        label="Experiments — work-in-progress, not for everyday use"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        exp_exp_amplifier_dev [label="exp-amplifier-dev", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        exp_exp_foundation [label="exp-foundation", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        exp_delegation_only [label="delegation-only", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        exp_exp_amplifier_dev [label="Experimental Dev Kit\nTrial version of the dev kit", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        exp_exp_foundation [label="Experimental Foundation\nTrial version of the main kit", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        exp_delegation_only [label="Delegation-Only Trial\nTesting handoffs in isolation", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
     }
 
     subgraph cluster_context {
-        label="Context Files"
+        label="Context Files — shared knowledge the helpers read"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        ctx_delegation_instructions_md [label="delegation-instructions.md\n~3352 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_multi_agent_patterns_md [label="multi-agent-patterns.md\n~1863 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_ecosystem_map_md [label="ecosystem-map.md\n~1075 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_dev_workflows_md [label="dev-workflows.md\n~1310 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_testing_patterns_md [label="testing-patterns.md\n~2075 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_bundle_awareness_md [label="bundle-awareness.md\n~566 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_common_system_base_md [label="common-system-base.md\n~1529 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_delegation_instructions_md [label="How to Delegate Work\ndelegation-instructions.md\n~3352 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_multi_agent_patterns_md [label="Multi-Helper Patterns\nmulti-agent-patterns.md\n~1863 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_bundle_design_awareness_md [label="Bundle Design Notes\nbundle-design-awareness.md\n~708 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_bundle_awareness_md [label="Bundle Basics\nbundle-awareness.md\n~566 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_common_system_base_md [label="Core Ground Rules\ncommon-system-base.md\n~1529 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
     }
 
     subgraph cluster_legend {
@@ -143,19 +147,21 @@ digraph foundation {
 
     disclaimer [label="Token estimates: ~4 chars/token\nSolid border = local (counted)\nDashed + red = external, hidden cost (not counted)\nDashed + muted = external, no cost\nExcludes: sub-session costs, runtime-dynamic", shape=note, fillcolor="#eceff1", style="filled", fontsize=9]
 
-    ext_githttps___github_com_microsoft_amplifier_mainsubdirectorybehaviors_amplifier_expert_yaml [label="amplifier-expert.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_core_mainsubdirectorybehaviors_core_expert_yaml [label="core-expert.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_recipes_mainsubdirectorybehaviors_recipes_yaml [label="recipes.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_design_intelligence_mainsubdirectorybehaviors_design_intelligence_yaml [label="design-intelligence.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_python_dev_main [label="amplifier-bundle-python-dev\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_amplifier_tester_main [label="amplifier-bundle-amplifier-tester\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_skills_mainsubdirectorybehaviors_skills_yaml [label="skills.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_browser_tester_mainsubdirectorybehaviors_browser_tester_yaml [label="browser-tester.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_superpowers_mainsubdirectorybehaviors_superpowers_methodology_yaml [label="superpowers-methodology.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_module_hook_shell_mainsubdirectorybehaviors_hook_shell_yaml [label="hook-shell.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_module_tool_mcp_mainsubdirectorybehaviors_mcp_yaml [label="mcp.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_filesystem_mainsubdirectorybehaviors_apply_patch_yaml [label="apply-patch.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
-    ext_githttps___github_com_microsoft_amplifier_bundle_routing_matrix_main [label="amplifier-bundle-routing-matrix\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_mainsubdirectorybehaviors_amplifier_expert_yaml [label="Amplifier Expert (external)\namplifier-expert.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_core_mainsubdirectorybehaviors_core_expert_yaml [label="Core Expert (external)\ncore-expert.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_recipes_mainsubdirectorybehaviors_recipes_yaml [label="Recipes / Workflows (external)\nrecipes.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_design_intelligence_mainsubdirectorybehaviors_design_intelligence_yaml [label="Design Intelligence (external)\ndesign-intelligence.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_python_dev_main [label="Python Dev Tools (external)\namplifier-bundle-python-dev\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_amplifier_tester_main [label="Amplifier Tester (external)\namplifier-bundle-amplifier-tester\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_skills_mainsubdirectorybehaviors_skills_yaml [label="Skills Library (external)\nskills.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_browser_tester_mainsubdirectorybehaviors_browser_tester_yaml [label="Browser Tester (external)\nbrowser-tester.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_superpowers_mainsubdirectorybehaviors_superpowers_methodology_yaml [label="Superpowers Methodology (external)\nsuperpowers-methodology.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_llm_wiki_mainsubdirectorybehaviors_llm_wiki_yaml [label="LLM Wiki (external)\nllm-wiki.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_evaluation_mainsubdirectorybehaviors_evaluation_yaml [label="Evaluation Tools (external)\nevaluation.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_module_hook_shell_mainsubdirectorybehaviors_hook_shell_yaml [label="Shell Hook (external)\nhook-shell.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_module_tool_mcp_mainsubdirectorybehaviors_mcp_yaml [label="MCP Connector (external)\nmcp.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_filesystem_mainsubdirectorybehaviors_apply_patch_yaml [label="Apply Patch (external)\napply-patch.yaml\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_bundle_routing_matrix_main [label="Routing Matrix (external)\namplifier-bundle-routing-matrix\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
 
     root_foundation -> ext_githttps___github_com_microsoft_amplifier_mainsubdirectorybehaviors_amplifier_expert_yaml [style=dashed]
     root_foundation -> ext_githttps___github_com_microsoft_amplifier_core_mainsubdirectorybehaviors_core_expert_yaml [style=dashed]
@@ -173,6 +179,8 @@ digraph foundation {
     root_foundation -> ext_githttps___github_com_microsoft_amplifier_bundle_skills_mainsubdirectorybehaviors_skills_yaml [style=dashed]
     root_foundation -> ext_githttps___github_com_microsoft_amplifier_bundle_browser_tester_mainsubdirectorybehaviors_browser_tester_yaml [style=dashed]
     root_foundation -> ext_githttps___github_com_microsoft_amplifier_bundle_superpowers_mainsubdirectorybehaviors_superpowers_methodology_yaml [style=dashed]
+    root_foundation -> ext_githttps___github_com_microsoft_amplifier_bundle_llm_wiki_mainsubdirectorybehaviors_llm_wiki_yaml [style=dashed]
+    root_foundation -> ext_githttps___github_com_microsoft_amplifier_bundle_evaluation_mainsubdirectorybehaviors_evaluation_yaml [style=dashed]
     root_foundation -> ext_githttps___github_com_microsoft_amplifier_module_hook_shell_mainsubdirectorybehaviors_hook_shell_yaml [style=dashed]
     root_foundation -> ext_githttps___github_com_microsoft_amplifier_module_tool_mcp_mainsubdirectorybehaviors_mcp_yaml [style=dashed]
     root_foundation -> ext_githttps___github_com_microsoft_amplifier_bundle_filesystem_mainsubdirectorybehaviors_apply_patch_yaml [style=dashed]
@@ -181,9 +189,8 @@ digraph foundation {
     beh_behavior_agents -> ctx_delegation_instructions_md [style=dotted, color=purple]
     beh_behavior_agents -> ctx_multi_agent_patterns_md [style=dotted, color=purple]
     beh_behavior_amplifier_dev -> agt_ecosystem_expert [label="owns"]
-    beh_behavior_amplifier_dev -> ctx_ecosystem_map_md [style=dotted, color=purple]
-    beh_behavior_amplifier_dev -> ctx_dev_workflows_md [style=dotted, color=purple]
-    beh_behavior_amplifier_dev -> ctx_testing_patterns_md [style=dotted, color=purple]
+    beh_behavior_bundle_design -> agt_bundle_design_expert [label="owns"]
+    beh_behavior_bundle_design -> ctx_bundle_design_awareness_md [style=dotted, color=purple]
     beh_foundation_expert_behavior -> agt_foundation_expert [label="owns"]
     beh_foundation_expert_behavior -> ctx_bundle_awareness_md [style=dotted, color=purple]
     beh_behavior_progress_monitor -> mod_hooks_progress_monitor [label="uses", penwidth=0.8]
@@ -191,7 +198,6 @@ digraph foundation {
     beh_behavior_sessions -> mod_hooks_session_naming [label="uses", penwidth=0.8]
     beh_behavior_tasks -> ctx_delegation_instructions_md [style=dotted, color=purple]
     beh_behavior_tasks -> ctx_multi_agent_patterns_md [style=dotted, color=purple]
-    beh_behavior_todo_reminder -> mod_hooks_todo_display [label="uses", penwidth=0.8]
     root_foundation -> ctx_common_system_base_md [style=dotted, color=purple]
     sta_amplifier_dev -> root_foundation [label="extends", style=dashed]
     sta_foundation_minimal -> root_foundation [label="extends", style=dashed]
