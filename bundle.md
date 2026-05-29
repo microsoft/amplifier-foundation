@@ -34,6 +34,7 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-bundle-browser-tester@main#subdirectory=behaviors/browser-tester.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-superpowers@main#subdirectory=behaviors/superpowers-methodology.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-llm-wiki@main#subdirectory=behaviors/llm-wiki.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-evaluation@main#subdirectory=behaviors/evaluation.yaml
   - bundle: git+https://github.com/microsoft/amplifier-module-hook-shell@main#subdirectory=behaviors/hook-shell.yaml
   - bundle: git+https://github.com/microsoft/amplifier-module-tool-mcp@main#subdirectory=behaviors/mcp.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-filesystem@main#subdirectory=behaviors/apply-patch.yaml
