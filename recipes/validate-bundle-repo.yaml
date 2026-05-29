@@ -2621,10 +2621,54 @@ steps:
       # Directories to scan for unadvertised-mode references
       SCAN_DIRS = ["context", "agents", "behaviors", "skills", "modes"]
 
-      def scan_for_mode_mentions(mode_name, own_file_path):
-          """Return list of relative paths where mode_name is mentioned."""
+      def collect_mode_internal_files(mode_file_path):
+          """Return resolved paths the mode body @-mentions directly.
+
+          These files are 'mode-internal' lazy context — the LLM sees them
+          only when the mode is already active. References to the mode within
+          them are self-references, not dead-end invocations from out-of-mode
+          context, so the advertising-rule check skips them.
+
+          Template placeholders like @bundle:context/<filename> are ignored
+          (they do not resolve to an actual file).
+          """
+          internal = set()
+          try:
+              content = mode_file_path.read_text(encoding="utf-8", errors="replace")
+          except Exception:
+              return internal
+          # Strip frontmatter; only look at the body where @-mentions live
+          body_match = re.search(r'^---\s*\n.*?\n---\s*\n(.*)', content, re.DOTALL)
+          body = body_match.group(1) if body_match else content
+          # Match @namespace:path/to/file.md — kebab/snake names, dots/dashes/slashes in path
+          for m in re.finditer(r'@[\w-]+:([\w/.\-]+\.md)', body):
+              rel = m.group(1)
+              candidate = path / rel
+              if candidate.exists():
+                  internal.add(candidate.resolve())
+          return internal
+
+      def scan_for_mode_mentions(mode_name, own_file_path, mode_internal_files):
+          """Return list of relative paths where mode_name is mentioned as a
+          slash-command invocation or by name= attribute.
+
+          Skips:
+          - The mode's own file
+          - Files in mode_internal_files (lazy-loaded by this mode — references
+            to mode_name within them are self-references, not dead-end invocations)
+
+          The slash regex requires word/slash boundaries to avoid false positives
+          from URL paths (https://.../langsmith/evaluation) and file paths
+          (modes/evaluation.md, /evaluations/ as a directory segment).
+          """
           mentions = []
-          slash_pat = re.compile(r'`?/' + re.escape(mode_name) + r'`?')
+          # /mode-name must NOT be preceded by an alphanumeric char or slash
+          # (that would make it a path component, not a slash command), and
+          # must NOT be followed by an alphanumeric char, dot, or slash
+          # (which would make it part of a larger word or path).
+          slash_pat = re.compile(
+              r'(?<![\w/])`?/' + re.escape(mode_name) + r'`?(?![\w./])'
+          )
           name_pat  = re.compile(r'name=["\']' + re.escape(mode_name) + r'["\']')
           own_resolved = Path(own_file_path).resolve()
           for dir_name in SCAN_DIRS:
@@ -2632,8 +2676,11 @@ steps:
               if not scan_dir.exists():
                   continue
               for md_file in scan_dir.rglob("*.md"):
-                  if md_file.resolve() == own_resolved:
+                  resolved = md_file.resolve()
+                  if resolved == own_resolved:
                       continue  # skip the mode's own file
+                  if resolved in mode_internal_files:
+                      continue  # mode-internal — LLM already in mode when it reads this
                   try:
                       file_content = md_file.read_text(encoding="utf-8", errors="replace")
                       if slash_pat.search(file_content) or name_pat.search(file_content):
@@ -2667,7 +2714,8 @@ steps:
           }
 
           # ── Check A: Description token budget ────────────────────────────
-          description = fm.get("description", "")
+          # NOTE: description lives under the `mode:` block per the schema; not at frontmatter top level.
+          description = mode_section.get("description", "")
           # Handle YAML block scalars that parse as None or non-string
           if not isinstance(description, str):
               description = str(description) if description else ""
@@ -2714,12 +2762,14 @@ steps:
               detail["issues"].append("mode_description_high")
 
           # ── Check B: Advertising rule ─────────────────────────────────────
-          # Default advertised: True if key absent (opt-in to non-advertising is explicit)
-          advertised = fm.get("advertised", True)
+          # NOTE: `advertised` lives under the `mode:` block per the schema; not at frontmatter top level.
+          # Default True if key absent (opt-in to non-advertising is explicit).
+          advertised = mode_section.get("advertised", True)
           detail["advertised"] = advertised
 
           if advertised is False:
-              mentions = scan_for_mode_mentions(mode_name, mode_file)
+              mode_internal = collect_mode_internal_files(mode_file)
+              mentions = scan_for_mode_mentions(mode_name, mode_file, mode_internal)
               if mentions:
                   results["errors"].append({
                       "type": "unadvertised_but_referenced",
