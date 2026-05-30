@@ -473,3 +473,32 @@ class TestNoStreamingEvents:
         assert stream_events, (
             "DISCRIMINATOR BROKEN: expected stream events for request without flag"
         )
+
+    @pytest.mark.asyncio
+    async def test_call_provider_sets_small_max_output_tokens(self) -> None:
+        """ChatRequest must carry a small max_output_tokens to avoid Anthropic's
+        'streaming required for long operations' guard.
+
+        The naming call returns only a tiny JSON object; it has no need for a large
+        token budget.  Without an explicit cap the request inherits the provider's
+        large default, which trips Anthropic's guard when stream=False.
+
+        The cap must be set and must be <= 1024 (well below the threshold).
+        """
+        provider = _make_mock_provider()
+        hook = _make_hook(providers={"p": provider})
+
+        await hook._call_provider("name this session")
+
+        assert provider.complete.called
+        request = provider.complete.call_args[0][0]
+        assert request.max_output_tokens is not None, (
+            "ChatRequest.max_output_tokens must be explicitly set for the naming call. "
+            "Without it the request inherits the provider's large default, which trips "
+            "Anthropic's 'streaming required for long operations' guard when stream=False."
+        )
+        assert request.max_output_tokens <= 1024, (
+            f"max_output_tokens={request.max_output_tokens} is too large. "
+            "The naming call returns a tiny JSON object; cap it at <= 1024 "
+            "(256 is the recommended value)."
+        )

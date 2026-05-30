@@ -523,10 +523,18 @@ class SessionNamingHook:
             # from foreground output and leak into the streaming-UI overlay.
             from amplifier_core import ChatRequest, Message
 
+            # max_output_tokens: the naming response is a tiny JSON object
+            # ({"action": "set"|"defer", "name": "...", "description": "..."}).
+            # Without an explicit cap, the request inherits the provider's large
+            # default, which trips Anthropic's "streaming is required for operations
+            # that may take longer than 10 minutes" guard when stream=False.
+            # 256 tokens is a generous budget for the expected output and well
+            # below the threshold that triggers the guard.
             request = ChatRequest(
                 messages=[Message(role="user", content=prompt)],
                 model=model_override,
                 metadata={"stream": False},
+                max_output_tokens=256,
             )
 
             response = await provider.complete(request)
