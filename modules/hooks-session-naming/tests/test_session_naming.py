@@ -375,3 +375,101 @@ class TestModelRoleResolution:
         call_kwargs = priority_provider.complete.call_args
         request = call_kwargs[0][0]
         assert request.model is None, "No model override without model_role"
+
+
+# =============================================================================
+# Task 7: Background naming call must not leak llm:stream_* events
+# =============================================================================
+
+
+class TestNoStreamingEvents:
+    """_call_provider must set metadata={'stream': False} so the provider takes
+    the non-streaming branch and emits no llm:stream_block_* events.
+
+    Root cause: without this flag the shared Anthropic provider uses
+    use_streaming=True, emitting llm:stream_block_start/delta/end on the hook
+    bus.  Those events carry no session_id, so the streaming-UI overlay treats
+    them as foreground output and renders the naming JSON to the terminal.
+    """
+
+    _STREAM_EVENTS = frozenset({
+        "llm:stream_block_start",
+        "llm:stream_block_delta",
+        "llm:stream_block_end",
+    })
+
+    def _make_streaming_simulator(self, emitted: list) -> MagicMock:
+        """Mock provider that conditionally emits stream events.
+
+        Mirrors the real AnthropicProvider's logic after the fix:
+          - metadata={'stream': False}  → non-streaming path, NO events
+          - anything else               → streaming path, emits llm:stream_*
+
+        This lets the test discriminate: before the fix the naming hook sends
+        no metadata flag so events fire; after the fix the flag suppresses them.
+        """
+        from amplifier_core import ChatRequest
+
+        async def _complete(request: ChatRequest) -> MagicMock:
+            force_no_stream = (
+                request.metadata is not None
+                and request.metadata.get("stream") is False
+            )
+            if not force_no_stream:
+                emitted.append("llm:stream_block_start")
+                emitted.append("llm:stream_block_delta")
+                emitted.append("llm:stream_block_end")
+            return _make_mock_provider().complete.return_value
+
+        provider = MagicMock()
+        provider.complete = _complete
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_call_provider_sets_stream_false_in_metadata(self) -> None:
+        """ChatRequest passed to provider.complete() must have metadata['stream']=False."""
+        provider = _make_mock_provider()
+        hook = _make_hook(providers={"p": provider})
+
+        await hook._call_provider("name this session")
+
+        assert provider.complete.called
+        request = provider.complete.call_args[0][0]
+        assert request.metadata is not None, (
+            "ChatRequest.metadata must not be None — fix: pass metadata={'stream': False}"
+        )
+        assert request.metadata.get("stream") is False, (
+            f"Expected metadata['stream']=False, got metadata={request.metadata!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_naming_call_emits_no_stream_events(self) -> None:
+        """No llm:stream_* events on the hook bus during the naming call."""
+        emitted: list = []
+        provider = self._make_streaming_simulator(emitted)
+        hook = _make_hook(providers={"p": provider})
+
+        await hook._call_provider("name this session")
+
+        stream_events = [e for e in emitted if e in self._STREAM_EVENTS]
+        assert not stream_events, (
+            f"Naming call leaked llm:stream_* events: {stream_events}. "
+            "Fix: set metadata={'stream': False} in _call_provider()."
+        )
+
+    @pytest.mark.asyncio
+    async def test_discriminator_detects_streaming_without_flag(self) -> None:
+        """Control group: without the metadata flag, stream events ARE detected."""
+        from amplifier_core import ChatRequest
+
+        emitted: list = []
+        provider = self._make_streaming_simulator(emitted)
+
+        # Call directly with no metadata flag (pre-fix scenario)
+        request_no_flag = ChatRequest(messages=[])
+        await provider.complete(request_no_flag)
+
+        stream_events = [e for e in emitted if e in self._STREAM_EVENTS]
+        assert stream_events, (
+            "DISCRIMINATOR BROKEN: expected stream events for request without flag"
+        )
