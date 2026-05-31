@@ -1,6 +1,6 @@
 bundle:
   name: behavior-streaming-ui
-  version: 1.0.0
+  version: 1.1.0
   description: Streaming UI display for thinking blocks, tool calls, and token usage
 
 hooks:
@@ -11,3 +11,9 @@ hooks:
         show_thinking_stream: true
         show_tool_lines: 5
         show_token_usage: true
+        # Token-streaming overlay ON by default for the interactive experience.
+        # The hook itself defaults this False (conservative mechanism); enabling it
+        # here is policy. It still only activates on a real TTY (sys.stdout.isatty()),
+        # so pipes/CI are unaffected. Opt out per-session with:
+        #   overrides.hooks-streaming-ui.config.ui.stream_tokens: false
+        stream_tokens: true
