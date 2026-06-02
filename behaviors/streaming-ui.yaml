@@ -1,6 +1,6 @@
 bundle:
   name: behavior-streaming-ui
-  version: 1.2.0
+  version: 1.3.0
   description: Streaming UI display for thinking blocks, tool calls, and token usage
 
 hooks:
@@ -11,10 +11,13 @@ hooks:
         show_thinking_stream: true
         show_tool_lines: 5
         show_token_usage: true
-        # Token-streaming overlay TEMPORARILY OFF by default while delegate-session
-        # and interleaved-assistant-message handling are finished. The renderer ships
-        # dormant (hook default False); this re-asserts that default at the policy
-        # layer after the trial in 1.1.0. To turn it back on, set this to true.
-        # Opt IN per-session meanwhile with:
-        #   overrides.hooks-streaming-ui.config.ui.stream_tokens: true
-        stream_tokens: false
+        # Token-streaming overlay ON by default (policy layer). The work that
+        # gated it is done: sub-agent output is curated (no live token stream;
+        # attributed full-width dim final result + a "sub-agent working" spinner),
+        # and the final assistant response is owned solely by app-cli's
+        # render_message, so parallel delegate sessions and interleaved assistant
+        # messages render cleanly. The hook (mechanism) still defaults False; this
+        # enables it at the policy layer.
+        # Opt OUT per-session with:
+        #   overrides.hooks-streaming-ui.config.ui.stream_tokens: false
+        stream_tokens: true
