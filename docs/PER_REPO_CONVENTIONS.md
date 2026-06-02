@@ -1,93 +1,94 @@
 # Per-Repo Conventions
 
-How agents (and humans) discover and honor the local rules of a repository before changing it.
+How agents (and humans) discover, honor, and keep re-reading the local rules of a repository while changing it.
 
 ---
 
-## The Principle
+## Why This Matters
 
-Foundation defines the philosophy. Individual repositories define their specifics. An agent working in a repo is a guest — read the house rules before changing the furniture.
+Foundation defines the philosophy. Individual repositories define their specifics. An agent working in a repo is a guest — read the house rules before changing the furniture, and keep them in view while you work.
 
-This is not bureaucracy. It is stewardship. Foundation cannot know every repo's gates, smoke tests, common pitfalls, or release rituals; the repo owners encode that knowledge in files they expect you to read. When you skip the discovery step, you re-discover bugs they already solved, you break invariants they already documented, and you waste reviewer time on rework that the checklist would have caught.
+This is not bureaucracy; it is stewardship. Foundation cannot know any given repo's gates, smoke tests, pitfalls, invariants, or release rituals. The repo's owners encode that knowledge in files they expect you to read. The cost of reading them is minutes. The cost of skipping them is paid downstream, and it is larger:
 
-If you are about to act in a repository you have not worked in before — or have not worked in recently — **stop and read the conventions first**. It takes a minute. It saves hours.
+- You re-derive decisions the owners already settled.
+- You break invariants they already documented.
+- You design without knowing how the change will be graded, then fail verification.
+- You re-propose work the team already chose to defer.
+- You burn reviewer time on rework a checklist would have caught.
+
+The owners learned these things the hard way. Reading what they wrote is how you avoid learning them the same way.
 
 ---
 
-## What to Look For
+## The Two Kinds of Convention Files
 
-Read these files, in this order, before writing code or opening a PR:
+Repo conventions live in two classes of file. The distinction is about *loading cost*, and it changes how you treat each.
 
-| File | Purpose | When it wins |
-|------|---------|--------------|
-| `AGENTS.md` | Agent-facing conventions: test commands, gates, common pitfalls, "what 'done' looks like" | Always. This is the repo owner talking directly to you. |
-| `.github/PULL_REQUEST_TEMPLATE.md` | The checklist a PR body is expected to honor; reviewers see unchecked boxes immediately | Whenever you open a PR. |
-| `CONTRIBUTING.md` | Style, branch naming, commit conventions, contribution workflow | General contribution context. |
-| `README.md` | User-facing overview; sometimes contains a contributor or development section | When the repo is unfamiliar. |
+**Always-loaded** — thin, and in context on every operation:
 
-### Discovery locations
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Agent-facing conventions: test commands, gates, common pitfalls, what "done" looks like. The owner talking directly to you. |
+| `.github/PULL_REQUEST_TEMPLATE.md` | The checklist a PR body must honor; reviewers see unchecked boxes immediately. |
+| `CONTRIBUTING.md` | Style, branch naming, commit conventions, contribution workflow. |
+| `README.md` | User-facing overview; sometimes carries a contributor or development section. |
 
-Some of these files live only at the repo root. Others — `AGENTS.md` in particular — may also appear in subdirectories that scope conventions to a specific subsystem.
+**Contextual** — read when their phase is relevant, not crammed into the always-on set:
 
-The discovery pattern:
+| File | Holds | When it's read / written |
+|------|-------|--------------------------|
+| `PRINCIPLES.md` | Philosophical context, architectural invariants, upstream-spec linkage, intentional deltas, pointers to ADRs and design docs. | Read before designing or planning a change. |
+| `SMOKE_TESTS.md` | The repo's smoke runnable(s) and any cross-repo smokes to run when changes touch dependents. | Read **twice** — at planning (design *to* the rubric) and at verification (run it). |
+| `KNOWN_ISSUES.md` | Known-broken, deliberately-deferred, or unsupported items, plus intent and good ideas for future work. | Read when scoping; written when work is deferred (offer and confirm first — see below). |
+
+Why two classes? `AGENTS.md` stays thin and always-on because it is paid for on every operation. The contextual files would tax that budget with material that is only sometimes relevant, so they earn their own file and load when their content is needed. Keeping them separate avoids per-operation bloat — it is **not** permission to skip them. They are optional to *author*: a repo without them is signalling that everything an agent needs is already in `AGENTS.md` or self-evident from the code. Author them when the gap is real, not pre-emptively.
+
+---
+
+## Where the Files Live
+
+Some of these files exist only at the repo root. Others — `AGENTS.md` especially — may also appear in subdirectories that scope conventions to a specific subsystem.
+
+To resolve them:
 
 1. Read the file at the repository root if it exists.
-2. Read any same-named file in the current working directory.
-3. Walk upward from the working directory to the repo root, reading any same-named files along the way.
+2. Read any same-named file in your current working directory.
+3. Walk upward from the working directory to the root, reading same-named files along the way.
 4. Apply the **most specific** file last — subsystem rules override repo-wide rules.
 
-If a repo has no `AGENTS.md`, no PR template, no `CONTRIBUTING.md` — that is itself information. Default behavior applies. But check before you assume.
+If a repo has none of these files, that is itself information: default behavior applies. But check before you assume.
 
 ---
 
-## JIT-Loaded Files: `PRINCIPLES.md` and `SMOKE_TESTS.md`
+## When to Read — and Re-Read
 
-Some files are read **only at specific phases of work**, not on every operation. They earn their own file — rather than a section in `AGENTS.md` — because force-loading their content into every agent operation would tax context for content that is only sometimes relevant. The convention is to keep `AGENTS.md` thin (always-on) and push phase-specific material to dedicated files that the agent loads when the phase fires.
+An agent acts only on what is in its context. A convention you never loaded cannot guide you; a convention that has fallen out of context no longer does. So reading repo conventions is not a one-time gate at the start of a task — it is a habit you repeat as the work changes shape.
 
-| File | Loading scope | When to read |
-|------|---------------|--------------|
-| `PRINCIPLES.md` | Just-in-time, design phase | Before planning or designing a change. Captures philosophical context, architectural invariants, upstream-spec linkage, intentional deltas, and pointers to deeper material (ADRs, design docs). |
-| `SMOKE_TESTS.md` | Just-in-time, planning **and** verification phases | **Twice.** At planning, to know the scenarios this change will be graded against — design *to* the rubric. At verification, to run the smokes and confirm. Names the repo's own smoke runnable(s) and any cross-repo smokes that must also run when changes touch dependent repos. |
+**Read what exists before you start.** Before any new work in a repo — designing, coding, debugging, opening a PR — read the always-loaded files and whichever contextual files exist, at the root and in the subdirectories you will touch.
 
-If a repo has either file, its `AGENTS.md` should point at them with explicit triggers ("Before designing changes, read `PRINCIPLES.md`. Before verifying, read `SMOKE_TESTS.md`.").
+**Re-read at each major shift in what you are doing.** Design → implementation. Investigation → fix. Coding → verification → PR. Two forces make a single up-front read insufficient:
 
-On `SMOKE_TESTS.md` specifically: read it at **both** planning and verification. The point of phase-specific files is not "do not load until the phase fires" — it is "load when their content is relevant to the work at hand." Discovering the grading rubric only at verification means you designed without knowing what excellence looked like. The agent loads them when the phase fires; otherwise they stay out of context.
+- *Context decay.* Over a long session, earlier reads fall out of context through compaction and intervening work. A file you read an hour ago may no longer be in front of you.
+- *Changing lens.* The same file matters differently depending on what you are doing. At design, `PRINCIPLES.md` tells you which invariants to honor; at verification, whether you did. `SMOKE_TESTS.md` at planning is a rubric to design toward; at verification it is a command to run. Re-reading is re-aiming, not repetition.
 
-These files are optional. A repo without either is signalling that everything an agent needs at design or verification time is already in `AGENTS.md` or self-evident from the codebase. Author them when the gap is real, not pre-emptively.
+(Those transitions are illustrative, not a canonical list. The rule is simply: when the nature of your work shifts, re-read what is now relevant.)
 
----
+**The one exception:** files that an `AGENTS.md` pulls in through an always-loaded @-mention chain ride along automatically and need no deliberate re-read. Everything else is on you to revisit.
 
-## The Discovery Pattern (Concrete)
+**Honor what you read.** As the work reaches each stage:
 
-**Before writing code in a repo:**
-
-- Read `AGENTS.md` if it exists. Apply its test commands, smoke-test invocations, and common pitfalls.
-- Read `CONTRIBUTING.md` if it exists. Honor its branch naming and commit message conventions.
-- Note any gates the repo declares (lint, type-check, smoke tests, integration tests). You will run these before declaring done.
-
-**When opening a PR:**
-
-- Read `.github/PULL_REQUEST_TEMPLATE.md` if it exists. The template is not decorative — it is the reviewer's checklist.
-- Populate the PR body using the template's structure. Fill in evidence for each checkbox. Do not silently skip items.
-- If a checkbox does not apply, say so explicitly: `- [x] N/A — no provisioning changes`. An unchecked box without explanation reads as "I forgot."
-
-**When verifying work:**
-
-- The PR template's verification checklist tells you which gates the repo expects. Run them.
-- If the template asks for a smoke test, a live run, or evidence from a specific environment, produce that evidence. Link it. Paste it. Do not paraphrase.
-
-**When repo conventions contradict your defaults:**
-
-- The repo wins. You are a guest.
-- If you believe the convention is wrong, say so in the PR description with evidence. Do not silently override.
+- *Opening a PR* — populate the body from `.github/PULL_REQUEST_TEMPLATE.md`. Fill in evidence for each item; do not silently skip. If an item does not apply, say so explicitly (`- [x] N/A — no provisioning changes`). An unchecked box without explanation reads as "I forgot."
+- *Verifying* — run the gates the repo declares (see the gradient below). If the template asks for a smoke test, a live run, or evidence from a specific environment, produce it. Link it, paste it — do not paraphrase.
+- *Deferring work* — when you and the user decide *not* to address something now, record it in `KNOWN_ISSUES.md` so the gap and the intent behind it survive. Because appending is cheap, this file bloats fast: **offer the entry and get the user's confirmation before writing it.** Do not auto-log every rough edge or passing TODO — only what the user agrees is worth keeping.
+- *Conflict* — when a repo convention contradicts your defaults, the repo wins; you are a guest. If you believe the convention is wrong, say so in the PR description with evidence. Do not silently override.
 
 ---
 
 ## The Verification Gradient
 
-Unit tests are necessary but rarely sufficient. Most repos that have had integration-blocking bugs in production specify a gradient of gates beyond unit tests — and the gradient exists because integration is where unit-tested code breaks.
+Unit tests are necessary but rarely sufficient. The recurring failure: unit tests pass, integration fails. The author wrote tests from the implementation outward — *does this code do what I wrote it to do?* — and never asked the question that catches integration bugs: *what scenarios does the production path actually trigger?*
 
-A repo's `AGENTS.md` or PR template typically encodes which of these gates apply:
+Repos that have lived through this declare a gradient of gates beyond unit tests. A repo's `AGENTS.md` or PR template encodes which apply:
 
 | Gate | What it proves | When the repo requires it |
 |------|----------------|---------------------------|
@@ -96,54 +97,34 @@ A repo's `AGENTS.md` or PR template typically encodes which of these gates apply
 | Smoke tests | The system starts and the happy path runs | When the change touches startup, provisioning, or configuration. |
 | Live runs | The system handles a real workload end-to-end | When the change touches engines, pipelines, or orchestration. |
 
-Repo owners have learned through experience which of these gates catch real bugs in their code. Their conventions encode that experience. Skipping a gate the repo specifies is not a time-saver; it is a way of re-discovering bugs the owner already paid for.
-
----
-
-## Why This Matters
-
-A recurring failure pattern: unit tests pass, integration fails. The author wrote tests from the implementation outward — does this code do what I wrote it to do? — and never asked the question that catches integration bugs: what scenarios does the production path actually trigger?
-
-Repo owners who have lived through this learn the specific paths their code breaks on. They write those paths into `AGENTS.md`. They put gates into the PR template. They list the smoke tests in `CONTRIBUTING.md`.
-
-When an agent ignores these files, the agent is not being clever; it is choosing to learn from scratch what someone has already documented. The cost is paid by reviewers and by users in production. Read the files. The owner wrote them for exactly this moment.
+Owners have learned which gates catch real bugs in their code. Skipping a gate the repo specifies is not a time-saver; it is a way of re-discovering a bug the owner already paid for.
 
 ---
 
 ## Author Guidance (If You Own a Repo)
 
-If you maintain a repository, write down what the next agent or contributor needs to know. The audience is **the next person (or agent) who will touch this code**, and they have no prior context.
+Write down what the next agent or contributor needs to know. The audience has no prior context.
 
-**Put in `AGENTS.md`:**
+**In `AGENTS.md`:** the test command(s) that must pass before "done"; smoke-test invocations with exact commands; common pitfalls (bugs that bit you more than once); what "done" looks like for a typical change; non-obvious environment setup.
 
-- The test command(s) that must pass before "done"
-- Smoke-test invocations, with the exact commands
-- Common pitfalls — bugs you have hit more than once
-- What "done" looks like for a typical change in this repo
-- Any environment setup that is not obvious from `README.md`
+**In `.github/PULL_REQUEST_TEMPLATE.md`:** the verification checklist a PR body must address; evidence requirements (logs, screenshots, smoke output); links to the gates and their commands.
 
-**Put in `.github/PULL_REQUEST_TEMPLATE.md`:**
+**In `KNOWN_ISSUES.md`:** issues you are deliberately deferring, each with one line on *why not now*; intent and good ideas for future work that would address shortcomings of the current system. Not a workaround log for current bugs (those are pitfalls in `AGENTS.md`), and not a dumping ground — an entry goes in only after the user confirms it is worth keeping.
 
-- The verification checklist a PR body must address
-- Evidence requirements (logs, screenshots, smoke-test output)
-- Links to the relevant gates and where to find their commands
-
-**Keep both files short.** Twenty lines of actionable checklist beat two hundred lines of philosophy. Philosophy lives here in foundation; specifics live in your repo.
-
-**Update them when you learn something.** If a class of bug bit you twice, that is a pitfall worth documenting. If you added a gate, add it to the template. The files are living documents.
+**Keep them short.** Twenty lines of actionable checklist beat two hundred lines of philosophy. Philosophy lives here in foundation; specifics live in your repo. **Update them when you learn something** — a bug that bit twice is a pitfall worth documenting; a new gate belongs in the template. These are living documents.
 
 ---
 
 ## Cross-References
 
-- [AGENT_AUTHORING.md](AGENT_AUTHORING.md) — how to author agents (including the discovery behavior described above)
-- [PR_REVIEW_GUIDE.md](PR_REVIEW_GUIDE.md) — how to review PRs, including how to use the repo's template as the review baseline
-- [CONCEPTS.md](CONCEPTS.md) — foundation concepts that apply across all repos
+- [AGENT_AUTHORING.md](AGENT_AUTHORING.md) — how to author agents, including the discovery behavior described above.
+- [PR_REVIEW_GUIDE.md](PR_REVIEW_GUIDE.md) — how to review PRs, using the repo's template as the baseline.
+- [CONCEPTS.md](CONCEPTS.md) — foundation concepts that apply across all repos.
 
 ---
 
 ## TL;DR
 
-Before acting in a repo, read its `AGENTS.md`, `.github/PULL_REQUEST_TEMPLATE.md`, and `CONTRIBUTING.md`. Apply them. When opening a PR, fill in the template honestly. When the repo's rules contradict your defaults, the repo wins.
+Before — and during — work in a repo, read its conventions. The always-loaded files (`AGENTS.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `CONTRIBUTING.md`) set the baseline; the contextual files (`PRINCIPLES.md`, `SMOKE_TESTS.md`, `KNOWN_ISSUES.md`) carry phase-specific knowledge. Read what exists before you start, and **re-read the relevant files at each major shift in what you are doing** — they fall out of context, and each reads differently through the current lens. Honor the PR template, run the gates, and when the repo's rules contradict your defaults, the repo wins.
 
-The repo owner has learned things you have not. Read what they wrote.
+The repo owner has learned things you have not. Read what they wrote — and keep reading it.

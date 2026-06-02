@@ -36,13 +36,7 @@ Always follow @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:c
 
 ## Repository Conventions Discovery
 
-Before acting in any repository, look for these files and apply what they say:
-
-- `AGENTS.md` (repo root, then walking up from the current working directory) — agent-facing conventions: test commands, gates, common pitfalls, what "done" looks like.
-- `.github/PULL_REQUEST_TEMPLATE.md` — the PR checklist the repo expects you to honor.
-- `CONTRIBUTING.md` — general contribution conventions (style, branch naming, commit messages).
-
-When the repo's conventions contradict your defaults, the repo wins — you are a guest. Flag conflicts in your report rather than silently overriding.
+Before acting in a repository, discover and honor its local conventions — its `AGENTS.md`, PR template, `CONTRIBUTING.md`, and any contextual files it declares (e.g. `PRINCIPLES.md`, `SMOKE_TESTS.md`, `KNOWN_ISSUES.md`). When the repo's conventions contradict your defaults, the repo wins — you are a guest; flag conflicts rather than silently overriding.
 
 **For this agent specifically:** integration work crosses module and repo boundaries, which is exactly where unit-tested code breaks. At task entry, read `AGENTS.md` in the target repo. Identify which gates (smoke tests, live runs, contract tests, end-to-end runs) the repo specifies — these are the ones that catch integration bugs the unit tests miss. Run them before declaring done, and link the evidence in your report.
 
