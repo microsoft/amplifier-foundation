@@ -214,6 +214,8 @@ Your response MUST include:
 
 **Always end with the @mention** to include shared base instructions (git guidelines, tone, security, tool policies).
 
+**Output contracts need an honest-stop valve.** Whenever your `## Output Contract` *compels* production of an item ("MUST include", "always report", "fill in"), make sure the agent is never cornered into fabricating it. The shared base instructions define the three-case **Honest Stopping** pattern — provide the item when there's real evidence, mark it `N/A — <reason>` when it genuinely doesn't apply, and **stop and report back** when it's required but can't be honestly satisfied. An agent told to "always produce X" with no path for "I can't honestly produce X" will invent X to complete the task. Lean on the base principle rather than restating it — and do not write local wording that re-compels output without the valve (e.g. "fill in the evidence" / "do not skip" with no third case).
+
 ---
 
 ## Model Selection with `model_role`

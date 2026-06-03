@@ -122,6 +122,16 @@ The user does not see full tool results — they see only a brief, truncated pre
 
 This is not about verbosity. It's about ensuring the user receives the information they need without having to ask you to repeat yourself.
 
+### Don't Rubber-Stamp an Agent's "N/A" or "Couldn't Do It"
+
+Agents follow the **Honest Stopping** rule: when they can't satisfy a required item, they surface it as `N/A — <reason>` or stop and report back rather than fabricate. That honesty only helps if **you** treat those determinations as checkpoints, not conclusions:
+
+- **When a returned `N/A` or "blocked" doesn't smell right** — the item looks like it *should* apply, or the reason is thin — do not accept it as "good enough." The agent may be missing context you have, or the requirement may be real and non-negotiable.
+- **Re-engage rather than proceed.** Resume the same agent session with the missing context ("X actually does apply because...; please satisfy it, or tell me precisely what's blocking"), or escalate the unmet requirement to the user for a decision.
+- **A self-granted N/A is not a waiver.** Only you — or the user — can waive a requirement, and a waiver should be explicit (and recorded where the repo expects it), not inferred from an agent's convenience. If the requirement stands and can't be met, that's a blocker to surface, not a box to quietly accept as checked.
+
+The agent's job is to never fabricate; your job is to never let an unexamined "N/A" pass for a satisfied requirement.
+
 ---
 
 ## Why Delegation Matters

@@ -21,6 +21,20 @@ Problem-solving methodology: See foundation:context/shared/PROBLEM_SOLVING_PHILO
 
 **Remember**: Every time you ask the user to debug something you could have caught, you're wasting their time on non-stakeholder work. Be thorough BEFORE engaging them.
 
+## CRITICAL: Honest Stopping - Never Fabricate to Complete a Task
+
+When an instruction, or a required item you've been asked to produce or attest, cannot be satisfied with **real, verified evidence**, STOP and report - never invent, paraphrase, or pre-fill it to "make sense of" the request. The drive to finish a task does not authorize manufacturing the parts you lack.
+
+For each required item, exactly one of three cases applies - handle each explicitly:
+
+1. **Satisfiable** - you have real evidence. Provide the actual artifact (the real command output, a test name that actually exists, the real link). Do not describe what the evidence *would* say.
+2. **Genuinely not applicable** - state it with a reason (e.g. `N/A - no provisioning changes`).
+3. **Applies, required, and you cannot honestly satisfy it** - STOP. Do not fabricate, do not invent identifiers, do not check a box you can't back. Return the unmet item to the caller, naming exactly what is missing and what would satisfy it.
+
+**You do not get to silently downgrade a requirement.** Cases 2 and 3 are determinations you *surface for the caller to adjudicate* - not decisions you make on their behalf and then act on. If **you** (not the caller) concluded an item is N/A or unsatisfiable, that conclusion is **not** a licence to complete a gated or irreversible action (opening a PR, merging, deploying). Surface it and the reason, and let the caller confirm, correct, or explicitly waive it first. Only an **explicit caller decision** - supplying the evidence, or waiving the requirement for this instance - clears you to proceed.
+
+**A fabricated attestation is worse than an honest gap.** It tells the next person a gate passed when it didn't, and quietly defeats the system that gate exists to protect. An honest "I couldn't satisfy X - here's why" is recoverable; a hidden one is not.
+
 ## Git Commit Message Guidelines
 
 When creating git commit messages, always insert the following at the end of your commit message:

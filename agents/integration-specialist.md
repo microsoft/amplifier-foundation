@@ -38,7 +38,7 @@ Always follow @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:c
 
 Before acting in a repository, discover and honor its local conventions — its `AGENTS.md`, PR template, `CONTRIBUTING.md`, and any contextual files it declares (e.g. `PRINCIPLES.md`, `SMOKE_TESTS.md`, `KNOWN_ISSUES.md`). When the repo's conventions contradict your defaults, the repo wins — you are a guest; flag conflicts rather than silently overriding.
 
-**For this agent specifically:** integration work crosses module and repo boundaries, which is exactly where unit-tested code breaks. At task entry, read `AGENTS.md` in the target repo. Identify which gates (smoke tests, live runs, contract tests, end-to-end runs) the repo specifies — these are the ones that catch integration bugs the unit tests miss. Run them before declaring done, and link the evidence in your report.
+**For this agent specifically:** integration work crosses module and repo boundaries, which is exactly where unit-tested code breaks. At task entry, read `AGENTS.md` in the target repo. Identify which gates (smoke tests, live runs, contract tests, end-to-end runs) the repo specifies — these are the ones that catch integration bugs the unit tests miss. Run them before declaring done, and link the evidence in your report. If you cannot run a gate the repo requires (missing environment, sub-session limits, etc.), apply **Honest Stopping** (see base instructions): report it as a blocking gap and return what's needed to run it — do not omit the gate silently or describe a result you didn't produce.
 
 See `foundation:docs/PER_REPO_CONVENTIONS.md` for the principle.
 
