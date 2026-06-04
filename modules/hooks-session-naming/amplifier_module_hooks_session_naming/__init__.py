@@ -35,6 +35,7 @@ class SessionNamingConfig:
     max_description_length: int = 200
     max_retries: int = 3
     model_role: str | None = "fast"
+    provider_timeout: float = 10.0
 
 
 INITIAL_NAMING_PROMPT = """You generate names and descriptions for conversation sessions.
@@ -248,11 +249,12 @@ class SessionNamingHook:
             # Call the provider — hard timeout caps stalled providers
             try:
                 response = await asyncio.wait_for(
-                    self._call_provider(prompt), timeout=10.0
+                    self._call_provider(prompt), timeout=self.config.provider_timeout
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "Session naming provider call timed out (10 s) for session %s",
+                    "Session naming provider call timed out (%d s) for session %s",
+                    int(self.config.provider_timeout),
                     session_id[:8],
                 )
                 await self.coordinator.hooks.emit(
@@ -583,6 +585,8 @@ async def mount(
             Defaults to "fast" so naming uses a cheap model automatically.
             Set to None to use the priority provider explicitly.
             Falls back to priority provider silently when hooks-routing is not installed.
+        provider_timeout: float (default: 10.0) - Timeout in seconds for the provider call.
+            Increase for slow local models (e.g., Ollama on external storage).
     """
     config = config or {}
 
@@ -593,6 +597,7 @@ async def mount(
         max_description_length=config.get("max_description_length", 200),
         max_retries=config.get("max_retries", 3),
         model_role=config.get("model_role"),
+        provider_timeout=float(config.get("provider_timeout", 10.0)),
     )
 
     hook = SessionNamingHook(coordinator, hook_config)
