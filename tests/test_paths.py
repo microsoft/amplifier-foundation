@@ -116,6 +116,20 @@ class TestParseUri:
         assert result.scheme == "file"
         assert result.path == "/home/user/bundle"
 
+    def test_parse_windows_absolute_path(self) -> None:
+        """Parses Windows absolute paths as file URIs."""
+        result = parse_uri(r"C:\Users\test\.amplifier\cache\module")
+        assert result.scheme == "file"
+        assert result.path == r"C:\Users\test\.amplifier\cache\module"
+        assert result.host == ""
+        assert result.subpath == ""
+
+    def test_parse_windows_unc_path(self) -> None:
+        """Parses Windows UNC paths as file URIs."""
+        result = parse_uri(r"\\server\share\module")
+        assert result.scheme == "file"
+        assert result.path == r"\\server\share\module"
+
     def test_https_uri(self) -> None:
         """Parses https:// URIs."""
         result = parse_uri("https://example.com/bundle.yaml")
