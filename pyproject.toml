@@ -36,6 +36,10 @@ tts = [
 voice = [
     "amplifier-foundation[tts]",
 ]
+slack-adapter = [
+    "slack-bolt>=1.18.0",
+    "slack-sdk>=3.27.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/microsoft/amplifier-foundation"
