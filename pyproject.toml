@@ -29,6 +29,13 @@ grpc-adapter = [
     "grpcio>=1.78.0",
     "protobuf>=4.0.0",
 ]
+tts = [
+    "elevenlabs>=1.0.0",
+    "azure-cognitiveservices-speech>=1.35.0",
+]
+voice = [
+    "amplifier-foundation[tts]",
+]
 
 [project.urls]
 Homepage = "https://github.com/microsoft/amplifier-foundation"
