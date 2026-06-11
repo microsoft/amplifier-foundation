@@ -99,6 +99,7 @@ response = await session.execute("Hello, what can you help with?")
 | **Create** | Yes | Produces the AmplifierSession |
 | **Mount** | No | For tools not declared in the bundle (runtime-dependent tools) |
 | **Hook** | No | For app-specific event handling (WebSocket streaming, etc.) |
+| **Register spawn** | No | For agent / sub-session delegation. Register the `session.spawn` capability **after `create_session` and before `execute`**. Register it too early (no session yet) or too late (after the loop starts) and the orchestrator silently falls back to a no-tools backend — delegation never gets full sub-sessions. See [Example 23](../examples/23_spawn_with_bundle_refs.py). |
 | **Execute** | Yes | Runs the agent loop |
 
 ### Key Opinions
@@ -108,6 +109,8 @@ response = await session.execute("Hello, what can you help with?")
 **`session_cwd` is critical for non-CLI apps.** Without it, file-system tools see the server's working directory, not the user's project or workspace. Always pass it explicitly when creating sessions for web or API applications.
 
 **Composition replaces configuration.** Want different behavior for different environments, users, or modes? Don't toggle flags — compose a different bundle overlay.
+
+**Use `prepare(install_deps=False)` for offline / pinned execution.** When the environment already has every module installed (CI runners, air-gapped hosts, reproducible builds), call `await composed.prepare(install_deps=False)`. It skips all network access — it discovers the paths of already-installed modules and builds the resolver from them, but installs nothing. The modules must already be importable. Do **not** try to bypass `prepare()` by hand-feeding a raw mount plan to `create_session()`: the module resolver is computed *inside* `prepare()` and cannot be precomputed or supplied externally, so a hand-built mount plan leaves the resolver unset and the session fails to wire its modules. Always go through `prepare()`; use `install_deps=False` when it must stay offline.
 
 ### Session ID Reuse
 
@@ -348,6 +351,30 @@ unreg = session.coordinator.hooks.register(
 | Cost tracking | Bundle or app-layer | Depends on scope |
 
 **Note on policy concerns**: Notifications, cost alerts, and similar organizational policy concerns often belong in the application layer, not in the bundle itself. The bundle provides the mechanisms (hooks, events); the application applies the policies.
+
+### Hook Propagation to Spawned Children
+
+Hooks declared in the **bundle** propagate to spawned sub-sessions automatically. When a spawn capability calls `prepared.spawn(child_bundle, instruction, compose=True)` — and `compose=True` is the default — the parent bundle is composed with the child before the child session is created. Everything the parent declares (hook modules, providers, tools) is therefore inherited by the child. Compose one observability or logging hook into the parent and *every* descendant session is instrumented, with no per-child wiring:
+
+```python
+# Generic observability hook composed into the PARENT bundle once...
+observability = Bundle(
+    name="observability-behavior",
+    hooks=[{"module": "hooks-observability", "source": "<your-hook-source>", "config": {...}}],
+)
+composed = foundation.compose(provider).compose(observability)
+prepared = await composed.prepare()
+
+# ...is inherited by children spawned with compose=True (the default).
+await prepared.spawn(child_bundle, "do a task", compose=True)
+```
+
+Two caveats:
+
+- **Bundle hooks propagate; ephemeral hooks do not.** A hook registered directly on a session's coordinator (`session.coordinator.hooks.register(...)`) lives only on that session — it is *not* part of any bundle, so spawned children never see it. If you need a hook in children, put it in the (parent) bundle.
+- **Register concrete event names, not `"*"`.** A hook module's `mount()` should subscribe to specific events from `amplifier_core` `ALL_EVENTS` (e.g. `session:start`, `provider:request`, `tool:pre`, `tool:post`). There is no wildcard subscription at the module-mount layer.
+
+See [Example 23](../examples/23_spawn_with_bundle_refs.py) for a runnable end-to-end demonstration.
 
 ---
 
@@ -822,6 +849,41 @@ async def spawn_session(config: dict) -> AmplifierSession:
 # Register on the coordinator
 session.coordinator.register_capability("spawn", spawn_session)
 ```
+
+> **⚠️ Bundle-Ref Agent Resolution.** An agent entry handed to a spawn capability
+> comes in one of two shapes, and they must be handled differently:
+>
+> 1. **Inline config** — a dict of bundle fields
+>    (`{"instruction": ..., "tools": [...], "providers": [...]}`). Build the child
+>    `Bundle(...)` directly from those fields.
+> 2. **Lazy bundle-ref** — a single-key dict `{"bundle": "<uri>"}` that points at a
+>    bundle to load. You **must** `load_bundle(...)` it first.
+>
+> A spawn capability that always does
+> `Bundle(session=config.get("session", {}), tools=config.get("tools", []), ...)`
+> works for shape 1 but is a **latent crash** for shape 2: a bundle-ref has no
+> inline fields, so every `.get(...)` returns empty and you get a structurally
+> empty child (no orchestrator, no provider, no tools). It inherits the parent's
+> orchestrator via compose and lands on a no-tools / unconfigured backend —
+> surfacing as an `ImportError` or a silent fallback at runtime. Branch on the
+> shape:
+>
+> ```python
+> if "bundle" in config and len(config) == 1:
+>     child_bundle = await load_bundle(config["bundle"])  # bundle-ref
+> else:
+>     child_bundle = Bundle(                               # inline config
+>         name=agent_name,
+>         session=config.get("session", {}),
+>         providers=config.get("providers", []),
+>         tools=config.get("tools", []),
+>         hooks=config.get("hooks", []),
+>         instruction=config.get("instruction")
+>         or config.get("system", {}).get("instruction"),
+>     )
+> ```
+>
+> See [Example 23](../examples/23_spawn_with_bundle_refs.py) for a runnable end-to-end demonstration.
 
 ### What Crosses the Boundary Correctly
 
