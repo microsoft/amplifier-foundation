@@ -51,6 +51,9 @@ See application architecture patterns: configuration management, logging, error 
 **[09_multi_agent_system.py](./09_multi_agent_system.py)** - Coordinate specialized agents
 Create specialized agents (Architect, Implementer, Reviewer) with different tools and instructions. See sequential workflows and context passing between agents.
 
+**[23_spawn_with_bundle_refs.py](./23_spawn_with_bundle_refs.py)** - Spawn sub-sessions safely
+Wire the `session.spawn` capability for agent delegation. Handle both agent-config shapes (inline config vs lazy `{"bundle": "<uri>"}` bundle-ref) so bundle-ref agents don't crash on an empty child. Shows that a generic observability hook composed into the parent bundle is inherited by every spawned child via `compose=True`.
+
 ### 🌍 Tier 4: Real-World Applications (10-21)
 **Goal:** Practical use cases and advanced patterns
 
