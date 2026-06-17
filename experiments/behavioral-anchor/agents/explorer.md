@@ -8,6 +8,12 @@ meta:
     DO NOT USE WHEN: you need a single known file -- read it directly.
 
 model_role: [general, fast]
+
+tools:
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
 ---
 
 # Explorer

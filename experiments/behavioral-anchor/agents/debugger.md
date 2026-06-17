@@ -7,6 +7,14 @@ meta:
     DO NOT USE WHEN: the problem is already understood and just needs implementation.
 
 model_role: [coding, general]
+
+tools:
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
+  - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
 ---
 
 # Debugger

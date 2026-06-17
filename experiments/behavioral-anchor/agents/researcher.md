@@ -7,6 +7,10 @@ meta:
     DO NOT USE WHEN: the answer is in the local codebase.
 
 model_role: [research, general]
+
+tools:
+  - module: tool-web
+    source: git+https://github.com/microsoft/amplifier-module-tool-web@main
 ---
 
 # Researcher

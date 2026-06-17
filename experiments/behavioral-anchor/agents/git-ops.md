@@ -7,6 +7,12 @@ meta:
     DO NOT USE WHEN: the task is code exploration or implementation.
 
 model_role: [fast, general]
+
+tools:
+  - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
 ---
 
 # Git Ops
