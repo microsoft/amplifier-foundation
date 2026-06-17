@@ -119,12 +119,12 @@ hooks:
 
 agents:
   include:
-    - behavioral-anchor:agents/explorer
-    - behavioral-anchor:agents/architect
-    - behavioral-anchor:agents/builder
-    - behavioral-anchor:agents/debugger
-    - behavioral-anchor:agents/git-ops
-    - behavioral-anchor:agents/researcher
+    - behavioral-anchor:explorer
+    - behavioral-anchor:architect
+    - behavioral-anchor:builder
+    - behavioral-anchor:debugger
+    - behavioral-anchor:git-ops
+    - behavioral-anchor:researcher
 ---
 
 # Behavioral Anchor

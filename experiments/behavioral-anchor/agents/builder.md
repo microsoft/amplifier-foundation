@@ -7,6 +7,14 @@ meta:
     DO NOT USE WHEN: requirements are vague or design decisions are open -- use architect first.
 
 model_role: [coding, general]
+
+tools:
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
+  - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
 ---
 
 # Builder

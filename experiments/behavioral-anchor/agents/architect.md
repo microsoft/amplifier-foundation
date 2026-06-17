@@ -8,6 +8,12 @@ meta:
     DO NOT USE WHEN: a clear spec already exists and code just needs writing.
 
 model_role: [reasoning, general]
+
+tools:
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
 ---
 
 # Architect
