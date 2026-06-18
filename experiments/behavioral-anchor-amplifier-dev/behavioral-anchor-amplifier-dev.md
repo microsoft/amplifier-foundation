@@ -128,6 +128,8 @@ agents:
     - behavioral-anchor-amplifier-dev:git-ops
     - behavioral-anchor-amplifier-dev:researcher
     - behavioral-anchor-amplifier-dev:amplifier-dev-expert
+    # Session analysis/repair: required route for events.jsonl + broken-session work
+    - foundation:session-analyst
 ---
 
 # Behavioral Anchor
