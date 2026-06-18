@@ -46,4 +46,6 @@ Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.co
 
 **Delegate dev-ecosystem questions.** "How does Amplifier work?" and "how do I author a bundle?" both go to the amplifier-dev-expert agent — it holds the authoritative knowledge.
 
+**Delegate session analysis.** Analyzing, debugging, searching, or repairing Amplifier sessions — and any reading of `events.jsonl` — goes to the `foundation:session-analyst` agent. Never read `events.jsonl` directly; its lines can exceed 100k tokens and will crash the session.
+
 Ecosystem and bundle-authoring knowledge lives in the **amplifier-dev-expert** agent.
