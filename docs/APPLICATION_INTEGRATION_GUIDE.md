@@ -99,7 +99,7 @@ response = await session.execute("Hello, what can you help with?")
 | **Create** | Yes | Produces the AmplifierSession |
 | **Mount** | No | For tools not declared in the bundle (runtime-dependent tools) |
 | **Hook** | No | For app-specific event handling (WebSocket streaming, etc.) |
-| **Register spawn** | No | For agent / sub-session delegation. Register the `session.spawn` capability **after `create_session` and before `execute`**. Register it too early (no session yet) or too late (after the loop starts) and the orchestrator silently falls back to a no-tools backend — delegation never gets full sub-sessions. See [Example 23](../examples/23_spawn_with_bundle_refs.py). |
+| **Register spawn** | No | For agent / sub-session delegation. Register the `session.spawn` capability **after `create_session` and before `execute`**. Register it too early (no session yet) or too late (after the loop starts) and the orchestrator silently falls back to a no-tools backend — delegation never gets full sub-sessions. |
 | **Execute** | Yes | Runs the agent loop |
 
 ### Key Opinions
@@ -373,8 +373,6 @@ Two caveats:
 
 - **Bundle hooks propagate; ephemeral hooks do not.** A hook registered directly on a session's coordinator (`session.coordinator.hooks.register(...)`) lives only on that session — it is *not* part of any bundle, so spawned children never see it. If you need a hook in children, put it in the (parent) bundle.
 - **Register concrete event names, not `"*"`.** A hook module's `mount()` should subscribe to specific events from `amplifier_core` `ALL_EVENTS` (e.g. `session:start`, `provider:request`, `tool:pre`, `tool:post`). There is no wildcard subscription at the module-mount layer.
-
-See [Example 23](../examples/23_spawn_with_bundle_refs.py) for a runnable end-to-end demonstration.
 
 ---
 
@@ -850,40 +848,49 @@ async def spawn_session(config: dict) -> AmplifierSession:
 session.coordinator.register_capability("spawn", spawn_session)
 ```
 
-> **⚠️ Bundle-Ref Agent Resolution.** An agent entry handed to a spawn capability
-> comes in one of two shapes, and they must be handled differently:
+> **Resolving an Agent Overlay.** The reference spawn capability
+> (`amplifier-app-cli`'s `session_spawner.py`) builds a child session by merging
+> an agent's overlay onto the parent's resolved config with
+> `merge_configs(parent_config, agent_overlay)`. The child inherits the parent's
+> orchestrator, context manager, providers, and tools, then applies the agent's
+> own fields on top. There are two sanctioned ways to define a spawnable agent:
 >
-> 1. **Inline config** — a dict of bundle fields
->    (`{"instruction": ..., "tools": [...], "providers": [...]}`). Build the child
->    `Bundle(...)` directly from those fields.
-> 2. **Lazy bundle-ref** — a single-key dict `{"bundle": "<uri>"}` that points at a
->    bundle to load. You **must** `load_bundle(...)` it first.
+> 1. **Inline overlay** — `agents.<name>` is a partial mount plan declaring only
+>    the fields that differ from the parent:
 >
-> A spawn capability that always does
-> `Bundle(session=config.get("session", {}), tools=config.get("tools", []), ...)`
-> works for shape 1 but is a **latent crash** for shape 2: a bundle-ref has no
-> inline fields, so every `.get(...)` returns empty and you get a structurally
-> empty child (no orchestrator, no provider, no tools). It inherits the parent's
-> orchestrator via compose and lands on a no-tools / unconfigured backend —
-> surfacing as an `ImportError` or a silent fallback at runtime. Branch on the
-> shape:
+>    ```yaml
+>    agents:
+>      planner:
+>        session:
+>          orchestrator: { module: loop-streaming }
+>        providers:
+>          - module: provider-anthropic
+>        tools:
+>          - module: tool-filesystem
+>        system:
+>          instruction: You are a planning specialist. Produce a step-by-step plan.
+>    ```
 >
-> ```python
-> if "bundle" in config and len(config) == 1:
->     child_bundle = await load_bundle(config["bundle"])  # bundle-ref
-> else:
->     child_bundle = Bundle(                               # inline config
->         name=agent_name,
->         session=config.get("session", {}),
->         providers=config.get("providers", []),
->         tools=config.get("tools", []),
->         hooks=config.get("hooks", []),
->         instruction=config.get("instruction")
->         or config.get("system", {}).get("instruction"),
->     )
-> ```
+>    The spawn capability merges this dict onto the parent config — unset fields
+>    (orchestrator, context, providers, tools) are inherited unchanged.
 >
-> See [Example 23](../examples/23_spawn_with_bundle_refs.py) for a runnable end-to-end demonstration.
+> 2. **Agent file** — `agents.include: [<name>]` references an agent `.md` file
+>    (YAML frontmatter + instruction body) in the bundle's `agents/` directory:
+>
+>    ```yaml
+>    agents:
+>      include:
+>        - planner
+>    ```
+>
+>    Foundation loads `agents/planner.md` as a `Bundle` during composition and
+>    exposes its overlay under the agent name, so the spawn capability merges it
+>    exactly like an inline overlay.
+>
+> Both shapes converge on the same `merge_configs` merge, so the child is always
+> fully configured: parent infrastructure plus the agent's overrides.
+>
+> See [Example 23](../examples/23_spawn_with_agents.py) for a runnable end-to-end demonstration.
 
 ### What Crosses the Boundary Correctly
 
@@ -893,7 +900,7 @@ session.coordinator.register_capability("spawn", spawn_session)
 | Amplifier → App | Approval request | `approval_system.request_approval("Send email to Sarah?", {...})` |
 | Amplifier → App | Display content | `display_system.display("Here are 3 restaurant options...")` |
 | Amplifier → App | Session events | `streaming_hook.on_tool_start("life_graph", {...})` |
-| Amplifier → App | Spawn request | `spawn_capability({"bundle": "planner", ...})` |
+| Amplifier → App | Spawn request | `spawn_capability("planner", "Plan the trip", ...)` |
 | App → Amplifier | Approval decision | `approval_system.resolve(request_id, True)` |
 | App → Amplifier | Session config | `create_session(session_id=..., session_cwd=...)` |
 
