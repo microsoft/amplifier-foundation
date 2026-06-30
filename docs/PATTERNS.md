@@ -221,7 +221,7 @@ In `agents/bug-hunter.md`:
 
 ```markdown
 ---
-agent:
+meta:
   name: bug-hunter
   description: Finds and fixes bugs
 
@@ -278,22 +278,22 @@ result = await prepared.spawn(
 ### Controlling Agent Tool Inheritance
 
 By default, spawned agents inherit all tools from their parent. Configure tool inheritance
-in the task tool's config section:
+in the delegate tool's config section:
 
 ```yaml
 # In your bundle.md
 tools:
-  - module: tool-task
-    source: git+https://github.com/microsoft/amplifier-module-tool-task@main
+  - module: tool-delegate
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate
     config:
-      exclude_tools: [tool-task]  # Agents inherit all EXCEPT these
+      exclude_tools: [tool-delegate]  # Agents inherit all EXCEPT these
 ```
 
 Or specify an explicit allowlist:
 
 ```yaml
 tools:
-  - module: tool-task
+  - module: tool-delegate
     config:
       inherit_tools: [tool-filesystem, tool-bash]  # Agents get ONLY these
 ```
@@ -301,21 +301,21 @@ tools:
 **Common pattern**: Prevent agents from delegating further:
 
 ```yaml
-# Coordinator has task tool for orchestration
+# Coordinator has delegate tool for orchestration
 tools:
   - module: tool-filesystem
   - module: tool-bash
-  - module: tool-task
+  - module: tool-delegate
     config:
-      exclude_tools: [tool-task]  # Spawned agents can't delegate
+      exclude_tools: [tool-delegate]  # Spawned agents can't delegate
 ```
 
 This ensures agents do the work themselves rather than trying to spawn sub-agents.
 
-**Design rationale**: Tool inheritance config belongs in tool-task's config section because:
-- The task tool is the module that consumes this config
+**Design rationale**: Tool inheritance config belongs in tool-delegate's config section because:
+- The delegate tool is the module that consumes this config
 - Follows the pattern of all other tool configs
-- Without tool-task mounted, this config is meaningless
+- Without tool-delegate mounted, this config is meaningless
 - Standard module-config merge rules apply during bundle composition
 
 ### Agent Resolution Pattern
