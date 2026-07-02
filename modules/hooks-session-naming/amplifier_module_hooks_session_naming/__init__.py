@@ -537,7 +537,16 @@ class SessionNamingHook:
                 max_output_tokens=256,
             )
 
-            response = await provider.complete(request)
+            # extended_thinking=False: this is a mechanical classification chore,
+            # not a reasoning task. Without this explicit opt-out, a provider with
+            # a session-level reasoning effort configured (e.g. Anthropic
+            # `effort: medium`) force-enables extended thinking on this call and
+            # floors max_output_tokens up to the thinking budget (tens of
+            # thousands), which — combined with stream=False above — trips
+            # Anthropic's "streaming is required for operations that may take
+            # longer than 10 minutes" guard and makes naming fail every retry.
+            # Providers without a thinking concept ignore this kwarg.
+            response = await provider.complete(request, extended_thinking=False)
 
             if response and response.content:
                 # Extract text from content blocks
@@ -592,7 +601,7 @@ async def mount(
         max_name_length=config.get("max_name_length", 50),
         max_description_length=config.get("max_description_length", 200),
         max_retries=config.get("max_retries", 3),
-        model_role=config.get("model_role"),
+        model_role=config.get("model_role", "fast"),
     )
 
     hook = SessionNamingHook(coordinator, hook_config)
