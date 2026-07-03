@@ -502,3 +502,60 @@ class TestNoStreamingEvents:
             "The naming call returns a tiny JSON object; cap it at <= 1024 "
             "(256 is the recommended value)."
         )
+
+
+# =============================================================================
+# Truncated-response parsing (token-cap resilience)
+# =============================================================================
+
+
+class TestParseResponseTruncation:
+    """_parse_response must survive a naming response truncated at the token cap.
+
+    The naming call caps output tokens. The requested JSON is
+    ``{"action", "name", "description"}`` with ``description`` last and
+    free-text, so an over-long description truncates the response mid-string
+    and yields invalid JSON. The parser salvages the completed ``action`` and
+    ``name`` fields instead of discarding the whole response, and never emits
+    a user-facing warning for a best-effort background chore.
+    """
+
+    def test_full_valid_response_parses(self) -> None:
+        hook = _make_hook()
+        result = hook._parse_response(
+            '{"action": "set", "name": "My Session", "description": "A test."}'
+        )
+        assert result == {
+            "action": "set",
+            "name": "My Session",
+            "description": "A test.",
+        }
+
+    def test_truncated_in_description_salvages_name(self) -> None:
+        hook = _make_hook()
+        result = hook._parse_response(
+            '{"action": "set", "name": "My Session", '
+            '"description": "A very long description that ran past the token c'
+        )
+        assert result == {"action": "set", "name": "My Session"}
+
+    def test_truncated_in_name_is_clean_miss(self) -> None:
+        hook = _make_hook()
+        result = hook._parse_response('{"action": "set", "name": "My Sess')
+        assert result is None
+
+    def test_truncation_emits_no_warning(self, caplog) -> None:
+        hook = _make_hook()
+        with caplog.at_level("DEBUG"):
+            hook._parse_response(
+                '{"action": "set", "name": "My Session", "description": "trunc'
+            )
+        warnings = [r for r in caplog.records if r.levelno >= 30]  # WARNING+
+        assert not warnings, f"unexpected warning(s): {[r.getMessage() for r in warnings]}"
+
+    def test_markdown_wrapped_response_parses(self) -> None:
+        hook = _make_hook()
+        result = hook._parse_response(
+            '```json\n{"action": "set", "name": "X Y", "description": "z"}\n```'
+        )
+        assert result == {"action": "set", "name": "X Y", "description": "z"}
