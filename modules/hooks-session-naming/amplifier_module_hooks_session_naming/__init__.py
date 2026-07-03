@@ -564,7 +564,18 @@ class SessionNamingHook:
         return None
 
     def _parse_response(self, response: str) -> dict | None:
-        """Parse JSON response from LLM."""
+        """Parse the JSON naming response from the LLM.
+
+        The response is a small JSON object of the form
+        ``{"action": ..., "name": ..., "description": ...}``. Because the
+        provider call caps output tokens, a long ``description`` (the last,
+        free-text field) can push the response past the cap and truncate it
+        mid-string, leaving invalid JSON. Rather than discard the whole
+        response, salvage the fields that completed: ``action`` and ``name``
+        both precede ``description``, so they are intact whenever truncation
+        lands inside the description. Naming then still succeeds and the
+        description is refreshed on a later update pass.
+        """
         try:
             # Try to extract JSON from response (may have markdown wrapper)
             json_match = re.search(r"\{[^{}]*\}", response, re.DOTALL)
@@ -572,9 +583,54 @@ class SessionNamingHook:
                 return json.loads(json_match.group())
             return json.loads(response)
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse naming response: {e}")
-            logger.debug(f"Response was: {response[:200]}")
+            salvaged = self._salvage_partial(response)
+            if salvaged:
+                logger.debug(
+                    "Naming response truncated; salvaged fields: %s",
+                    ", ".join(salvaged),
+                )
+                return salvaged
+            # Best-effort background chore: a genuinely unparseable response is
+            # not worth a user-facing warning. Log quietly, like every other
+            # non-fatal naming outcome in this module.
+            logger.debug("Could not parse naming response: %s", e)
+            logger.debug("Response was: %s", response[:200])
             return None
+
+    @staticmethod
+    def _salvage_partial(response: str) -> dict | None:
+        """Recover completed fields from a truncated naming JSON response.
+
+        Only ``action`` and ``name`` are recovered: they precede the free-text
+        ``description`` that overflows the token cap, so they are complete
+        whenever truncation happens inside ``description``. Returns None when
+        nothing actionable can be read (e.g. truncation landed inside ``name``
+        itself), letting the caller treat it as a clean miss and retry on a
+        later turn.
+        """
+        # A complete JSON string value: opening quote, any escaped or
+        # non-quote characters, closing quote.
+        string_val = r'"((?:[^"\\]|\\.)*)"'
+        name_match = re.search(r'"name"\s*:\s*' + string_val, response)
+        action_match = re.search(r'"action"\s*:\s*' + string_val, response)
+        action = action_match.group(1) if action_match else None
+
+        if name_match:
+            raw = name_match.group(1)
+            try:
+                # Round-trip through json to unescape \", \\, etc.
+                name = json.loads(f'"{raw}"')
+            except json.JSONDecodeError:
+                name = raw
+            # A recovered name is only meaningful for the "set" action.
+            return {"action": action or "set", "name": name}
+
+        # No name recovered, but a short action-only response (defer/keep)
+        # may still have completed its action field.
+        if action in ("defer", "keep"):
+            return {"action": action}
+
+        return None
 
 
 async def mount(
