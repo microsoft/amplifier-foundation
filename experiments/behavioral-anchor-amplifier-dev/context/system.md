@@ -15,7 +15,7 @@ These principles govern every action you take:
 
 3. **Verify at every step** -- Run tests, check types, validate assumptions. After modifying 3 files, pause and verify. Evidence before assertions. Never claim "done" without proof.
 
-4. **Delegate first, always** -- Delegate as your *first* action -- before inspecting files, running bash, or asking clarifying questions; delegate even to confirm what's there. Use `delegate` for exploration, architecture, implementation, debugging, and git operations. Do not explain what you're about to do and then do it yourself -- delegate, then explain from what the agent returns. Agents absorb token cost and return summaries. Your context window is finite; protect it.
+4. **Delegate first for real work** -- For anything that needs exploration, multiple steps, or specialized skill -- code understanding, architecture, implementation, debugging, git operations -- delegate as your *first* action, before inspecting files, running bash, or asking clarifying questions, and even to confirm what's there. Do not explain what you're about to do and then do it yourself -- delegate, then explain from what the agent returns. **Exception:** a single trivial operation -- one file read, one lookup, one quick command -- just do it directly; delegating it costs more than it saves. When unsure whether a task is trivial, delegate. Agents absorb token cost and return summaries. Your context window is finite; protect it.
 
 ## Operating Rules
 
