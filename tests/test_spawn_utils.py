@@ -250,8 +250,17 @@ class TestResolveModelPattern:
         assert len(result.matched_models or []) == 3
 
     @pytest.mark.asyncio
-    async def test_pattern_no_matches_returns_pattern(self) -> None:
-        """Test that unmatched patterns are returned as-is."""
+    async def test_pattern_no_matches_returns_none(self) -> None:
+        """Regression test (bug: silent-fallback design flaw): when a glob
+        pattern finds zero matches against a real, non-empty model list,
+        resolve_model_pattern() must NOT disguise this as a successful
+        resolution by returning the raw, unresolved pattern string as
+        resolved_model. That raw glob (e.g. "claude-*") would otherwise
+        flow straight into a mount plan and be sent literally to the
+        provider's API, producing a confusing 404 instead of a clear,
+        diagnosable "could not resolve a model" signal. Failure must be
+        explicit: resolved_model is None.
+        """
         mock_provider = AsyncMock()
         mock_provider.list_models = AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
 
@@ -264,7 +273,35 @@ class TestResolveModelPattern:
             mock_coordinator,
         )
 
-        assert result.resolved_model == "claude-*"
+        assert result.resolved_model is None, (
+            "resolve_model_pattern() must signal failure (None) when a glob "
+            f"matches nothing, not disguise it as success. Got: {result.resolved_model!r}"
+        )
+        assert result.matched_models == []
+
+    @pytest.mark.asyncio
+    async def test_empty_model_list_returns_none(self) -> None:
+        """Regression test (bug: silent-fallback design flaw): when the
+        provider has no available models at all (empty list_models()
+        result), resolve_model_pattern() must NOT return the raw,
+        unresolved pattern string disguised as a successful resolution.
+        """
+        mock_provider = AsyncMock()
+        mock_provider.list_models = AsyncMock(return_value=[])
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.get.return_value = {"provider-openai": mock_provider}
+
+        result = await resolve_model_pattern(
+            "gpt-4o-*",
+            "openai",
+            mock_coordinator,
+        )
+
+        assert result.resolved_model is None, (
+            "resolve_model_pattern() must signal failure (None) when the "
+            f"provider has no models, not disguise it as success. Got: {result.resolved_model!r}"
+        )
         assert result.matched_models == []
 
     @pytest.mark.asyncio
@@ -410,6 +447,105 @@ class TestApplyProviderPreferencesWithResolution:
         assert result["providers"][0]["config"]["priority"] == 0
         # gpt-4o-mini > gpt-4o when sorted descending
         assert result["providers"][0]["config"]["default_model"] == "gpt-4o-mini"
+
+    @pytest.mark.asyncio
+    async def test_falls_through_to_next_preference_when_glob_fails(self) -> None:
+        """Regression test (bug: silent-fallback design flaw): when the
+        FIRST preference's glob pattern fails to resolve against its
+        provider's real model list (zero fnmatch matches), the function
+        must NOT apply that preference with the raw, unresolved glob
+        string as the "resolved" model. It must instead advance to the
+        NEXT preference in the ordered list -- mirroring
+        resolve_model_role()'s `continue` behavior in the sibling
+        routing-matrix resolver -- and apply ITS successfully resolved
+        model.
+        """
+        mount_plan = {
+            "providers": [
+                {"module": "provider-anthropic", "config": {}},
+                {"module": "provider-openai", "config": {}},
+            ]
+        }
+
+        # Anthropic is present but has no model matching the glob.
+        mock_anthropic = AsyncMock()
+        mock_anthropic.list_models = AsyncMock(
+            return_value=["claude-sonnet-4-20250514"]  # no "claude-haiku-*" match
+        )
+        # OpenAI is present and DOES have a matching model.
+        mock_openai = AsyncMock()
+        mock_openai.list_models = AsyncMock(return_value=["gpt-4o-mini"])
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.get.return_value = {
+            "provider-anthropic": mock_anthropic,
+            "provider-openai": mock_openai,
+        }
+
+        prefs = [
+            # First preference: provider present, but glob matches nothing.
+            ProviderPreference(provider="anthropic", model="claude-haiku-*"),
+            # Second preference: provider present, glob resolves cleanly.
+            ProviderPreference(provider="openai", model="gpt-4o-*"),
+        ]
+
+        result = await apply_provider_preferences_with_resolution(
+            mount_plan, prefs, mock_coordinator
+        )
+
+        # The SECOND preference (openai) must be the one promoted/applied,
+        # with its cleanly-resolved model -- NOT anthropic with the raw
+        # unresolved glob "claude-haiku-*".
+        assert result["providers"][1]["config"]["priority"] == 0, (
+            "Expected openai (second preference) to be promoted after "
+            "anthropic's glob failed to resolve."
+        )
+        assert result["providers"][1]["config"]["default_model"] == "gpt-4o-mini"
+        # Anthropic (first preference) must be left untouched -- specifically,
+        # it must never have been given the raw, unresolved glob as a model.
+        assert "default_model" not in result["providers"][0]["config"]
+        assert result["providers"][0]["config"].get("priority") != 0
+
+    @pytest.mark.asyncio
+    async def test_all_preferences_fail_leaves_mount_plan_unmodified(self) -> None:
+        """Regression test: when EVERY preference in the ordered list fails
+        to resolve its glob pattern, the mount plan must be returned
+        unmodified -- no unresolved pattern string may be written into it
+        anywhere, and no provider should be promoted.
+        """
+        mount_plan = {
+            "providers": [
+                {"module": "provider-anthropic", "config": {"priority": 10}},
+                {"module": "provider-openai", "config": {"priority": 20}},
+            ]
+        }
+
+        mock_anthropic = AsyncMock()
+        mock_anthropic.list_models = AsyncMock(return_value=["claude-sonnet-4-20250514"])
+        mock_openai = AsyncMock()
+        mock_openai.list_models = AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.get.return_value = {
+            "provider-anthropic": mock_anthropic,
+            "provider-openai": mock_openai,
+        }
+
+        prefs = [
+            ProviderPreference(provider="anthropic", model="claude-haiku-*"),  # no match
+            ProviderPreference(provider="openai", model="claude-*"),  # no match either
+        ]
+
+        result = await apply_provider_preferences_with_resolution(
+            mount_plan, prefs, mock_coordinator
+        )
+
+        # Nothing should have been promoted or modified.
+        assert result["providers"][0]["config"] == {"priority": 10}
+        assert result["providers"][1]["config"] == {"priority": 20}
+        # No unresolved glob pattern string should appear anywhere in the result.
+        for p in result["providers"]:
+            assert "default_model" not in p["config"]
 
 
 class TestProviderPreferenceConfig:

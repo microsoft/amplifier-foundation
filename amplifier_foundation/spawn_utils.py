@@ -121,13 +121,18 @@ class ModelResolutionResult:
     """Result of model pattern resolution.
 
     Attributes:
-        resolved_model: The final model name to use.
+        resolved_model: The final model name to use, or None if the pattern
+            could not be resolved against the provider's available models.
+            None is an explicit failure signal -- callers must NOT treat it
+            as (or substitute in) the raw, unresolved pattern string, since
+            that string is not a real model name and would be sent literally
+            to the provider's API.
         pattern: Original pattern (None if input wasn't a pattern).
         available_models: All models available from the provider.
         matched_models: Models that matched the pattern.
     """
 
-    resolved_model: str
+    resolved_model: str | None
     pattern: str | None = None
     available_models: list[str] | None = None
     matched_models: list[str] | None = None
@@ -165,7 +170,11 @@ async def resolve_model_pattern(
         2. Query provider for available models
         3. Filter with fnmatch
         4. Sort descending (latest date/version wins)
-        5. Return first match, or original if no matches
+        5. Return the best match, or a failure signal (resolved_model=None)
+           if the provider has no models, or none of them match the pattern.
+           The raw, unresolved pattern string is never returned disguised as
+           a successful resolution -- callers must check for None and treat
+           it as "could not resolve", not substitute in the pattern itself.
     """
     # Not a pattern - return as-is
     if not is_glob_pattern(model_hint):
@@ -222,12 +231,13 @@ async def resolve_model_pattern(
 
     if not available_models:
         logger.warning(
-            "No available models from provider '%s' for pattern '%s' - using pattern as-is",
+            "No available models from provider '%s' for pattern '%s' - "
+            "cannot resolve (provider has no models)",
             provider_name,
             model_hint,
         )
         return ModelResolutionResult(
-            resolved_model=model_hint,
+            resolved_model=None,
             pattern=model_hint,
             available_models=[],
             matched_models=[],
@@ -248,14 +258,14 @@ async def resolve_model_pattern(
     if not matched:
         logger.warning(
             "Pattern '%s' matched no models from provider '%s'. "
-            "Available: %s. Using pattern as-is.",
+            "Available: %s. Cannot resolve.",
             model_hint,
             provider_name,
             ", ".join(available_models[:10])
             + ("..." if len(available_models) > 10 else ""),
         )
         return ModelResolutionResult(
-            resolved_model=model_hint,
+            resolved_model=None,
             pattern=model_hint,
             available_models=available_models,
             matched_models=[],
@@ -506,7 +516,13 @@ async def apply_provider_preferences_with_resolution(
     # Build lookup for efficient matching
     lookup = _build_provider_lookup(providers)
 
-    # Find first matching preference and resolve its model pattern
+    # Find first matching preference whose model actually resolves, and
+    # apply it. A preference whose provider is present but whose glob
+    # pattern fails to resolve (no matching models) is NOT applied with
+    # the raw, unresolved pattern -- that would send a literal glob string
+    # to the provider's API. Instead we advance to the next preference in
+    # the ordered list, mirroring resolve_model_role()'s `continue`
+    # behavior in the sibling routing-matrix resolver.
     for pref in preferences:
         if pref.provider in lookup:
             target_idx = lookup[pref.provider]
@@ -517,13 +533,24 @@ async def apply_provider_preferences_with_resolution(
                 result = await resolve_model_pattern(
                     pref.model, pref.provider, coordinator
                 )
+                if result.resolved_model is None:
+                    logger.warning(
+                        "Preference for provider '%s' failed to resolve model "
+                        "pattern '%s' - trying next preference",
+                        pref.provider,
+                        pref.model,
+                    )
+                    continue
                 resolved_model = result.resolved_model
 
             return _apply_single_override(
                 mount_plan, providers, target_idx, resolved_model, pref.config
             )
 
-    # No preferences matched
+    # No preferences matched -- either no preference's provider was present
+    # in the mount plan, or every candidate's model pattern failed to
+    # resolve. Either way, leave the mount plan unmodified rather than
+    # writing an unresolved pattern string into it.
     logger.warning(
         "No preferred providers found in mount plan. Preferences: %s, Available: %s",
         [p.provider for p in preferences],
