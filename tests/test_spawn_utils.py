@@ -267,6 +267,58 @@ class TestResolveModelPattern:
         assert result.resolved_model == "claude-*"
         assert result.matched_models == []
 
+    @pytest.mark.asyncio
+    async def test_pattern_matches_case_insensitively(self) -> None:
+        """Regression test: glob matching must be case-insensitive and
+        OS-independent. Raw fnmatch.filter() uses os.path.normcase, which is
+        case-sensitive on Linux/Mac and case-insensitive on Windows -- so a
+        mixed-case model id (e.g. real-world 'Qwen3.6-35B-A3B-UD-Q4_K_XL')
+        would silently fail to match a lowercase pattern ('qwen3.6-*') on
+        Linux/Mac while matching on Windows. Model glob matching must be
+        deterministic across platforms, and consistent with the routing-matrix
+        resolver's semantics (amplifier_module_hooks_routing.resolver).
+        """
+        mock_provider = AsyncMock()
+        mock_provider.list_models = AsyncMock(
+            return_value=["Qwen3.6-35B-A3B-UD-Q4_K_XL"]
+        )
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.get.return_value = {"provider-ornith": mock_provider}
+
+        result = await resolve_model_pattern(
+            "qwen3.6-*",
+            "ornith",
+            mock_coordinator,
+        )
+
+        assert result.resolved_model == "Qwen3.6-35B-A3B-UD-Q4_K_XL", (
+            f"Expected case-insensitive match to find the mixed-case model, "
+            f"got: {result.resolved_model!r}"
+        )
+        assert result.matched_models == ["Qwen3.6-35B-A3B-UD-Q4_K_XL"]
+
+    @pytest.mark.asyncio
+    async def test_uppercase_pattern_matches_lowercase_model(self) -> None:
+        """Symmetric case: an uppercase-leaning pattern must match a
+        lowercase model id -- proves the fix lowercases BOTH sides, not just
+        the model list."""
+        mock_provider = AsyncMock()
+        mock_provider.list_models = AsyncMock(
+            return_value=["qwen3.6-35b-a3b-ud-q4_k_xl"]
+        )
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.get.return_value = {"provider-ornith": mock_provider}
+
+        result = await resolve_model_pattern(
+            "Qwen3.6-*",
+            "ornith",
+            mock_coordinator,
+        )
+
+        assert result.resolved_model == "qwen3.6-35b-a3b-ud-q4_k_xl"
+
 
 class TestApplyProviderPreferencesWithResolution:
     """Tests for apply_provider_preferences_with_resolution function."""

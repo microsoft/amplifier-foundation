@@ -105,6 +105,91 @@ class TestBundleCompose:
         result = base.compose(child)
         assert result.instruction == "Child instruction"
 
+    def test_compose_propagates_hooks_routing_config_to_child(self) -> None:
+        """BUG 3 regression: hooks-routing config (default_matrix,
+        custom_routing_dirs, overrides) injected into the parent/root
+        session's bundle must survive composition into a spawned child
+        bundle -- this is the mechanism PreparedBundle.spawn() relies on
+        (self.bundle.compose(child_bundle).to_mount_plan()) to make a
+        sub-session resolve model roles via the SAME user custom routing
+        matrix as its parent.
+
+        This does not re-test amplifier_module_hooks_routing's own mount()
+        logic (covered in the routing-matrix repo) -- it verifies the
+        foundation-owned propagation mechanism that carries the hook's
+        config dict, unmodified, from parent bundle to child mount plan.
+        """
+        parent_hooks_routing_config = {
+            "default_matrix": "ornith",
+            "custom_routing_dirs": ["/home/user/.amplifier/routing"],
+            "overrides": {"coding": {"description": "Coding override"}},
+        }
+        parent = Bundle(
+            name="parent",
+            hooks=[
+                {"module": "hooks-routing", "config": parent_hooks_routing_config},
+                {"module": "hooks-logging"},
+            ],
+        )
+        # Child (agent) bundle declares no hooks-routing entry of its own --
+        # the common case for a sub-agent bundle that doesn't override routing.
+        child = Bundle(name="child", hooks=[{"module": "tool-specific-hook"}])
+
+        composed = parent.compose(child)
+        mount_plan = composed.to_mount_plan()
+
+        routing_entries = [
+            h for h in mount_plan["hooks"] if h.get("module") == "hooks-routing"
+        ]
+        assert len(routing_entries) == 1, (
+            f"hooks-routing must propagate to the child mount plan, got hooks: "
+            f"{mount_plan['hooks']}"
+        )
+        assert routing_entries[0]["config"] == parent_hooks_routing_config, (
+            "hooks-routing config (default_matrix/custom_routing_dirs/overrides) "
+            f"must reach the child unmodified, got: {routing_entries[0]['config']}"
+        )
+
+    def test_compose_child_hooks_routing_override_merges_not_replaces(self) -> None:
+        """When BOTH parent and child declare hooks-routing, the configs are
+        deep-merged (child wins on conflicts) rather than the child silently
+        replacing the parent's entire config -- so a child bundle overriding
+        just `overrides` does not accidentally drop the parent's
+        custom_routing_dirs (which is what makes a spawned sub-session able
+        to resolve a user's custom matrix at all)."""
+        parent = Bundle(
+            name="parent",
+            hooks=[
+                {
+                    "module": "hooks-routing",
+                    "config": {
+                        "default_matrix": "ornith",
+                        "custom_routing_dirs": ["/home/user/.amplifier/routing"],
+                    },
+                }
+            ],
+        )
+        child = Bundle(
+            name="child",
+            hooks=[
+                {
+                    "module": "hooks-routing",
+                    "config": {"overrides": {"coding": {"description": "x"}}},
+                }
+            ],
+        )
+
+        mount_plan = parent.compose(child).to_mount_plan()
+        cfg = next(
+            h["config"] for h in mount_plan["hooks"] if h["module"] == "hooks-routing"
+        )
+        assert cfg["default_matrix"] == "ornith"
+        assert cfg["custom_routing_dirs"] == ["/home/user/.amplifier/routing"], (
+            "Parent's custom_routing_dirs must survive even when the child "
+            f"bundle also declares hooks-routing config, got: {cfg}"
+        )
+        assert cfg["overrides"] == {"coding": {"description": "x"}}
+
 
 class TestBundleToMountPlan:
     """Tests for Bundle.to_mount_plan method."""

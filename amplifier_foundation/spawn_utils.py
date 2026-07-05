@@ -233,8 +233,17 @@ async def resolve_model_pattern(
             matched_models=[],
         )
 
-    # Match pattern against available models
-    matched = fnmatch.filter(available_models, model_hint)
+    # Match pattern against available models: case-insensitive, OS-independent.
+    # Raw fnmatch.filter() uses os.path.normcase, which is case-sensitive on
+    # Linux/Mac and case-insensitive on Windows -- an OS-dependent
+    # inconsistency. Lowercasing both sides before comparing matches the
+    # canonical model-glob semantics used by the routing-matrix resolver
+    # (amplifier_module_hooks_routing.resolver) and the unified-llm-client
+    # reference implementation, so a pattern like "qwen3.6-*" deterministically
+    # matches "Qwen3.6-35B-A3B-..." on every platform. Original casing of the
+    # matched model name is preserved in the result.
+    lowered_hint = model_hint.lower()
+    matched = [m for m in available_models if fnmatch.fnmatch(m.lower(), lowered_hint)]
 
     if not matched:
         logger.warning(
