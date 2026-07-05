@@ -11,6 +11,7 @@ from amplifier_foundation.spawn_utils import ProviderPreference
 from amplifier_foundation.spawn_utils import _apply_single_override
 from amplifier_foundation.spawn_utils import _build_provider_lookup
 from amplifier_foundation.spawn_utils import _find_provider_index
+from amplifier_foundation.spawn_utils import _find_provider_instance
 from amplifier_foundation.spawn_utils import apply_provider_preferences
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 from amplifier_foundation.spawn_utils import is_glob_pattern
@@ -357,6 +358,158 @@ class TestResolveModelPattern:
         assert result.resolved_model == "qwen3.6-35b-a3b-ud-q4_k_xl"
 
 
+class TestFindProviderInstanceMultiInstance:
+    """Regression tests for _find_provider_instance's bare-module-type fallback.
+
+    Live production bug: a user with 3 separately-configured Anthropic
+    instances (each with an explicit `id:` -- anthropic-sonnet,
+    anthropic-opus, anthropic-haiku -- none keyed bare "anthropic") hit
+    "provider has no models" for every matrix role candidate naming the
+    bare type "anthropic" (e.g. fast -> claude-haiku-*). The real Anthropic
+    API was independently confirmed to have real models available; the bug
+    is purely in provider lookup never falling back to "search all
+    instances of this module type" when no single provider is keyed by
+    the bare type.
+    """
+
+    @staticmethod
+    def _provider_specs() -> list[dict]:
+        return [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-sonnet",
+                "config": {"priority": 1},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-opus",
+                "config": {"priority": 2},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-haiku",
+                "config": {"priority": 9},
+            },
+        ]
+
+    def test_bare_type_resolves_to_highest_priority_instance(self) -> None:
+        """No provider is keyed bare 'anthropic' -- must fall back to the
+        module-type search and pick the default (priority=1) instance,
+        not return None."""
+        sonnet = MagicMock(name="sonnet-instance")
+        opus = MagicMock(name="opus-instance")
+        haiku = MagicMock(name="haiku-instance")
+        providers = {
+            "anthropic-sonnet": sonnet,
+            "anthropic-opus": opus,
+            "anthropic-haiku": haiku,
+        }
+        coordinator = MagicMock()
+        coordinator.config = {"providers": self._provider_specs()}
+
+        result = _find_provider_instance(providers, "anthropic", coordinator)
+
+        assert result is sonnet, (
+            "Bare type 'anthropic' with no bare-keyed instance must resolve "
+            "to the highest-priority (lowest priority number) instance of "
+            f"that module type. Got: {result!r}"
+        )
+
+    def test_returns_none_without_coordinator(self) -> None:
+        """Without a coordinator, old exact-match-only behavior is preserved
+        (no crash, no fallback attempted)."""
+        providers = {"anthropic-sonnet": MagicMock()}
+        assert _find_provider_instance(providers, "anthropic") is None
+
+    def test_exact_match_still_wins_over_fallback(self) -> None:
+        """A provider keyed literally 'anthropic' is preferred immediately --
+        the fallback path is never even consulted."""
+        bare = MagicMock(name="bare-instance")
+        providers = {"anthropic": bare, "anthropic-haiku": MagicMock()}
+        coordinator = MagicMock()
+        coordinator.config = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-haiku",
+                    "config": {"priority": 1},
+                },
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic",
+                    "config": {"priority": 5},
+                },
+            ]
+        }
+        assert _find_provider_instance(providers, "anthropic", coordinator) is bare
+
+    def test_no_matching_module_type_returns_none(self) -> None:
+        """Fallback search finds no instance of the requested module type ->
+        still returns None (no false positive)."""
+        providers = {"openai": MagicMock()}
+        coordinator = MagicMock()
+        coordinator.config = {
+            "providers": [
+                {"module": "provider-openai", "id": "openai", "config": {}},
+            ]
+        }
+        assert _find_provider_instance(providers, "anthropic", coordinator) is None
+
+
+class TestResolveModelPatternMultiInstanceProvider:
+    """End-to-end regression test (live prod bug, reproduced directly against
+    the real amplifier ecosystem): resolve_model_pattern() must resolve a
+    bare-type provider name + glob pattern against the default instance when
+    multiple named instances exist and none is keyed by the bare type.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bare_type_glob_resolves_via_default_instance(self) -> None:
+        sonnet_provider = AsyncMock()
+        sonnet_provider.list_models = AsyncMock(
+            return_value=["claude-haiku-4-5-20251001", "claude-haiku-3-20240307"]
+        )
+        opus_provider = AsyncMock()
+        opus_provider.list_models = AsyncMock(return_value=["claude-opus-4-8"])
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.get.return_value = {
+            "anthropic-sonnet": sonnet_provider,
+            "anthropic-opus": opus_provider,
+        }
+        mock_coordinator.config = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-sonnet",
+                    "config": {"priority": 1},
+                },
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-opus",
+                    "config": {"priority": 2},
+                },
+            ]
+        }
+
+        result = await resolve_model_pattern(
+            "claude-haiku-*", "anthropic", mock_coordinator
+        )
+
+        assert result.resolved_model == "claude-haiku-4-5-20251001", (
+            "resolve_model_pattern() must resolve a bare-type provider name "
+            "against the default (highest-priority) instance when no single "
+            "instance is keyed by the bare type. Got: "
+            f"{result.resolved_model!r} (before the fix this returned None, "
+            "with 'provider has no models' logged -- even though the "
+            "provider genuinely has matching models)."
+        )
+        assert opus_provider.list_models.await_count == 0, (
+            "Only the resolved (highest-priority) instance's list_models() "
+            "should be queried, not every instance of the type."
+        )
+
+
 class TestApplyProviderPreferencesWithResolution:
     """Tests for apply_provider_preferences_with_resolution function."""
 
@@ -521,7 +674,9 @@ class TestApplyProviderPreferencesWithResolution:
         }
 
         mock_anthropic = AsyncMock()
-        mock_anthropic.list_models = AsyncMock(return_value=["claude-sonnet-4-20250514"])
+        mock_anthropic.list_models = AsyncMock(
+            return_value=["claude-sonnet-4-20250514"]
+        )
         mock_openai = AsyncMock()
         mock_openai.list_models = AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
 
@@ -532,7 +687,9 @@ class TestApplyProviderPreferencesWithResolution:
         }
 
         prefs = [
-            ProviderPreference(provider="anthropic", model="claude-haiku-*"),  # no match
+            ProviderPreference(
+                provider="anthropic", model="claude-haiku-*"
+            ),  # no match
             ProviderPreference(provider="openai", model="claude-*"),  # no match either
         ]
 
