@@ -15,12 +15,104 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from amplifier_foundation.modules.install_state import InstallStateManager
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
 
 logger = logging.getLogger(__name__)
+
+# Wall-clock bound (seconds) for a single ``uv`` install invocation. This is only
+# meaningful because installs are now run via a non-blocking async subprocess:
+# a timeout can never fire while the event loop is frozen inside a synchronous
+# subprocess.run(). Generous enough for a from-source editable build; can be
+# lifted into config later if this module grows a config surface.
+DEFAULT_INSTALL_TIMEOUT = 300
+
+
+class ModuleInstallTimeout(RuntimeError):
+    """Raised when a module install exceeds DEFAULT_INSTALL_TIMEOUT seconds.
+
+    Fails loud instead of hanging: the previous synchronous ``subprocess.run()``
+    had no timeout, so a wedged ``uv`` install would freeze the entire event loop
+    (and any liveness heartbeat) until the worker was reaped.
+    """
+
+
+# Per-event-loop install lock registry.
+#
+# Making installs non-blocking means activate_all()'s ``asyncio.gather()`` can,
+# for the first time, run multiple editable ``uv pip install`` invocations
+# *truly* concurrently into the SAME interpreter environment. Concurrent editable
+# installs race on site-packages metadata (.pth files, RECORD, dist-info), so we
+# serialize the install critical section with an ``asyncio.Lock``.
+#
+# The lock is created lazily *inside the running loop* and keyed by that loop, so
+# it never binds to a loop at import time and never triggers cross-loop
+# "bound to a different event loop" errors when foundation spawns child sessions
+# that each drive their own event loop. Entries are weakly held: when a loop is
+# garbage-collected its lock disappears automatically.
+_install_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    WeakKeyDictionary()
+)
+
+
+def _get_install_lock() -> asyncio.Lock:
+    """Return the install lock bound to the currently running event loop.
+
+    Must be called from within a running coroutine (installs always are).
+    """
+    loop = asyncio.get_running_loop()
+    lock = _install_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _install_locks[loop] = lock
+    return lock
+
+
+async def _run_install(
+    cmd: list[str], *, timeout: float = DEFAULT_INSTALL_TIMEOUT
+) -> None:
+    """Run a ``uv`` install command without blocking the event loop.
+
+    Preserves the error surface of the previous synchronous
+    ``subprocess.run(..., check=True, capture_output=True, text=True)`` call:
+
+    * a non-zero exit raises ``subprocess.CalledProcessError`` carrying the
+      captured stdout/stderr, and
+    * a missing ``uv`` binary still raises ``FileNotFoundError``.
+
+    Adds a wall-clock ``timeout``: on expiry the child is killed, reaped, and a
+    typed :class:`ModuleInstallTimeout` is raised so the caller fails loud
+    instead of hanging.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        try:
+            await proc.wait()  # reap the killed child so we don't leak a zombie
+        except ProcessLookupError:
+            pass
+        raise ModuleInstallTimeout(
+            f"Install exceeded {timeout}s and was killed: {' '.join(cmd)}"
+        ) from None
+
+    if proc.returncode != 0:
+        # Match the old check=True behavior: surface a CalledProcessError whose
+        # stdout/stderr are decoded text, exactly as capture_output+text gave.
+        raise subprocess.CalledProcessError(
+            proc.returncode or -1,
+            cmd,
+            output=stdout_b.decode(errors="replace") if stdout_b else "",
+            stderr=stderr_b.decode(errors="replace") if stderr_b else "",
+        )
 
 
 class ModuleActivator:
@@ -224,24 +316,25 @@ class ModuleActivator:
         requirements = module_path / "requirements.txt"
 
         if pyproject.exists():
+            cmd = [
+                "uv",
+                "pip",
+                "install",
+                "-e",
+                str(module_path),
+                "--python",
+                sys.executable,
+                "--quiet",
+            ]
             try:
-                subprocess.run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "-e",
-                        str(module_path),
-                        "--python",
-                        sys.executable,
-                        "--quiet",
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                # Mark as installed after successful install
-                self._install_state.mark_installed(module_path)
+                # Serialize the install + state-mark critical section per event
+                # loop so newly-concurrent gather() installs cannot corrupt shared
+                # site-packages metadata. The subprocess itself is non-blocking, so
+                # the loop (and any heartbeat) keeps running while uv works.
+                async with _get_install_lock():
+                    await _run_install(cmd)
+                    # Mark as installed after successful install
+                    self._install_state.mark_installed(module_path)
             except subprocess.CalledProcessError as e:
                 logger.error(
                     f"Failed to install module from {module_path}.\nstdout: {e.stdout}\nstderr: {e.stderr}"
@@ -253,24 +346,25 @@ class ModuleActivator:
                 )
                 raise
         elif requirements.exists():
+            cmd = [
+                "uv",
+                "pip",
+                "install",
+                "-r",
+                str(requirements),
+                "--python",
+                sys.executable,
+                "--quiet",
+            ]
             try:
-                subprocess.run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "-r",
-                        str(requirements),
-                        "--python",
-                        sys.executable,
-                        "--quiet",
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                # Mark as installed after successful install
-                self._install_state.mark_installed(module_path)
+                # Serialize the install + state-mark critical section per event
+                # loop so newly-concurrent gather() installs cannot corrupt shared
+                # site-packages metadata. The subprocess itself is non-blocking, so
+                # the loop (and any heartbeat) keeps running while uv works.
+                async with _get_install_lock():
+                    await _run_install(cmd)
+                    # Mark as installed after successful install
+                    self._install_state.mark_installed(module_path)
             except subprocess.CalledProcessError as e:
                 logger.error(
                     f"Failed to install requirements from {requirements}.\nstdout: {e.stdout}\nstderr: {e.stderr}"
