@@ -1,0 +1,8 @@
+{
+  "baseline": [
+    "amplifier_foundation/spawn_utils.py:_find_provider_index:416"
+  ],
+  "notes": {
+    "amplifier_foundation/spawn_utils.py:_find_provider_index:416": "Triaged during tripwire rollout (see diff summary / PR description). NOT confirmed as a false positive: _find_provider_index() has the identical tuple-of-variants first-match-wins structure as the 4 confirmed historical bugs (amplifier-foundation PR #267, amplifier-bundle-routing-matrix PR #31, amplifier-app-cli PR #214/#215), with no priority tie-break. It currently has no production call site (only exercised by tests), so the ambiguous-multi-instance scenario may not be reachable today, but this should be tracked as a follow-up fix, not dismissed. Baselined only to let this rollout land with zero unbaselined findings; do not treat this entry as evidence the finding is spurious."
+  }
+}
