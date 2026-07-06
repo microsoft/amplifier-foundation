@@ -1,0 +1,12 @@
+- id: resolver-priority-tripwire
+  name: resolver priority tripwire
+  description: >-
+    Detects first-match-wins provider/module resolution with no
+    priority tie-break (the anti-pattern fixed in amplifier-foundation
+    PR #267, amplifier-bundle-routing-matrix PR #31, and amplifier-app-cli
+    PR #214/#215). See docs/PATTERNS.md#priority-based-provider-resolution
+    for the accepted fix pattern.
+  entry: python3 scripts/ci_checks/resolver_priority_tripwire.py --diff-only
+  language: system
+  types: [python]
+  pass_filenames: false
