@@ -44,6 +44,8 @@ model_role: general
 
 provider_preferences:
   - provider: anthropic
+    model: claude-fable-*
+  - provider: anthropic
     model: claude-sonnet-*
   - provider: openai
     model: gpt-5.[0-9]

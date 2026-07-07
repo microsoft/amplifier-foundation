@@ -27,6 +27,8 @@ model_role: [security-audit, critique, general]
 
 provider_preferences:
   - provider: anthropic
+    model: claude-fable-*
+  - provider: anthropic
     model: claude-opus-*
   - provider: openai
     model: gpt-5*-pro

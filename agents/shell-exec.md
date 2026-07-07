@@ -42,6 +42,8 @@ model_role: fast
 
 provider_preferences:
   - provider: anthropic
+    model: claude-fable-*
+  - provider: anthropic
     model: claude-haiku-*
   - provider: openai
     model: gpt-5-mini
