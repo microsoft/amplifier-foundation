@@ -3,12 +3,15 @@ bundle:
   version: 1.0.0
   description: Redact secrets and PII from logs
 
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-redaction@main#subdirectory=behaviors/redaction.yaml
+
 hooks:
-  - module: hooks-redaction
-    source: git+https://github.com/microsoft/amplifier-module-hooks-redaction@main
+  - module: hooks-deprecation
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-deprecation
     config:
-      allowlist:
-        - session_id
-        - turn_id
-        - span_id
-        - parent_span_id
+      bundle_name: hooks-redaction
+      replacement: amplifier-bundle-redaction
+      message: "hooks-redaction is retired; use the redaction hook in amplifier-bundle-redaction."
+      sunset_date: "2026-10-01"
+      require_evidence: true
