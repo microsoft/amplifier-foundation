@@ -16,7 +16,6 @@ import logging
 import site
 import subprocess
 import sys
-from importlib.util import find_spec
 from pathlib import Path
 from typing import Callable
 
@@ -25,6 +24,28 @@ from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
 
 logger = logging.getLogger(__name__)
+
+
+def _distribution_installed(pkg_name: str) -> bool:
+    """Return True if a distribution named ``pkg_name`` is installed.
+
+    Keys on the distribution name via ``importlib.metadata`` rather than guessing
+    an import name from ``pkg_name.replace("-", "_")``. Both editable and wheel
+    installs register a queryable ``.dist-info``, and ``uv sync`` removing an
+    editable install also removes that metadata. This correctly answers "is it
+    installed?" for bundles whose import package differs from their distribution
+    name (e.g. ``amplifier-bundle-evaluation`` -> ``amplifier_evaluation``) or
+    that ship no import package at all (``packages=[]``), both of which the old
+    import-name guess mis-detected as "not installed" and rebuilt on every
+    process. See issue #326.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        distribution(pkg_name)
+        return True
+    except PackageNotFoundError:
+        return False
 
 
 class ModuleActivator:
@@ -212,22 +233,21 @@ class ModuleActivator:
             )
             return
 
-        # Skip packages that are already importable in the current environment.
+        # Skip packages that are already installed in the current environment.
         # This prevents editable-installing packages (like amplifier-core) that were
         # already installed from PyPI as prebuilt wheels. Without this check, a repo
         # cloned into the cache for its YAML/context files (via bundle includes) would
         # trigger a source build that may require native toolchains (Rust, protobuf, etc).
+        #
+        # Detection keys on the distribution name (importlib.metadata), NOT a guessed
+        # import name. See _distribution_installed() and issue #326.
         pkg_name = pyproject_data.get("project", {}).get("name", "")
-        if pkg_name:
-            import importlib.util
-
-            normalized = pkg_name.replace("-", "_")
-            if importlib.util.find_spec(normalized) is not None:
-                logger.debug(
-                    f"Package '{pkg_name}' already installed, "
-                    f"skipping editable install from {bundle_path}"
-                )
-                return
+        if pkg_name and _distribution_installed(pkg_name):
+            logger.debug(
+                f"Package '{pkg_name}' already installed, "
+                f"skipping editable install from {bundle_path}"
+            )
+            return
 
         if progress_callback:
             progress_callback("installing_package", pkg_name or bundle_path.name)
@@ -395,14 +415,12 @@ class ModuleActivator:
                     with open(pyproject, "rb") as f:
                         data = tomllib.load(f)
                     pkg_name = data.get("project", {}).get("name", "")
-                    if pkg_name:
-                        normalized = pkg_name.replace("-", "_")
-                        if find_spec(normalized) is not None:
-                            logger.debug(
-                                f"Package '{pkg_name}' already installed from wheels, "
-                                f"skipping editable install from {module_path}"
-                            )
-                            return
+                    if pkg_name and _distribution_installed(pkg_name):
+                        logger.debug(
+                            f"Package '{pkg_name}' already installed from wheels, "
+                            f"skipping editable install from {module_path}"
+                        )
+                        return
                 except Exception:
                     pass  # If we can't check, proceed with install
 
@@ -421,16 +439,14 @@ class ModuleActivator:
                     with open(_pyproject, "rb") as f:
                         _data = tomllib.load(f)
                     _pkg_name = _data.get("project", {}).get("name", "")
-                    if _pkg_name:
-                        _normalized = _pkg_name.replace("-", "_")
-                        if find_spec(_normalized) is None:
-                            logger.debug(
-                                f"Package '{_pkg_name}' no longer importable "
-                                f"(removed by uv sync?), invalidating cache "
-                                f"for {module_path.name}"
-                            )
-                            self._install_state.invalidate(module_path)
-                            _stale = True
+                    if _pkg_name and not _distribution_installed(_pkg_name):
+                        logger.debug(
+                            f"Package '{_pkg_name}' no longer installed "
+                            f"(removed by uv sync?), invalidating cache "
+                            f"for {module_path.name}"
+                        )
+                        self._install_state.invalidate(module_path)
+                        _stale = True
                 except Exception:
                     pass
             if not _stale:
