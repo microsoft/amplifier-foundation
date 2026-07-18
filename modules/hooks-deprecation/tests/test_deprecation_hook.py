@@ -1,6 +1,7 @@
 """Tests for the deprecation hook module."""
 
 from datetime import date, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -97,6 +98,16 @@ class TestDeprecationConfig:
         )
         assert cfg.severity == "warning"
 
+    def test_require_evidence_defaults_to_false(self):
+        """require_evidence defaults to False when not provided in config dict."""
+        cfg = DeprecationConfig.from_dict(
+            {
+                "bundle_name": "lsp-python",
+                "message": "deprecated",
+            }
+        )
+        assert cfg.require_evidence is False
+
 
 # — Source File Scanner Tests —
 
@@ -164,6 +175,45 @@ class TestFindSourceFiles:
         bad_file.write_bytes(b"\x80\x81\x82\x83")  # Invalid UTF-8
         results = find_source_files("lsp-python", [tmp_path])
         assert results == []
+
+    def test_excludes_cache_directory_matches(self, tmp_path):
+        """Cached/resolved artifacts under a 'cache' dir are excluded (#344).
+
+        The tombstone's own carrier config is cached on every install and
+        would otherwise always self-match, defeating require_evidence gating.
+        """
+        amp_dir = tmp_path / ".amplifier"
+        amp_dir.mkdir()
+        real_file = amp_dir / "real.yaml"
+        real_file.write_text("includes: lsp-python\n")
+
+        cache_dir = amp_dir / "cache" / "dep"
+        cache_dir.mkdir(parents=True)
+        cached_file = cache_dir / "cached.yaml"
+        cached_file.write_text("includes: lsp-python\n")
+
+        results = find_source_files("lsp-python", [tmp_path])
+
+        assert results == [str(real_file)]
+        assert not any("cache" in Path(p).parts for p in results)
+
+    def test_cache_in_ancestor_of_base_dir_does_not_suppress(self, tmp_path):
+        """A 'cache' segment ABOVE .amplifier must not suppress real matches (#344).
+
+        Only artifacts under .amplifier/cache/ are resolved copies. A user whose
+        project simply lives beneath some 'cache/' ancestor still has genuine
+        authored config, and the scan must find it. Guards against scoping the
+        exclusion to the full absolute path instead of the .amplifier-relative one.
+        """
+        base = tmp_path / "cache" / "myproject"
+        amp_dir = base / ".amplifier"
+        amp_dir.mkdir(parents=True)
+        real_file = amp_dir / "settings.yaml"
+        real_file.write_text("includes: lsp-python\n")
+
+        results = find_source_files("lsp-python", [base])
+
+        assert results == [str(real_file)]
 
 
 # — Sunset Escalation Tests —
@@ -470,6 +520,43 @@ class TestDeprecationHook:
         hook = self._make_hook()
         result = await hook.on_session_start("session:start", {})
         assert result.user_message_source == "deprecation"
+
+    @pytest.mark.asyncio
+    async def test_require_evidence_true_no_source_files_stays_silent(self, tmp_path):
+        """require_evidence=True + no source files found -> stays silent."""
+        cfg = self._make_config(require_evidence=True)
+        hook = self._make_hook(config=cfg, search_dirs=[tmp_path])
+
+        result = await hook.on_session_start("session:start", {})
+
+        assert result.action == "continue"
+        assert result.context_injection is None
+        assert result.user_message is None
+        hook.hooks.emit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_require_evidence_true_with_source_file_fires_normally(
+        self, tmp_path
+    ):
+        """require_evidence=True + a source file present -> fires normally."""
+        amp_dir = tmp_path / ".amplifier"
+        amp_dir.mkdir()
+        source_file = amp_dir / "x.yaml"
+        source_file.write_text("includes: lsp-python\n")
+
+        cfg = self._make_config(require_evidence=True)
+        hook = self._make_hook(config=cfg, search_dirs=[tmp_path])
+
+        result = await hook.on_session_start("session:start", {})
+
+        assert result.action == "inject_context"
+        assert result.user_message is not None
+        assert result.context_injection is not None
+        assert "Found in:" in result.context_injection
+        assert str(source_file) in result.context_injection
+        hook.hooks.emit.assert_called_once()
+        call_args = hook.hooks.emit.call_args
+        assert call_args[0][0] == "deprecation:warning"
 
 
 # — Mount Function Tests —

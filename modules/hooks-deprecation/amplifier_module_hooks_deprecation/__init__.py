@@ -28,6 +28,7 @@ class DeprecationConfig:
     migration: str | None = None
     severity: str = "warning"  # "warning" or "info"
     sunset_date: date | None = None
+    require_evidence: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> DeprecationConfig:
@@ -68,6 +69,7 @@ class DeprecationConfig:
             migration=raw.get("migration"),
             severity=severity,
             sunset_date=sunset_date,
+            require_evidence=bool(raw.get("require_evidence", False)),
         )
 
 
@@ -92,6 +94,14 @@ def find_source_files(bundle_name: str, search_dirs: list[Path]) -> list[str]:
             continue
 
         for yaml_file in amp_dir.rglob("*.yaml"):
+            # Skip resolved/cached artifacts (e.g. .amplifier/cache/...) — the
+            # tombstone's own carrier config is cached on every install and would
+            # otherwise always self-match, defeating require_evidence gating. (#344)
+            # Scope the check to the path *below* .amplifier so a "cache" segment
+            # in an ancestor of base_dir (e.g. a user project under some cache/
+            # dir) doesn't suppress genuine authored config.
+            if "cache" in yaml_file.relative_to(amp_dir).parts:
+                continue
             try:
                 content = yaml_file.read_text(encoding="utf-8")
                 if bundle_name in content:
@@ -198,6 +208,10 @@ class DeprecationHook:
 
         # Scan for source files referencing this deprecated bundle
         source_files = find_source_files(self.config.bundle_name, self.search_dirs)
+
+        # Opt-in: when evidence is required and none was found, stay silent.
+        if self.config.require_evidence and not source_files:
+            return HookResult(action="continue")
 
         # Build the AI context block and user message
         context_text = build_warning_text(self.config, severity, source_files)
