@@ -197,6 +197,24 @@ class TestFindSourceFiles:
         assert results == [str(real_file)]
         assert not any("cache" in Path(p).parts for p in results)
 
+    def test_cache_in_ancestor_of_base_dir_does_not_suppress(self, tmp_path):
+        """A 'cache' segment ABOVE .amplifier must not suppress real matches (#344).
+
+        Only artifacts under .amplifier/cache/ are resolved copies. A user whose
+        project simply lives beneath some 'cache/' ancestor still has genuine
+        authored config, and the scan must find it. Guards against scoping the
+        exclusion to the full absolute path instead of the .amplifier-relative one.
+        """
+        base = tmp_path / "cache" / "myproject"
+        amp_dir = base / ".amplifier"
+        amp_dir.mkdir(parents=True)
+        real_file = amp_dir / "settings.yaml"
+        real_file.write_text("includes: lsp-python\n")
+
+        results = find_source_files("lsp-python", [base])
+
+        assert results == [str(real_file)]
+
 
 # — Sunset Escalation Tests —
 

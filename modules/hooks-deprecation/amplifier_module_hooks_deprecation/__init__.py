@@ -94,10 +94,13 @@ def find_source_files(bundle_name: str, search_dirs: list[Path]) -> list[str]:
             continue
 
         for yaml_file in amp_dir.rglob("*.yaml"):
-            # Skip resolved/cached artifacts (e.g. ~/.amplifier/cache/...) — the
+            # Skip resolved/cached artifacts (e.g. .amplifier/cache/...) — the
             # tombstone's own carrier config is cached on every install and would
             # otherwise always self-match, defeating require_evidence gating. (#344)
-            if "cache" in yaml_file.parts:
+            # Scope the check to the path *below* .amplifier so a "cache" segment
+            # in an ancestor of base_dir (e.g. a user project under some cache/
+            # dir) doesn't suppress genuine authored config.
+            if "cache" in yaml_file.relative_to(amp_dir).parts:
                 continue
             try:
                 content = yaml_file.read_text(encoding="utf-8")
