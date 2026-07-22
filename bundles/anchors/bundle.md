@@ -3,7 +3,7 @@ bundle:
   name: anchors
   version: 0.1.0
   description: |
-    Experimental lean bundle driven by a small set of behavioral principles.
+    Lean bundle driven by a small set of behavioral principles.
     A minimal system prompt, thin purposeful agents, and a standard tool roster.
     Explores how far concise behavior-shaping -- principles loaded once at the
     head of the system prompt -- can carry an Amplifier session at a fraction of
@@ -130,7 +130,7 @@ agents:
 
 # Anchors
 
-A lean, principle-driven experimental bundle. Behavior is shaped by a short set
+A lean, principle-driven bundle. Behavior is shaped by a short set
 of named principles loaded once at the head of the system prompt, backed by thin
 purposeful agents and a standard tool roster.
 

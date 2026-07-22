@@ -23,6 +23,17 @@ Bundles are the primary way to share and compose AI agent configurations.
 
 ---
 
+## Foundation vs. Anchors: Which Base?
+
+This repository publishes two bundles that serve **different** purposes, and it is easy to conflate them:
+
+- **`anchors`** is the CLI's **default runtime bundle** — the bundle a new session uses when none is specified. It is lean and self-contained: it pins all of its own module sources with full `git+https://…` URLs and does **not** inherit from `foundation`. Think of `anchors` as a bundle you *run*.
+- **`foundation`** is the **composition base you inherit from** when authoring your own bundle. Think of `foundation` as a bundle you *build on*.
+
+This guide covers the second case: creating a bundle by inheriting from `foundation` (the thin bundle pattern below). Making `anchors` the default runtime bundle does **not** change how you author bundles — you still build on `foundation`.
+
+---
+
 ## The Thin Bundle Pattern (Recommended)
 
 **Most bundles should be thin** - inheriting from foundation and adding only their unique capabilities.
