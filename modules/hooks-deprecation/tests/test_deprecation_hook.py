@@ -1,5 +1,6 @@
 """Tests for the deprecation hook module."""
 
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -830,6 +831,79 @@ class TestMultiTombstoneMount:
             for call in coordinator.hooks.emit.await_args_list
         }
         assert emitted_bundles == {"hooks-redaction", "hooks-logging"}
+
+    @pytest.mark.asyncio
+    async def test_flat_plus_list_logs_coexistence_warning(self, caplog):
+        """Scalar bundle_name composed alongside a deprecations: list warns.
+
+        The flat form under composition is at clobber risk (deep-merge keeps
+        only one scalar bundle_name), so on_session_ready() logs a migration
+        warning naming the at-risk flat tombstone -- warning on the CAUSE
+        (flat form present with a list), since the dropped tombstone from an
+        actual collision is already gone before the hook runs.
+        """
+        config = {
+            "bundle_name": "hooks-redaction",
+            "message": "hooks-redaction is retired",
+            "require_evidence": False,
+            "deprecations": [
+                {
+                    "bundle_name": "hooks-logging",
+                    "message": "demoted",
+                    "require_evidence": False,
+                }
+            ],
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_module_hooks_deprecation"
+        ):
+            await on_session_ready(coordinator)
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert any("composed alongside a 'deprecations:' list" in m for m in warnings)
+        assert any("hooks-redaction" in m for m in warnings)
+
+    @pytest.mark.asyncio
+    async def test_lone_flat_form_does_not_warn(self, caplog):
+        """A single flat tombstone (no list) is safe -> no coexistence warning."""
+        config = {
+            "bundle_name": "hooks-redaction",
+            "message": "retired",
+            "require_evidence": False,
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_module_hooks_deprecation"
+        ):
+            await on_session_ready(coordinator)
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert not any(
+            "composed alongside a 'deprecations:' list" in m for m in warnings
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_only_form_does_not_warn(self, caplog):
+        """List form with no flat scalar -> no coexistence warning."""
+        config = {
+            "deprecations": [
+                {"bundle_name": "a", "message": "m", "require_evidence": False}
+            ]
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_module_hooks_deprecation"
+        ):
+            await on_session_ready(coordinator)
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert not any(
+            "composed alongside a 'deprecations:' list" in m for m in warnings
+        )
 
     @pytest.mark.asyncio
     async def test_require_evidence_gates_independently_per_tombstone(

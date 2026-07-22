@@ -449,6 +449,26 @@ async def on_session_ready(coordinator: Any) -> None:
 
         configs = parse_deprecation_configs(own_config)
 
+        # Self-deprecate the legacy flat form under composition. When the merged
+        # config carries BOTH a scalar `bundle_name` AND a `deprecations:` list,
+        # we are provably in a multi-tombstone composition where at least one
+        # author is still on the flat form. That scalar is at risk: foundation's
+        # deep-merge keeps only ONE `bundle_name` (child-wins), so a second flat
+        # mount would silently clobber it. The hook can't see the tombstone that
+        # was already dropped (the merge discards it before we run) -- so we warn
+        # on the CAUSE (flat form present alongside a list), not the symptom. A
+        # lone flat consumer (no list) is safe and stays silent -- no nagging.
+        if own_config.get("bundle_name") and (own_config.get("deprecations") or []):
+            logger.warning(
+                "hooks-deprecation: a flat scalar 'bundle_name' tombstone (%r) is "
+                "composed alongside a 'deprecations:' list. Foundation's deep-merge "
+                "keeps only one scalar 'bundle_name' (child-wins), so a flat "
+                "tombstone can be silently clobbered when another behavior also "
+                "mounts this hook flat. Move it under the 'deprecations:' list so "
+                "every tombstone unions.",
+                own_config.get("bundle_name"),
+            )
+
         declared_ids: set[str] = set()
         for section in ("hooks", "tools", "providers"):
             for entry in coordinator.config.get(section, []) or []:
