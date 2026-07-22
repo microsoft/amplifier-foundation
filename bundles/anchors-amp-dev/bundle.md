@@ -71,6 +71,7 @@ tools:
     config:
       skills:
         - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+        - "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=skills"
       visibility:
         enabled: false
 

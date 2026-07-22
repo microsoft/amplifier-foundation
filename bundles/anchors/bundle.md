@@ -63,12 +63,13 @@ tools:
       settings:
         exclude_tools: [tool-delegate]
 
-  # Skills (discovery available, auto-injection disabled to save tokens)
+  # Skills (user-invocable skills callable via /command + load_skill; auto-injection off to save tokens)
   - module: tool-skills
     source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
     config:
       skills:
         - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+        - "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=skills"
       visibility:
         enabled: false
 
