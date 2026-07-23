@@ -1,7 +1,9 @@
 """Tests for the deprecation hook module."""
 
+import logging
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,6 +16,8 @@ from amplifier_module_hooks_deprecation import (
     effective_severity,
     find_source_files,
     mount,
+    on_session_ready,
+    parse_deprecation_configs,
 )
 
 
@@ -560,14 +564,21 @@ class TestDeprecationHook:
 
 
 # — Mount Function Tests —
+#
+# mount() now ONLY validates config and registers nothing (see
+# on_session_ready() below for where firing actually gets wired up). These
+# tests were adapted from the pre-on_session_ready flow: the hook
+# registration and working-dir-capability assertions moved to
+# TestOnSessionReady, since that's the phase that now owns them.
 
 
 class TestMount:
     """Tests for the mount() entry point."""
 
     @pytest.mark.asyncio
-    async def test_registers_session_start_hook(self):
-        """mount() registers a handler on 'session:start'."""
+    async def test_does_not_register_any_hook(self):
+        """mount() no longer registers a session:start handler -- that is
+        deferred to on_session_ready()."""
         coordinator = MagicMock()
         coordinator.hooks = MagicMock()
         coordinator.hooks.register = MagicMock()
@@ -579,17 +590,13 @@ class TestMount:
         }
         await mount(coordinator, config)
 
-        coordinator.hooks.register.assert_called_once()
-        call_args = coordinator.hooks.register.call_args
-        assert call_args[0][0] == "session:start"
-        assert call_args[1]["name"] == "deprecation"
+        coordinator.hooks.register.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_returns_module_metadata(self):
-        """mount() returns proper module metadata dict."""
+    async def test_returns_none(self):
+        """mount() returns None -- no cleanup callable is needed."""
         coordinator = MagicMock()
         coordinator.hooks = MagicMock()
-        coordinator.hooks.register = MagicMock()
         coordinator.get_capability = MagicMock(return_value=None)
 
         config = {
@@ -599,16 +606,14 @@ class TestMount:
         }
         result = await mount(coordinator, config)
 
-        assert result["name"] == "hooks-deprecation"
-        assert "version" in result
-        assert result["config"]["bundle_name"] == "lsp-python"
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_uses_working_dir_capability(self):
-        """mount() uses session.working_dir capability for source scanning."""
+    async def test_does_not_use_working_dir_capability(self):
+        """mount() no longer builds search_dirs -- that's on_session_ready's
+        job, once the composed plan is available."""
         coordinator = MagicMock()
         coordinator.hooks = MagicMock()
-        coordinator.hooks.register = MagicMock()
         coordinator.get_capability = MagicMock(return_value="/some/project")
 
         config = {
@@ -617,7 +622,7 @@ class TestMount:
         }
         await mount(coordinator, config)
 
-        coordinator.get_capability.assert_called_with("session.working_dir")
+        coordinator.get_capability.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_raises_on_invalid_config(self):
@@ -628,3 +633,671 @@ class TestMount:
 
         with pytest.raises(ValueError, match="bundle_name"):
             await mount(coordinator, {"message": "deprecated"})
+
+
+# — Multi-Tombstone Tests —
+#
+# Foundation composition deep-merges module mounts by module-id: deep_merge
+# REPLACES scalars (child-wins) but CONCATENATES lists. Two behaviors that each
+# mount hooks-deprecation with a different legacy flat `bundle_name` collapse
+# to ONE and a tombstone is silently lost. The `deprecations:` list form fixes
+# this by unioning instead of colliding. These tests exercise that fix through
+# the public `parse_deprecation_configs` + `mount` + `on_session_ready` surfaces.
+#
+# Firing is now decided in on_session_ready(), not mount(). mount() is still
+# called in these tests (it validates config and must keep raising the same
+# ValueErrors), but the handler only gets registered -- and can be dispatched
+# -- once on_session_ready() runs against a coordinator whose `.config`
+# mirrors the composed mount plan.
+
+
+def _make_coordinator(
+    working_dir: str | None = None,
+    hooks_config: dict[str, Any] | None = None,
+    declared_hooks: list[str] | None = None,
+    declared_tools: list[str] | None = None,
+    declared_providers: list[str] | None = None,
+):
+    """Build a coordinator mock whose `.config` mirrors a composed mount plan.
+
+    `hooks_config`, if given, becomes THIS module's own merged config --
+    embedded as the `{"module": "hooks-deprecation", "config": ...}` entry
+    in `coordinator.config["hooks"]`, exactly as on_session_ready() expects
+    to find it post-compose-merge.
+
+    `declared_hooks` / `declared_tools` / `declared_providers` are OTHER
+    module ids present in the composed plan (alongside hooks-deprecation
+    itself), used to exercise the composed-detection gate: a tombstone
+    fires without filesystem evidence iff its `bundle_name` is among these.
+    """
+    coordinator = MagicMock()
+    coordinator.hooks = MagicMock()
+    coordinator.hooks.register = MagicMock()
+    coordinator.hooks.emit = AsyncMock()
+    coordinator.hooks.list_handlers = MagicMock(return_value={})
+    coordinator.get_capability = MagicMock(return_value=working_dir)
+
+    # Records (channel, name, callback) tuples passed to register_contributor()
+    # so tests can assert on the observability.events declaration mount() makes
+    # for "deprecation:warning" (see TestObservabilityRegistration below).
+    register_contributor_calls: list[tuple[str, str, Any]] = []
+    coordinator.register_contributor_calls = register_contributor_calls
+
+    def _record_contributor(channel: str, name: str, callback: Any) -> None:
+        register_contributor_calls.append((channel, name, callback))
+
+    coordinator.register_contributor = _record_contributor
+
+    hooks_entries: list[dict[str, Any]] = [
+        {"module": name} for name in (declared_hooks or [])
+    ]
+    if hooks_config is not None:
+        hooks_entries.append({"module": "hooks-deprecation", "config": hooks_config})
+
+    coordinator.config = {
+        "hooks": hooks_entries,
+        "tools": [{"module": name} for name in (declared_tools or [])],
+        "providers": [{"module": name} for name in (declared_providers or [])],
+    }
+    return coordinator
+
+
+async def _register_and_dispatch(coordinator):
+    """Run on_session_ready() (registers the handler), then invoke it.
+
+    Replaces the old `_dispatch_session_start`, which invoked the handler
+    mount() used to register directly. Registration now happens in
+    on_session_ready() instead.
+    """
+    await on_session_ready(coordinator)
+    call_args = coordinator.hooks.register.call_args
+    handler = call_args[0][1]
+    return await handler("session:start", {})
+
+
+class TestParseDeprecationConfigs:
+    """Tests for the parse_deprecation_configs() normalizer."""
+
+    def test_legacy_flat_produces_one_tombstone(self):
+        """Legacy flat form (unchanged) produces exactly one tombstone."""
+        configs = parse_deprecation_configs(
+            {"bundle_name": "hooks-redaction", "message": "retired"}
+        )
+        assert len(configs) == 1
+        assert configs[0].bundle_name == "hooks-redaction"
+
+    def test_list_form_produces_n_tombstones(self):
+        """`deprecations:` list form produces one tombstone per entry."""
+        configs = parse_deprecation_configs(
+            {
+                "deprecations": [
+                    {"bundle_name": "a", "message": "m1"},
+                    {"bundle_name": "b", "message": "m2"},
+                ]
+            }
+        )
+        assert [c.bundle_name for c in configs] == ["a", "b"]
+
+    def test_both_present_produces_flat_plus_list_tombstones(self):
+        """Flat fields AND `deprecations:` entries both become tombstones.
+
+        This is the shape a composed bundle sees after deep_merge unions two
+        behaviors that each mount this module with a different tombstone.
+        """
+        configs = parse_deprecation_configs(
+            {
+                "bundle_name": "hooks-redaction",
+                "message": "r",
+                "deprecations": [{"bundle_name": "hooks-logging", "message": "l"}],
+            }
+        )
+        assert [c.bundle_name for c in configs] == ["hooks-redaction", "hooks-logging"]
+
+    def test_empty_config_raises_value_error(self):
+        """Neither bundle_name nor a non-empty deprecations list -> ValueError."""
+        with pytest.raises(ValueError, match="bundle_name.*deprecations"):
+            parse_deprecation_configs({})
+
+    def test_empty_deprecations_list_raises_value_error(self):
+        """An empty `deprecations: []` list (and no flat bundle_name) still raises."""
+        with pytest.raises(ValueError):
+            parse_deprecation_configs({"deprecations": []})
+
+
+class TestMultiTombstoneMount:
+    """Tests for mount() + on_session_ready() with multiple tombstones
+    (list form and union)."""
+
+    @pytest.mark.asyncio
+    async def test_list_form_both_fire(self):
+        """Two tombstones in `deprecations:` both fire in one combined dispatch."""
+        config = {
+            "deprecations": [
+                {"bundle_name": "a", "message": "message-a", "require_evidence": False},
+                {"bundle_name": "b", "message": "message-b", "require_evidence": False},
+            ]
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+        await mount(coordinator, config)  # validates only; registers nothing
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "inject_context"
+        assert result.context_injection is not None
+        assert "DEPRECATION WARNING: a" in result.context_injection
+        assert "DEPRECATION WARNING: b" in result.context_injection
+        assert result.user_message is not None
+        assert "a" in result.user_message
+        assert "b" in result.user_message
+
+        assert coordinator.hooks.emit.await_count == 2
+        emitted_bundles = {
+            call.args[1]["bundle_name"]
+            for call in coordinator.hooks.emit.await_args_list
+        }
+        assert emitted_bundles == {"a", "b"}
+
+    @pytest.mark.asyncio
+    async def test_union_of_flat_and_list_both_fire(self):
+        """Flat bundle_name + deprecations list (the post-merge shape) both fire.
+
+        Mirrors what deep_merge produces when redaction.yaml's legacy flat
+        tombstone and logging.yaml's `deprecations:` tombstone are unioned.
+        """
+        config = {
+            "bundle_name": "hooks-redaction",
+            "message": "hooks-redaction is retired",
+            "require_evidence": False,
+            "deprecations": [
+                {
+                    "bundle_name": "hooks-logging",
+                    "message": "hooks-logging is demoted",
+                    "require_evidence": False,
+                }
+            ],
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+        await mount(coordinator, config)
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "inject_context"
+        assert "hooks-redaction" in result.context_injection
+        assert "hooks-logging" in result.context_injection
+
+        assert coordinator.hooks.emit.await_count == 2
+        emitted_bundles = {
+            call.args[1]["bundle_name"]
+            for call in coordinator.hooks.emit.await_args_list
+        }
+        assert emitted_bundles == {"hooks-redaction", "hooks-logging"}
+
+    @pytest.mark.asyncio
+    async def test_flat_plus_list_logs_coexistence_warning(self, caplog):
+        """Scalar bundle_name composed alongside a deprecations: list warns.
+
+        The flat form under composition is at clobber risk (deep-merge keeps
+        only one scalar bundle_name), so on_session_ready() logs a migration
+        warning naming the at-risk flat tombstone -- warning on the CAUSE
+        (flat form present with a list), since the dropped tombstone from an
+        actual collision is already gone before the hook runs.
+        """
+        config = {
+            "bundle_name": "hooks-redaction",
+            "message": "hooks-redaction is retired",
+            "require_evidence": False,
+            "deprecations": [
+                {
+                    "bundle_name": "hooks-logging",
+                    "message": "demoted",
+                    "require_evidence": False,
+                }
+            ],
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_module_hooks_deprecation"
+        ):
+            await on_session_ready(coordinator)
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert any("composed alongside a 'deprecations:' list" in m for m in warnings)
+        assert any("hooks-redaction" in m for m in warnings)
+
+    @pytest.mark.asyncio
+    async def test_lone_flat_form_does_not_warn(self, caplog):
+        """A single flat tombstone (no list) is safe -> no coexistence warning."""
+        config = {
+            "bundle_name": "hooks-redaction",
+            "message": "retired",
+            "require_evidence": False,
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_module_hooks_deprecation"
+        ):
+            await on_session_ready(coordinator)
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert not any(
+            "composed alongside a 'deprecations:' list" in m for m in warnings
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_only_form_does_not_warn(self, caplog):
+        """List form with no flat scalar -> no coexistence warning."""
+        config = {
+            "deprecations": [
+                {"bundle_name": "a", "message": "m", "require_evidence": False}
+            ]
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_module_hooks_deprecation"
+        ):
+            await on_session_ready(coordinator)
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert not any(
+            "composed alongside a 'deprecations:' list" in m for m in warnings
+        )
+
+    @pytest.mark.asyncio
+    async def test_require_evidence_gates_independently_per_tombstone(
+        self, tmp_path, monkeypatch
+    ):
+        """Each tombstone's require_evidence gate is evaluated independently.
+
+        Evidence is authored for only ONE of the two bundle_names, and
+        neither bundle is present in the composed plan (no declared_hooks
+        given); only the evidenced tombstone should fire, and only its
+        event should be emitted.
+
+        on_session_ready() always adds Path.cwd() and Path.home() to
+        search_dirs in addition to the working_dir capability, so both are
+        pinned to the same isolated tmp_path here -- otherwise real files
+        in the actual cwd/home (outside this test's control) could
+        coincidentally reference one of these bundle names and make the
+        gating non-deterministic.
+        """
+        amp_dir = tmp_path / ".amplifier"
+        amp_dir.mkdir()
+        (amp_dir / "settings.yaml").write_text(
+            "includes: hooks-redaction\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        config = {
+            "bundle_name": "hooks-redaction",
+            "message": "hooks-redaction is retired",
+            "require_evidence": True,
+            "deprecations": [
+                {
+                    "bundle_name": "hooks-logging",
+                    "message": "hooks-logging is demoted",
+                    "require_evidence": True,
+                }
+            ],
+        }
+        coordinator = _make_coordinator(working_dir=str(tmp_path), hooks_config=config)
+        await mount(coordinator, config)
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "inject_context"
+        assert "hooks-redaction" in result.context_injection
+        assert "hooks-logging" not in result.context_injection
+
+        coordinator.hooks.emit.assert_called_once()
+        call_args = coordinator.hooks.emit.call_args
+        assert call_args[0][1]["bundle_name"] == "hooks-redaction"
+
+    @pytest.mark.asyncio
+    async def test_single_flat_config_is_pass_through_identical_to_direct_hook(self):
+        """Backward compat: mount() + on_session_ready() with ONE flat
+        tombstone must be observably identical to using DeprecationHook
+        directly (today's legacy behavior).
+
+        Both paths use the same search dirs (Path.cwd() + Path.home(), since
+        get_capability returns None in both) so the source-file scan -- and
+        therefore the full result -- is deterministically identical. Neither
+        path declares any other composed module, so `composed` stays False
+        on both sides too.
+        """
+        cfg_dict = {"bundle_name": "lsp-python", "message": "lsp-python is deprecated"}
+        same_search_dirs = [Path.cwd(), Path.home()]
+
+        direct_hooks_mock = MagicMock()
+        direct_hooks_mock.emit = AsyncMock()
+        direct_hook = DeprecationHook(
+            DeprecationConfig.from_dict(cfg_dict),
+            direct_hooks_mock,
+            search_dirs=same_search_dirs,
+        )
+        direct_result = await direct_hook.on_session_start("session:start", {})
+
+        coordinator = _make_coordinator(working_dir=None, hooks_config=cfg_dict)
+        await mount(coordinator, cfg_dict)
+        mounted_result = await _register_and_dispatch(coordinator)
+
+        assert mounted_result.action == direct_result.action
+        assert mounted_result.context_injection == direct_result.context_injection
+        assert mounted_result.user_message == direct_result.user_message
+        assert mounted_result.user_message_level == direct_result.user_message_level
+        assert mounted_result.user_message_source == direct_result.user_message_source
+
+    @pytest.mark.asyncio
+    async def test_single_flat_config_fires_once_per_session_through_mount(self):
+        """Backward compat: single-tombstone mount() + on_session_ready()
+        still fires once per session (mirrors
+        TestDeprecationHook.test_fires_once_per_session, but through the
+        full mount() + on_session_ready() + combine_hook_results() path)."""
+        config = {"bundle_name": "lsp-python", "message": "lsp-python is deprecated"}
+        coordinator = _make_coordinator(hooks_config=config)
+        await mount(coordinator, config)
+        await on_session_ready(coordinator)
+
+        call_args = coordinator.hooks.register.call_args
+        handler = call_args[0][1]
+
+        result1 = await handler("session:start", {})
+        assert result1.action == "inject_context"
+
+        result2 = await handler("session:start", {})
+        assert result2.action == "continue"
+
+    @pytest.mark.asyncio
+    async def test_empty_config_raises_value_error_through_mount(self):
+        """mount() propagates parse_deprecation_configs' ValueError for {}."""
+        coordinator = _make_coordinator()
+
+        with pytest.raises(ValueError, match="bundle_name"):
+            await mount(coordinator, {})
+
+
+# — on_session_ready() Tests —
+#
+# Covers the registration mechanics on_session_ready() now owns: recovering
+# this module's own merged config from the composed plan, the defensive
+# no-op paths (no own entry, already registered, registration raises), and
+# the composed-detection gate itself (the additive bypass of
+# require_evidence when a tombstone's bundle is confirmed present in the
+# composed plan).
+
+
+class TestOnSessionReady:
+    """Tests for on_session_ready()'s registration mechanics."""
+
+    @pytest.mark.asyncio
+    async def test_no_own_config_entry_registers_nothing(self):
+        """If coordinator.config['hooks'] has no hooks-deprecation entry,
+        this module wasn't actually mounted for this session -- return
+        without registering anything."""
+        coordinator = _make_coordinator()  # no hooks_config -> no own entry
+
+        await on_session_ready(coordinator)
+
+        coordinator.hooks.register.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_registration_if_already_registered(self):
+        """Defensive guard: if list_handlers() already reports a
+        'deprecation' handler on session:start, on_session_ready() does not
+        register again."""
+        config = {"bundle_name": "lsp-python", "message": "deprecated"}
+        coordinator = _make_coordinator(hooks_config=config)
+        coordinator.hooks.list_handlers = MagicMock(
+            return_value={"session:start": ["deprecation"]}
+        )
+
+        await on_session_ready(coordinator)
+
+        coordinator.hooks.register.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_registration_exception_is_caught_not_propagated(self):
+        """An exception raised while registering the handler is caught and
+        logged, not propagated -- a deprecation notice must never be the
+        reason session initialization fails."""
+        config = {"bundle_name": "lsp-python", "message": "deprecated"}
+        coordinator = _make_coordinator(hooks_config=config)
+        coordinator.hooks.register = MagicMock(side_effect=RuntimeError("boom"))
+
+        await on_session_ready(coordinator)  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_registers_session_start_handler_named_deprecation(self):
+        """on_session_ready() registers exactly one 'session:start' handler
+        named 'deprecation', same contract mount() used to fulfill."""
+        config = {"bundle_name": "lsp-python", "message": "deprecated"}
+        coordinator = _make_coordinator(hooks_config=config)
+
+        await on_session_ready(coordinator)
+
+        coordinator.hooks.register.assert_called_once()
+        call_args = coordinator.hooks.register.call_args
+        assert call_args[0][0] == "session:start"
+        assert call_args[1]["name"] == "deprecation"
+        assert call_args[1]["priority"] == 10
+
+
+class TestComposedDetection:
+    """Tests for the additive composed-detection gate: a tombstone whose
+    bundle_name is confirmed present in the ACTUAL composed mount plan
+    fires even with zero filesystem evidence. Nothing that fired under the
+    old evidence-only gate stops firing (see the (c) legacy case below)."""
+
+    @pytest.mark.asyncio
+    async def test_composed_bundle_in_hooks_fires_without_evidence(
+        self, tmp_path, monkeypatch
+    ):
+        """(a) require_evidence=True + bundle IS in coordinator.config['hooks']
+        -> fires even with NO filesystem source_files."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "bundle_name": "lsp-python",
+            "message": "lsp-python is deprecated",
+            "require_evidence": True,
+        }
+        coordinator = _make_coordinator(
+            working_dir=str(tmp_path),
+            hooks_config=config,
+            declared_hooks=["lsp-python"],
+        )
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "inject_context"
+        assert "lsp-python" in result.context_injection
+        coordinator.hooks.emit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_composed_bundle_in_tools_fires_without_evidence(
+        self, tmp_path, monkeypatch
+    ):
+        """(a) variant: the composed signal also comes from `tools`, not
+        just `hooks`."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "bundle_name": "tool-legacy",
+            "message": "tool-legacy is deprecated",
+            "require_evidence": True,
+        }
+        coordinator = _make_coordinator(
+            working_dir=str(tmp_path),
+            hooks_config=config,
+            declared_tools=["tool-legacy"],
+        )
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "inject_context"
+        coordinator.hooks.emit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_composed_bundle_in_providers_fires_without_evidence(
+        self, tmp_path, monkeypatch
+    ):
+        """(a) variant: the composed signal also comes from `providers`."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "bundle_name": "provider-legacy",
+            "message": "provider-legacy is deprecated",
+            "require_evidence": True,
+        }
+        coordinator = _make_coordinator(
+            working_dir=str(tmp_path),
+            hooks_config=config,
+            declared_providers=["provider-legacy"],
+        )
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "inject_context"
+        coordinator.hooks.emit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_not_composed_and_no_evidence_stays_silent(
+        self, tmp_path, monkeypatch
+    ):
+        """(b) require_evidence=True + module NOT composed + NO source
+        files -> stays silent."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "bundle_name": "lsp-python",
+            "message": "lsp-python is deprecated",
+            "require_evidence": True,
+        }
+        coordinator = _make_coordinator(working_dir=str(tmp_path), hooks_config=config)
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "continue"
+        assert result.context_injection is None
+        assert result.user_message is None
+        coordinator.hooks.emit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_require_evidence_false_fires_regardless(self, tmp_path, monkeypatch):
+        """(c) require_evidence=False fires regardless of composed status
+        or filesystem evidence (legacy, always-fire behavior)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "bundle_name": "lsp-python",
+            "message": "lsp-python is deprecated",
+            "require_evidence": False,
+        }
+        coordinator = _make_coordinator(working_dir=str(tmp_path), hooks_config=config)
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "inject_context"
+        coordinator.hooks.emit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_union_only_composed_tombstone_fires(self, tmp_path, monkeypatch):
+        """(d) P2 union case: a merged config carries a flat tombstone
+        (hooks-redaction, require_evidence=True) AND a `deprecations:` list
+        tombstone (hooks-logging, require_evidence=True). Only
+        hooks-logging is present in the composed plan's `hooks` list; only
+        it should fire."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "bundle_name": "hooks-redaction",
+            "message": "hooks-redaction is retired",
+            "require_evidence": True,
+            "deprecations": [
+                {
+                    "bundle_name": "hooks-logging",
+                    "message": "hooks-logging is demoted",
+                    "require_evidence": True,
+                }
+            ],
+        }
+        coordinator = _make_coordinator(
+            working_dir=str(tmp_path),
+            hooks_config=config,
+            declared_hooks=["hooks-logging"],  # hooks-redaction NOT declared
+        )
+
+        result = await _register_and_dispatch(coordinator)
+
+        assert result.action == "inject_context"
+        assert "hooks-logging" in result.context_injection
+        assert "hooks-redaction" not in result.context_injection
+
+        coordinator.hooks.emit.assert_called_once()
+        call_args = coordinator.hooks.emit.call_args
+        assert call_args[0][1]["bundle_name"] == "hooks-logging"
+
+
+# — Observability Contribution Channel Tests —
+#
+# hooks-deprecation EMITS "deprecation:warning" via self.hooks.emit(...) but
+# must also DECLARE it on the "observability.events" contribution channel so
+# the session capture hooks (hooks-logging + hook-context-intelligence), which
+# auto-discover recordable events via coordinator.collect_contributions(
+# "observability.events") at their own on_session_ready(), know to record it.
+# This is a module-owned declaration (template: tool-delegate's mount()); see
+# core:docs/specs/CONTRIBUTION_CHANNELS.md.
+
+
+class TestObservabilityRegistration:
+    """Tests for mount()'s observability.events contribution registration."""
+
+    @pytest.mark.asyncio
+    async def test_mount_registers_deprecation_warning_event(self):
+        """mount() registers exactly one observability.events contributor,
+        named 'hooks-deprecation', whose callback returns
+        ['deprecation:warning']."""
+        config = {"bundle_name": "lsp-python", "message": "lsp-python is deprecated"}
+        coordinator = _make_coordinator(hooks_config=config)
+
+        await mount(coordinator, config)
+
+        assert len(coordinator.register_contributor_calls) == 1
+        channel, name, callback = coordinator.register_contributor_calls[0]
+        assert channel == "observability.events"
+        assert name == "hooks-deprecation"
+        assert callback() == ["deprecation:warning"]
+
+    @pytest.mark.asyncio
+    async def test_registration_happens_even_without_evidence_requirement(self):
+        """The registration is unconditional -- it does not depend on any
+        tombstone's require_evidence setting or on multi-tombstone shape."""
+        config = {
+            "deprecations": [
+                {"bundle_name": "a", "message": "message-a"},
+                {"bundle_name": "b", "message": "message-b"},
+            ]
+        }
+        coordinator = _make_coordinator(hooks_config=config)
+
+        await mount(coordinator, config)
+
+        assert len(coordinator.register_contributor_calls) == 1
+        channel, name, callback = coordinator.register_contributor_calls[0]
+        assert channel == "observability.events"
+        assert name == "hooks-deprecation"
+        assert callback() == ["deprecation:warning"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_config_does_not_register_contributor(self):
+        """mount() raises before registering the contributor when config is
+        invalid -- validation still happens first, unchanged."""
+        coordinator = _make_coordinator()
+
+        with pytest.raises(ValueError, match="bundle_name"):
+            await mount(coordinator, {})
+
+        assert coordinator.register_contributor_calls == []
