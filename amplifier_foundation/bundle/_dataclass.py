@@ -281,7 +281,10 @@ class Bundle:
                 return overrides.get(module_id) or source
             prepared = await bundle.prepare(source_resolver=resolve_with_overrides)
         """
-        from amplifier_foundation.bundle._prepared import BundleModuleResolver, PreparedBundle
+        from amplifier_foundation.bundle._prepared import (
+            BundleModuleResolver,
+            PreparedBundle,
+        )
         from amplifier_foundation.modules.activator import ModuleActivator
 
         # Get mount plan
@@ -562,7 +565,7 @@ class Bundle:
             version=bundle_meta.get("version", "1.0.0"),
             description=bundle_meta.get("description", ""),
             includes=data.get("includes", []),
-            session=data.get("session", {}),
+            session=_resolve_session_sources(data.get("session", {}), base_path),
             providers=providers,
             tools=tools,
             hooks=hooks,
@@ -703,6 +706,42 @@ def _parse_context(
     return resolved, pending
 
 
+def _resolve_relative_source(source: Any, base_path: Path | None) -> Any:
+    """Anchor a relative local source ('./x' or '../x') to base_path.
+
+    Only literal relative paths are rewritten (issue #190 / relative-source
+    provenance). git+https://, file://, zip+..., and bare module-name sources
+    are returned byte-for-byte untouched, as is any non-string value.
+    """
+    if (
+        base_path
+        and isinstance(source, str)
+        and (source.startswith("./") or source.startswith("../"))
+    ):
+        return str((base_path / source).resolve())
+    return source
+
+
+def _resolve_session_sources(session: Any, base_path: Path | None) -> dict[str, Any]:
+    """Resolve relative sources in a bundle's session config to absolute.
+
+    Anchors session.orchestrator.source / session.context.source (and any other
+    dict entry carrying a 'source') to the DECLARING bundle's base_path before
+    composition can flatten provenance. Plain-string shorthand values (e.g.
+    ``session={"orchestrator": "loop-basic"}``) are left untouched.
+    """
+    if not isinstance(session, dict):
+        return session
+    resolved: dict[str, Any] = dict(session)
+    for key, value in resolved.items():
+        if isinstance(value, dict) and "source" in value:
+            resolved[key] = {
+                **value,
+                "source": _resolve_relative_source(value["source"], base_path),
+            }
+    return resolved
+
+
 def _validate_module_list(
     items: Any,
     field_name: str,
@@ -748,12 +787,10 @@ def _validate_module_list(
     if base_path:
         resolved_items = []
         for item in items:
-            source = item.get("source", "")
-            if isinstance(source, str) and (
-                source.startswith("./") or source.startswith("../")
-            ):
-                # Resolve relative path against bundle's base_path
-                resolved_source = str((base_path / source).resolve())
+            resolved_source = _resolve_relative_source(
+                item.get("source", ""), base_path
+            )
+            if resolved_source != item.get("source", ""):
                 # Copy dict to avoid mutating original
                 item = {**item, "source": resolved_source}
             resolved_items.append(item)
