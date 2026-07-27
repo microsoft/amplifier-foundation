@@ -65,6 +65,7 @@ class ModuleActivator:
         cache_dir: Path | None = None,
         install_deps: bool = True,
         base_path: Path | None = None,
+        strict: bool = False,
     ) -> None:
         """Initialize module activator.
 
@@ -75,9 +76,13 @@ class ModuleActivator:
                        For bundles loaded from git, this should be the cloned
                        bundle's base_path so relative paths like ./modules/foo
                        resolve correctly.
+            strict: If True, activation failures in activate_all() raise
+                    ModuleActivationError instead of being logged and skipped.
+                    Mirrors BundleRegistry(strict=...) for include failures.
         """
         self.cache_dir = cache_dir or get_amplifier_home() / "cache"
         self.install_deps = install_deps
+        self.strict = strict
         self._resolver = SimpleSourceResolver(
             cache_dir=self.cache_dir, base_path=base_path
         )
@@ -157,6 +162,11 @@ class ModuleActivator:
 
         Returns:
             Dict mapping module names to their local paths.
+
+        Raises:
+            ModuleActivationError: If strict=True and any module fails to
+                activate. All failures are reported together, not just the
+                first one.
         """
         # Phase 1: Resolve all sources and check install state
         to_activate = []
@@ -176,11 +186,21 @@ class ModuleActivator:
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             activated = {}
+            failures: list[tuple[str, BaseException]] = []
             for (name, _), result in zip(to_activate, results):
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
+                    failures.append((name, result))
                     logger.error(f"Failed to activate {name}: {result}")
                 else:
                     activated[name] = result
+
+            if failures and self.strict:
+                detail = "\n".join(f"  - {name}: {err}" for name, err in failures)
+                raise ModuleActivationError(
+                    f"{len(failures)} of {len(to_activate)} modules failed to "
+                    f"activate (strict mode):\n{detail}"
+                ) from failures[0][1]
+
             return activated
 
         return {}

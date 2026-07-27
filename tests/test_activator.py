@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from amplifier_foundation.modules.activator import (
+    ModuleActivationError,
     ModuleActivator,
     _distribution_installed,
 )
@@ -462,3 +463,63 @@ class TestDistributionGuard326:
 
                 mock_invalidate.assert_not_called()
                 mock_subprocess.assert_not_called()
+
+
+class TestStrictActivation343:
+    """Regression coverage for issue #343.
+
+    ``BundleRegistry(strict=...)`` made include failures fatal, but module
+    activation had no equivalent: ``activate_all`` logged every failure and
+    returned the survivors, so a session could start with a provider or tool
+    silently missing. These tests pin both halves of the contract.
+    """
+
+    @pytest.mark.asyncio
+    async def test_strict_raises_and_reports_every_failure(self) -> None:
+        """strict=True surfaces ALL failures, not just the first."""
+        activator = ModuleActivator(install_deps=False, strict=True)
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            if name in ("bad-one", "bad-two"):
+                raise RuntimeError(f"clone failed for {name}")
+            return Path("/tmp") / name
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            with pytest.raises(ModuleActivationError) as exc_info:
+                await activator.activate_all(
+                    [
+                        {"module": "good-one", "source": "file:///good-one"},
+                        {"module": "bad-one", "source": "file:///bad-one"},
+                        {"module": "bad-two", "source": "file:///bad-two"},
+                    ]
+                )
+
+        message = str(exc_info.value)
+        assert "2 of 3 modules failed" in message
+        # Both failures reported together -- not just the first.
+        assert "bad-one" in message
+        assert "bad-two" in message
+        # Original cause is chained for debuggability.
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_non_strict_preserves_skip_and_continue(self) -> None:
+        """strict=False (the default) keeps the pre-#343 behaviour."""
+        activator = ModuleActivator(install_deps=False)
+        assert activator.strict is False
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            if name == "bad-one":
+                raise RuntimeError("clone failed")
+            return Path("/tmp") / name
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            activated = await activator.activate_all(
+                [
+                    {"module": "good-one", "source": "file:///good-one"},
+                    {"module": "bad-one", "source": "file:///bad-one"},
+                ]
+            )
+
+        assert "good-one" in activated
+        assert "bad-one" not in activated

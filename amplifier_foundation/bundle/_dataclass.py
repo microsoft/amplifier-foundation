@@ -305,6 +305,7 @@ class Bundle:
         install_deps: bool = True,
         source_resolver: Callable[[str, str], str] | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
+        strict: bool = False,
     ) -> PreparedBundle:
         """Prepare bundle for execution by activating all modules.
 
@@ -324,6 +325,11 @@ class Bundle:
             progress_callback: Optional callback(action, detail) for progress reporting.
                 Called at key phases during preparation to report what is happening.
                 Actions include "installing_package", "activating", "installing".
+            strict: If True, any module that fails to activate raises
+                ModuleActivationError instead of being logged and skipped.
+                Mirrors BundleRegistry(strict=...), which governs include
+                failures. Without this, a bundle whose modules fail to download
+                still returns a PreparedBundle -- just missing capabilities.
 
         Returns:
             PreparedBundle with mount_plan and create_session() helper.
@@ -355,7 +361,9 @@ class Bundle:
 
         # Create activator with bundle's base_path so relative module paths
         # like ./modules/foo resolve relative to the bundle, not cwd
-        activator = ModuleActivator(install_deps=install_deps, base_path=self.base_path)
+        activator = ModuleActivator(
+            install_deps=install_deps, base_path=self.base_path, strict=strict
+        )
 
         # CRITICAL: Install bundle packages BEFORE activating modules
         # Modules may import from their parent bundle's package (e.g., a tool

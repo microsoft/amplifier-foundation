@@ -622,10 +622,17 @@ class BundleRegistry:
             future.set_result(bundle)
             return bundle
 
-        except Exception:
-            # Cancel the future to avoid "Future exception was never retrieved" warning
-            # Any concurrent waiters will get CancelledError and can retry
-            future.cancel()
+        except Exception as exc:
+            # Propagate the REAL error to concurrent waiters (step 3 above awaits
+            # this future for the diamond-dependency case). Cancelling instead
+            # would hand every waiter a bare CancelledError, hiding the actual
+            # cause and turning one root failure into several misleading ones.
+            if not future.done():
+                future.set_exception(exc)
+                # The exception may have no waiter (the only consumer can be the
+                # owner, which re-raises below). Retrieve it via callback so
+                # asyncio does not emit "Future exception was never retrieved".
+                future.add_done_callback(lambda f: f.exception())
             raise
         finally:
             # Clean up pending load tracker
