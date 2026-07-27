@@ -485,3 +485,95 @@ class TestGitSourceHandlerShaRefs:
         branch_path = handler._get_cache_path(branch_parsed, cache_dir)
         sha_path = handler._get_cache_path(sha_parsed, cache_dir)
         assert branch_path != sha_path
+
+
+class TestGitNetworkOpRetry343:
+    """Regression coverage for issue #343 (transient clone failures).
+
+    ``git clone`` had no retry. A single dropped connection failed the module
+    permanently. Once activation failures become fatal rather than silent, that
+    same blip would take down a whole session -- so the retry is what makes
+    fail-loud safe to turn on.
+    """
+
+    def test_retries_then_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A failure followed by a success resolves without raising."""
+        from amplifier_foundation.sources import git as git_mod
+
+        calls: list[list[str]] = []
+        sleeps: list[float] = []
+
+        def fake_run(args, **kwargs):  # noqa: ANN001, ANN202
+            calls.append(args)
+            if len(calls) == 1:
+                raise subprocess.CalledProcessError(
+                    128, args, stderr="fatal: unable to access: Connection reset"
+                )
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(git_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(git_mod.time, "sleep", lambda s: sleeps.append(s))
+
+        result = git_mod._run_git_network_op(["git", "clone", "url", "/tmp/x"])
+
+        assert result.returncode == 0
+        assert len(calls) == 2, "should have retried exactly once"
+        assert sleeps == [1.0], "should have backed off before the retry"
+
+    def test_exhausts_attempts_and_reraises_real_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When every attempt fails, the original git error is raised."""
+        from amplifier_foundation.sources import git as git_mod
+
+        calls: list[list[str]] = []
+
+        def always_fail(args, **kwargs):  # noqa: ANN001, ANN202
+            calls.append(args)
+            raise subprocess.CalledProcessError(
+                128, args, stderr="fatal: could not resolve host: github.com"
+            )
+
+        monkeypatch.setattr(git_mod.subprocess, "run", always_fail)
+        monkeypatch.setattr(git_mod.time, "sleep", lambda _s: None)
+
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
+            git_mod._run_git_network_op(["git", "clone", "url", "/tmp/x"])
+
+        assert len(calls) == git_mod._CLONE_MAX_ATTEMPTS
+        # The real cause survives -- not swallowed into a generic message.
+        assert "could not resolve host" in (exc_info.value.stderr or "")
+
+    def test_shallow_sha_fetch_is_not_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SHA fetch falls straight through to full clone, no retry delay.
+
+        Servers without ``allowReachableSHA1InWant`` refuse the shallow fetch as
+        a matter of course. That failure is a designed fallback, not an error,
+        so retrying it would add seconds to a normal path.
+        """
+        from amplifier_foundation.sources.git import GitSourceHandler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            handler = GitSourceHandler()
+            cache_path = Path(tmpdir) / "repo"
+            seen: list[list[str]] = []
+
+            def fake_run(args, **kwargs):  # noqa: ANN001, ANN202
+                seen.append(list(args))
+                # Refuse the shallow SHA fetch; succeed at everything else.
+                if "fetch" in args:
+                    raise subprocess.CalledProcessError(128, args, stderr="refused")
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+            monkeypatch.setattr(subprocess, "run", fake_run)
+
+            handler._clone_at_commit("https://example.invalid/r.git", "a" * 40, cache_path)
+
+            fetch_calls = [c for c in seen if "fetch" in c]
+            assert len(fetch_calls) == 1, (
+                "shallow SHA fetch must not be retried -- its failure is the "
+                "designed trigger for the full-clone fallback"
+            )
+            assert any("clone" in c for c in seen), "should fall back to full clone"
