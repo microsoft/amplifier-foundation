@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import shutil
 import subprocess
 from datetime import datetime
@@ -21,6 +22,16 @@ logger = logging.getLogger(__name__)
 
 # Metadata file name for tracking cache info
 CACHE_METADATA_FILE = ".amplifier_cache_meta.json"
+
+# Full 40-character hex commit SHA (case-insensitive, matching SourceStatus.is_pinned).
+# Short/abbreviated SHAs are intentionally NOT matched: they are ambiguous as refs
+# and fall through to the existing --branch clone path (and its clear error).
+_FULL_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _is_full_commit_sha(ref: str) -> bool:
+    """Check whether a ref is a full 40-hex-character commit SHA."""
+    return bool(_FULL_COMMIT_SHA_PATTERN.match(ref))
 
 
 class GitSourceHandler:
@@ -152,6 +163,67 @@ class GitSourceHandler:
 
         return True
 
+    def _clone_at_commit(self, git_url: str, sha: str, cache_path: Path) -> None:
+        """Clone a repository pinned to a specific commit SHA.
+
+        ``git clone --branch`` only accepts branch/tag names, so commit SHAs
+        need a fetch + checkout sequence instead. Tries the cheapest form
+        first: shallow-fetch exactly the requested commit (supported by
+        GitHub and any server with ``uploadpack.allowReachableSHA1InWant``).
+        Falls back to a full clone + checkout when the server refuses to
+        serve the SHA directly.
+
+        Args:
+            git_url: Repository URL (without git+ prefix).
+            sha: Full 40-character commit SHA to pin.
+            cache_path: Destination directory for the clone.
+
+        Raises:
+            subprocess.CalledProcessError: If both strategies fail (converted
+                to BundleNotFoundError by the caller).
+        """
+
+        def run_git(args: list[str], cwd: Path | None = None) -> None:
+            subprocess.run(
+                args,
+                cwd=cwd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        try:
+            # Cheap path: init + shallow fetch of the exact commit.
+            cache_path.mkdir(parents=True, exist_ok=True)
+            run_git(["git", "init", "--quiet", str(cache_path)])
+            run_git(["git", "remote", "add", "origin", git_url], cwd=cache_path)
+            run_git(["git", "fetch", "--depth", "1", "origin", sha], cwd=cache_path)
+            run_git(
+                [
+                    "git",
+                    "-c",
+                    "advice.detachedHead=false",
+                    "checkout",
+                    "--quiet",
+                    "FETCH_HEAD",
+                ],
+                cwd=cache_path,
+            )
+        except subprocess.CalledProcessError as e:
+            # Server refused direct SHA fetch (e.g., unadvertised object on a
+            # server without allowReachableSHA1InWant). Fall back to a full
+            # clone + checkout. Errors here propagate to the caller.
+            logger.debug(
+                f"Shallow fetch of commit {sha} from {git_url} failed "
+                f"({e.stderr}); falling back to full clone + checkout"
+            )
+            shutil.rmtree(cache_path, ignore_errors=True)
+            run_git(["git", "clone", git_url, str(cache_path)])
+            run_git(
+                ["git", "-c", "advice.detachedHead=false", "checkout", "--quiet", sha],
+                cwd=cache_path,
+            )
+
     async def resolve(self, parsed: ParsedURI, cache_dir: Path) -> ResolvedSource:
         """Resolve git URI to local cached path.
 
@@ -192,20 +264,24 @@ class GitSourceHandler:
             shutil.rmtree(cache_path)
 
         try:
-            # Shallow clone with specific ref
-            # Note: "HEAD" is not a valid --branch argument; it's a symbolic reference.
-            # When ref is HEAD (or not specified), let git clone use the repo's default branch.
-            clone_args = ["git", "clone", "--depth", "1"]
-            if parsed.ref and parsed.ref != "HEAD":
-                clone_args.extend(["--branch", parsed.ref])
-            clone_args.extend([git_url, str(cache_path)])
+            if parsed.ref and _is_full_commit_sha(parsed.ref):
+                # Commit SHAs are not valid --branch arguments; use fetch + checkout.
+                self._clone_at_commit(git_url, parsed.ref, cache_path)
+            else:
+                # Shallow clone with specific ref
+                # Note: "HEAD" is not a valid --branch argument; it's a symbolic reference.
+                # When ref is HEAD (or not specified), let git clone use the repo's default branch.
+                clone_args = ["git", "clone", "--depth", "1"]
+                if parsed.ref and parsed.ref != "HEAD":
+                    clone_args.extend(["--branch", parsed.ref])
+                clone_args.extend([git_url, str(cache_path)])
 
-            subprocess.run(
-                clone_args,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+                subprocess.run(
+                    clone_args,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
 
             # Verify clone completed with expected structure
             if not self._verify_clone_integrity(cache_path):

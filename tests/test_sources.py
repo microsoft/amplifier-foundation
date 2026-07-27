@@ -1,13 +1,16 @@
 """Tests for source handlers."""
 
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
 
 import pytest
+from amplifier_foundation.exceptions import BundleNotFoundError
 from amplifier_foundation.paths.resolution import ParsedURI
 from amplifier_foundation.sources.file import FileSourceHandler
 from amplifier_foundation.sources.git import GitSourceHandler
+from amplifier_foundation.sources.git import _is_full_commit_sha
 from amplifier_foundation.sources.http import HttpSourceHandler
 from amplifier_foundation.sources.zip import ZipSourceHandler
 
@@ -300,3 +303,185 @@ class TestGitSourceHandlerCloneIntegrity:
             )
             handler = GitSourceHandler()
             assert handler._verify_clone_integrity(clone_path) is False
+
+
+def _git(args: list[str], cwd: Path) -> str:
+    """Run a git command in a fixture repo and return stdout."""
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _make_fixture_repo(base: Path) -> tuple[Path, list[str]]:
+    """Create a local git repo with two commits.
+
+    Returns:
+        (repo_path, [first_commit_sha, second_commit_sha])
+    """
+    repo = base / "fixture-repo"
+    repo.mkdir()
+    _git(["init", "--quiet", "-b", "main"], cwd=repo)
+    _git(["config", "user.email", "test@example.com"], cwd=repo)
+    _git(["config", "user.name", "Test"], cwd=repo)
+
+    (repo / "bundle.md").write_text("# Fixture Bundle\n")
+    (repo / "data.txt").write_text("version one\n")
+    _git(["add", "-A"], cwd=repo)
+    _git(["commit", "--quiet", "-m", "first"], cwd=repo)
+    first_sha = _git(["rev-parse", "HEAD"], cwd=repo)
+
+    (repo / "data.txt").write_text("version two\n")
+    _git(["add", "-A"], cwd=repo)
+    _git(["commit", "--quiet", "-m", "second"], cwd=repo)
+    second_sha = _git(["rev-parse", "HEAD"], cwd=repo)
+
+    return repo, [first_sha, second_sha]
+
+
+def _parsed_git_file_uri(repo: Path, ref: str) -> ParsedURI:
+    """Build a ParsedURI for a git+file:// URI pointing at a local fixture repo."""
+    return ParsedURI(scheme="git+file", host="", path=str(repo), ref=ref, subpath="")
+
+
+class TestIsFullCommitSha:
+    """Tests for _is_full_commit_sha ref classification."""
+
+    def test_accepts_full_lowercase_sha(self) -> None:
+        assert _is_full_commit_sha("32d4052dad46016f91ce698646580473e4121344") is True
+
+    def test_accepts_uppercase_sha(self) -> None:
+        assert _is_full_commit_sha("32D4052DAD46016F91CE698646580473E4121344") is True
+
+    def test_rejects_short_sha(self) -> None:
+        assert _is_full_commit_sha("32d4052") is False
+
+    def test_rejects_39_chars(self) -> None:
+        assert _is_full_commit_sha("3" * 39) is False
+
+    def test_rejects_41_chars(self) -> None:
+        assert _is_full_commit_sha("3" * 41) is False
+
+    def test_rejects_non_hex_chars(self) -> None:
+        assert _is_full_commit_sha("g" + "3" * 39) is False
+
+    def test_rejects_branch_names(self) -> None:
+        assert _is_full_commit_sha("main") is False
+        assert _is_full_commit_sha("feat/some-branch") is False
+        assert _is_full_commit_sha("v1.0.0") is False
+
+
+class TestGitSourceHandlerShaRefs:
+    """Tests for resolving git refs pinned to a commit SHA."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_full_sha_ref_pins_non_tip_commit(self) -> None:
+        """Full-SHA ref resolves to exactly that commit (not the branch tip).
+
+        The pinned commit is NOT the branch tip and the fixture remote does
+        not enable uploadpack.allowReachableSHA1InWant, so this also exercises
+        the full-clone + checkout fallback.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, shas = _make_fixture_repo(base)
+            pinned_sha = shas[0]  # older, non-tip commit
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref=pinned_sha)
+            result = await handler.resolve(parsed, base / "cache")
+
+            assert result.active_path.exists()
+            assert (result.active_path / "data.txt").read_text() == "version one\n"
+            head = _git(["rev-parse", "HEAD"], cwd=result.source_root)
+            assert head == pinned_sha
+
+    @pytest.mark.asyncio
+    async def test_resolve_full_sha_ref_shallow_fetch(self) -> None:
+        """When the server allows SHA fetches, the shallow fast path is used."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, shas = _make_fixture_repo(base)
+            # GitHub enables this; mirror it on the fixture remote.
+            _git(["config", "uploadpack.allowReachableSHA1InWant", "true"], cwd=repo)
+            pinned_sha = shas[0]
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref=pinned_sha)
+            result = await handler.resolve(parsed, base / "cache")
+
+            head = _git(["rev-parse", "HEAD"], cwd=result.source_root)
+            assert head == pinned_sha
+            # Shallow marker proves the depth-1 fetch path was taken
+            # (the fallback does a full clone, which is not shallow).
+            assert (result.source_root / ".git" / "shallow").exists()
+
+    @pytest.mark.asyncio
+    async def test_resolve_branch_ref_still_works(self) -> None:
+        """Branch refs continue to use the existing --branch clone path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, shas = _make_fixture_repo(base)
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref="main")
+            result = await handler.resolve(parsed, base / "cache")
+
+            assert result.active_path.exists()
+            head = _git(["rev-parse", "HEAD"], cwd=result.source_root)
+            assert head == shas[1]  # branch tip
+
+    @pytest.mark.asyncio
+    async def test_short_sha_ref_raises_clear_error(self) -> None:
+        """Short/abbreviated SHAs are not special-cased and fail clearly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, shas = _make_fixture_repo(base)
+            short_sha = shas[0][:7]
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref=short_sha)
+            with pytest.raises(BundleNotFoundError, match="Failed to clone"):
+                await handler.resolve(parsed, base / "cache")
+
+    @pytest.mark.asyncio
+    async def test_unknown_sha_raises_clear_error(self) -> None:
+        """A well-formed SHA that doesn't exist in the repo fails clearly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, _shas = _make_fixture_repo(base)
+            bogus_sha = "deadbeef" * 5  # 40 hex chars, not in the repo
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref=bogus_sha)
+            with pytest.raises(BundleNotFoundError, match="Failed to clone"):
+                await handler.resolve(parsed, base / "cache")
+
+    def test_sha_and_branch_refs_get_distinct_cache_paths(self) -> None:
+        """A SHA ref must not collide with a branch ref cache entry."""
+        handler = GitSourceHandler()
+        cache_dir = Path("/tmp/cache")
+        sha = "32d4052dad46016f91ce698646580473e4121344"
+
+        branch_parsed = ParsedURI(
+            scheme="git+https",
+            host="github.com",
+            path="/org/repo",
+            ref="main",
+            subpath="",
+        )
+        sha_parsed = ParsedURI(
+            scheme="git+https",
+            host="github.com",
+            path="/org/repo",
+            ref=sha,
+            subpath="",
+        )
+
+        branch_path = handler._get_cache_path(branch_parsed, cache_dir)
+        sha_path = handler._get_cache_path(sha_parsed, cache_dir)
+        assert branch_path != sha_path
