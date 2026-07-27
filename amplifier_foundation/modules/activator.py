@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+from amplifier_foundation.exceptions import BundleError
 from amplifier_foundation.modules.install_state import InstallStateManager
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
@@ -588,7 +589,12 @@ class ModuleActivator:
         self._install_state.save()
 
 
-class ModuleActivationError(Exception):
-    """Raised when module activation fails."""
+class ModuleActivationError(BundleError):
+    """Raised when module activation fails.
+
+    Subclasses BundleError so that callers already handling bundle
+    preparation failures render this cleanly instead of letting it
+    escape as an unhandled traceback.
+    """
 
     pass
