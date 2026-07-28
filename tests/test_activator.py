@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from amplifier_foundation.exceptions import BundleError
 from amplifier_foundation.modules.activator import (
     ModuleActivationError,
     ModuleActivator,
@@ -523,3 +524,48 @@ class TestStrictActivation343:
 
         assert "good-one" in activated
         assert "bad-one" not in activated
+
+
+class TestModuleActivationErrorIsBundleError343:
+    """``ModuleActivationError`` must live inside the ``BundleError`` hierarchy.
+
+    This class existed before issue #343 but nothing ever raised it, so its
+    base class was never load-bearing. Turning on strict activation made it
+    fire for the first time -- and because it subclassed bare ``Exception`` it
+    walked straight past every ``except BundleError`` handler in the codebase
+    and reached the user as a raw Python traceback.
+
+    The fix is inheritance, not another catch site: a bundle whose modules
+    fail to activate *is* a bundle error, so every current and future
+    ``except BundleError`` handler should cover it for free.
+    """
+
+    def test_is_bundle_error_subclass(self) -> None:
+        assert issubclass(ModuleActivationError, BundleError)
+
+    def test_caught_by_a_generic_bundle_error_handler(self) -> None:
+        """The whole point of the inheritance, pinned directly."""
+        try:
+            raise ModuleActivationError("1 of 2 modules failed to activate")
+        except BundleError as exc:
+            assert "1 of 2 modules failed to activate" in str(exc)
+        else:  # pragma: no cover - only reached if the fix regresses
+            pytest.fail("ModuleActivationError escaped `except BundleError`")
+
+    @pytest.mark.asyncio
+    async def test_real_strict_failure_is_catchable_as_bundle_error(self) -> None:
+        """End-to-end: the actual strict path raises something handlers catch.
+
+        Asserting the class hierarchy alone would still pass if ``activate_all``
+        were changed to raise some other error type, so drive the real path.
+        """
+        activator = ModuleActivator(install_deps=False, strict=True)
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            raise RuntimeError(f"clone failed for {name}")
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            with pytest.raises(BundleError):
+                await activator.activate_all(
+                    [{"module": "bad-one", "source": "file:///bad-one"}]
+                )
