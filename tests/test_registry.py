@@ -1897,3 +1897,64 @@ class TestExplicitlyRequestedFlag:
             assert raw_state2.explicitly_requested is True, (
                 "explicitly_requested=True must survive a registry.json round-trip"
             )
+
+
+class TestPendingLoadFailurePropagation343:
+    """Regression coverage for issue #343 (shared-future failure cascade).
+
+    ``_load_single`` de-duplicates concurrent loads of the same URI through
+    ``_pending_loads``. When the owning task failed it called ``future.cancel()``,
+    so every task waiting on that future received a bare ``CancelledError``
+    instead of the real cause. One network blip therefore surfaced as several
+    unrelated-looking failures with the actual reason nowhere in the output.
+    """
+
+    @pytest.mark.asyncio
+    async def test_waiter_receives_real_error_not_cancellation(self) -> None:
+        """A diamond-dependency waiter sees the owner's actual exception."""
+        import asyncio
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            registry = BundleRegistry(home=base / "home")
+
+            uri = "git+https://example.invalid/some-bundle"
+            sentinel = "network unreachable while cloning some-bundle"
+
+            async def failing_resolve(_uri: str, **_kwargs: object) -> None:
+                # Hold the future open long enough for the waiter to attach.
+                await asyncio.sleep(0.05)
+                raise RuntimeError(sentinel)
+
+            registry._source_resolver.resolve = failing_resolve  # type: ignore[assignment,method-assign]
+
+            async def waiter() -> None:
+                # Let the owner register its future first, then join it.
+                await asyncio.sleep(0.01)
+                assert uri in registry._pending_loads
+                await registry._load_single(uri)
+
+            owner_task = asyncio.create_task(registry._load_single(uri))
+            waiter_task = asyncio.create_task(waiter())
+
+            owner_exc = None
+            waiter_exc = None
+            try:
+                await owner_task
+            except BaseException as e:  # noqa: BLE001 - asserting on type below
+                owner_exc = e
+            try:
+                await waiter_task
+            except BaseException as e:  # noqa: BLE001 - asserting on type below
+                waiter_exc = e
+
+            # Owner always saw the real error.
+            assert isinstance(owner_exc, RuntimeError)
+            assert sentinel in str(owner_exc)
+
+            # The waiter must see the SAME real error -- not CancelledError.
+            assert not isinstance(waiter_exc, asyncio.CancelledError), (
+                "waiter got CancelledError: the real cause was masked"
+            )
+            assert isinstance(waiter_exc, RuntimeError)
+            assert sentinel in str(waiter_exc)

@@ -14,7 +14,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from amplifier_foundation.exceptions import BundleError
 from amplifier_foundation.modules.activator import (
+    ModuleActivationError,
     ModuleActivator,
     _distribution_installed,
 )
@@ -462,3 +464,108 @@ class TestDistributionGuard326:
 
                 mock_invalidate.assert_not_called()
                 mock_subprocess.assert_not_called()
+
+
+class TestStrictActivation343:
+    """Regression coverage for issue #343.
+
+    ``BundleRegistry(strict=...)`` made include failures fatal, but module
+    activation had no equivalent: ``activate_all`` logged every failure and
+    returned the survivors, so a session could start with a provider or tool
+    silently missing. These tests pin both halves of the contract.
+    """
+
+    @pytest.mark.asyncio
+    async def test_strict_raises_and_reports_every_failure(self) -> None:
+        """strict=True surfaces ALL failures, not just the first."""
+        activator = ModuleActivator(install_deps=False, strict=True)
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            if name in ("bad-one", "bad-two"):
+                raise RuntimeError(f"clone failed for {name}")
+            return Path("/tmp") / name
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            with pytest.raises(ModuleActivationError) as exc_info:
+                await activator.activate_all(
+                    [
+                        {"module": "good-one", "source": "file:///good-one"},
+                        {"module": "bad-one", "source": "file:///bad-one"},
+                        {"module": "bad-two", "source": "file:///bad-two"},
+                    ]
+                )
+
+        message = str(exc_info.value)
+        assert "2 of 3 modules failed" in message
+        # Both failures reported together -- not just the first.
+        assert "bad-one" in message
+        assert "bad-two" in message
+        # Original cause is chained for debuggability.
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_non_strict_preserves_skip_and_continue(self) -> None:
+        """strict=False (the default) keeps the pre-#343 behaviour."""
+        activator = ModuleActivator(install_deps=False)
+        assert activator.strict is False
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            if name == "bad-one":
+                raise RuntimeError("clone failed")
+            return Path("/tmp") / name
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            activated = await activator.activate_all(
+                [
+                    {"module": "good-one", "source": "file:///good-one"},
+                    {"module": "bad-one", "source": "file:///bad-one"},
+                ]
+            )
+
+        assert "good-one" in activated
+        assert "bad-one" not in activated
+
+
+class TestModuleActivationErrorIsBundleError343:
+    """``ModuleActivationError`` must live inside the ``BundleError`` hierarchy.
+
+    This class existed before issue #343 but nothing ever raised it, so its
+    base class was never load-bearing. Turning on strict activation made it
+    fire for the first time -- and because it subclassed bare ``Exception`` it
+    walked straight past every ``except BundleError`` handler in the codebase
+    and reached the user as a raw Python traceback.
+
+    The fix is inheritance, not another catch site: a bundle whose modules
+    fail to activate *is* a bundle error, so every current and future
+    ``except BundleError`` handler should cover it for free.
+    """
+
+    def test_is_bundle_error_subclass(self) -> None:
+        assert issubclass(ModuleActivationError, BundleError)
+
+    def test_caught_by_a_generic_bundle_error_handler(self) -> None:
+        """The whole point of the inheritance, pinned directly."""
+        try:
+            raise ModuleActivationError("1 of 2 modules failed to activate")
+        except BundleError as exc:
+            assert "1 of 2 modules failed to activate" in str(exc)
+        else:  # pragma: no cover - only reached if the fix regresses
+            pytest.fail("ModuleActivationError escaped `except BundleError`")
+
+    @pytest.mark.asyncio
+    async def test_real_strict_failure_is_catchable_as_bundle_error(self) -> None:
+        """End-to-end: the actual strict path raises something handlers catch.
+
+        Asserting the class hierarchy alone would still pass if ``activate_all``
+        were changed to raise some other error type, so drive the real path.
+        """
+        activator = ModuleActivator(install_deps=False, strict=True)
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            raise RuntimeError(f"clone failed for {name}")
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            with pytest.raises(BundleError):
+                await activator.activate_all(
+                    [{"module": "bad-one", "source": "file:///bad-one"}]
+                )
