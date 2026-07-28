@@ -10,6 +10,7 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +33,59 @@ _FULL_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 def _is_full_commit_sha(ref: str) -> bool:
     """Check whether a ref is a full 40-hex-character commit SHA."""
     return bool(_FULL_COMMIT_SHA_PATTERN.match(ref))
+
+
+# Retry policy for network-touching git operations (clone/fetch).
+#
+# Deliberately NOT gated on an error-message allowlist. Classifying git stderr
+# into "transient" vs "permanent" is a policy table that drifts and misfires;
+# the entire cost of retrying a genuinely permanent error here is
+# _CLONE_RETRY_BACKOFF_S summed over the retries (3s), paid only on a path that
+# is already failing. Retrying everything is simpler and fails safe.
+_CLONE_MAX_ATTEMPTS = 3
+_CLONE_RETRY_BACKOFF_S = (1.0, 2.0)
+
+
+def _run_git_network_op(
+    args: list[str], cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a network-touching git command, retrying transient failures.
+
+    A single dropped connection while cloning used to fail the module
+    permanently. Combined with strict activation (where a failed module aborts
+    the session rather than degrading it silently), one network blip would take
+    down a whole session. This absorbs that class of failure.
+
+    Args:
+        args: Full git command line.
+        cwd: Working directory for the command.
+
+    Returns:
+        The CompletedProcess from the first successful attempt.
+
+    Raises:
+        subprocess.CalledProcessError: From the final attempt, if all fail.
+    """
+    last_error: subprocess.CalledProcessError | None = None
+
+    for attempt in range(_CLONE_MAX_ATTEMPTS):
+        try:
+            return subprocess.run(
+                args, cwd=cwd, check=True, capture_output=True, text=True
+            )
+        except subprocess.CalledProcessError as e:
+            last_error = e
+            if attempt < _CLONE_MAX_ATTEMPTS - 1:
+                delay = _CLONE_RETRY_BACKOFF_S[attempt]
+                logger.warning(
+                    f"git {args[1] if len(args) > 1 else ''} failed "
+                    f"(attempt {attempt + 1}/{_CLONE_MAX_ATTEMPTS}), "
+                    f"retrying in {delay}s: {(e.stderr or '').strip()}"
+                )
+                time.sleep(delay)
+
+    assert last_error is not None  # loop always sets it before exhausting
+    raise last_error
 
 
 class GitSourceHandler:
@@ -218,7 +272,11 @@ class GitSourceHandler:
                 f"({e.stderr}); falling back to full clone + checkout"
             )
             shutil.rmtree(cache_path, ignore_errors=True)
-            run_git(["git", "clone", git_url, str(cache_path)])
+            # Retry only this clone, not the shallow fetch above: that fetch
+            # failing is an *expected* outcome on servers without
+            # allowReachableSHA1InWant, and retrying it would add seconds to a
+            # designed fallback path rather than to an error path.
+            _run_git_network_op(["git", "clone", git_url, str(cache_path)])
             run_git(
                 ["git", "-c", "advice.detachedHead=false", "checkout", "--quiet", sha],
                 cwd=cache_path,
@@ -276,12 +334,7 @@ class GitSourceHandler:
                     clone_args.extend(["--branch", parsed.ref])
                 clone_args.extend([git_url, str(cache_path)])
 
-                subprocess.run(
-                    clone_args,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
+                _run_git_network_op(clone_args)
 
             # Verify clone completed with expected structure
             if not self._verify_clone_integrity(cache_path):
