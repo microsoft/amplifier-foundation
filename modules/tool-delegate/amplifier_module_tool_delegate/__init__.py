@@ -288,7 +288,39 @@ Agent usage notes:
                 " Use a registered agent name or bundle path instead."
             )
         schema["properties"]["agent"]["description"] += note
+
+        # Constrain `model_role` to the roles the active routing matrix
+        # actually defines. Left as an open string, models have been observed
+        # to invent values -- notably the literal "default" -- which resolve
+        # to no candidates and silently bypass routing rather than failing
+        # loudly. When no routing matrix is registered the parameter cannot be
+        # honoured at all, so it is dropped from the schema instead of being
+        # advertised as if it worked.
+        roles = self._available_model_roles()
+        if roles:
+            schema["properties"]["model_role"]["enum"] = roles
+        else:
+            schema["properties"].pop("model_role", None)
         return schema
+
+    def _available_model_roles(self) -> list[str]:
+        """Return role names published by the active routing matrix, if any.
+
+        A routing bundle stores its composed matrix on the coordinator's
+        session state as ``{"name": ..., "roles": {<role>: ...}}``. Without a
+        routing bundle the key is absent entirely and model-role routing is
+        unavailable for the session.
+        """
+        session_state = getattr(self.coordinator, "session_state", None)
+        if not isinstance(session_state, dict):
+            return []
+        matrix = session_state.get("routing_matrix")
+        if not isinstance(matrix, dict):
+            return []
+        roles = matrix.get("roles")
+        if not isinstance(roles, dict):
+            return []
+        return sorted(str(role) for role in roles)
 
     def _static_input_schema(self) -> dict:
         """Return a fresh literal copy of the input schema dict.
