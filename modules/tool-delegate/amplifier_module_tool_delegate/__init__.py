@@ -289,38 +289,57 @@ Agent usage notes:
             )
         schema["properties"]["agent"]["description"] += note
 
-        # Constrain `model_role` to the roles the active routing matrix
-        # actually defines. Left as an open string, models have been observed
-        # to invent values -- notably the literal "default" -- which resolve
-        # to no candidates and silently bypass routing rather than failing
-        # loudly. When no routing matrix is registered the parameter cannot be
-        # honoured at all, so it is dropped from the schema instead of being
-        # advertised as if it worked.
-        roles = self._available_model_roles()
-        if roles:
-            schema["properties"]["model_role"]["enum"] = roles
-        else:
+        # Shape `model_role` to what the session can actually honour. Left as
+        # an open string, models have been observed to invent values -- notably
+        # the literal "default" -- which resolve to no candidates, log a
+        # warning, and let the spawn proceed on the agent's default model. The
+        # role names belong in the parameter the model is filling, not only in
+        # prose it may not weight.
+        #
+        # Three distinct states, and collapsing any two of them is a bug:
+        #   None -> no resolver registered at all. execute() can do nothing but
+        #           warn, so the parameter is inert: drop it.
+        #   ()   -> a resolver is registered but cannot enumerate its roles
+        #           (older routing bundle, or a strategy that has no fixed role
+        #           set). Routing works; we just cannot constrain it. Keep the
+        #           parameter as an open string -- dropping it here would break
+        #           working routing.
+        #   (..) -> constrain to those roles.
+        known_roles = self._resolver_known_roles()
+        if known_roles is None:
             schema["properties"].pop("model_role", None)
+        elif known_roles:
+            schema["properties"]["model_role"]["enum"] = list(known_roles)
         return schema
 
-    def _available_model_roles(self) -> list[str]:
-        """Return role names published by the active routing matrix, if any.
+    def _resolver_known_roles(self) -> tuple[str, ...] | None:
+        """Roles the active ``model_role_resolver`` can enumerate.
 
-        A routing bundle stores its composed matrix on the coordinator's
-        session state as ``{"name": ..., "roles": {<role>: ...}}``. Without a
-        routing bundle the key is absent entirely and model-role routing is
-        unavailable for the session.
+        Returns ``None`` when no resolver capability is registered, and an
+        empty tuple when a resolver is registered but does not expose the
+        optional ``known_roles`` member. Those two states are different and
+        callers must treat them differently -- see ``input_schema``.
+
+        The capability is the contract, and it is the same source ``execute()``
+        resolves against. Note that ``known_roles`` is advisory: a listed role
+        can still resolve to no candidates when no installed provider serves
+        it, which is why the miss-path warning in ``execute()`` stays.
         """
-        session_state = getattr(self.coordinator, "session_state", None)
-        if not isinstance(session_state, dict):
-            return []
-        matrix = session_state.get("routing_matrix")
-        if not isinstance(matrix, dict):
-            return []
-        roles = matrix.get("roles")
-        if not isinstance(roles, dict):
-            return []
-        return sorted(str(role) for role in roles)
+        if not hasattr(self.coordinator, "get_capability"):
+            return None
+        resolver = self.coordinator.get_capability("model_role_resolver")
+        if resolver is None:
+            return None
+        # Optional member of a duck-typed contract, so it may be absent, and a
+        # third-party resolver may return something unusable. A bad value must
+        # degrade to "cannot enumerate" -- never leak into the schema, and
+        # never raise, since this runs on every request.
+        roles = getattr(resolver, "known_roles", None)
+        if not isinstance(roles, (list, tuple)):
+            return ()
+        if not all(isinstance(role, str) for role in roles):
+            return ()
+        return tuple(roles)
 
     def _static_input_schema(self) -> dict:
         """Return a fresh literal copy of the input schema dict.
