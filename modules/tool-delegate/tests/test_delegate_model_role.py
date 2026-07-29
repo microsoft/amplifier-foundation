@@ -604,3 +604,116 @@ class TestAgentSpawnedEventIncludesRouting:
         )
         assert len(payload["provider_preferences"]) >= 1
         assert payload["provider_preferences"][0]["provider"] == "anthropic"
+
+# =============================================================================
+# Tests: input_schema shaping of the model_role parameter
+#
+# Three states, and collapsing any two of them is a bug:
+#   no resolver registered   -> drop model_role (it is inert)
+#   resolver, no known_roles -> keep model_role open (routing still works)
+#   resolver with roles      -> constrain to those roles
+# =============================================================================
+
+
+class TestModelRoleSchemaShaping:
+    @staticmethod
+    def _model_role_prop(tool) -> dict | None:
+        return tool.input_schema["properties"].get("model_role")
+
+    def test_enum_matches_resolver_known_roles(self):
+        """Roles come from the capability -- the same source execute() resolves
+        against -- not from any session_state mirror."""
+        resolver = _make_resolver()
+        resolver.known_roles = ("general", "fast", "coding")
+        tool = _make_delegate_tool(model_role_resolver=resolver)
+
+        prop = self._model_role_prop(tool)
+        assert prop is not None
+        assert prop["enum"] == ["general", "fast", "coding"]
+
+    def test_enum_preserves_declaration_order_and_is_not_sorted(self):
+        """The routing bundle injects roles into session context in matrix
+        order. Sorting here would desync the enum from that prose."""
+        resolver = _make_resolver()
+        resolver.known_roles = ("general", "fast", "coding", "ui-coding")
+        tool = _make_delegate_tool(model_role_resolver=resolver)
+
+        enum = self._model_role_prop(tool)["enum"]
+        assert enum == ["general", "fast", "coding", "ui-coding"]
+        assert enum != sorted(enum), "enum must not be alphabetised"
+
+    def test_resolver_without_known_roles_keeps_open_string(self):
+        """known_roles is OPTIONAL. An older routing bundle -- or a strategy
+        with no fixed role set -- still routes, so the parameter must survive
+        as an open string. Dropping it here would break working routing."""
+        resolver = _make_resolver()  # MagicMock: delete the auto-created attr
+        del resolver.known_roles
+        tool = _make_delegate_tool(model_role_resolver=resolver)
+
+        prop = self._model_role_prop(tool)
+        assert prop is not None, "model_role must not be dropped when a resolver exists"
+        assert "enum" not in prop
+
+    def test_resolver_with_empty_known_roles_keeps_open_string(self):
+        """Empty tuple means 'cannot enumerate', not 'no roles exist'."""
+        resolver = _make_resolver()
+        resolver.known_roles = ()
+        tool = _make_delegate_tool(model_role_resolver=resolver)
+
+        prop = self._model_role_prop(tool)
+        assert prop is not None
+        assert "enum" not in prop
+
+    def test_no_resolver_drops_the_parameter(self):
+        """Without a resolver, execute() can only warn -- the parameter is
+        inert, so it should not be advertised as if it worked."""
+        tool = _make_delegate_tool(model_role_resolver=None)
+        assert self._model_role_prop(tool) is None
+
+    def test_coordinator_without_get_capability_drops_the_parameter(self):
+        """Host that predates the capability API: must not raise."""
+        tool = _make_delegate_tool(model_role_resolver=None)
+        del tool.coordinator.get_capability
+        assert not hasattr(tool.coordinator, "get_capability")
+        assert self._model_role_prop(tool) is None
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "general",  # a bare string is iterable -- must not become 7 letters
+            {"general": {}},
+            123,
+            ["general", 42],  # mixed types
+            [None],
+        ],
+        ids=["bare-str", "dict", "int", "mixed-types", "none-item"],
+    )
+    def test_malformed_known_roles_degrades_without_raising(self, bad_value):
+        """Third-party resolvers may register anything under this capability
+        name. A bad value degrades to 'cannot enumerate' -- it must never leak
+        into the schema and must never raise, since this runs per request."""
+        resolver = _make_resolver()
+        resolver.known_roles = bad_value
+        tool = _make_delegate_tool(model_role_resolver=resolver)
+
+        prop = self._model_role_prop(tool)
+        assert prop is not None
+        assert "enum" not in prop
+
+    def test_static_schema_remains_a_pure_literal(self):
+        """foundation's bundle-docs token estimator statically evaluates the
+        schema body via ast.literal_eval. The dynamic enum is applied by
+        input_schema() afterwards and must not push computation into the
+        literal."""
+        import ast
+        import inspect
+        import textwrap
+
+        src = textwrap.dedent(inspect.getsource(DelegateTool._static_input_schema))
+        ret = next(
+            node for node in ast.walk(ast.parse(src)) if isinstance(node, ast.Return)
+        )
+        literal = ast.literal_eval(ret.value)  # raises if not a pure literal
+
+        assert "model_role" in literal["properties"]
+        assert "enum" not in literal["properties"]["model_role"]
