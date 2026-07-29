@@ -12,6 +12,7 @@ from amplifier_foundation.spawn_utils import _apply_single_override
 from amplifier_foundation.spawn_utils import _build_provider_lookup
 from amplifier_foundation.spawn_utils import _find_provider_index
 from amplifier_foundation.spawn_utils import _find_provider_instance
+from amplifier_foundation.spawn_utils import _spec_for_instance
 from amplifier_foundation.spawn_utils import apply_provider_preferences
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 from amplifier_foundation.spawn_utils import is_glob_pattern
@@ -988,3 +989,86 @@ class TestProviderPreferenceConfigWiring:
         assert result_config["temperature"] == 0.3
         # Existing protected key untouched
         assert result_config["api_key"] == "sk-test"
+
+
+class TestInstanceIdLookup:
+    """Tests for instance_id lookup alongside id (kernel vs app-cli spelling)."""
+
+    def test_spec_for_instance_with_id_only(self) -> None:
+        """A provider with only id field is resolvable (regression lock)."""
+        specs = [{"module": "provider-anthropic", "id": "local"}]
+        assert _spec_for_instance(specs, "local") == specs[0]
+
+    def test_spec_for_instance_with_instance_id_only(self) -> None:
+        """A provider with only instance_id field is resolvable (THE FIX)."""
+        specs = [{"module": "provider-anthropic", "instance_id": "local"}]
+        assert _spec_for_instance(specs, "local") == specs[0]
+
+    def test_spec_for_instance_with_both_id_and_instance_id(self) -> None:
+        """A provider with both id and instance_id is resolvable by instance_id."""
+        specs = [{"module": "provider-anthropic", "id": "alpha", "instance_id": "beta"}]
+        # Kernel uses instance_id as the mount name
+        assert _spec_for_instance(specs, "beta") == specs[0]
+        # id is also valid for app-cli compatibility
+        assert _spec_for_instance(specs, "alpha") == specs[0]
+
+    def test_spec_for_instance_with_neither(self) -> None:
+        """A provider without id/instance_id falls back to module (regression lock)."""
+        specs = [{"module": "provider-anthropic"}]
+        assert _spec_for_instance(specs, "provider-anthropic") == specs[0]
+
+    def test_find_provider_index_with_id_only(self) -> None:
+        """Can find a provider by its id field (regression lock)."""
+        providers = [
+            {"module": "provider-anthropic", "id": "local", "config": {}},
+        ]
+        assert _find_provider_index(providers, "local") == 0
+
+    def test_find_provider_index_with_instance_id_only(self) -> None:
+        """Can find a provider by its instance_id field (THE FIX)."""
+        providers = [
+            {"module": "provider-anthropic", "instance_id": "local", "config": {}},
+        ]
+        assert _find_provider_index(providers, "local") == 0
+
+    def test_find_provider_index_with_both_id_and_instance_id(self) -> None:
+        """Can find a provider by either id or instance_id."""
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "alpha",
+                "instance_id": "beta",
+                "config": {},
+            },
+        ]
+        assert _find_provider_index(providers, "alpha") == 0
+        assert _find_provider_index(providers, "beta") == 0
+
+    def test_build_provider_lookup_with_instance_id_only(self) -> None:
+        """Lookup dict includes instance_id keys when providers have instance_id only."""
+        providers = [
+            {"module": "provider-anthropic", "instance_id": "local", "config": {}},
+        ]
+        lookup = _build_provider_lookup(providers)
+        assert lookup["local"] == 0
+        # Also index module and short names
+        assert lookup["provider-anthropic"] == 0
+        assert lookup["anthropic"] == 0
+
+    def test_build_provider_lookup_with_both_id_and_instance_id(self) -> None:
+        """Lookup dict includes both id and instance_id keys when both present."""
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "alpha",
+                "instance_id": "beta",
+                "config": {},
+            },
+        ]
+        lookup = _build_provider_lookup(providers)
+        # Both keys should map to the same provider
+        assert lookup["alpha"] == 0
+        assert lookup["beta"] == 0
+        # And also module/short names
+        assert lookup["provider-anthropic"] == 0
+        assert lookup["anthropic"] == 0

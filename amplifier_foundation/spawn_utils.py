@@ -318,7 +318,17 @@ def _spec_for_instance(
     for spec in provider_specs:
         if not isinstance(spec, dict):
             continue
-        spec_id = spec.get("id") or spec.get("module", "")
+        # Kernel uses instance_id as the mount name (see _session_init.py:132),
+        # but bundle YAMLs may use id (app-cli/bundle-facing spelling) or module
+        # Check both id and instance_id; if both present and different, both are valid
+        spec_id = spec.get("instance_id")
+        if spec_id == instance_id:
+            return spec
+        spec_id = spec.get("id")
+        if spec_id == instance_id:
+            return spec
+        # Fall back to module if neither id nor instance_id matched
+        spec_id = spec.get("module", "")
         if spec_id == instance_id:
             return spec
     return None
@@ -412,12 +422,15 @@ def _find_provider_index(
     """
     for i, p in enumerate(providers):
         module_id = p.get("module", "")
-        instance_id = p.get("id", "")
+        # Kernel uses instance_id as the mount name; bundle YAMLs may use id or module
+        instance_id = p.get("instance_id")
+        id_val = p.get("id")
         if provider_id in (
             module_id,
             module_id.replace("provider-", ""),
             f"provider-{provider_id}",
             instance_id,
+            id_val,
         ):
             return i
     return None
@@ -433,6 +446,15 @@ def _build_provider_lookup(
 
     Returns:
         Dict mapping various name formats to provider index.
+
+    Note: Both ``id`` and ``instance_id`` are indexed because:
+    - ``id`` is the app-cli/bundle-facing spelling (bridged to ``instance_id``
+      by ``amplifier_app_cli/runtime/config.py``)
+    - ``instance_id`` is the kernel's own field name (``_session_init.py:132``)
+    - A bundle loaded WITHOUT the app-cli bridge (e.g. a runner calling
+      ``Bundle.prepare()`` directly) only ever has ``instance_id``
+    If both are present and different, both keys are indexed to support both
+    the app-cli-bundled and direct kernel usage scenarios.
     """
     lookup: dict[str, int] = {}
     for i, p in enumerate(providers):
@@ -444,10 +466,15 @@ def _build_provider_lookup(
             lookup[short_name] = i
         # And with provider- prefix
         lookup[f"provider-{short_name}"] = i
-        # Add id-based lookup if present
-        instance_id = p.get("id")
-        if instance_id:
-            lookup[instance_id] = i
+        # Index both id and instance_id for flexibility
+        # id: app-cli/bundle-facing spelling
+        # instance_id: kernel's field name for mounts
+        id_val = p.get("id")
+        if id_val:
+            lookup[id_val] = i
+        instance_id_val = p.get("instance_id")
+        if instance_id_val:
+            lookup[instance_id_val] = i
     return lookup
 
 
