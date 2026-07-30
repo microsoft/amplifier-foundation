@@ -296,7 +296,7 @@ A specification is complete if modular-builder can implement WITHOUT:
 
 **Test:** If modular-builder reads >5 files to "understand context", spec was incomplete.
 
-### Incomplete Spec = Don't Delegate
+### Complete the Spec Before Delegating
 
 If you find yourself saying:
 - "Figure out the best way to..."

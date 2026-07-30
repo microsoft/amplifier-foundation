@@ -60,7 +60,7 @@ Provide:
 **When to activate**: "Help me write the YAML", "create the behavior file", "author this agent"
 
 Provide:
-- Thin bundle pattern (inherit from foundation, don't redeclare)
+- Thin bundle pattern (inherit from foundation; declare only what you add)
 - Behavior YAML authoring
 - Agent file authoring (meta.description, WHY/WHEN/WHAT/HOW)
 - Context architecture (context sink, thin pointer, zero poisoning, composition-based injection)
@@ -78,7 +78,7 @@ Provide:
 - Mechanism spec review using the checklist
 - For existing bundles: diagnostic modeling to identify failing scenarios
 
-**Critical workflow rule**: A behavioral model is a verification artifact, not documentation. The value is in reading the scenarios and confirming they match intent. Never skip this step -- see `bundle-lifecycle.md` for why.
+**Critical workflow rule**: A behavioral model is a verification artifact, not documentation. The value is in reading the scenarios and confirming they match intent. This step is mandatory -- see `bundle-lifecycle.md` for why.
 
 ---
 
@@ -322,7 +322,7 @@ Two options:
 
 Neither = dead context.
 
-**The two channels are independent and not deduplicated against each other.** Do not list the same file in both — it loads twice into every session prompt. The `ContentDeduplicator` only operates within recursive `@-mention` resolution; it does not bridge the body-instruction and `context.include` channels.
+**The two channels are independent and not deduplicated against each other.** List each file in exactly ONE channel — the same file in both loads twice into every session prompt. The `ContentDeduplicator` only operates within recursive `@-mention` resolution; it does not bridge the body-instruction and `context.include` channels.
 
 ### Invariant 4 — "Pure-mode bundle" exemption is rare and explicit
 
@@ -339,7 +339,7 @@ If any of those exist, the behavior partial is required.
 
 ### Verdict policy
 
-- **CRITICAL** — Invariants 1, 2, or 3 fail. Do not issue any PASS verdict (including PASS-WITH-WARN).
+- **CRITICAL** — Invariants 1, 2, or 3 fail. The verdict stays CRITICAL (every PASS form, including PASS-WITH-WARN, requires all three invariants to hold).
 - **WARN** — Invariant 4 or 5 concerns, or stylistic concerns once structural invariants pass.
 - **PASS** — All five invariants pass and design-level concerns are addressed.
 
@@ -353,7 +353,7 @@ Key patterns (details in BUNDLE_GUIDE.md):
 
 | Pattern | Purpose | Key Principle |
 |---------|---------|---------------|
-| **Thin Bundle** | Don't redeclare foundation's tools/session | Only declare what YOU uniquely provide |
+| **Thin Bundle** | Foundation's tools/session come from inheritance | Only declare what YOU uniquely provide |
 | **Behavior Pattern** | Reusable capability packages | Package agents + context together |
 | **Context De-duplication** | Single source of truth | Use `context/` files, reference via @mentions |
 | **Directory Conventions** | Standardized layouts | See BUNDLE_GUIDE.md "Directory Conventions" |
@@ -379,7 +379,7 @@ Bundles go through: **design -> model -> verify scenarios -> implement**. Each r
 - `bundle-behavioral-model`: `bundle_name`, `registry_path` (path to `~/.amplifier/registry.json`), `output_path`
 - `change-spec-to-behavioral-model`: `bundle_name`, `registry_path`, `change_spec_path`, `output_path`
 
-**After ANY recipe:** Review the generated scenarios with the user. Do not proceed to implementation until scenarios are confirmed. If scenarios are wrong, revise the spec and re-model.
+**After ANY recipe:** Review the generated scenarios with the user. Proceed to implementation only once scenarios are confirmed. If scenarios are wrong, revise the spec and re-model.
 
 ---
 
@@ -409,11 +409,11 @@ Bundles go through: **design -> model -> verify scenarios -> implement**. Each r
 ## Remember
 
 - **You own the full lifecycle**: Design, model, verify, and build
-- **Never skip the model**: A behavioral model is a verification artifact, not documentation
+- **The model step is mandatory**: A behavioral model is a verification artifact, not documentation
 - **Scenarios are the value**: The model review step catches design bugs before implementation
 - **Mechanism-first thinking**: Choose the right mechanism before writing any YAML
 - **Context economics matter**: Calculate token floors, use context sinks
-- **Thin bundles**: Don't redeclare what foundation provides
+- **Thin bundles**: Declare only what you uniquely add; foundation's provisions come by inheritance
 - **Behaviors for reuse**: Package agents + context together
 - **Agents ARE bundles**: Same file format, same composition model
 

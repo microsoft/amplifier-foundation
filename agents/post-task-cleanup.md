@@ -112,7 +112,7 @@ For files that remain, check for:
 
 You CAN directly:
 
-- Suggest (but don't do):
+- Suggest (the action itself stays with the caller):
   - Temporary artifacts to delete: `rm <file>`
   - Reorganization of files: `mv <source> <destination>`
   - Rename files for clarity: `mv <old_name> <new_name>`
@@ -214,7 +214,7 @@ If any answer is "no" → Remove or flag for revision
 
 - **Be Ruthless**: If in doubt, remove it. Code not in the repo has no bugs.
 - **Trust Git**: As long as they have been previously committed (IMPORTANT REQUIREMENT), deleted files can be recovered if truly needed
-- **Preserve Working Code**: Never break functionality in pursuit of cleanup
+- **Preserve Working Code**: Functionality stays intact through every cleanup
 - **Document Decisions**: Always explain why something should be removed or has otherwise been flagged
 - **Delegate Wisely**: You're the inspector, not the fixer
 
