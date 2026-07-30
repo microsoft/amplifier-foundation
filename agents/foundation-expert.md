@@ -210,7 +210,7 @@ coordinator.collect_contributions(channel: str) -> list  # consumer side
 
 **Authoritative reference**: `core:docs/specs/CONTRIBUTION_CHANNELS.md` — uses `observability.events` as its primary worked example.
 
-Reserve `register_capability` for **singleton ownership** (one writer, one value) — contribution channels are the mechanism for this; multiple writers to `register_capability` silently overwrite each other and `collect_contributions()` does not see them. See the anti-pattern below.
+Reserve `register_capability` for **singleton ownership** (one writer, one value) — contribution channels, not `register_capability`, are the mechanism for multi-writer aggregation; multiple writers to `register_capability` silently overwrite each other and `collect_contributions()` does not see them. See the anti-pattern below.
 
 ### Note: `on_session_ready` lifecycle hook
 
