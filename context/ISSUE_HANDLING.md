@@ -8,7 +8,7 @@ This document captures the systematic approach for handling software issues, der
 
 ### 1. **Investigation Before Action**
 
-**Never start coding until you understand the complete picture.**
+**Start coding only once you understand the complete picture.**
 
 - Use specialized agents to gather information (explorer, amplifier-expert, code-intel)
 - Trace the actual code paths involved
@@ -47,7 +47,7 @@ Before presenting work to the user:
 
 **If your analysis establishes a premise, trace it all the way through.**
 
-When you've built the logical case for a position -- "X has negligible cost, provides clear value, and the data is lost forever if not captured now" -- follow that reasoning to its natural endpoint. Don't stop short and present half-conclusions that require the user to connect the final dots.
+When you've built the logical case for a position -- "X has negligible cost, provides clear value, and the data is lost forever if not captured now" -- follow that reasoning to its natural endpoint. Present the full conclusion, with the final dots already connected for the user.
 
 Common failure mode: Arguing that a feature is non-destructive, low-overhead, and universally useful... then suggesting it should be configurable. If there's truly no cost, there's no reason for a toggle. The toggle is complexity that contradicts your own analysis.
 
@@ -119,8 +119,8 @@ an agent to retrieve the specific lessons from that case study before designing 
 **Wait for explicit approval before proceeding.**
 
 **Gate efficiency rule:** If the investigation concludes with a GH interaction (close,
-request info, etc.), the user approves the action AND the text in one pass. Never
-present the decision in one round and the text in a follow-up.
+request info, etc.), the user approves the action AND the text in one pass — the
+decision and the text always travel in the same round.
 
 ---
 
@@ -180,7 +180,7 @@ encounter and use the feature. If the issue was "tool X failed to load", evidenc
 should show tool X working in a realistic scenario, not just unit tests. Evidence
 must demonstrate the fix from the user's perspective.
 
-**Don't present to user until ALL evidence requirements pass.**
+**Present to the user only when ALL evidence requirements pass.**
 
 ---
 
@@ -319,7 +319,7 @@ When recommending merge:
 
 ### Gate Efficiency Rule
 
-**Never have two consecutive approval points.** Bundle the draft GH text into
+**Merge adjacent approval points into one.** Bundle the draft GH text into
 the nearest existing gate where the decision is made. The user reviews the
 decision and the public-facing text simultaneously:
 
@@ -457,7 +457,7 @@ Use this checklist for every issue:
 - [ ] Implement fix based on approved design
 - [ ] Run `python_check` to verify syntax
 - [ ] Commit locally with detailed message
-- [ ] Create new issues for any out-of-scope work discovered (don't expand scope)
+- [ ] Create new issues for any out-of-scope work discovered (scope stays fixed)
 
 ### Testing
 - [ ] Define specific evidence requirements
@@ -465,7 +465,7 @@ Use this checklist for every issue:
 - [ ] Run complete end-to-end test
 - [ ] Verify ALL evidence requirements pass
 - [ ] Collect before/after comparison
-- [ ] If tests fail -> investigate -> fix -> re-test (don't present until passing)
+- [ ] If tests fail -> investigate -> fix -> re-test (present only when passing)
 - [ ] **GATE 2:** Present complete tested solution to user for approval
 
 ### Finalization
@@ -493,7 +493,7 @@ For PR review guidance, see `docs/PR_REVIEW_GUIDE.md`.
 - Multiple wrong hypotheses preceded the correct one in every major incident.
   Keep investigating until you can point to the exact line of code.
 - When the user asks clarifying questions, it signals incomplete understanding.
-  Dig deeper, don't treat it as a disruption.
+  Treat it as a signal to dig deeper.
 - Even technical reporters need independent code verification. Trust but verify.
 
 ### State and Lifecycle
@@ -501,22 +501,22 @@ For PR review guidance, see `docs/PR_REVIEW_GUIDE.md`.
   it tracks, ensure cleanup handles ALL related state, test upgrade/reset paths.
 
 ### Algorithm and Detection Fixes
-- Enumerate ALL legitimate patterns BEFORE implementing. Don't stop at two.
+- Enumerate ALL legitimate patterns BEFORE implementing — carry the enumeration to exhaustion.
 - Test in ACTUAL deployment configurations, not isolated components.
 - If algorithm rejects X, trace what depends on X loading successfully.
 - Simple and complete beats elegant and incomplete.
 
 ### Ecosystem Conventions & Event Design
-- `metadata` is THE property bag name across the ecosystem. Don't rename it,
-  don't introduce alternatives. It's the standard extensibility slot for
+- `metadata` is THE property bag name across the ecosystem. Keep that exact
+  name everywhere. It's the standard extensibility slot for
   experimentation and convention.
 - Add empty extensibility slots (`metadata: None`) to event payloads when the
   event is part of a stable interface. Overhead is negligible next to LLM calls;
   the slot enables future use without changing the event shape.
-- Don't decompose at the emitter. Raw data (e.g., qualified agent names) flows
-  through events intact; consumers parse at their site. Emitters shouldn't bake
-  in assumptions about what decomposition consumers need.
-- Don't promote helpers to foundation until 2+ independent consumers exist.
+- Keep data whole at the emitter. Raw data (e.g., qualified agent names) flows
+  through events intact; consumers parse at their site — decomposition
+  assumptions belong to the consumer, and only the consumer.
+- Promote helpers to foundation only once 2+ independent consumers exist.
   Patterns stay in the consuming code (e.g., a specific hook) until then.
 
 ### PR Review
@@ -526,10 +526,10 @@ For PR review guidance, see `docs/PR_REVIEW_GUIDE.md`.
 - Kernel fields with ambiguous semantics need `Field(description=...)` not
   inline comments -- invisible in IDE hover, help(), JSON schema.
 - Even owner PRs need independent expert review.
-- Zero consumers means zero backward-compat burden. Don't add aliases for
-  events nobody is listening to. Clean over compatible-with-nothing.
-- Don't ship fragile approaches with caveats. If it breaks for edge cases,
-  find a reliable approach or leave it out entirely.
+- Zero consumers means zero backward-compat burden. Add aliases only when a
+  real listener needs them. Clean over compatible-with-nothing.
+- Ship only approaches that hold for the edge cases. If it breaks for edge
+  cases, find a reliable approach or leave it out entirely.
 - Contract docs are copy-paste targets. Examples must show the exemplar case
   (populated, useful), not the degenerate case (null, empty).
 
@@ -656,7 +656,7 @@ After merging a PR to a bundle repository (amplifier-bundle-recipes, amplifier-b
 1. **The running Amplifier process has the old code in memory.** Python loads modules from the bundle cache at startup and stores them in `sys.modules`. Patching the `.py` file in the cache directory does NOT affect the running process.
 2. **Tell the user to restart.** "You'll need to restart Amplifier to pick up the new bundle cache."
 3. **If the cache doesn't refresh**, the user may need to delete the stale cache directory.
-4. **Never attempt more than one retry** after patching a cached module file. If it doesn't work the first time, the module is already loaded in memory -- stop and communicate the restart requirement.
+4. **Attempt at most one retry** after patching a cached module file. If it doesn't work the first time, the module is already loaded in memory -- stop and communicate the restart requirement.
 
 **Anti-pattern:** Patching a cached `.py` file, clearing `.pyc`, re-running, seeing the same error, patching again, clearing again...
 **Correct pattern:** Merge upstream, tell user to restart, wait.
@@ -753,7 +753,7 @@ When issue reports mention terms not found in the Amplifier codebase:
 
 ### 3. Test-Before-Advising Rule
 
-**NEVER propose posting code advice/workarounds without first:**
+**Propose posting code advice/workarounds only after first:**
 
 1. Testing the exact code pattern in a DTU
 2. Verifying it works in a realistic scenario
@@ -789,14 +789,14 @@ When reporter describes code that doesn't match current main:
 
 ### 6. Decisiveness Over Hedging
 
-When you have enough information to make a recommendation, **make it.** Don't present "consider X" when your analysis supports "do X." Hedging wastes the user's time by forcing them to re-derive a conclusion you've already reached.
+When you have enough information to make a recommendation, **make it.** State "do X" when your analysis supports "do X" — "consider X" is for genuinely open calls. Hedging wastes the user's time by forcing them to re-derive a conclusion you've already reached.
 
 **Signs you're hedging unnecessarily:**
 - You wrote "consider" or "you might want to" but your analysis clearly supports one answer
 - You're presenting a design decision to the user that your investigation has already resolved
 - You listed pros and cons but didn't say which side wins (and the evidence clearly favors one)
 
-**The litmus test:** "If the user asked me 'so what should I do?', would I immediately know the answer?" If yes, just say it. Don't make them ask.
+**The litmus test:** "If the user asked me 'so what should I do?', would I immediately know the answer?" If yes, just say it — up front, unprompted.
 
 **Anti-pattern:** "Default True changes behavior. Consider False initially."  (when your own analysis says the change is non-destructive, low-cost, and beneficial)
 **Correct pattern:** "Default True is correct -- timestamps are non-destructive, can't be added retroactively, and the opt-out is trivial."
@@ -805,8 +805,8 @@ When you have enough information to make a recommendation, **make it.** Don't pr
 
 ### 7. Post-Action = Next-Action
 
-After completing any action, propose the logical next step. Never leave conversational
-dead air that requires the user to re-engage.
+After completing any action, propose the logical next step, so every exchange
+ends with forward motion instead of dead air the user must re-start.
 
 **Anti-pattern:** "Merged. PR #10 is on main." [silence]
 **Correct pattern:** "Merged. PR #10 is on main. To verify: `git pull && pytest`. Next: review the Phase 2 batch, or run reflection?"

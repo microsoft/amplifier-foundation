@@ -24,7 +24,7 @@ Every non-trivial bundle should go through: **design -> model -> verify -> imple
 **New bundles:** Write a mechanism spec, generate a behavioral model, review the scenarios, then implement.
 **Existing bundles:** Generate a model from the bundle, identify failing scenarios, spec the changes, re-model, then implement.
 
-Do NOT skip the model step. See `foundation:context/understanding-mechanisms/bundle-lifecycle.md` for the full workflow.
+The model step is required — complete it before implementing. See `foundation:context/understanding-mechanisms/bundle-lifecycle.md` for the full workflow.
 
 ## Available Recipes
 

@@ -91,7 +91,7 @@ This file complements `IMPLEMENTATION_PHILOSOPHY.md` and `MODULAR_DESIGN_PHILOSO
 ## 4) Evolution rules (how the kernel changes)
 
 1. **Additive first.** Extend contracts without breaking them. Prefer optional capabilities and feature negotiation over replacement.  
-2. **Two-implementation rule.** Do not promote a new concept into kernel until at least two independent modules have converged on the need.  
+2. **Two-implementation rule.** Promote a new concept into kernel only after at least two independent modules have converged on the need.  
 3. **Deprecation discipline.** When removal is unavoidable: announce, document migration, support a dual path for a deprecation window, then remove.  
 4. **Spec before code.** Kernel changes begin with a short spec: purpose, alternatives, impact on invariants, test strategy, roll-back plan.  
 5. **No policy leaks.** If a change drifts toward policy, move it outward into a module or hook.  
@@ -116,7 +116,7 @@ This file complements `IMPLEMENTATION_PHILOSOPHY.md` and `MODULAR_DESIGN_PHILOSO
 - **High bar, low velocity.** Releases are small and boring; large or risky ideas must prove themselves at the edges first.  
 - **PR minimums for kernel:** tiny diff, invariant review, failure modes, rollback plan, tests, and docs.  
 - **Fast lanes at the edges.** Modules may iterate rapidly; the kernel does not chase them—modules adapt to kernel, not vice versa.  
-- **No surprise upgrades.** Semantic versioning and clear release notes; never ship breaking changes under a patch/minor version.
+- **No surprise upgrades.** Semantic versioning and clear release notes; breaking changes ship only under a major version.
 
 ---
 
@@ -125,7 +125,7 @@ This file complements `IMPLEMENTATION_PHILOSOPHY.md` and `MODULAR_DESIGN_PHILOSO
 - **Deny by default.** Kernel offers no ambient authority; modules must request capabilities explicitly.  
 - **Sandbox boundaries.** All calls across boundaries are validated, attributed, and observable.  
 - **Non-interference by design.** Failures in modules are isolated; recovery paths are documented; the kernel stays up.  
-- **Privacy-first mechanisms.** Provide hooks for redaction/approval, but never decide policy in kernel.
+- **Privacy-first mechanisms.** Provide hooks for redaction/approval; policy decisions live outside the kernel.
 
 ---
 
@@ -134,7 +134,7 @@ This file complements `IMPLEMENTATION_PHILOSOPHY.md` and `MODULAR_DESIGN_PHILOSO
 - **Event-first.** The kernel emits lifecycle and boundary events that modules can observe.  
 - **Single source of truth.** Strive for one canonical, structured feed; derived views live outside kernel.  
 - **Causality IDs.** Provide session/request/span identifiers so edges can correlate activity end-to-end.  
-- **Never block primary flow.** Observability must not jeopardize system progress; on failure, degrade gracefully.
+- **Keep primary flow moving.** Observability always yields to system progress; on failure, degrade gracefully.
 
 ---
 

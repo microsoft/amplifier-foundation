@@ -126,7 +126,7 @@ These are the current applications of the principles. As new languages emerge, a
 
 4. **The verification spectrum determines trust.** The stricter the toolchain, the more you can trust AI output without additional verification.
 
-5. **Deterministic code understanding, not probabilistic search.** AI must use code-graph tools (LSP, AST, call hierarchy) to understand code — not grep, not embedding search, not similarity matching. These tools provide deterministic truth about what the code actually does. When they aren't available, say so — don't guess.
+5. **Deterministic code understanding, not probabilistic search.** AI must use code-graph tools (LSP, AST, call hierarchy) to understand code — not grep, not embedding search, not similarity matching. These tools provide deterministic truth about what the code actually does. When they aren't available, state that limitation explicitly.
 
 6. **Dead code is context poison.** Unreachable code isn't harmless — it's a virus that infects AI understanding and propagates errors through every interaction that touches it. Identify it, flag it, remove it.
 
