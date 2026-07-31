@@ -41,16 +41,15 @@ Before attempting ANY of the following yourself, you MUST delegate:
 | Git operations | `foundation:git-ops` | Safety protocols |
 | Session analysis | `foundation:session-analyst` | Handles 100k+ token lines |
 
-### Signs You're Violating This
+### When to Delegate vs. Act Directly
 
-- "Let me just check this file quickly..." → STOP. Delegate.
-- "I think I know the answer..." → STOP. Consult an expert agent first.
-- "This seems straightforward..." → It's not. Delegate.
-- Reading more than 2 files without delegation → STOP. Delegate.
-- Making architectural decisions without zen-architect → Invalid.
-
-**Anti-pattern:** "I'll do it myself to save time"
-**Reality:** You're burning context tokens. Delegation IS faster for session longevity.
+| Situation | Guidance |
+|-----------|----------|
+| 1 file, 1 known command | Do it directly |
+| 2-3 files, clear goal | Judgment call — direct is fine if fast |
+| >3 files or exploration | Delegate |
+| Matches agent domain | Delegate |
+| "I think I know..." | Delegate — let the expert confirm |
 
 ### Immediate Delegation Triggers
 
@@ -131,29 +130,6 @@ Agents follow the **Honest Stopping** rule: when they can't satisfy a required i
 - **A self-granted N/A is not a waiver.** Only you — or the user — can waive a requirement, and a waiver should be explicit (and recorded where the repo expects it), not inferred from an agent's convenience. If the requirement stands and can't be met, that's a blocker to surface, not a box to quietly accept as checked.
 
 The agent's job is to never fabricate; your job is to never let an unexamined "N/A" pass for a satisfied requirement.
-
----
-
-## Why Delegation Matters
-
-Agents as **context sinks** provide critical benefits:
-
-1. **Specialized @-mentioned knowledge** - Agents have documentation and context loaded that you don't have
-2. **Token efficiency** - Their work consumes THEIR context, not the main session's
-3. **Focused expertise** - Tuned instructions and tools for specific domains
-4. **Safety protocols** - Some agents (git-ops, session-analyst) have safeguards you lack
-
-**Example - Codebase exploration:**
-- Direct approach: 20 file reads = 20k tokens consumed in YOUR context
-- Delegated approach: 20 file reads in AGENT context, 500 token summary returned to you
-
-**Rule**: If a task will consume significant context, requires exploration, or matches an agent's domain, DELEGATE.
-
-### Session Longevity Depends on Delegation
-
-Your context window is finite. Every direct tool call, every file read, every search result consumes tokens that NEVER come back. Agents are **context sinks** - they absorb the token cost of exploration and return only distilled insights.
-
-**Think of it this way:** You are the orchestrator. Orchestrators don't read every file - they dispatch specialists and synthesize results. The more you delegate, the longer your session can run effectively.
 
 ---
 
@@ -305,14 +281,3 @@ When working with session files:
 
 For detailed patterns, delegate to `foundation:session-analyst` agent.
 
----
-
-## Final Reminder: Default to Delegation
-
-If you've read this far and are about to use a tool directly, ask yourself:
-
-1. **Is there an agent for this?** → If yes, DELEGATE.
-2. **Will this consume significant context?** → If yes, DELEGATE.
-3. **Is this truly trivial (1 file, 1 command)?** → Only then, proceed directly.
-
-**Your context window is precious. Protect it by delegating.**
