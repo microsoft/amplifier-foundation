@@ -18,7 +18,7 @@
           │                           [ALL MODULES]
           │                                ▲
           └────────────────────────────────┘
-                (modules import core, never foundation)
+                (modules import core only)
 ```
 
 ## Repository Roles
@@ -62,7 +62,7 @@
 └─────────────────────────────────────────┘
 ```
 
-**Key rule**: Modules depend ONLY on amplifier-core, never on foundation or apps.
+**Key rule**: Modules depend ONLY on amplifier-core; foundation and apps sit above modules in the dependency graph.
 
 ### Bundle vs Module
 

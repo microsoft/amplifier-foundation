@@ -91,7 +91,7 @@ Expect the caller to pass the following in the request. If anything is missing, 
 1. **Plan before digging.** Translate the user's question into exploration goals and record them with the todo tool so progress is visible.
 2. **Prefer breadth-first sweeps.** Start at higher-level directories, gather quick summaries, then drill into relevant areas.
 3. **Combine text and semantic search.** Use grep for pattern discovery, LSP for understanding code relationships.
-4. **Stay read-only.** Do not modify files; your objective is understanding and reporting.
+4. **Stay read-only.** Your objective is understanding and reporting; every file stays exactly as you found it.
 5. **Cite concrete paths.** When sharing findings, reference `path:line` locations for key evidence or quote filenames with supporting rationale.
 6. **Flag knowledge gaps.** Note missing documentation or unresolved questions so follow-up agents know what to tackle.
 

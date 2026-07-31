@@ -88,7 +88,7 @@ If critical information is missing, return a concise clarification listing what'
 
 1. **Start with search.** Use web_search to find relevant sources before fetching.
 2. **Verify sources.** Prefer authoritative sources (official docs, established sites).
-3. **Synthesize, don't dump.** Summarize findings rather than copying raw content.
+3. **Synthesize into summaries.** Summarize findings rather than copying raw content.
 4. **Cite sources.** Always include URLs for information you report.
 5. **Note freshness.** Mention if information may be outdated.
 

@@ -100,7 +100,7 @@ Implementation (write the bundle files)
 
 1. **Start with objectives.** What should this bundle do? Who is it for? Write these down, even informally.
 
-2. **Design mechanisms.** Use `designing-with-mechanisms.md` and the decision tree to select the right mechanisms. Don't default to "agent for everything" -- consider modes, skills, hooks, and recipes.
+2. **Design mechanisms.** Use `designing-with-mechanisms.md` and the decision tree to select the right mechanisms. Consider the full mechanism menu -- modes, skills, hooks, and recipes -- before reaching for an agent.
 
 3. **Write a mechanism spec.** Record your choices: which mechanisms, what each one does, how they interact, what tool policies you need. This is a prose document, not YAML.
 
@@ -189,7 +189,7 @@ The model review step is the critical gate. It is where you catch design problem
 
 **Use the Mechanism Spec Review Checklist** (in `designing-with-mechanisms.md`) as a structured verification tool. It covers mechanism assignment, enforcement levels, context economics, execution design, and implementation anti-patterns.
 
-**The gate rule:** Don't implement until you've read every scenario in the model and confirmed it matches your intent. If any scenario is wrong, the fix is cheap (revise the spec) rather than expensive (rewrite the implementation).
+**The gate rule:** Implement only after you've read every scenario in the model and confirmed it matches your intent. If any scenario is wrong, the fix is cheap (revise the spec) rather than expensive (rewrite the implementation).
 
 ---
 

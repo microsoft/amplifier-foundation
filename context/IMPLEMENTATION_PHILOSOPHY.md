@@ -21,7 +21,7 @@ This development philosophy values clear documentation, readable code, and belie
 - **KISS principle taken to heart**: Keep everything as simple as possible, but no simpler
 - **Minimize abstractions**: Every layer of abstraction must justify its existence
 - **Start minimal, grow as needed**: Begin with the simplest implementation that meets current needs
-- **Avoid future-proofing**: Don't build for hypothetical future requirements
+- **Build for the present**: Build for today's actual requirements; hypothetical future needs earn code only when they become real
 - **Question everything**: Regularly challenge complexity in the codebase
 
 ### 2. Architectural Integrity with Minimal Implementation
@@ -196,7 +196,7 @@ Push for extreme simplicity in these areas:
 3. **Edge case handling**: Handle the common cases well first
 4. **Framework usage**: Use only what you need from frameworks
 5. **State management**: Keep state simple and explicit
-6. **Conventions via instructions, not code**: When a pattern is too trivial for a shared utility but important to standardize across modules, encode it as context/instruction guidance rather than creating shared helper code. The dependency tax of importing a shared library is not worth it for a one-liner that Python's stdlib already provides. Document the convention; don't centralize the code. This approach is preferred when: (a) the pattern is a well-known stdlib call (e.g., `.expanduser()`, `encoding="utf-8"`), (b) modules are isolated and shouldn't take new dependencies, and (c) the real problem is awareness, not complexity.
+6. **Conventions via instructions, not code**: When a pattern is too trivial for a shared utility but important to standardize across modules, encode it as context/instruction guidance rather than creating shared helper code. The dependency tax of importing a shared library is not worth it for a one-liner that Python's stdlib already provides. Document the convention; keep the code local to each module. This approach is preferred when: (a) the pattern is a well-known stdlib call (e.g., `.expanduser()`, `encoding="utf-8"`), (b) modules are isolated and shouldn't take new dependencies, and (c) the real problem is awareness, not complexity.
 
 ## Practical Examples
 

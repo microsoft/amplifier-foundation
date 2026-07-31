@@ -108,7 +108,7 @@ Some domains have anti-patterns that cause significant rework. **Load required r
 | Embedding Amplifier in apps | `foundation:docs/APPLICATION_INTEGRATION_GUIDE.md` |
 | **New module/tool/capability** | **Consult `amplifier:amplifier-expert`** |
 
-**Pattern**: When you detect work in a listed domain, load the doc FIRST—don't wait until you hit problems.
+**Pattern**: When you detect work in a listed domain, load the doc FIRST—before the first problem appears.
 
 ### Before Building New Functionality
 

@@ -4,7 +4,7 @@ For testing local changes to Amplifier ecosystem repos (core, foundation, module
 
 ## How to Use
 
-Always delegate to the specialist agents. Do not drive the CLI directly.
+Always delegate to the specialist agents; route all CLI driving through them.
 
 ```
 delegate(agent="amplifier-tester:setup-digital-twin",
