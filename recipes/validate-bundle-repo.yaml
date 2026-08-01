@@ -1,9 +1,23 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.6.0
+# Repository-Wide Bundle Validator Recipe v3.6.1
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.6.1 - Fix two false-positive defects
+#        - Standalone completeness (Phase 3): Bundle.session is dict[str, Any],
+#          but the check used getattr(session, 'orchestrator'/'context'), which
+#          never resolves dict keys -> has_orchestrator/has_context were False
+#          unconditionally, flagging EVERY standalone bundle in EVERY repo as
+#          ERROR missing_session_config (drove false "critical" classification
+#          on clean repos). New _sess() helper handles dict and object forms;
+#          via_includes derivation now computes correctly downstream.
+#        - Individual validation (Phase 2): the bundle: schema checks
+#          (bundle.name / bundle.description) were applied to files discovery
+#          classified as category "agents", but agent files use meta:
+#          frontmatter (meta.name / meta.description) -> well-formed agents got
+#          2 spurious warnings and name "". Agents are now checked against
+#          meta.name / meta.description.
 # v3.6.0 - Mode Authoring Discipline Validation (Phase 2.7)
 #        - New Phase 2.7: mode-validation checks all modes/*.md files
 #        - Check A: Mode description token budget
@@ -190,7 +204,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.6.0"
+version: "3.6.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -1002,6 +1016,7 @@ steps:
       python3 << 'EOF'
       import asyncio
       import json
+      import re
       import sys
       from pathlib import Path
 
@@ -1061,11 +1076,33 @@ steps:
               result["agents_count"] = len(bundle.agents)
               result["has_description"] = bool(getattr(bundle, 'description', None))
 
-              if not bundle.name:
-                  result["warnings"].append("Missing bundle.name")
-              
-              if not getattr(bundle, 'description', None):
-                  result["warnings"].append("Missing bundle description")
+              if category == "agents":
+                  # Agent files use meta: frontmatter (meta.name/meta.description),
+                  # not the bundle: schema — check the schema agents actually use.
+                  import yaml
+                  meta = {}
+                  fm_match = re.match(r'^---\n(.*?)\n---', path.read_text(), re.DOTALL)
+                  if fm_match:
+                      try:
+                          fm = yaml.safe_load(fm_match.group(1)) or {}
+                          if isinstance(fm.get("meta"), dict):
+                              meta = fm["meta"]
+                      except Exception:
+                          pass
+                  result["name"] = meta.get("name") or bundle.name
+                  result["has_description"] = bool(meta.get("description") or getattr(bundle, 'description', None))
+
+                  if not result["name"]:
+                      result["warnings"].append("Missing meta.name")
+
+                  if not result["has_description"]:
+                      result["warnings"].append("Missing meta.description")
+              else:
+                  if not bundle.name:
+                      result["warnings"].append("Missing bundle.name")
+                  
+                  if not getattr(bundle, 'description', None):
+                      result["warnings"].append("Missing bundle description")
 
           except BundleDependencyError as e:
               result["passed"] = False
@@ -1766,6 +1803,12 @@ steps:
       # Full validation with foundation available
       from amplifier_foundation import BundleRegistry
 
+      def _sess(s, k):
+          # Bundle.session is dict[str, Any]; handle dict and object forms.
+          # (getattr on a dict never resolves keys, which flagged every
+          # standalone bundle as missing orchestrator/context.)
+          return (s.get(k) if isinstance(s, dict) else getattr(s, k, None)) if s else None
+
       async def check_completeness():
           for bundle_path in standalone_bundles:
               results["bundles_checked"] += 1
@@ -1795,8 +1838,8 @@ steps:
                   # Check composed session config
                   session = getattr(bundle, 'session', None)
                   if session:
-                      detail["has_orchestrator"] = bool(getattr(session, 'orchestrator', None))
-                      detail["has_context"] = bool(getattr(session, 'context', None))
+                      detail["has_orchestrator"] = bool(_sess(session, 'orchestrator'))
+                      detail["has_context"] = bool(_sess(session, 'context'))
                   
                   # Check if bundle itself has orchestrator or got it via includes
                   content = path.read_text()
