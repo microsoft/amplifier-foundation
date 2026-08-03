@@ -17,6 +17,9 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/logging.yaml
   # Dev testing bundle (cross-repo DTU validation)
   - bundle: git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main
+  # Context Intelligence: session event capture + local-JSONL navigation
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-logging.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-navigation.yaml
 
 session:
   raw: true
