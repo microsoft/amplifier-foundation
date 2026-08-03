@@ -300,6 +300,79 @@ When both `model_role` and `provider_preferences` are present, `provider_prefere
 
 ---
 
+## Sub-Agent Access Control with `agents`
+
+An agent can declare which sub-agents its own spawned session may delegate to. This is the `agents` field in agent frontmatter - a **Smart Single Value** taking one of three forms.
+
+> **Not the same as a bundle's `agents:` section.** A bundle or behavior uses `agents:` with a **mapping** value (`include:` lists, inline definitions) to declare which agents it *provides*. An agent uses `agents:` with a **string or list** value to declare which agents it may *delegate to*. Same key, two meanings, told apart by value type. See [BUNDLE_GUIDE.md](BUNDLE_GUIDE.md) for the roster form.
+
+### The `agents` Frontmatter Field
+
+`agents` is a top-level key - a sibling of `meta:`, alongside `tools:` and `providers:` - not a field nested inside `meta:`.
+
+**Disable delegation entirely** - the agent does the work itself:
+
+```yaml
+meta:
+  name: leaf-worker
+  description: "..."
+
+agents: none
+```
+
+**Allowlist** - the agent may delegate only to the named agents:
+
+```yaml
+meta:
+  name: coordinator
+  description: "..."
+
+agents: [explorer, bug-hunter]
+```
+
+**Inherit everything** - the default, and identical to omitting the field:
+
+```yaml
+meta:
+  name: orchestrator
+  description: "..."
+
+agents: all
+```
+
+An allowlist is satisfied from every agent available to the parent session - both those declared statically by the bundle and those contributed at runtime by an active mode. Naming an agent that does not exist yields no error; the agent simply is not available to delegate to.
+
+A value that is neither `all`, `none`, a list, nor a mapping raises at load time rather than being ignored, so a typo fails loudly instead of silently granting full access.
+
+### Example Agent Frontmatter
+
+```yaml
+---
+meta:
+  name: security-auditor
+  description: |
+    Use PROACTIVELY for vulnerability assessment and code auditing.
+    Reviews directly without delegating.
+  model_role: security-audit
+
+agents: none
+
+tools:
+  - module: tool-filesystem
+  - module: tool-bash
+---
+
+# Security Auditor
+
+[Agent instructions...]
+```
+
+> **Where this is enforced.** The reference spawn capability (`amplifier-app-cli`'s `session_spawner.py`) applies the declaration when it builds the child session's config, filtering both the parent's static agents and any runtime-contributed ones. An agent declaring `agents: none` receives an empty agent set, so its `delegate` tool has nothing to call.
+
+Restricting delegation is not a security boundary - it shapes what an agent is *meant* to reach for, keeping a focused worker focused. To remove the capability itself, drop the delegation tool from the agent's `tools:` list.
+
+---
+
 ## Agents as Context Sinks
 
 Expert agents serve as **context sinks** - they carry heavy documentation that would bloat every session if always loaded.

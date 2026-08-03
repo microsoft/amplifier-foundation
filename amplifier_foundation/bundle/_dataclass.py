@@ -790,13 +790,29 @@ class Bundle:
 
 
 def _parse_agents(
-    agents_config: dict[str, Any], base_path: Path | None
+    agents_config: dict[str, Any] | str | list[Any],
+    base_path: Path | None,
 ) -> dict[str, dict[str, Any]]:
     """Parse agents config section.
 
     Handles both include lists and direct definitions.
+
+    The bundle `agents:` key is overloaded with two unrelated meanings,
+    distinguished only by value TYPE:
+      - dict:       the agent roster (include list / inline definitions),
+                    handled entirely by this function.
+      - str/list:   the "Smart Single Value" access-control declaration
+                    ("all" | "none" | [agent names]) that restricts which
+                    sub-agents a spawned session may delegate to. That form
+                    isn't a roster at all -- it's carried through as-is by
+                    the config dict (see _load_agent_file_metadata), so
+                    here we simply return an empty roster rather than
+                    attempting to parse it as one.
     """
     if not agents_config:
+        return {}
+
+    if isinstance(agents_config, (str, list)):
         return {}
 
     result: dict[str, dict[str, Any]] = {}
@@ -866,6 +882,39 @@ def _load_agent_file_metadata(path: Path, fallback_name: str) -> dict[str, Any]:
 
     if "model_role" in frontmatter:
         result["model_role"] = frontmatter["model_role"]
+
+    # Top-level `agents:` is overloaded with two unrelated meanings, distinguished
+    # only by value TYPE:
+    #   - dict:     an agent roster (include list / inline definitions). That form
+    #               is bundle-level configuration, not something an individual
+    #               agent file declares about itself -- leave it dropped here, as
+    #               it always has been; rosters are parsed by _parse_agents via
+    #               the bundle path.
+    #   - str/list: the "Smart Single Value" access-control declaration
+    #               ("all" | "none" | [agent names]) that restricts which
+    #               sub-agents this agent's spawned session may delegate to.
+    #               This is the form we must forward so amplifier-app-cli's
+    #               spawner can honor it.
+    if "agents" in frontmatter:
+        agents_value = frontmatter["agents"]
+        if isinstance(agents_value, str):
+            if agents_value not in ("all", "none"):
+                raise ValueError(
+                    f"Invalid 'agents' value in {path}: {agents_value!r} (str). "
+                    'Expected "all", "none", a list of agent names, or a mapping '
+                    "of agent definitions."
+                )
+            result["agents"] = agents_value
+        elif isinstance(agents_value, list):
+            result["agents"] = agents_value
+        elif isinstance(agents_value, dict):
+            pass  # roster form -- not forwarded from the agent-file layer
+        else:
+            raise ValueError(
+                f"Invalid 'agents' value in {path}: {agents_value!r} "
+                f'({type(agents_value).__name__}). Expected "all", "none", '
+                "a list of agent names, or a mapping of agent definitions."
+            )
 
     # Include instruction from markdown body (same as bundle loading does)
     if body and body.strip():
