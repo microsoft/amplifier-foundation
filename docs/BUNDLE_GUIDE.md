@@ -1237,6 +1237,10 @@ spawn:
   # OR use explicit list:
   # tools: [tool-a, tool-b]         # Agents get ONLY these tools
 
+# Declare which agents this bundle PROVIDES (a mapping value).
+# Not to be confused with the same key in an *agent's* frontmatter, where a
+# string or list value declares which agents that agent may DELEGATE TO --
+# see AGENT_AUTHORING.md, "Sub-Agent Access Control".
 agents:
   include:
     - my-bundle:agent-name          # Reference agents in this bundle
