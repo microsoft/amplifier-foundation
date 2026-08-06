@@ -831,6 +831,7 @@ class TestApplyProviderPreferencesWithResolution:
         for p in result["providers"]:
             assert "default_model" not in p["config"]
 
+    @pytest.mark.asyncio
     async def test_provider_glob_resolves_model_with_canonical_module(self) -> None:
         """Model resolution uses the selected mount's canonical provider module."""
         mount_plan = {
