@@ -592,13 +592,62 @@ async def _run_child_session(config_path: str) -> str:
 
     logger.debug("Subprocess child session initialized, capabilities registered")
 
-    # (7) Expand @mentions in the prompt before execute. Mirrors PreparedBundle.spawn.
+    # Shared mention-expansion inputs, resolved once and reused below for both
+    # the agent's system instruction (persona) and the prompt (step 7).
     from amplifier_foundation.mentions import expand_mentions_in_instruction
 
     _mention_resolver = session.coordinator.get_capability("mention_resolver")
     _mention_dedup = session.coordinator.get_capability("mention_deduplicator")
     _working_dir = session.coordinator.get_capability("session.working_dir")
     _relative_to = Path(_working_dir) if _working_dir else None
+
+    # (6b) Register the agent's system instruction (persona) on the child context.
+    #
+    # WHY THIS EXISTS: the `instruction` key crosses the process boundary intact
+    # inside `config` (merge_configs() on the parent side preserves it), but
+    # nothing on the subprocess child path ever reads it. Without this block, a
+    # subprocess-spawned agent runs as a generic session with NO persona at all
+    # -- the persona is silently dropped. Mirrors the in-process path in
+    # amplifier-app-cli's session_spawner.py (search "Inject agent's system
+    # instruction" near spawn_sub_session()) -- keep the two in sync.
+    system_instruction = config.get("instruction")
+    if not system_instruction:
+        _system_cfg = config.get("system")
+        if isinstance(_system_cfg, dict):
+            system_instruction = _system_cfg.get("instruction")
+
+    if system_instruction:
+        if _mention_resolver is not None:
+            # Fresh deduplicator for this call -- do NOT share the session's
+            # instance with the prompt expansion below. ContentDeduplicator
+            # accumulates every file it has ever seen and re-serializes the
+            # whole set on each call, so a shared instance makes the persona's
+            # resolved @mention content bleed into the prompt's context block
+            # (verified: shared -> bleed, fresh -> no bleed). Matches the
+            # already-correct pattern in bundle/_prepared.py ("Fresh
+            # deduplicator each call").
+            system_instruction = await expand_mentions_in_instruction(
+                system_instruction,
+                resolver=_mention_resolver,
+                deduplicator=ContentDeduplicator(),
+                relative_to=_relative_to,
+            )
+
+        context = session.coordinator.get("context")
+        if context is not None and hasattr(context, "set_system_prompt_factory"):
+            # Register a factory rather than a static system message so hooks
+            # that compose onto the system prompt have a surface to wrap.
+            # Mirrors the in-process spawn path exactly (see comment above).
+            _resolved_system_instruction = system_instruction
+
+            async def _system_prompt_factory() -> str:
+                return _resolved_system_instruction
+
+            await context.set_system_prompt_factory(_system_prompt_factory)
+        elif context is not None and hasattr(context, "add_message"):
+            await context.add_message({"role": "system", "content": system_instruction})
+
+    # (7) Expand @mentions in the prompt before execute. Mirrors PreparedBundle.spawn.
     if _mention_resolver is not None:
         prompt = await expand_mentions_in_instruction(
             prompt,
