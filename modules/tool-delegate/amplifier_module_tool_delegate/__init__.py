@@ -19,7 +19,10 @@ Config Options:
 - features.provider_selection.enabled: Allow provider preferences (default: True)
 - settings.exclude_tools: Tools spawned agents should NOT inherit (default: ["tool-delegate"])
 - settings.exclude_hooks: Hooks spawned agents should NOT inherit (default: [])
-- settings.timeout: Maximum total execution time for child session in seconds (default: None/disabled)
+- settings.timeout: Maximum child-session execution time in seconds (default: 1800);
+  set explicitly to None/null to disable. Timeouts return the child session ID,
+  but callers must wait for app-layer cancellation cleanup and persistence before
+  attempting to resume it.
 
 Tool Parameters:
 - agent: Agent to delegate to (e.g., 'foundation:explorer', 'self')
@@ -36,13 +39,50 @@ __amplifier_module_type__ = "tool"
 
 import asyncio
 import logging
+import math
+from collections.abc import Coroutine
 from typing import Any
 
 from amplifier_core import ModuleCoordinator, ToolResult
+
 from amplifier_foundation import ProviderPreference
 from amplifier_foundation.tracing import generate_sub_session_id
 
 logger = logging.getLogger(__name__)
+
+
+class _DelegateTimeoutExpired(Exception):
+    """Internal signal that the delegate-owned timeout expired."""
+
+
+def _validate_timeout(timeout: object) -> int | float | None:
+    """Return a timeout that asyncio's event loop can represent.
+
+    ``asyncio.wait`` takes a float timeout. Validate that conversion at
+    configuration time, before spawning a child coroutine, so an oversized
+    integer cannot fail later after work has begun.
+    """
+    if timeout is None:
+        return None
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise TypeError(
+            "settings.timeout must be null or a positive finite, non-boolean "
+            "number of seconds"
+        )
+
+    try:
+        event_loop_timeout = float(timeout)
+    except OverflowError as error:
+        raise ValueError(
+            "settings.timeout must be representable as a finite event-loop timeout"
+        ) from error
+
+    if timeout <= 0 or not math.isfinite(event_loop_timeout):
+        raise ValueError(
+            "settings.timeout must be null or a positive finite, non-boolean "
+            "number of seconds"
+        )
+    return timeout
 
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
@@ -128,7 +168,8 @@ class DelegateTool:
         # Settings
         self.exclude_tools: list[str] = settings.get("exclude_tools", ["tool-delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
-        self.timeout: int | None = settings.get("timeout", None)
+        self.timeout = _validate_timeout(settings.get("timeout", 1800))
+        self._detached_child_tasks: set[asyncio.Task[Any]] = set()
 
         # Build feature registry for dynamic description composition
         self._feature_registry = self._build_feature_registry()
@@ -173,6 +214,62 @@ class DelegateTool:
                 "disabled_note": None,
             },
         ]
+
+    async def _await_child_with_deadline(
+        self, child_coro: Coroutine[Any, Any, Any]
+    ) -> Any:
+        """Await a child while releasing the parent at the configured deadline.
+
+        Unlike ``asyncio.timeout`` and ``asyncio.wait_for``, this does not wait
+        for a child that catches ``CancelledError`` or performs slow cancellation
+        cleanup. The child is cancelled, detached, and its terminal result is
+        consumed by a callback. A cancellation of this parent task follows the
+        same cleanup path but is re-raised unchanged.
+        """
+        if self.timeout is None:
+            return await child_coro
+
+        child_task = asyncio.create_task(child_coro)
+        try:
+            done, _ = await asyncio.wait(
+                (child_task,),
+                timeout=float(self.timeout),
+                return_when=asyncio.ALL_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            self._cancel_and_detach_child(child_task)
+            raise
+
+        if child_task in done:
+            return child_task.result()
+
+        self._cancel_and_detach_child(child_task)
+        raise _DelegateTimeoutExpired
+
+    def _cancel_and_detach_child(self, child_task: asyncio.Task[Any]) -> None:
+        """Cancel a child while retaining it strongly until terminal cleanup."""
+        if not child_task.done():
+            child_task.cancel()
+        if child_task.done():
+            self._consume_detached_child_result(child_task)
+            return
+
+        self._detached_child_tasks.add(child_task)
+        child_task.add_done_callback(self._consume_detached_child_result)
+
+    def _consume_detached_child_result(self, child_task: asyncio.Task[Any]) -> None:
+        """Consume a detached child result and release its strong reference."""
+        try:
+            child_task.result()
+        except asyncio.CancelledError:
+            pass
+        except BaseException:
+            logger.debug(
+                "Detached delegate child finished with an exception after cancellation",
+                exc_info=True,
+            )
+        finally:
+            self._detached_child_tasks.discard(child_task)
 
     def _compose_feature_descriptions(self) -> str:
         """Compose feature descriptions based on enabled state.
@@ -1139,11 +1236,7 @@ Agent usage notes:
                 self_delegation_depth=child_self_delegation_depth,
                 session_metadata=session_metadata,
             )
-            if self.timeout is not None:
-                async with asyncio.timeout(self.timeout):
-                    result = await spawn_coro
-            else:
-                result = await spawn_coro
+            result = await self._await_child_with_deadline(spawn_coro)
 
             # Emit delegate:agent_completed event
             if hooks:
@@ -1209,16 +1302,14 @@ Agent usage notes:
                 )
             raise
 
-        except TimeoutError:
-            # asyncio.timeout raises TimeoutError (which may propagate as
-            # CancelledError internally).  Surface the source clearly so the
-            # caller knows this was a delegation-level wall-clock timeout,
-            # not a provider or network issue.
+        except _DelegateTimeoutExpired:
+            recovery_msg = (
+                "Child cancellation cleanup is still in progress; do not resume "
+                "this session until cleanup and persistence complete."
+            )
             timeout_msg = (
                 f"Agent '{agent_name}' timed out after {self.timeout}s "
-                f"(delegate tool session-level timeout). "
-                f"Increase or disable the timeout in tool-delegate settings "
-                f"(settings.timeout) to allow longer-running agents."
+                f"(delegate tool session-level timeout). {recovery_msg}"
             )
             logger.warning(timeout_msg)
             if hooks:
@@ -1229,11 +1320,30 @@ Agent usage notes:
                         "sub_session_id": sub_session_id,
                         "parent_session_id": parent_session_id,
                         "error": timeout_msg,
+                        "error_type": "delegate_timeout",
+                        "status": "timed_out",
+                        "timeout_seconds": self.timeout,
+                        "resumable": False,
+                        "resume_status": "pending_child_cleanup",
                         "tool_call_id": tool_call_id,
                         "parallel_group_id": parallel_group_id,
                     },
                 )
-            return ToolResult(success=False, error={"message": timeout_msg})
+            return ToolResult(
+                success=False,
+                output={
+                    "session_id": sub_session_id,
+                    "agent": agent_name,
+                    "status": "timed_out",
+                    "metadata": {
+                        "timeout_seconds": self.timeout,
+                        "resumable": False,
+                        "resume_status": "pending_child_cleanup",
+                        "recovery_message": recovery_msg,
+                    },
+                },
+                error={"message": timeout_msg},
+            )
 
         except Exception as e:
             # Emit delegate:error event — include the exception type so the
@@ -1277,6 +1387,9 @@ Agent usage notes:
             ToolResult with success status and output or error
         """
         parent_session_id = self.coordinator.session_id
+        resume_agent = None
+        if "_" in session_id:
+            resume_agent = session_id.rsplit("_", 1)[-1] or None
 
         try:
             # Use session_id as-is (no short ID resolution - LLMs can handle full IDs)
@@ -1309,11 +1422,7 @@ Agent usage notes:
                 sub_session_id=full_session_id,
                 instruction=instruction,
             )
-            if self.timeout is not None:
-                async with asyncio.timeout(self.timeout):
-                    result = await resume_coro
-            else:
-                result = await resume_coro
+            result = await self._await_child_with_deadline(resume_coro)
 
             # Emit delegate:agent_completed event
             if hooks:
@@ -1329,9 +1438,7 @@ Agent usage notes:
                 )
 
             # Extract agent name from session ID if possible
-            agent_name = "unknown"
-            if "_" in full_session_id:
-                agent_name = full_session_id.split("_")[-1]
+            agent_name = resume_agent or "unknown"
 
             # Return output with session info
             session_id_result = result["session_id"]
@@ -1398,30 +1505,50 @@ Agent usage notes:
                 )
             raise
 
-        except TimeoutError:
-            # Extract agent name for the message
-            resume_agent = "unknown"
-            if "_" in session_id:
-                resume_agent = session_id.split("_")[-1]
+        except _DelegateTimeoutExpired:
+            agent_label = resume_agent or "unknown"
+            recovery_msg = (
+                "Child cancellation cleanup is still in progress; do not resume "
+                "this session until cleanup and persistence complete."
+            )
             timeout_msg = (
-                f"Resumed agent '{resume_agent}' timed out after {self.timeout}s "
-                f"(delegate tool session-level timeout). "
-                f"Increase or disable the timeout in tool-delegate settings "
-                f"(settings.timeout) to allow longer-running agents."
+                f"Resumed agent '{agent_label}' timed out after {self.timeout}s "
+                f"(delegate tool session-level timeout). {recovery_msg}"
             )
             logger.warning(timeout_msg)
             if hooks:
-                await hooks.emit(
-                    "delegate:error",
-                    {
-                        "session_id": session_id,
-                        "parent_session_id": parent_session_id,
-                        "error": timeout_msg,
-                        "tool_call_id": tool_call_id,
-                        "parallel_group_id": parallel_group_id,
-                    },
-                )
-            return ToolResult(success=False, error={"message": timeout_msg})
+                error_payload = {
+                    "session_id": session_id,
+                    "parent_session_id": parent_session_id,
+                    "error": timeout_msg,
+                    "error_type": "delegate_timeout",
+                    "status": "timed_out",
+                    "timeout_seconds": self.timeout,
+                    "resumable": False,
+                    "resume_status": "pending_child_cleanup",
+                    "tool_call_id": tool_call_id,
+                    "parallel_group_id": parallel_group_id,
+                }
+                if resume_agent is not None:
+                    error_payload["agent"] = resume_agent
+                await hooks.emit("delegate:error", error_payload)
+            timeout_output = {
+                "session_id": session_id,
+                "status": "timed_out",
+                "metadata": {
+                    "timeout_seconds": self.timeout,
+                    "resumable": False,
+                    "resume_status": "pending_child_cleanup",
+                    "recovery_message": recovery_msg,
+                },
+            }
+            if resume_agent is not None:
+                timeout_output["agent"] = resume_agent
+            return ToolResult(
+                success=False,
+                output=timeout_output,
+                error={"message": timeout_msg},
+            )
 
         except Exception as e:
             # Other errors — include exception type for clear source attribution

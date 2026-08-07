@@ -68,6 +68,7 @@ next-steps.md
 
 # Working folders
 ai_working/tmp
+.next/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
