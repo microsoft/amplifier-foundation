@@ -7,6 +7,8 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
+import platform
 import re
 import shutil
 import subprocess
@@ -15,8 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from amplifier_foundation.exceptions import BundleNotFoundError
-from amplifier_foundation.paths.resolution import ParsedURI
-from amplifier_foundation.paths.resolution import ResolvedSource
+from amplifier_foundation.paths.resolution import ParsedURI, ResolvedSource
 from amplifier_foundation.sources.protocol import SourceStatus
 
 logger = logging.getLogger(__name__)
@@ -45,9 +46,139 @@ def _is_full_commit_sha(ref: str) -> bool:
 _CLONE_MAX_ATTEMPTS = 3
 _CLONE_RETRY_BACKOFF_S = (1.0, 2.0)
 
+# Hard wall-clock bound per git network-operation attempt. GAP-014: without
+# this, a git invocation that never returns (observed cause: a credential
+# helper blocked on interactive auth it cannot complete headlessly, e.g. Git
+# Credential Manager attempting an OAuth/browser flow with no desktop session)
+# hangs the calling process forever, with no diagnostic and no way for the
+# user to know why. Overridable because "how long is too long" legitimately
+# varies with repo size and network conditions.
+_CLONE_TIMEOUT_S = float(os.environ.get("AMPLIFIER_GIT_CLONE_TIMEOUT_S", "45"))
+
+
+class GitCloneTimeoutError(Exception):
+    """A git network operation exceeded its wall-clock bound without completing.
+
+    This is a *bounded* failure, not a hang: the git process (and its process
+    tree) was killed after ``timeout_s`` seconds because it made no progress
+    a caller could observe. This is deliberately distinct from
+    ``subprocess.CalledProcessError`` (git exited with a real error) because
+    the diagnosis and remedy are different: a timeout usually means something
+    downstream of git itself (most commonly a credential helper) is stuck
+    waiting on interactive input it will never receive, not that git failed
+    outright. See GAP-014 in WINDOWS-GAP-LEDGER.md for the investigation that
+    root-caused this on native Windows.
+    """
+
+    def __init__(self, args: list[str], timeout_s: float) -> None:
+        # Named git_args (not `args`) to avoid shadowing Exception.args, which
+        # is a plain tuple used by the base class's own machinery.
+        self.git_args = args
+        self.timeout_s = timeout_s
+        cmd = " ".join(args)
+        super().__init__(
+            f"git command exceeded {timeout_s:.0f}s and was killed (it was "
+            f"still running, not erroring out): {cmd}\n"
+            "This is usually NOT a slow network. The most common cause is a "
+            "git credential helper blocked waiting on interactive "
+            "authentication it cannot complete in this context (e.g. Git "
+            "Credential Manager attempting a browser/OAuth flow with no "
+            "desktop session available, or no cached credential for this "
+            "host). To check: confirm `gh auth status` shows a valid login, "
+            "and make sure that helper is tried before any interactive one "
+            "for this host (`gh auth setup-git`), or run `git credential-"
+            "manager github logout` to clear a stuck credential-manager "
+            "state. Set AMPLIFIER_GIT_CLONE_TIMEOUT_S to change this timeout "
+            f"(currently {timeout_s:.0f}s per attempt)."
+        )
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Kill a process and its descendants.
+
+    Plain ``Popen.kill()`` only terminates the immediate child. Git spawns its
+    own helper children for network operations (``git-remote-https``,
+    credential helpers) that are NOT reparented/reaped when git.exe itself is
+    killed, and were observed to accumulate as orphaned processes across an
+    entire investigation session (GAP-013's failure mode) when only the
+    top-level process was targeted.
+    """
+    if platform.system() == "Windows":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        import signal
+
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+
+
+def _run_git_subprocess(
+    args: list[str], cwd: Path | None, timeout_s: float
+) -> subprocess.CompletedProcess[str]:
+    """Run a single git command with a hard timeout, killing the whole tree on expiry.
+
+    A bare ``subprocess.run(..., timeout=...)`` only kills the direct child on
+    expiry, which is not sufficient here: see ``_kill_process_tree``.
+    """
+    creationflags = 0
+    start_new_session = False
+    if platform.system() == "Windows":
+        # Only defined on Windows builds of the subprocess module.
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        start_new_session = True
+
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=creationflags,
+        start_new_session=start_new_session,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc.pid)
+        # Reap the now-killed process so it doesn't linger as a zombie;
+        # this is expected to return almost immediately post-kill.
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=5)
+        raise GitCloneTimeoutError(args, timeout_s) from None
+    except BaseException:
+        # GAP-025: proc.communicate() can also be interrupted by something
+        # OTHER than its own timeout -- most importantly a user Ctrl+C
+        # (KeyboardInterrupt) while this call is blocking the calling
+        # thread, but also asyncio task cancellation (CancelledError) or
+        # any other unwind. Both of those derive from BaseException, not
+        # Exception, so the TimeoutExpired-only handler above never sees
+        # them. Confirmed on native Windows: a real Ctrl+C during this
+        # window IS delivered and raises KeyboardInterrupt here promptly
+        # (~1s), but git.exe (or its credential-helper/remote-https
+        # children) is left running as an orphan for the rest of its
+        # natural lifetime -- exactly GAP-013/GAP-024's failure mode, in a
+        # third, independent code path neither of those fixes covers.
+        # Cleaning up here, then re-raising, closes it for every cause of
+        # interruption, not just the ones we anticipated.
+        _kill_process_tree(proc.pid)
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=5)
+        raise
+
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode, args, output=stdout, stderr=stderr
+        )
+    return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
+
 
 def _run_git_network_op(
-    args: list[str], cwd: Path | None = None
+    args: list[str], cwd: Path | None = None, cleanup_path: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run a network-touching git command, retrying transient failures.
 
@@ -56,32 +187,53 @@ def _run_git_network_op(
     the session rather than degrading it silently), one network blip would take
     down a whole session. This absorbs that class of failure.
 
+    Each attempt is bounded by _CLONE_TIMEOUT_S (GAP-014): a git invocation
+    that never returns is treated as a failed attempt like any other, rather
+    than hanging the caller indefinitely.
+
     Args:
         args: Full git command line.
         cwd: Working directory for the command.
+        cleanup_path: If given, removed before each retry (not before the
+            first attempt). ``git clone`` creates its destination directory
+            immediately, before any content arrives, so a failed attempt
+            (timeout OR a real git error - e.g. a dropped connection
+            mid-transfer) leaves a non-empty directory behind. Without this,
+            retrying `git clone` into the same path fails immediately with
+            "destination path ... already exists and is not an empty
+            directory", masking the real failure behind an unrelated one.
+            Only meaningful for callers doing a fresh clone into a new
+            directory - not for e.g. `git fetch` into an existing repo.
 
     Returns:
         The CompletedProcess from the first successful attempt.
 
     Raises:
-        subprocess.CalledProcessError: From the final attempt, if all fail.
+        subprocess.CalledProcessError: From the final attempt, if all fail
+            with a real git error.
+        GitCloneTimeoutError: From the final attempt, if all fail by timing
+            out without git ever returning.
     """
-    last_error: subprocess.CalledProcessError | None = None
+    last_error: subprocess.CalledProcessError | GitCloneTimeoutError | None = None
 
     for attempt in range(_CLONE_MAX_ATTEMPTS):
         try:
-            return subprocess.run(
-                args, cwd=cwd, check=True, capture_output=True, text=True
-            )
-        except subprocess.CalledProcessError as e:
+            return _run_git_subprocess(args, cwd, _CLONE_TIMEOUT_S)
+        except (subprocess.CalledProcessError, GitCloneTimeoutError) as e:
             last_error = e
             if attempt < _CLONE_MAX_ATTEMPTS - 1:
                 delay = _CLONE_RETRY_BACKOFF_S[attempt]
+                if isinstance(e, GitCloneTimeoutError):
+                    reason = f"timed out after {_CLONE_TIMEOUT_S:.0f}s"
+                else:
+                    reason = (e.stderr or "").strip()
                 logger.warning(
                     f"git {args[1] if len(args) > 1 else ''} failed "
                     f"(attempt {attempt + 1}/{_CLONE_MAX_ATTEMPTS}), "
-                    f"retrying in {delay}s: {(e.stderr or '').strip()}"
+                    f"retrying in {delay}s: {reason}"
                 )
+                if cleanup_path is not None:
+                    shutil.rmtree(cleanup_path, ignore_errors=True)
                 time.sleep(delay)
 
     assert last_error is not None  # loop always sets it before exhausting
@@ -235,15 +387,22 @@ class GitSourceHandler:
         Raises:
             subprocess.CalledProcessError: If both strategies fail (converted
                 to BundleNotFoundError by the caller).
+            GitCloneTimeoutError: If the network-touching fetch step hangs
+                past _CLONE_TIMEOUT_S without git returning (GAP-014).
         """
 
         def run_git(args: list[str], cwd: Path | None = None) -> None:
+            # Local-only git plumbing (init/remote add/checkout touch no
+            # network and complete near-instantly), so a plain bounded run is
+            # fine here. The network-touching step below goes through
+            # _run_git_network_op instead, which has the GAP-014 timeout.
             subprocess.run(
                 args,
                 cwd=cwd,
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=30,
             )
 
         try:
@@ -251,7 +410,24 @@ class GitSourceHandler:
             cache_path.mkdir(parents=True, exist_ok=True)
             run_git(["git", "init", "--quiet", str(cache_path)])
             run_git(["git", "remote", "add", "origin", git_url], cwd=cache_path)
-            run_git(["git", "fetch", "--depth", "1", "origin", sha], cwd=cache_path)
+            # GAP-030 cross-platform validation: this used to call
+            # _run_git_network_op (which RETRIES up to _CLONE_MAX_ATTEMPTS
+            # times), directly contradicting the "Retry only this clone, not
+            # the shallow fetch above" comment a few lines below -- a
+            # regression introduced by GAP-014 switching this call over
+            # without noticing it also inherited retry behavior it was never
+            # meant to have. A server without allowReachableSHA1InWant now
+            # refused the fetch 3 times (with 1s+2s backoff, ~3s wasted) on
+            # EVERY clone before falling back, instead of once. Still routed
+            # through _run_git_subprocess directly (not a bare subprocess.run)
+            # so the GAP-014 wall-clock timeout still applies to a fetch that
+            # hangs -- just without the retry-on-failure this specific call
+            # was never supposed to have.
+            _run_git_subprocess(
+                ["git", "fetch", "--depth", "1", "origin", sha],
+                cwd=cache_path,
+                timeout_s=_CLONE_TIMEOUT_S,
+            )
             run_git(
                 [
                     "git",
@@ -263,20 +439,26 @@ class GitSourceHandler:
                 ],
                 cwd=cache_path,
             )
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, GitCloneTimeoutError) as e:
             # Server refused direct SHA fetch (e.g., unadvertised object on a
-            # server without allowReachableSHA1InWant). Fall back to a full
-            # clone + checkout. Errors here propagate to the caller.
+            # server without allowReachableSHA1InWant) - or the fetch hung
+            # (GAP-014). Fall back to a full clone + checkout. Errors here
+            # propagate to the caller.
+            detail = (
+                e.stderr if isinstance(e, subprocess.CalledProcessError) else str(e)
+            )
             logger.debug(
                 f"Shallow fetch of commit {sha} from {git_url} failed "
-                f"({e.stderr}); falling back to full clone + checkout"
+                f"({detail}); falling back to full clone + checkout"
             )
             shutil.rmtree(cache_path, ignore_errors=True)
             # Retry only this clone, not the shallow fetch above: that fetch
             # failing is an *expected* outcome on servers without
             # allowReachableSHA1InWant, and retrying it would add seconds to a
             # designed fallback path rather than to an error path.
-            _run_git_network_op(["git", "clone", git_url, str(cache_path)])
+            _run_git_network_op(
+                ["git", "clone", git_url, str(cache_path)], cleanup_path=cache_path
+            )
             run_git(
                 ["git", "-c", "advice.detachedHead=false", "checkout", "--quiet", sha],
                 cwd=cache_path,
@@ -334,7 +516,7 @@ class GitSourceHandler:
                     clone_args.extend(["--branch", parsed.ref])
                 clone_args.extend([git_url, str(cache_path)])
 
-                _run_git_network_op(clone_args)
+                _run_git_network_op(clone_args, cleanup_path=cache_path)
 
             # Verify clone completed with expected structure
             if not self._verify_clone_integrity(cache_path):
@@ -357,9 +539,12 @@ class GitSourceHandler:
                     "git_url": git_url,
                 },
             )
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, GitCloneTimeoutError) as e:
+            detail = (
+                e.stderr if isinstance(e, subprocess.CalledProcessError) else str(e)
+            )
             raise BundleNotFoundError(
-                f"Failed to clone {git_url}@{ref}: {e.stderr}"
+                f"Failed to clone {git_url}@{ref}: {detail}"
             ) from e
 
         # Return path with subpath if specified

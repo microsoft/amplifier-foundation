@@ -23,20 +23,82 @@ module is responsible for *how* to serialize and validate it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import platform
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from amplifier_core import AmplifierSession
+
 from amplifier_foundation.bundle import BundleModuleResolver
 
 logger = logging.getLogger(__name__)
+
+
+def _kill_subprocess_tree(pid: int) -> None:
+    """Kill a subprocess and its descendants.
+
+    GAP-026: a plain ``process.kill()`` (used on the ``asyncio.TimeoutError``
+    path below) only terminates the immediate child -- the
+    ``python -m amplifier_foundation.subprocess_runner`` process itself. If
+    that child has, in turn, spawned its own tool subprocesses (e.g. a bash
+    tool call made by the delegated subagent), those are not reparented or
+    reaped when only the direct child is killed. Mirrors
+    ``amplifier_foundation.sources.git._kill_process_tree`` (GAP-013/GAP-014),
+    duplicated here rather than imported to keep this module's dependency on
+    ``sources.git`` at zero -- these are two independently-triggerable
+    process-cleanup gaps in otherwise-unrelated code paths, not one shared
+    mechanism.
+
+    GAP-030: on POSIX, ``os.killpg(os.getpgid(pid), ...)`` only isolates the
+    *target* if that target was started in its own process group. The child
+    spawned below used to inherit *our* process group (the default for
+    ``asyncio.create_subprocess_exec``), so ``os.getpgid(pid)`` returned OUR
+    OWN pgid and this call would SIGKILL the calling process (and everything
+    else sharing its group -- e.g. the user's interactive shell) instead of
+    just the runaway child. Confirmed empirically on Linux before the
+    ``start_new_session=True`` fix below: child pgid == our pgid. Fixed at
+    the spawn site so the child gets its own group; this guard is a second,
+    independent line of defense that refuses to act if that ever regresses,
+    rather than trusting the spawn site silently forever.
+    """
+    if platform.system() == "Windows":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        import signal
+
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            target_pgid = os.getpgid(pid)
+            if target_pgid == os.getpgid(0):
+                # GAP-030 defense-in-depth: the target is (still) in OUR
+                # process group -- e.g. start_new_session somehow didn't
+                # take effect. Killing this group would kill the caller.
+                # Fall back to killing just the direct child instead of
+                # silently self-destructing.
+                logger.warning(
+                    "Refusing to killpg pid %s: its process group (%s) is "
+                    "our own. Falling back to killing only the direct "
+                    "child; descendants may be left running.",
+                    pid,
+                    target_pgid,
+                )
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)
+            else:
+                os.killpg(target_pgid, signal.SIGKILL)
+
 
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
 
@@ -396,6 +458,22 @@ async def run_session_in_subprocess(
         if current_mode & (stat.S_IRWXG | stat.S_IRWXO):
             os.chmod(tmp_path, 0o600)
 
+        # GAP-030: on POSIX, spawn the child into its own process group so
+        # that _kill_subprocess_tree's os.killpg() targets the child (and
+        # anything IT spawned) rather than the group this very process is
+        # in. Without this, the child inherits our group by default and
+        # killpg(getpgid(child)) == killpg(our own group) -- confirmed
+        # empirically on Linux: same pgid as the parent before this fix.
+        # Mirrors amplifier_foundation.sources.git._run_git_subprocess,
+        # which got this right for its own subprocess.Popen() call.
+        extra_spawn_kwargs: dict[str, Any] = {}
+        if platform.system() == "Windows":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if creationflags:
+                extra_spawn_kwargs["creationflags"] = creationflags
+        else:
+            extra_spawn_kwargs["start_new_session"] = True
+
         async with semaphore:
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
@@ -406,6 +484,7 @@ async def run_session_in_subprocess(
                 stderr=asyncio.subprocess.PIPE,
                 cwd=project_path,
                 env=_build_child_env(),
+                **extra_spawn_kwargs,
             )
 
             try:
@@ -422,6 +501,25 @@ async def run_session_in_subprocess(
                         process.pid,
                     )
                 raise TimeoutError(f"Subprocess session timed out after {timeout}s")
+            except BaseException:
+                # GAP-026: this function has NO cancellation wiring at all --
+                # unlike in-process delegation (session_spawner.py's
+                # register_child/unregister_child), a subprocess-mode
+                # delegate call is not linked to the parent's
+                # CancellationToken in any way. The only previously-handled
+                # exception here was our OWN asyncio.TimeoutError (default
+                # 1800s). Anything else that unwinds this await -- most
+                # importantly asyncio.CancelledError from the enclosing task
+                # being cancelled (what a real Ctrl+C would have to drive if
+                # this path is ever wired up), but also e.g. a bare
+                # KeyboardInterrupt -- left the child process (and anything
+                # IT spawned, such as a bash tool call made by the delegated
+                # subagent) running fully unsupervised, verified empirically:
+                # confirmed alive both immediately and 3s after cancellation.
+                # See GAP-026 in WINDOWS-GAP-LEDGER.md.
+                if process.returncode is None:
+                    _kill_subprocess_tree(process.pid)
+                raise
 
             raw_stdout = stdout.decode("utf-8")
             stderr_text = stderr.decode("utf-8")
@@ -517,8 +615,12 @@ async def _run_child_session(config_path: str) -> str:
             {name: Path(path) for name, path in module_paths.items()}
         )
         try:
-            from amplifier_app_cli.lib.bundle_loader import AppModuleResolver  # type: ignore[import-untyped,import-not-found]
-            from amplifier_app_cli.paths import create_foundation_resolver  # type: ignore[import-untyped,import-not-found]
+            from amplifier_app_cli.lib.bundle_loader import (
+                AppModuleResolver,  # type: ignore[import-untyped,import-not-found]
+            )
+            from amplifier_app_cli.paths import (
+                create_foundation_resolver,  # type: ignore[import-untyped,import-not-found]
+            )
 
             resolver = AppModuleResolver(
                 bundle_resolver=bundle_resolver,

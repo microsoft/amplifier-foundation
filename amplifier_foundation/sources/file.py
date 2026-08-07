@@ -5,8 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from amplifier_foundation.exceptions import BundleNotFoundError
-from amplifier_foundation.paths.resolution import ParsedURI
-from amplifier_foundation.paths.resolution import ResolvedSource
+from amplifier_foundation.paths.resolution import (
+    ParsedURI,
+    ResolvedSource,
+    describe_cross_platform_path_mismatch,
+)
 
 
 class FileSourceHandler:
@@ -38,6 +41,17 @@ class FileSourceHandler:
             BundleNotFoundError: If file doesn't exist.
         """
         path_str = parsed.path
+
+        # GAP-007: catch an absolute path shaped for a *different* OS before
+        # naive pathlib resolution silently mangles it into a nonsense local
+        # path (e.g. on Windows, Path("/home/x").resolve() prepends the
+        # current drive letter, yielding "C:\home\x", which then fails with
+        # a generic "File not found" that sends the user hunting for a file
+        # that was never expected to exist on this machine). Fail loud with
+        # a message naming the real problem instead.
+        mismatch = describe_cross_platform_path_mismatch(path_str)
+        if mismatch:
+            raise BundleNotFoundError(mismatch)
 
         # Handle relative paths
         if path_str.startswith("./") or path_str.startswith("../"):
