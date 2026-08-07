@@ -30,6 +30,25 @@ Resume sessions using the full `session_id` returned by previous delegate calls:
 session_id: "abc123-def456-..._foundation:explorer"
 ```
 
+### Delegate Timeout
+
+Delegated spawn and resume operations time out after 1800 seconds by default.
+Configure `settings.timeout` with a positive finite number of seconds to change
+the limit, or set it explicitly to `null` to disable the delegate-level timeout.
+
+A timeout returns `success: false` with structured output containing
+`status: timed_out`, the child `session_id`, the agent identity when available,
+and metadata with `timeout_seconds`, `resumable: false`, and
+`resume_status: pending_child_cleanup`. It emits `delegate:error` with
+`error_type: delegate_timeout`, not `delegate:agent_completed`, because the
+cancelled child may still be cleaning up.
+
+Do not immediately resume the returned session ID. The coordinated
+persistence-capable `amplifier-app-cli` spawner may persist the interrupted
+session after cancellation cleanup finishes, but the delegate timeout response
+does not claim that persistence is complete or that the session is ready to
+resume.
+
 ### Tool Inheritance Fix
 
 Agent's explicit tool declarations are always honored, even when parent excludes them. Exclusions apply only to inheritance, not explicit declarations.
@@ -70,7 +89,7 @@ modules:
       exclude_tools:
         - delegate  # Default: spawned agents can't further delegate
       exclude_hooks: []
-      timeout: 300
+      timeout: 1800  # Default; set to null to disable
       max_llm_calls: null      # Layer 1 call budget (spec: 298-replacement).
                                 # None/unset (default): ships dark -- no
                                 # budget is injected into any child session;
