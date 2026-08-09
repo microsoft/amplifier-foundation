@@ -6,6 +6,16 @@ bundle:
 hooks:
   - module: hooks-status-context
     source: git+https://github.com/microsoft/amplifier-module-hooks-status-context@main
-    config:
-      include_datetime: true
-      datetime_include_timezone: false
+    # No config override: the module's own defaults are what we want.
+    #
+    # This previously set `include_datetime: true`, which renders the "Today's date"
+    # field at second resolution. That field is re-rendered live on every single
+    # provider request (it is deliberately never cached, so it cannot go stale), so
+    # second-resolution timestamps make the injected block differ on nearly every
+    # turn -- which defeats provider-side prompt caching. Measured on real Gemini
+    # traffic: -17 to -20 percentage points of implicit cache-hit rate, and a Gemini
+    # miss bills the entire prefix at full price.
+    #
+    # The module now defaults to calendar-day resolution (see
+    # microsoft/amplifier-module-hooks-status-context#9). Do not re-add
+    # `include_datetime: true` here without re-measuring that cost.
