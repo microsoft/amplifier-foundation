@@ -462,7 +462,18 @@ class SessionNamingHook:
           2. Fallback   — next(iter(providers.values()))
 
         model_role resolution requires amplifier_module_hooks_routing. When that
-        module is not installed, logs a warning and falls back to #2.
+        module is not installed (no model_role_resolver capability registered
+        at all), logs a debug message and falls back to #2 — that fallback is
+        legitimate and intended.
+
+        But when a model_role_resolver IS registered and the resolution itself
+        fails (resolves to no candidates, or raises), that is a failure of an
+        explicitly-configured routing preference, not an absent one. Silently
+        substituting the fallback provider in that case would mean a transient
+        resolver error (e.g. a provider API hiccup while listing models) quietly
+        routes a cheap background chore onto the session's primary/expensive
+        model. Instead, abort this naming attempt (return None) and let the
+        self-retrying trigger try again on a later turn.
         """
         try:
             providers = self.coordinator.get("providers")
@@ -491,7 +502,18 @@ class SessionNamingHook:
                         self.config.model_role,
                     )
                 else:
-                    resolved = await resolver.resolve(self.config.model_role)
+                    try:
+                        resolved = await resolver.resolve(self.config.model_role)
+                    except Exception as e:
+                        logger.warning(
+                            "model_role %r resolver raised %s; skipping session"
+                            " naming for this turn rather than silently falling"
+                            " back to the priority (expensive) provider — will"
+                            " retry on a later turn",
+                            self.config.model_role,
+                            e,
+                        )
+                        return None
                     if resolved:
                         # ProviderPreference attrs: .provider, .model, .config
                         resolved_provider_name = resolved[0].provider
@@ -503,11 +525,16 @@ class SessionNamingHook:
                                 break
                     else:
                         logger.warning(
-                            "model_role %r resolved to no candidates",
+                            "model_role %r resolved to no candidates; skipping"
+                            " session naming for this turn rather than silently"
+                            " falling back to the priority (expensive) provider"
+                            " — will retry on a later turn",
                             self.config.model_role,
                         )
+                        return None
 
-            # Fallback: use first/priority provider
+            # Fallback: use first/priority provider (only reached when
+            # model_role is unset, or no resolver capability is registered)
             if provider is None:
                 provider = next(iter(providers.values()), None)
 

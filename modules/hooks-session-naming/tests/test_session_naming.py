@@ -376,6 +376,96 @@ class TestModelRoleResolution:
         request = call_kwargs[0][0]
         assert request.model is None, "No model override without model_role"
 
+    @pytest.mark.asyncio
+    async def test_resolver_empty_result_aborts_without_calling_provider(self) -> None:
+        """Resolver present but resolves to [] must abort, NOT fall back to the
+        priority provider.
+
+        This is the load-bearing regression test for the bug: a resolver that
+        legitimately exists but fails to resolve any candidates (e.g. a transient
+        provider error inside list_models()) must never silently substitute the
+        session's primary/expensive model for a background naming chore.
+        """
+        priority_provider = _make_mock_provider()
+        providers = {"provider-priority": priority_provider}
+
+        resolver = _make_resolver(return_value=[])
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=resolver,
+            model_role="fast",
+        )
+
+        result = await hook._call_provider("name this session")
+
+        assert result is None, (
+            "Must abort (return None) when model_role resolves to no candidates"
+        )
+        assert not priority_provider.complete.called, (
+            "Must NOT silently fall back to the priority provider when an "
+            "explicitly-configured model_role fails to resolve"
+        )
+        resolver.resolve.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_resolver_exception_aborts_without_calling_provider(self) -> None:
+        """Resolver present but resolve() raises must abort, NOT propagate and
+        NOT fall back to the priority provider."""
+        priority_provider = _make_mock_provider()
+        providers = {"provider-priority": priority_provider}
+
+        resolver = _make_resolver()
+        resolver.resolve = AsyncMock(side_effect=RuntimeError("boom"))
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=resolver,
+            model_role="fast",
+        )
+
+        result = await hook._call_provider("name this session")
+
+        assert result is None, (
+            "Must abort (return None) when the resolver raises, not propagate"
+        )
+        assert not priority_provider.complete.called, (
+            "Must NOT silently fall back to the priority provider when the "
+            "resolver raises"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolver_empty_result_logs_warning(self, caplog) -> None:
+        """Aborting due to an empty resolution must be logged at WARNING."""
+        hook = _make_hook(
+            providers={"provider-priority": _make_mock_provider()},
+            model_role_resolver=_make_resolver(return_value=[]),
+            model_role="fast",
+        )
+
+        with caplog.at_level("WARNING"):
+            await hook._call_provider("name this session")
+
+        warnings = [r for r in caplog.records if r.levelno >= 30]
+        assert warnings, (
+            "Expected a WARNING log when model_role resolves to no candidates"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolver_exception_logs_warning(self, caplog) -> None:
+        """Aborting due to a resolver exception must be logged at WARNING."""
+        resolver = _make_resolver()
+        resolver.resolve = AsyncMock(side_effect=RuntimeError("boom"))
+        hook = _make_hook(
+            providers={"provider-priority": _make_mock_provider()},
+            model_role_resolver=resolver,
+            model_role="fast",
+        )
+
+        with caplog.at_level("WARNING"):
+            await hook._call_provider("name this session")
+
+        warnings = [r for r in caplog.records if r.levelno >= 30]
+        assert warnings, "Expected a WARNING log when the resolver raises"
+
 
 # =============================================================================
 # Task 7: Background naming call must not leak llm:stream_* events
