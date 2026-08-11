@@ -112,8 +112,27 @@ def _kill_process_tree(pid: int) -> None:
     else:
         import signal
 
+        # GAP-030 (mirrored from subprocess_runner._kill_subprocess_tree):
+        # os.killpg only isolates the target if that target is in its OWN
+        # process group. Every caller here spawns via _run_git_subprocess,
+        # which sets start_new_session=True, so it always is -- but that is an
+        # invisible coupling between two functions, and if it ever breaks,
+        # killpg would SIGKILL this process and everything sharing its group,
+        # which on an interactive POSIX session includes the user's shell.
+        # Assert the isolation rather than trusting it.
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            target_pgid = os.getpgid(pid)
+            if target_pgid == os.getpgid(0):
+                logger.warning(
+                    "Refusing to killpg(%s): target shares this process's own "
+                    "process group. Killing only the direct child instead -- "
+                    "descendants may leak. This means the subprocess was not "
+                    "started with start_new_session=True.",
+                    target_pgid,
+                )
+                os.kill(pid, signal.SIGKILL)
+            else:
+                os.killpg(target_pgid, signal.SIGKILL)
 
 
 def _run_git_subprocess(
@@ -392,18 +411,33 @@ class GitSourceHandler:
         """
 
         def run_git(args: list[str], cwd: Path | None = None) -> None:
-            # Local-only git plumbing (init/remote add/checkout touch no
-            # network and complete near-instantly), so a plain bounded run is
-            # fine here. The network-touching step below goes through
-            # _run_git_network_op instead, which has the GAP-014 timeout.
-            subprocess.run(
-                args,
-                cwd=cwd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+            # Local-only git plumbing, so a plain bounded run is fine here. The
+            # network-touching step below goes through _run_git_network_op
+            # instead, which has the GAP-014 timeout.
+            #
+            # The 30s bound is NOT purely defensive: two of this helper's four
+            # call sites are `git checkout`, which on a large working tree is
+            # genuinely disk-bound and can exceed 30s. So the timeout path is
+            # reachable in normal use, not just under pathology.
+            #
+            # `subprocess.TimeoutExpired` is a SubprocessError, NOT a
+            # CalledProcessError -- every `except (CalledProcessError,
+            # GitCloneTimeoutError)` handler in this module would let it sail
+            # straight past, so a slow checkout would escape the designed
+            # full-clone fallback as a raw traceback instead of degrading
+            # gracefully. Convert it to GitCloneTimeoutError, which every one
+            # of those handlers already catches.
+            try:
+                subprocess.run(
+                    args,
+                    cwd=cwd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise GitCloneTimeoutError(args, 30) from exc
 
         try:
             # Cheap path: init + shallow fetch of the exact commit.
