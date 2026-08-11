@@ -53,7 +53,15 @@ _CLONE_RETRY_BACKOFF_S = (1.0, 2.0)
 # hangs the calling process forever, with no diagnostic and no way for the
 # user to know why. Overridable because "how long is too long" legitimately
 # varies with repo size and network conditions.
-_CLONE_TIMEOUT_S = float(os.environ.get("AMPLIFIER_GIT_CLONE_TIMEOUT_S", "45"))
+#
+# The bound is deliberately generous rather than tight. The failure it exists
+# to catch is *unbounded* -- a helper waiting on input that can never arrive --
+# so any finite value catches it, and the only thing a tight value buys is
+# false positives on legitimately slow work. A large repository over a slow or
+# metered link genuinely takes minutes; every measured ecosystem clone
+# completes in under a second, so the headroom costs working users nothing and
+# protects the ones on the bad end of the distribution.
+_CLONE_TIMEOUT_S = float(os.environ.get("AMPLIFIER_GIT_CLONE_TIMEOUT_S", "300"))
 
 
 class GitCloneTimeoutError(Exception):
@@ -238,7 +246,19 @@ def _run_git_network_op(
     for attempt in range(_CLONE_MAX_ATTEMPTS):
         try:
             return _run_git_subprocess(args, cwd, _CLONE_TIMEOUT_S)
-        except (subprocess.CalledProcessError, GitCloneTimeoutError) as e:
+        except GitCloneTimeoutError:
+            # Do NOT retry a timeout. Retries exist to absorb *transient*
+            # failures -- a dropped connection mid-transfer, a flaky DNS
+            # answer -- where a second attempt plausibly succeeds. A timeout
+            # is not that: the operation was given a full budget and did not
+            # finish, so re-running it with the same budget buys the same
+            # answer at three times the wait, and the cleanup_path rmtree
+            # between attempts discards whatever partial progress was made.
+            # For the blocked-credential-helper case this bound exists to
+            # catch, retrying is pure added latency in front of an error the
+            # user is going to see anyway.
+            raise
+        except subprocess.CalledProcessError as e:
             last_error = e
             if attempt < _CLONE_MAX_ATTEMPTS - 1:
                 delay = _CLONE_RETRY_BACKOFF_S[attempt]
