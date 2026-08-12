@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -988,3 +989,114 @@ class TestProviderPreferenceConfigWiring:
         assert result_config["temperature"] == 0.3
         # Existing protected key untouched
         assert result_config["api_key"] == "sk-test"
+
+
+class TestListModelsSingleFlightMemoization:
+    """Regression tests: concurrent glob-pattern resolutions must coalesce
+    provider.list_models() into a single upstream call (per provider, per TTL
+    window) instead of firing one GET /v1/models per spawned child session.
+    """
+
+    def _make_coordinator(self, provider: AsyncMock) -> MagicMock:
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"provider-anthropic": provider}
+        return coordinator
+
+    @pytest.mark.asyncio
+    async def test_concurrent_resolutions_fetch_once(self) -> None:
+        """50 parallel spawns resolving the same pattern = 1 upstream call."""
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            return_value=["claude-sonnet-4-5", "claude-haiku-4-5"]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        results = await asyncio.gather(
+            *(
+                resolve_model_pattern("claude-haiku-*", "anthropic", coordinator)
+                for _ in range(50)
+            )
+        )
+
+        assert provider.list_models.await_count == 1
+        assert all(r.resolved_model == "claude-haiku-4-5" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_sequential_resolutions_reuse_within_ttl(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        coordinator = self._make_coordinator(provider)
+
+        for _ in range(5):
+            result = await resolve_model_pattern(
+                "claude-sonnet-*", "anthropic", coordinator
+            )
+            assert result.resolved_model == "claude-sonnet-4-5"
+
+        assert provider.list_models.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_after_ttl_expiry(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        coordinator = self._make_coordinator(provider)
+
+        import amplifier_foundation.spawn_utils as su
+
+        original_ttl = su.LIST_MODELS_CACHE_TTL_SECONDS
+        su.LIST_MODELS_CACHE_TTL_SECONDS = 0.05
+        try:
+            await resolve_model_pattern("claude-*", "anthropic", coordinator)
+            await asyncio.sleep(0.1)
+            await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        finally:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = original_ttl
+
+        assert provider.list_models.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exact_name_never_fetches(self) -> None:
+        provider = AsyncMock()
+        coordinator = self._make_coordinator(provider)
+
+        result = await resolve_model_pattern(
+            "claude-sonnet-4-5", "anthropic", coordinator
+        )
+
+        assert result.resolved_model == "claude-sonnet-4-5"
+        provider.list_models.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_providers_cached_independently(self) -> None:
+        provider_a = AsyncMock()
+        provider_a.list_models = AsyncMock(return_value=["m-a"])
+        coordinator_a = MagicMock()
+        coordinator_a.get.return_value = {"provider-anthropic": provider_a}
+
+        provider_b = AsyncMock()
+        provider_b.list_models = AsyncMock(return_value=["m-b"])
+        coordinator_b = MagicMock()
+        coordinator_b.get.return_value = {"provider-anthropic": provider_b}
+
+        await asyncio.gather(
+            resolve_model_pattern("m-*", "anthropic", coordinator_a),
+            resolve_model_pattern("m-*", "anthropic", coordinator_b),
+        )
+
+        assert provider_a.list_models.await_count == 1
+        assert provider_b.list_models.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failures_are_not_cached(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            side_effect=[RuntimeError("boom"), ["claude-sonnet-4-5"]]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        first = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        assert first.resolved_model is None
+
+        second = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        assert second.resolved_model == "claude-sonnet-4-5"
+        assert provider.list_models.await_count == 2

@@ -9,13 +9,83 @@ when spawning sub-sessions. It supports:
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
+import time
+import weakref
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# TTL for memoizing provider.list_models() during pattern resolution.
+# Every child/delegate spawn with a glob-pattern model hint resolves the
+# pattern by querying the provider live. Parallel delegate waves (e.g. recipe
+# fan-out) otherwise fire one identical GET /v1/models per spawned session.
+# Model catalogs change rarely, so a short TTL is functionally exact while
+# collapsing a whole wave into a single upstream call.
+LIST_MODELS_CACHE_TTL_SECONDS = 60.0
+
+
+@dataclass
+class _ModelListCacheEntry:
+    """Per-provider memoization state for list_models()."""
+
+    expires_at: float = 0.0
+    models: Any = None
+    lock: asyncio.Lock | None = None
+    loop_id: int = 0
+
+
+_MODEL_LIST_CACHE: weakref.WeakKeyDictionary[Any, _ModelListCacheEntry] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+async def _list_models_cached(provider: Any, provider_name: str) -> Any:
+    """Return provider.list_models(), memoized per provider with single-flight.
+
+    Concurrent resolutions against the same provider coalesce into a single
+    upstream call: the first task fetches while the rest await its result.
+    Cache entries are keyed by the provider instance (weakly referenced), so
+    they expire naturally with the provider. Failures are never cached --
+    they propagate exactly as an uncached call would.
+    """
+    try:
+        entry = _MODEL_LIST_CACHE.get(provider)
+    except TypeError:
+        # Provider not weak-referenceable/unhashable -- pass through uncached.
+        return await provider.list_models()
+
+    now = time.monotonic()
+    if entry is not None and entry.models is not None and entry.expires_at > now:
+        return entry.models
+
+    loop_id = id(asyncio.get_running_loop())
+    if entry is None:
+        entry = _ModelListCacheEntry()
+        try:
+            _MODEL_LIST_CACHE[provider] = entry
+        except TypeError:
+            return await provider.list_models()
+    # asyncio primitives are bound to their event loop; rotate the lock if
+    # this provider is being driven from a different loop than before.
+    if entry.lock is None or entry.loop_id != loop_id:
+        entry.lock = asyncio.Lock()
+        entry.loop_id = loop_id
+
+    async with entry.lock:
+        now = time.monotonic()
+        if entry.models is None or entry.expires_at <= now:
+            logger.debug(
+                "Fetching model list from provider '%s' (cache miss/expired)",
+                provider_name,
+            )
+            entry.models = await provider.list_models()
+            entry.expires_at = now + LIST_MODELS_CACHE_TTL_SECONDS
+        return entry.models
 
 PROTECTED_CONFIG_KEYS = frozenset(
     {
@@ -206,7 +276,7 @@ async def resolve_model_pattern(
         if providers:
             provider = _find_provider_instance(providers, provider_name, coordinator)
             if provider and hasattr(provider, "list_models"):
-                models = await provider.list_models()
+                models = await _list_models_cached(provider, provider_name)
                 # Handle both list of strings and list of model objects
                 available_models = [
                     m if isinstance(m, str) else getattr(m, "id", str(m))
