@@ -42,6 +42,7 @@ reproduce Windows file-attribute semantics on POSIX, which isn't possible):
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import sys
@@ -120,7 +121,12 @@ def test_rmtree_robust_raises_when_retry_still_fails(
 
     monkeypatch.setattr(os, "unlink", always_fails)
 
-    with pytest.raises(OSError, match=str(repo)):
+    # `match` is a REGEX, not a substring. On Windows `str(repo)` is a path
+    # like C:\Users\...\repo -- and `\U` there is an invalid regex escape, so
+    # pytest raises `re.error: Invalid regex pattern provided to 'match'`
+    # before it ever evaluates the assertion. Escaping is what makes this test
+    # actually run on the platform the fix exists for.
+    with pytest.raises(OSError, match=re.escape(str(repo))):
         rmtree_robust(repo)
 
     # The directory must still exist -- nothing should look like it was
