@@ -164,7 +164,12 @@ class TestBaseMentionResolver:
         test_file.write_text("# Test")
 
         # Monkeypatch HOME environment variable
+        # Windows Path.expanduser() consults USERPROFILE (or
+        # HOMEDRIVE+HOMEPATH), NOT HOME -- so patching HOME alone left the
+        # real home in place and the resolver found nothing. Set both so
+        # the fake home takes effect on every platform.
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         resolver = BaseMentionResolver()
         result = resolver.resolve("@~/.amplifier/AGENTS.md")
@@ -183,7 +188,12 @@ class TestBaseMentionResolver:
         test_file.write_text("# Test")
 
         # Monkeypatch HOME environment variable
+        # Windows Path.expanduser() consults USERPROFILE (or
+        # HOMEDRIVE+HOMEPATH), NOT HOME -- so patching HOME alone left the
+        # real home in place and the resolver found nothing. Set both so
+        # the fake home takes effect on every platform.
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         resolver = BaseMentionResolver()
         result = resolver.resolve("@~/.amplifier/AGENTS")  # No .md extension

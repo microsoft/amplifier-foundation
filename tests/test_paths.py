@@ -278,12 +278,19 @@ class TestNormalizePath:
     def test_absolute_path(self) -> None:
         """Absolute paths remain absolute."""
         result = normalize_path("/home/user/file.txt")
-        assert result == Path("/home/user/file.txt")
+        # Compare against the RESOLVED form. normalize_path() calls .resolve(),
+        # and on Windows a POSIX-style leading slash is drive-RELATIVE, so
+        # resolve() anchors it to the current drive: "/home/user/file.txt"
+        # becomes "C:/home/user/file.txt". That is correct behaviour, not a
+        # bug -- resolving both sides tests the contract ("absolute stays
+        # absolute, canonicalised") instead of an accident of POSIX where the
+        # input already happens to be canonical.
+        assert result == Path("/home/user/file.txt").resolve()
 
     def test_relative_path_with_base(self) -> None:
         """Relative paths are resolved against base."""
         result = normalize_path("file.txt", relative_to=Path("/home/user"))
-        assert result == Path("/home/user/file.txt")
+        assert result == Path("/home/user/file.txt").resolve()
 
     def test_relative_path_without_base(self) -> None:
         """Relative paths without base use cwd."""
@@ -293,21 +300,21 @@ class TestNormalizePath:
     def test_path_object_input(self) -> None:
         """Accepts Path objects."""
         result = normalize_path(Path("/home/user/file.txt"))
-        assert result == Path("/home/user/file.txt")
+        assert result == Path("/home/user/file.txt").resolve()
 
     def test_tilde_path_expands_home(self) -> None:
         """Tilde paths expand to home directory."""
         result = normalize_path("~/some/file.txt")
         assert "~" not in str(result)
         assert result.is_absolute()
-        assert str(result).endswith("/some/file.txt")
+        assert str(result).endswith(str(Path("some/file.txt")))
 
     def test_tilde_path_with_base_expands_home(self) -> None:
         """Tilde paths expand even when relative_to is provided."""
         result = normalize_path("~/some/file.txt", relative_to=Path("/ignored"))
         assert "~" not in str(result)
         assert result.is_absolute()
-        assert str(result).endswith("/some/file.txt")
+        assert str(result).endswith(str(Path("some/file.txt")))
 
 
 class TestConstructPaths:

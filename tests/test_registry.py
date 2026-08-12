@@ -431,7 +431,12 @@ class TestSubdirectoryBundleLoading:
                 "  name: bundle-main\n"
                 "  version: 1.0.0\n"
                 "includes:\n"
-                f'  - "file://{behavior_path}"\n'
+                # .as_posix(): a Windows path interpolated into a DOUBLE-quoted
+                # YAML scalar breaks the parser -- "file://C:\\Users\\..." makes
+                # YAML read \U as an escape needing 8 hex digits and raise
+                # ScannerError before the bundle is ever loaded. Forward slashes
+                # are also simply correct for a file:// URI on every platform.
+                f'  - "file://{behavior_path.as_posix()}"\n'
                 "---\n"
             )
 
@@ -674,7 +679,12 @@ class TestSubdirectoryBundleLoading:
                 "  name: main\n"
                 "  version: 1.0.0\n"
                 "includes:\n"
-                f'  - "file://{behavior_path}"\n'
+                # .as_posix(): a Windows path interpolated into a DOUBLE-quoted
+                # YAML scalar breaks the parser -- "file://C:\\Users\\..." makes
+                # YAML read \U as an escape needing 8 hex digits and raise
+                # ScannerError before the bundle is ever loaded. Forward slashes
+                # are also simply correct for a file:// URI on every platform.
+                f'  - "file://{behavior_path.as_posix()}"\n'
                 "---\n"
             )
 
