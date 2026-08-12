@@ -56,6 +56,9 @@ class Bundle:
             When absent (the default), the YAML file's own directory is used.  Only
             single-level relative paths are supported; 3+ level nesting is out of scope.
         session: Session config (orchestrator, context).
+        routing: Optional routing configuration (e.g. ``{'matrix': 'openai'}``).
+            Opaque to foundation; interpreted by the host application. Acts as
+            a DEFAULT -- user/project settings override it.
         providers: List of provider configs.
         tools: List of tool configs.
         hooks: List of hook configs.
@@ -98,6 +101,7 @@ class Bundle:
     spawn: dict[str, Any] = field(
         default_factory=dict
     )  # Spawn config (exclude_tools, etc.)
+    routing: dict[str, Any] = field(default_factory=dict)
 
     # Resources
     agents: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -132,6 +136,8 @@ class Bundle:
             self._pending_context = {}
         if self.origins is None:
             self.origins = {}
+        if self.routing is None:
+            self.routing = {}
 
     def compose(self, *others: Bundle) -> Bundle:
         """Compose this bundle with others (later overrides earlier).
@@ -186,6 +192,7 @@ class Bundle:
             tools=list(self.tools),
             hooks=list(self.hooks),
             spawn=dict(self.spawn),
+            routing=dict(self.routing),
             agents=dict(self.agents),
             context=initial_context,
             _pending_context=initial_pending_context,
@@ -234,6 +241,10 @@ class Bundle:
 
             # Spawn config: deep merge (later overrides)
             result.spawn = deep_merge(result.spawn, other.spawn)
+
+            # Routing: deep merge (later overrides). Opaque passthrough --
+            # foundation does not interpret matrix/overrides keys.
+            result.routing = deep_merge(result.routing, other.routing)
 
             # Module lists: merge by module ID
             result.providers = merge_module_lists(result.providers, other.providers)
@@ -297,6 +308,13 @@ class Bundle:
         # Spawn config for tool filtering in spawned agents
         if self.spawn:
             mount_plan["spawn"] = dict(self.spawn)
+
+        # NOTE: self.routing is deliberately NOT included in the mount plan.
+        # The mount plan is the kernel-facing surface; routing is app-layer
+        # policy (which provider/model a role maps to). Adding it here would
+        # leak policy toward the kernel. Host apps read bundle.routing
+        # directly off the Bundle/PreparedBundle to apply their own routing
+        # policy on top of it -- do not "fix" this by adding it back.
 
         return mount_plan
 
@@ -770,6 +788,13 @@ class Bundle:
             data.get("context", {}), base_path
         )
 
+        # Routing is opaque passthrough: foundation stores and merges the dict,
+        # it does not validate or interpret matrix/overrides keys. Non-dict
+        # values (e.g. a bare string) coerce to an empty dict rather than
+        # raising, since foundation has no opinion on the schema.
+        _routing = data.get("routing") or {}
+        routing = _routing if isinstance(_routing, dict) else {}
+
         return cls(
             name=bundle_name,
             version=bundle_meta.get("version", "1.0.0"),
@@ -781,6 +806,7 @@ class Bundle:
             tools=tools,
             hooks=hooks,
             spawn=data.get("spawn", {}),
+            routing=routing,
             agents=_parse_agents(data.get("agents", {}), base_path),
             context=resolved_context,
             _pending_context=pending_context,

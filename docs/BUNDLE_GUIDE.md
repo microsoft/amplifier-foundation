@@ -1237,6 +1237,16 @@ spawn:
   # OR use explicit list:
   # tools: [tool-a, tool-b]         # Agents get ONLY these tools
 
+# Optional default routing matrix. Opaque to foundation -- it stores and
+# deep-merges this dict but does not interpret matrix/overrides. This is a
+# DEFAULT: user/project settings' own `routing:` block always wins. Omit
+# this key entirely and behavior is unchanged from today.
+routing:
+  matrix: openai
+  overrides:
+    coding:
+      model: gpt-5
+
 # Declare which agents this bundle PROVIDES (a mapping value).
 # Not to be confused with the same key in an *agent's* frontmatter, where a
 # string or list value declares which agents that agent may DELEGATE TO --
@@ -1292,6 +1302,8 @@ includes:
 - Later bundles override earlier ones
 - `session`: deep-merged (nested dicts merged recursively, later wins for scalars)
 - `spawn`: deep-merged (later overrides earlier)
+- `routing`: deep-merged (later overrides earlier); this is a DEFAULT -- any
+  `routing:` set in user/project settings overrides whatever a bundle declares
 - `providers`, `tools`, `hooks`: merged by module ID (configs for same module are deep-merged)
 - `agents`: merged by agent name (later wins)
 - `context`: accumulates with namespace prefix (each bundle contributes without collision)
