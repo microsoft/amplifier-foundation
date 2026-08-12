@@ -39,12 +39,46 @@ def test_clone_timeout_default_is_generous_enough_for_slow_links() -> None:
     Pins the policy decision, not the exact number: a bound tight enough to
     fail a legitimate multi-minute clone is a regression for every platform.
     """
-    assert git_mod._CLONE_TIMEOUT_S >= 120.0, (
-        f"clone bound is {git_mod._CLONE_TIMEOUT_S}s -- tight enough to fail a "
-        "legitimate large-repo or slow-link clone. The hang this catches is "
-        "unbounded, so a generous value catches it just as well at no cost to "
+    assert git_mod._CLONE_TIMEOUT_DEFAULT_S >= 120.0, (
+        f"clone bound is {git_mod._CLONE_TIMEOUT_DEFAULT_S}s -- tight enough to "
+        "fail a legitimate large-repo or slow-link clone. The hang this catches "
+        "is unbounded, so a generous value catches it just as well at no cost to "
         "working users."
     )
+
+
+def test_timeout_override_is_read_at_call_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented override must work for the process that reads the advice.
+
+    GitCloneTimeoutError's message tells the user to set
+    AMPLIFIER_GIT_CLONE_TIMEOUT_S. If the value is bound at import, that
+    instruction is false for any caller that sets it after the module loads --
+    the advertised escape hatch silently does nothing.
+    """
+    monkeypatch.delenv("AMPLIFIER_GIT_CLONE_TIMEOUT_S", raising=False)
+    assert git_mod._clone_timeout_s() == git_mod._CLONE_TIMEOUT_DEFAULT_S
+
+    monkeypatch.setenv("AMPLIFIER_GIT_CLONE_TIMEOUT_S", "900")
+    assert git_mod._clone_timeout_s() == 900.0, (
+        "the timeout override was not honoured after the module was imported -- "
+        "the error message advertises an escape hatch that does not work"
+    )
+
+
+@pytest.mark.parametrize("bad_value", ["not-a-number", "0", "-5", ""])
+def test_malformed_timeout_override_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch, bad_value: str
+) -> None:
+    """A malformed override must not turn a working clone into a crash.
+
+    The override exists to help a user on a slow link. Making a typo in it a
+    hard failure at import (or at call) trades one usability problem for a
+    worse one.
+    """
+    monkeypatch.setenv("AMPLIFIER_GIT_CLONE_TIMEOUT_S", bad_value)
+    assert git_mod._clone_timeout_s() == git_mod._CLONE_TIMEOUT_DEFAULT_S
 
 
 def test_timeout_is_not_retried(tmp_path: Path) -> None:

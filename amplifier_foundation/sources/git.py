@@ -16,7 +16,11 @@ from datetime import datetime
 from pathlib import Path
 
 from amplifier_foundation.exceptions import BundleNotFoundError
-from amplifier_foundation.paths.resolution import ParsedURI, ResolvedSource
+from amplifier_foundation.paths.resolution import (
+    ParsedURI,
+    ResolvedSource,
+    describe_cross_platform_path_mismatch,
+)
 from amplifier_foundation.sources._rmtree import rmtree_robust
 from amplifier_foundation.sources.protocol import SourceStatus
 
@@ -123,7 +127,40 @@ _CLONE_RETRY_BACKOFF_S = (1.0, 2.0)
 # metered link genuinely takes minutes; every measured ecosystem clone
 # completes in under a second, so the headroom costs working users nothing and
 # protects the ones on the bad end of the distribution.
-_CLONE_TIMEOUT_S = float(os.environ.get("AMPLIFIER_GIT_CLONE_TIMEOUT_S", "300"))
+_CLONE_TIMEOUT_DEFAULT_S = 300.0
+
+
+def _clone_timeout_s() -> float:
+    """Resolve the per-attempt git timeout, reading the environment each call.
+
+    Read at call time rather than bound at import. GitCloneTimeoutError's
+    message tells the user to set AMPLIFIER_GIT_CLONE_TIMEOUT_S to change the
+    bound; an import-time read makes that instruction false for the process
+    that just printed it, since by the time the user acts on the advice the
+    value is already frozen. Callers are per-attempt and infrequent (a git
+    network op), so re-reading costs nothing measurable.
+
+    An unparseable value falls back to the default rather than raising: a
+    malformed override should not turn a working clone into a crash.
+    """
+    raw = os.environ.get("AMPLIFIER_GIT_CLONE_TIMEOUT_S")
+    if raw is None:
+        return _CLONE_TIMEOUT_DEFAULT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            f"AMPLIFIER_GIT_CLONE_TIMEOUT_S={raw!r} is not a number; "
+            f"using default {_CLONE_TIMEOUT_DEFAULT_S:.0f}s"
+        )
+        return _CLONE_TIMEOUT_DEFAULT_S
+    if value <= 0:
+        logger.warning(
+            f"AMPLIFIER_GIT_CLONE_TIMEOUT_S={raw!r} must be positive; "
+            f"using default {_CLONE_TIMEOUT_DEFAULT_S:.0f}s"
+        )
+        return _CLONE_TIMEOUT_DEFAULT_S
+    return value
 
 
 class GitCloneTimeoutError(Exception):
@@ -276,7 +313,7 @@ def _run_git_network_op(
     the session rather than degrading it silently), one network blip would take
     down a whole session. This absorbs that class of failure.
 
-    Each attempt is bounded by _CLONE_TIMEOUT_S (GAP-014): a git invocation
+    Each attempt is bounded by _clone_timeout_s() (GAP-014): a git invocation
     that never returns is treated as a failed attempt like any other, rather
     than hanging the caller indefinitely.
 
@@ -307,7 +344,7 @@ def _run_git_network_op(
 
     for attempt in range(_CLONE_MAX_ATTEMPTS):
         try:
-            return _run_git_subprocess(args, cwd, _CLONE_TIMEOUT_S)
+            return _run_git_subprocess(args, cwd, _clone_timeout_s())
         except GitCloneTimeoutError:
             # Do NOT retry a timeout. Retries exist to absorb *transient*
             # failures -- a dropped connection mid-transfer, a flaky DNS
@@ -324,10 +361,7 @@ def _run_git_network_op(
             last_error = e
             if attempt < _CLONE_MAX_ATTEMPTS - 1:
                 delay = _CLONE_RETRY_BACKOFF_S[attempt]
-                if isinstance(e, GitCloneTimeoutError):
-                    reason = f"timed out after {_CLONE_TIMEOUT_S:.0f}s"
-                else:
-                    reason = (e.stderr or "").strip()
+                reason = (e.stderr or "").strip()
                 logger.warning(
                     f"git {args[1] if len(args) > 1 else ''} failed "
                     f"(attempt {attempt + 1}/{_CLONE_MAX_ATTEMPTS}), "
@@ -489,7 +523,7 @@ class GitSourceHandler:
             subprocess.CalledProcessError: If both strategies fail (converted
                 to BundleNotFoundError by the caller).
             GitCloneTimeoutError: If the network-touching fetch step hangs
-                past _CLONE_TIMEOUT_S without git returning (GAP-014).
+                past _clone_timeout_s() without git returning (GAP-014).
         """
 
         def run_git(args: list[str], cwd: Path | None = None) -> None:
@@ -542,7 +576,7 @@ class GitSourceHandler:
             _run_git_subprocess(
                 ["git", "fetch", "--depth", "1", "origin", sha],
                 cwd=cache_path,
-                timeout_s=_CLONE_TIMEOUT_S,
+                timeout_s=_clone_timeout_s(),
             )
             run_git(
                 _with_longpaths(
@@ -605,6 +639,22 @@ class GitSourceHandler:
         Raises:
             BundleNotFoundError: If clone fails or ref not found.
         """
+        # GAP-007, local-clone case. A git+file:// source carries a real
+        # filesystem path, so it is subject to the same foreign-OS mismatch
+        # the file and zip handlers already guard against: a config written
+        # on one OS and run on another yields an opaque "repository not
+        # found" from git rather than naming the actual problem.
+        #
+        # Scoped deliberately to the file inner-scheme. For a network remote,
+        # parsed.path is the repo's path on the *host* (e.g.
+        # "/microsoft/amplifier-foundation") and is POSIX-absolute by shape;
+        # checking it unconditionally would reject every git+https:// source
+        # on Windows.
+        if parsed.scheme == "git+file":
+            mismatch = describe_cross_platform_path_mismatch(parsed.path)
+            if mismatch:
+                raise BundleNotFoundError(mismatch)
+
         git_url = self._build_git_url(parsed)
         ref = parsed.ref or "HEAD"
         cache_path = self._get_cache_path(parsed, cache_dir)
