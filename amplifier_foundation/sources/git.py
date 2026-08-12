@@ -10,7 +10,6 @@ import logging
 import os
 import platform
 import re
-import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -18,6 +17,7 @@ from pathlib import Path
 
 from amplifier_foundation.exceptions import BundleNotFoundError
 from amplifier_foundation.paths.resolution import ParsedURI, ResolvedSource
+from amplifier_foundation.sources._rmtree import rmtree_robust
 from amplifier_foundation.sources.protocol import SourceStatus
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,68 @@ _FULL_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 def _is_full_commit_sha(ref: str) -> bool:
     """Check whether a ref is a full 40-hex-character commit SHA."""
     return bool(_FULL_COMMIT_SHA_PATTERN.match(ref))
+
+
+def _with_longpaths(args: list[str]) -> list[str]:
+    """Insert ``-c core.longpaths=true`` into a git argv, right after the executable.
+
+    Windows' legacy MAX_PATH limit (260 characters) can cause git to report a
+    successful clone ("Clone succeeded") while its *checkout* step silently
+    fails with "Filename too long" / "cannot create directory at ...",
+    leaving a partial working tree. ``_verify_clone_integrity`` then detects
+    that partial tree as invalid on every subsequent run -- a permanent,
+    silent failure loop for any repo whose (cache-prefix + repo-relative
+    path) combination exceeds 260 characters. Confirmed on a real Windows box
+    cloning ``amplifier-bundle-evaluation``.
+
+    ``core.longpaths=true`` makes git use the Unicode ``\\\\?\\``-prefixed
+    Win32 APIs, which are not subject to MAX_PATH. It is passed per-
+    invocation (``-c``), never written to the user's global/system git
+    config: this module should never reach outside its own operations to
+    change machine state the user did not ask it to change.
+
+    Applied unconditionally on every platform, not gated to
+    ``platform.system() == "Windows"``: git treats the setting as a no-op on
+    POSIX, where no equivalent path-length ceiling exists, so the
+    unconditional form is exactly as safe as a Windows-only branch while
+    keeping a single code path -- the same one exercised by every test on
+    every platform, rather than a branch only a native Windows run would
+    ever execute.
+
+    Only applied by callers whose git subcommand actually materializes
+    working-tree paths (``clone``, ``checkout``) -- not ``init``/``remote
+    add``/``fetch``, whose writes (``.git/config``, the hash-addressed
+    object store) are not subject to MAX_PATH regardless of the
+    repository's own directory structure.
+    """
+    return [args[0], "-c", "core.longpaths=true", *args[1:]]
+
+
+# Substrings observed in git's stderr when a Windows MAX_PATH (260-character)
+# limit is the actual cause of a clone/checkout failure. Matched
+# case-insensitively. Kept as a short, explicit allowlist (not a fuzzy
+# heuristic) because misclassifying an unrelated error as "long path" would
+# send the next person chasing the wrong fix.
+_LONG_PATH_ERROR_MARKERS = (
+    "filename too long",
+    "cannot create directory at",
+)
+
+
+def _is_long_path_error(stderr: str) -> bool:
+    """Whether git's stderr matches the known Windows MAX_PATH failure signature.
+
+    ``core.longpaths=true`` (see ``_with_longpaths``) is not a complete cure:
+    it does not help every Win32 API, some tools still choke on very long
+    paths, and on some systems the OS-level "Enable Win32 long paths" policy
+    (the ``LongPathsEnabled`` registry value / Local Group Policy setting)
+    also has to be turned on system-wide before the full path is usable at
+    all. If a clone still fails this way after the flag is applied, the
+    failure must say so plainly instead of degrading into a generic "clone
+    failed".
+    """
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _LONG_PATH_ERROR_MARKERS)
 
 
 # Retry policy for network-touching git operations (clone/fetch).
@@ -272,7 +334,7 @@ def _run_git_network_op(
                     f"retrying in {delay}s: {reason}"
                 )
                 if cleanup_path is not None:
-                    shutil.rmtree(cleanup_path, ignore_errors=True)
+                    rmtree_robust(cleanup_path, ignore_errors=True)
                 time.sleep(delay)
 
     assert last_error is not None  # loop always sets it before exhausting
@@ -483,14 +545,16 @@ class GitSourceHandler:
                 timeout_s=_CLONE_TIMEOUT_S,
             )
             run_git(
-                [
-                    "git",
-                    "-c",
-                    "advice.detachedHead=false",
-                    "checkout",
-                    "--quiet",
-                    "FETCH_HEAD",
-                ],
+                _with_longpaths(
+                    [
+                        "git",
+                        "-c",
+                        "advice.detachedHead=false",
+                        "checkout",
+                        "--quiet",
+                        "FETCH_HEAD",
+                    ]
+                ),
                 cwd=cache_path,
             )
         except (subprocess.CalledProcessError, GitCloneTimeoutError) as e:
@@ -505,16 +569,26 @@ class GitSourceHandler:
                 f"Shallow fetch of commit {sha} from {git_url} failed "
                 f"({detail}); falling back to full clone + checkout"
             )
-            shutil.rmtree(cache_path, ignore_errors=True)
+            rmtree_robust(cache_path, ignore_errors=True)
             # Retry only this clone, not the shallow fetch above: that fetch
             # failing is an *expected* outcome on servers without
             # allowReachableSHA1InWant, and retrying it would add seconds to a
             # designed fallback path rather than to an error path.
             _run_git_network_op(
-                ["git", "clone", git_url, str(cache_path)], cleanup_path=cache_path
+                _with_longpaths(["git", "clone", git_url, str(cache_path)]),
+                cleanup_path=cache_path,
             )
             run_git(
-                ["git", "-c", "advice.detachedHead=false", "checkout", "--quiet", sha],
+                _with_longpaths(
+                    [
+                        "git",
+                        "-c",
+                        "advice.detachedHead=false",
+                        "checkout",
+                        "--quiet",
+                        sha,
+                    ]
+                ),
                 cwd=cache_path,
             )
 
@@ -540,7 +614,7 @@ class GitSourceHandler:
             # Verify cache integrity before using
             if not self._verify_clone_integrity(cache_path):
                 logger.warning(f"Cached clone is invalid, removing: {cache_path}")
-                shutil.rmtree(cache_path, ignore_errors=True)
+                rmtree_robust(cache_path)
             else:
                 result_path = cache_path
                 if parsed.subpath:
@@ -555,7 +629,7 @@ class GitSourceHandler:
 
         # Remove partial clone if exists
         if cache_path.exists():
-            shutil.rmtree(cache_path)
+            rmtree_robust(cache_path)
 
         try:
             if parsed.ref and _is_full_commit_sha(parsed.ref):
@@ -570,12 +644,14 @@ class GitSourceHandler:
                     clone_args.extend(["--branch", parsed.ref])
                 clone_args.extend([git_url, str(cache_path)])
 
-                _run_git_network_op(clone_args, cleanup_path=cache_path)
+                _run_git_network_op(
+                    _with_longpaths(clone_args), cleanup_path=cache_path
+                )
 
             # Verify clone completed with expected structure
             if not self._verify_clone_integrity(cache_path):
                 # Clone succeeded but result is invalid - remove and raise error
-                shutil.rmtree(cache_path, ignore_errors=True)
+                rmtree_robust(cache_path, ignore_errors=True)
                 raise BundleNotFoundError(
                     f"Clone of {git_url}@{ref} completed but result is invalid "
                     "(missing pyproject.toml/setup.py/bundle.md/amplifier.toml). "
@@ -597,8 +673,28 @@ class GitSourceHandler:
             detail = (
                 e.stderr if isinstance(e, subprocess.CalledProcessError) else str(e)
             )
+            hint = ""
+            if isinstance(e, subprocess.CalledProcessError) and _is_long_path_error(
+                detail
+            ):
+                # core.longpaths=true (see _with_longpaths) is already applied
+                # to this clone, but it is not a complete cure -- name the
+                # likely cause explicitly instead of letting this degrade
+                # into a generic "clone failed" the next person has to
+                # re-diagnose from scratch.
+                hint = (
+                    "\nThis looks like Windows' MAX_PATH (260 character) path "
+                    "limit. This clone already ran with -c core.longpaths=true, "
+                    "but that setting alone does not help every Windows API, "
+                    "and some systems additionally require enabling the "
+                    "OS-level 'Enable Win32 long paths' policy system-wide "
+                    "(Local Group Policy: Computer Configuration > "
+                    "Administrative Templates > System > Filesystem, or the "
+                    "'LongPathsEnabled' registry value under "
+                    "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem)."
+                )
             raise BundleNotFoundError(
-                f"Failed to clone {git_url}@{ref}: {detail}"
+                f"Failed to clone {git_url}@{ref}: {detail}{hint}"
             ) from e
 
         # Return path with subpath if specified
@@ -711,7 +807,7 @@ class GitSourceHandler:
 
         # Remove existing cache
         if cache_path.exists():
-            shutil.rmtree(cache_path)
+            rmtree_robust(cache_path)
 
         # Re-resolve (will clone fresh)
         return await self.resolve(parsed, cache_dir)
