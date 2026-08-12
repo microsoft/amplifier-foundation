@@ -558,6 +558,8 @@ class TestRunSessionInSubprocess:
         project_path = str(tmp_path)
 
         mock_process = MagicMock()
+        mock_process.pid = 12345
+        mock_process.returncode = None
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
 
@@ -565,16 +567,19 @@ class TestRunSessionInSubprocess:
             "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
         ):
             with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
-                with pytest.raises(TimeoutError, match="timed out after 30s"):
-                    await run_session_in_subprocess(
-                        config=config,
-                        prompt=prompt,
-                        parent_id=parent_id,
-                        project_path=project_path,
-                        timeout=30,
-                    )
+                with patch(
+                    "amplifier_foundation.subprocess_runner._kill_subprocess_tree"
+                ) as mock_kill_tree:
+                    with pytest.raises(TimeoutError, match="timed out after 30s"):
+                        await run_session_in_subprocess(
+                            config=config,
+                            prompt=prompt,
+                            parent_id=parent_id,
+                            project_path=project_path,
+                            timeout=30,
+                        )
 
-        mock_process.kill.assert_called_once()
+        mock_kill_tree.assert_called_once_with(mock_process.pid)
         mock_process.wait.assert_called_once()
 
     @pytest.mark.asyncio
@@ -602,6 +607,7 @@ class TestRunSessionInSubprocess:
 
         mock_process = MagicMock()
         mock_process.pid = 12345
+        mock_process.returncode = None
         mock_process.kill = MagicMock()
         # MagicMock (not AsyncMock) intentional: the patched asyncio.wait_for
         # raises TimeoutError before any await happens, so the wait() return
@@ -619,17 +625,20 @@ class TestRunSessionInSubprocess:
                 "asyncio.wait_for",
                 side_effect=[asyncio.TimeoutError(), asyncio.TimeoutError()],
             ):
-                with caplog.at_level(logging.WARNING):
-                    with pytest.raises(TimeoutError, match="timed out after 30s"):
-                        await run_session_in_subprocess(
-                            config=config,
-                            prompt=prompt,
-                            parent_id=parent_id,
-                            project_path=project_path,
-                            timeout=30,
-                        )
+                with patch(
+                    "amplifier_foundation.subprocess_runner._kill_subprocess_tree"
+                ) as mock_kill_tree:
+                    with caplog.at_level(logging.WARNING):
+                        with pytest.raises(TimeoutError, match="timed out after 30s"):
+                            await run_session_in_subprocess(
+                                config=config,
+                                prompt=prompt,
+                                parent_id=parent_id,
+                                project_path=project_path,
+                                timeout=30,
+                            )
 
-        mock_process.kill.assert_called_once()
+        mock_kill_tree.assert_called_once_with(mock_process.pid)
         assert "did not exit" in caplog.text
 
     @pytest.mark.asyncio

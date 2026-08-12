@@ -492,7 +492,8 @@ async def run_session_in_subprocess(
                     process.communicate(), timeout=timeout
                 )
             except asyncio.TimeoutError:
-                process.kill()
+                if process.returncode is None:
+                    _kill_subprocess_tree(process.pid)
                 try:
                     await asyncio.wait_for(process.wait(), timeout=10)
                 except asyncio.TimeoutError:
