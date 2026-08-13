@@ -136,30 +136,48 @@ class TestGap011InterruptKillsWholeProcessTree:
         parent_pid_marker = tmp_path / "parent.pid"
         child_pid_marker = tmp_path / "child.pid"
 
+        args = [sys.executable, str(script), "parent", str(tmp_path)]
+
         # Simulate a real Ctrl+C landing exactly where GAP-025 found it
         # can: inside `proc.communicate()`, while _run_git_subprocess is
         # blocked waiting on the (deterministic, stand-in) "hung" tree.
-        # Only the FIRST communicate() call raises -- and only once BOTH
-        # stand-in processes have confirmed they are alive, so we are
-        # genuinely testing "interrupt while an already-established tree
-        # is running", not racing the child's own startup. Subsequent
-        # communicate() calls (taskkill's own subprocess.run, and
-        # _run_git_subprocess's own post-kill reap) must behave normally,
-        # or this test would also break the cleanup it's trying to verify.
+        #
+        # Only the FIRST communicate() call *on our own stand-in
+        # subprocess* raises -- matched by identity (`self.args == args`),
+        # NOT by a global ordinal ("the first call anywhere in this
+        # process"). `subprocess.Popen.communicate` is a single, process-
+        # wide class attribute: patching it and counting calls globally
+        # means ANY other Popen().communicate() in this process (pytest's
+        # own machinery, a leftover subprocess from a previous test, an
+        # antivirus/CI helper, taskkill's own subprocess.run -- anything)
+        # can steal "call #1" before our target subprocess's own call ever
+        # happens. If that happens, our intended call becomes call #2 (or
+        # later) and silently falls through to the REAL, un-mocked
+        # `communicate()` with the REAL 60s timeout -- producing a bogus
+        # `GitCloneTimeoutError` instead of the `KeyboardInterrupt` this
+        # test means to inject, with no indication that interception (not
+        # the product's interrupt-cleanup path) is what actually failed.
+        # Matching by the exact argv of the subprocess this test itself
+        # spawned closes that whole class of race, regardless of what else
+        # is running in this process.
+        #
+        # Subsequent communicate() calls on our OWN stand-in proc (the
+        # post-kill reap) and calls on OTHER procs (taskkill's own
+        # subprocess.run) must behave normally, or this test would also
+        # break the cleanup it's trying to verify -- both fall through to
+        # the real implementation below.
         original_communicate = subprocess.Popen.communicate
-        calls = {"n": 0}
+        triggered = {"done": False}
 
         def fake_communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
-            calls["n"] += 1
-            if calls["n"] == 1:
+            if not triggered["done"] and list(self.args) == args:
+                triggered["done"] = True
                 _wait_for_marker(parent_pid_marker)
                 _wait_for_marker(child_pid_marker)
                 raise KeyboardInterrupt()
             return original_communicate(self, input, timeout=timeout)
 
         monkeypatch.setattr(subprocess.Popen, "communicate", fake_communicate)
-
-        args = [sys.executable, str(script), "parent", str(tmp_path)]
 
         parent_pid: int | None = None
         child_pid: int | None = None
