@@ -19,7 +19,13 @@ class TestFindNearestBundleFile:
             registry = BundleRegistry(home=base / "home")
             result = registry._find_nearest_bundle_file(start=base, stop=base)
 
-            assert result == base / "bundle.md"
+            # _find_nearest_bundle_file resolves its result (Path.resolve()).
+            # On Windows, tempfile.TemporaryDirectory() may hand back a path
+            # containing an 8.3 short component (e.g. "RUNNER~1") while
+            # resolve() returns the canonical long form (e.g. "runneradmin").
+            # Both spellings name the same directory, so resolve the expected
+            # side too rather than comparing raw/short vs. canonical/long.
+            assert result == (base / "bundle.md").resolve()
 
     def test_finds_bundle_yaml_in_start_directory(self) -> None:
         """Finds bundle.yaml in the starting directory."""
@@ -30,7 +36,8 @@ class TestFindNearestBundleFile:
             registry = BundleRegistry(home=base / "home")
             result = registry._find_nearest_bundle_file(start=base, stop=base)
 
-            assert result == base / "bundle.yaml"
+            # See resolve() note in test_finds_bundle_md_in_start_directory above.
+            assert result == (base / "bundle.yaml").resolve()
 
     def test_prefers_bundle_md_over_bundle_yaml(self) -> None:
         """When both exist, prefers bundle.md."""
@@ -42,7 +49,8 @@ class TestFindNearestBundleFile:
             registry = BundleRegistry(home=base / "home")
             result = registry._find_nearest_bundle_file(start=base, stop=base)
 
-            assert result == base / "bundle.md"
+            # See resolve() note in test_finds_bundle_md_in_start_directory above.
+            assert result == (base / "bundle.md").resolve()
 
     def test_walks_up_to_find_bundle(self) -> None:
         """Walks up directories to find bundle file."""
@@ -66,7 +74,8 @@ class TestFindNearestBundleFile:
             )
 
             # Should find root's bundle.md
-            assert result == base / "bundle.md"
+            # See resolve() note in test_finds_bundle_md_in_start_directory above.
+            assert result == (base / "bundle.md").resolve()
 
     def test_returns_none_when_not_found(self) -> None:
         """Returns None when no bundle file found."""

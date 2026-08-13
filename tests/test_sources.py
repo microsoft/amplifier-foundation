@@ -59,9 +59,16 @@ class TestFileSourceHandler:
             )
             result = await handler.resolve(parsed, Path(tmpdir) / "cache")
 
-            assert result.active_path == test_file
+            # FileSourceHandler.resolve() calls Path.resolve() internally. On
+            # Windows, tempfile.TemporaryDirectory() may hand back a path
+            # containing an 8.3 short component (e.g. "RUNNER~1") while
+            # resolve() returns the canonical long form (e.g. "runneradmin").
+            # Both spellings name the same file/directory, so resolve the
+            # expected side too rather than comparing raw/short vs.
+            # canonical/long.
+            assert result.active_path == test_file.resolve()
             # source_root is the parent directory for non-cached files
-            assert result.source_root == test_file.parent
+            assert result.source_root == test_file.parent.resolve()
 
     @pytest.mark.asyncio
     async def test_resolve_with_subpath(self) -> None:
@@ -82,7 +89,8 @@ class TestFileSourceHandler:
             )
             result = await handler.resolve(parsed, base / "cache")
 
-            assert result.active_path == subdir
+            # See resolve() note in test_resolve_existing_file above.
+            assert result.active_path == subdir.resolve()
             assert result.source_root == (base / "bundles").resolve()
 
 
