@@ -135,6 +135,34 @@ class TestParseUri:
         assert result.scheme == "file"
         assert result.path == "./bundles/my-bundle"
 
+    def test_windows_drive_letter_path(self) -> None:
+        """Parses Windows drive-letter paths as file URIs."""
+        result = parse_uri("C:/Users/test/bundle")
+        assert result.scheme == "file"
+        assert result.path == "C:/Users/test/bundle"
+        assert result.is_file
+
+    def test_windows_drive_letter_backslash_path(self) -> None:
+        """Parses Windows backslash drive-letter paths as file URIs."""
+        result = parse_uri(r"C:\Users\test\bundle")
+        assert result.scheme == "file"
+        assert result.path == r"C:\Users\test\bundle"
+        assert result.is_file
+
+    def test_windows_unc_path(self) -> None:
+        """Parses Windows UNC paths as file URIs."""
+        result = parse_uri(r"\\server\share\bundle")
+        assert result.scheme == "file"
+        assert result.path == r"\\server\share\bundle"
+        assert result.is_file
+
+    def test_windows_file_uri_with_drive_letter(self) -> None:
+        """Parses file:// URIs containing a drive letter."""
+        result = parse_uri("file://C:/Users/test/bundle")
+        assert result.scheme == "file"
+        assert result.path == "C:/Users/test/bundle"
+        assert result.is_file
+
 
 class TestNormalizePath:
     """Tests for normalize_path function."""
