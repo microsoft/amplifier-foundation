@@ -37,6 +37,7 @@ Repo conventions live in two classes of file. The distinction is about *loading 
 
 | File | Holds | When it's read / written |
 |------|-------|--------------------------|
+| `VISION.md` | The desired end state the repo is converging toward, and what it deliberately resists. For repos steering against a governing contract — see below. | Read before designing; amended only with evidence, never edited to record what shipped. |
 | `PRINCIPLES.md` | Philosophical context, architectural invariants, upstream-spec linkage, intentional deltas, pointers to ADRs and design docs. | Read before designing or planning a change. |
 | `SMOKE_TESTS.md` | The repo's smoke runnable(s) and any cross-repo smokes to run when changes touch dependents. | Read **twice** — at planning (design *to* the rubric) and at verification (run it). |
 | `KNOWN_ISSUES.md` | Known-broken, deliberately-deferred, or unsupported items, plus intent and good ideas for future work. | Read when scoping; written when work is deferred (offer and confirm first — see below). |
@@ -103,6 +104,42 @@ Owners have learned which gates catch real bugs in their code. Skipping a gate t
 
 ---
 
+## Steering Toward a Governing Contract
+
+Some repos are not free to move in whatever direction they like. They implement an upstream spec, serve a published schema, honor an API contract, or carry a design charter someone else owns. In those repos a change has to answer a second question beyond *does this work?* — namely *which way does this move us, relative to the thing we are bound to?*
+
+This section is for those repos only. A repo with no governing contract has no direction to drift from and should not manufacture one. But where the contract is real, so is the drift, and it arrives quietly: one locally-reasonable change at a time, each defensible on its own, none of them recorded as a decision.
+
+**State the destination in a file, and never edit that file for status.** A `VISION.md` says what the repo is converging toward, written as though already true — the north star, the principles it operates by, what it deliberately resists. What shipped, what is in flight, and what comes next are status and sequencing; those belong in the issue queue and in whatever ledgers the repo keeps. That separation is the whole discipline: *a page that has to be edited when a feature ships is a status report wearing a vision's name*, and it will end up competing with the ledgers instead of being the thing they are measured against. Amendments carry evidence — a failure this framing would have caught, or a cost it retires — and land in a dated changelog on the page itself, so the vision's own history stays legible.
+
+**Price each direction differently.** How much friction a change meets should depend on which way it moves relative to the contract, not on how large it is:
+
+| Direction relative to the contract | Posture | What the change owes |
+|------------------------------------|---------|----------------------|
+| **Toward** — closes a gap with the contract | Easy and supported; presumption of yes | The normal evidence for its change class. No ledger entry: conforming is the default state, not a deviation. |
+| **Into unspecified territory** — the contract is silent here | Resisted, but permitted | An argument for why the silence is not itself a signal, plus proof the change is additive and non-interfering — anything written to the contract behaves identically. |
+| **Away** — moves against what the contract specifies | Hard, and readily pushed back on | Measured evidence that the contract-literal behavior actually failed, behavior that fails loudly rather than resolving quietly toward success, and a ledger entry recording the deviation. |
+
+Three postures, not two, and *resisted* is not *forbidden* — the middle tier is a toll, not a wall, and most extensions worth having pass through it and pay it. **Name the tier in the PR.** A tier is a claim a reviewer can disagree with, which is only possible if it was stated; an unstated tier defaults in practice to the cheapest one.
+
+**If you see something, do something.** A vision cannot only be examined when someone sits down to examine it. During *any* work in the repo — including work with nothing to do with the vision — watch for observations against the currently documented vision: the repo drifting from what the page says, the page drifting from what the team actually believes, a shipped surface contradicting a stated principle. Capture them **without derailing the work at hand** — a labeled issue citing the passage it bears on, plus an `## Observations` heading in the PR body when one arises mid-PR. That heading is honest when empty: "none arose" is a finding, not a blank to fill. Observations never gate the work that surfaced them, which is exactly what makes the duty affordable — one issue, not a detour. Triage them periodically and *as a set*, because one observation is often noise and five are a pattern, and record the outcome as one of three: an amendment to the vision, a filed work item, or a decline that says why it changes nothing. A declined observation that says why keeps most of its value; a silently-closed one is lost.
+
+**Defend against drift in layers.** No single check sees every class of drift, because each layer is blind to what the next one up is looking at. Adopt only the layers your repo has a real source for — a repo with no upstream contract has no vendored truth and should not invent one.
+
+| Layer | What it is | The class it catches that the others cannot |
+|-------|------------|---------------------------------------------|
+| Vendored truth | The governing contract copied into the repo and pinned to a known upstream revision | Disagreement about what the contract actually says. Upstream movement becomes an event that re-opens every decision resting on the old text. |
+| Deterministic guards | Tests pinning each load-bearing doc claim to **its source in code** | Docs going stale. A page-only assertion ("the page says 500") passes forever and fails only when someone edits the page — the one case needing no guard. The assertion has to read the value from the code and fail when the *code* moves. |
+| An executable conformance matrix | One row per normative statement: the verbatim contract text, the decided disposition, the ledger entry licensing it, and an assertion that fails when the behavior moves | Unrecorded movement **in either direction** — including drifting silently *back* into conformance at a point where the ledger says the deviation was deliberate. Drift is any movement not recorded in the ledger. A flipped assertion names the ledger entry that must change; editing the assertion to match the new behavior is the one illegal exit. |
+| Periodic holistic review | A semantic read of the whole — docs, examples, guidance surfaces, ledgers — against the contract *and* against the stated vision, with the collected observations as a named input | What no local check can see: a README teaching one mental model while an example demonstrates another; records individually well-formed and collectively obsolete. |
+| A meta-protocol | The rules governing the layers themselves | Machinery accreting. Amendments need measured evidence; every guard names its retirement condition; machinery whose condition has fired is **removed, not deprecated**. |
+
+The last row is the one most often skipped, and it is the one that keeps the other four affordable. Every guard costs runtime, review attention, and friction on every unrelated change that has to walk past it. Yesterday's scaffolding is today's tax, and a protocol that cannot delete its own machinery only grows.
+
+**A working exemplar.** [`microsoft/amplifier-bundle-attractor`](https://github.com/microsoft/amplifier-bundle-attractor) runs this pattern against the upstream [`strongdm/attractor`](https://github.com/strongdm/attractor) spec, and its files read as a reference implementation: [`docs/VISION.md`](https://github.com/microsoft/amplifier-bundle-attractor/blob/main/docs/VISION.md) (the vision and its amendment meta-protocol), [`docs/QUALITY_PROTOCOL.md`](https://github.com/microsoft/amplifier-bundle-attractor/blob/main/docs/QUALITY_PROTOCOL.md) (the decision matrix in section 3, the observation convention in 4, the five layers in 5, the meta-protocol and its self-ablation rule in 7), [`SPEC_CONFORMANCE.md`](https://github.com/microsoft/amplifier-bundle-attractor/blob/main/SPEC_CONFORMANCE.md) (the compatibility doctrine and the deviation ledger it decides), and [`specs/conformance/attractor-matrix.yaml`](https://github.com/microsoft/amplifier-bundle-attractor/blob/main/specs/conformance/attractor-matrix.yaml) (the executable matrix). Read it for the shape rather than the specifics: its lint rules, ledger formats, guard files and pinned upstream revision are that repo's local answers to general questions — *what is your normative source, what pins your claims to it, and what is the record of deliberate deviation?* Every repo's answers look different. Its maintainers have offered to help seed a customized version for another repo — open an issue there.
+
+---
+
 ## Author Guidance (If You Own a Repo)
 
 Write down what the next agent or contributor needs to know. The audience has no prior context.
@@ -112,6 +149,8 @@ Write down what the next agent or contributor needs to know. The audience has no
 **In `.github/PULL_REQUEST_TEMPLATE.md`:** the verification checklist a PR body must address; evidence requirements (logs, screenshots, smoke output); links to the gates and their commands.
 
 **In `KNOWN_ISSUES.md`:** issues you are deliberately deferring, each with one line on *why not now*; intent and good ideas for future work that would address shortcomings of the current system. Not a workaround log for current bugs (those are pitfalls in `AGENTS.md`), and not a dumping ground — an entry goes in only after the user confirms it is worth keeping.
+
+**In `VISION.md` (only if your repo steers against a governing contract):** the end state it is converging toward, stated as though already true, and what it deliberately resists. Keep status out of it — what shipped belongs in the issue queue and in your ledgers, not here. See *Steering Toward a Governing Contract* above for the pattern and a worked example.
 
 **Keep them short.** Twenty lines of actionable checklist beat two hundred lines of philosophy. Philosophy lives here in foundation; specifics live in your repo. **Update them when you learn something** — a bug that bit twice is a pitfall worth documenting; a new gate belongs in the template. These are living documents, and keeping them current is not the owner's job alone: every contributor captures lessons back as the work happens (see *Capturing what you learned* above).
 
@@ -128,6 +167,6 @@ Write down what the next agent or contributor needs to know. The audience has no
 
 ## TL;DR
 
-Before — and during — work in a repo, read its conventions. The always-loaded files (`AGENTS.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `CONTRIBUTING.md`) set the baseline; the contextual files (`PRINCIPLES.md`, `SMOKE_TESTS.md`, `KNOWN_ISSUES.md`) carry phase-specific knowledge. Read what exists before you start, and **re-read the relevant files at each major shift in what you are doing** — they fall out of context, and each reads differently through the current lens. Honor the PR template, run the gates, and when the repo's rules contradict your defaults, the repo wins. Before you call work done, **capture the lessons it surfaced back into the file that owns them** — routing across repos only where awareness rules allow.
+Before — and during — work in a repo, read its conventions. The always-loaded files (`AGENTS.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `CONTRIBUTING.md`) set the baseline; the contextual files (`VISION.md`, `PRINCIPLES.md`, `SMOKE_TESTS.md`, `KNOWN_ISSUES.md`) carry phase-specific knowledge. Read what exists before you start, and **re-read the relevant files at each major shift in what you are doing** — they fall out of context, and each reads differently through the current lens. Honor the PR template, run the gates, and when the repo's rules contradict your defaults, the repo wins. If the repo steers against a governing contract — an upstream spec, a schema, an API contract, a charter — check which way your change moves relative to it, and name that direction in the PR. Before you call work done, **capture the lessons it surfaced back into the file that owns them** — routing across repos only where awareness rules allow.
 
 The repo owner has learned things you have not. Read what they wrote — and keep reading it.
