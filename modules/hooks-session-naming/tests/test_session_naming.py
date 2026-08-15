@@ -377,14 +377,21 @@ class TestModelRoleResolution:
         assert request.model is None, "No model override without model_role"
 
     @pytest.mark.asyncio
-    async def test_resolver_empty_result_aborts_without_calling_provider(self) -> None:
-        """Resolver present but resolves to [] must abort, NOT fall back to the
-        priority provider.
+    async def test_resolver_empty_result_falls_back_to_priority_provider(
+        self, caplog
+    ) -> None:
+        """Resolver present but resolves to [] must fall back to the session's
+        priority provider AND log a WARNING identifying the unresolved role
+        and the provider substituted for it -- naming must still run.
 
         This is the load-bearing regression test for the bug: a resolver that
-        legitimately exists but fails to resolve any candidates (e.g. a transient
-        provider error inside list_models()) must never silently substitute the
-        session's primary/expensive model for a background naming chore.
+        resolves to no candidates for a configured model_role (e.g. no "fast"
+        model configured for the active provider) is a *stable configuration
+        gap*, not a transient error -- retrying later changes nothing. Skipping
+        silently in that case means session naming is a feature that quietly
+        never runs. Naming must still happen, using the session's own default
+        provider, with a loud warning explaining why a role-based routing
+        preference was not honored.
         """
         priority_provider = _make_mock_provider()
         providers = {"provider-priority": priority_provider}
@@ -396,16 +403,71 @@ class TestModelRoleResolution:
             model_role="fast",
         )
 
-        result = await hook._call_provider("name this session")
+        with caplog.at_level("WARNING"):
+            result = await hook._call_provider("name this session", "session-abc")
 
-        assert result is None, (
-            "Must abort (return None) when model_role resolves to no candidates"
+        assert result is not None, (
+            "Naming must still run against the fallback provider when "
+            "model_role resolves to no candidates, not abort"
         )
-        assert not priority_provider.complete.called, (
-            "Must NOT silently fall back to the priority provider when an "
-            "explicitly-configured model_role fails to resolve"
+        assert priority_provider.complete.called, (
+            "Must fall back to the priority provider when an explicitly-"
+            "configured model_role resolves to no candidates, rather than "
+            "silently skipping naming for the turn"
+        )
+        call_kwargs = priority_provider.complete.call_args
+        request = call_kwargs[0][0]
+        assert request.model is None, (
+            "Fallback must not invent a model override -- it uses whatever "
+            "model the fallback provider is already configured with"
         )
         resolver.resolve.assert_called_once()
+
+        warnings = [r for r in caplog.records if r.levelno >= 30]
+        assert warnings, (
+            "Expected a WARNING log identifying the unresolved role and the "
+            "fallback provider substituted for it"
+        )
+        assert any("fast" in r.getMessage() for r in warnings), (
+            "Warning should name the model_role that failed to resolve"
+        )
+        assert any("provider-priority" in r.getMessage() for r in warnings), (
+            "Warning should name the provider actually used"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolver_empty_result_warns_once_per_session(self, caplog) -> None:
+        """The no-candidates fallback warning fires once per session, then
+        drops to DEBUG on subsequent occurrences within the same session.
+
+        Naming retries every few turns for the life of a session, so without
+        this, a stable config gap (role never resolves) would re-emit the
+        identical WARNING on every retry -- noise that drowns out the one
+        occurrence a reader actually needs to see.
+        """
+        providers = {"provider-priority": _make_mock_provider()}
+        resolver = _make_resolver(return_value=[])
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=resolver,
+            model_role="fast",
+        )
+
+        with caplog.at_level("DEBUG"):
+            await hook._call_provider("name this session", "session-xyz")
+            first_pass_warnings = [r for r in caplog.records if r.levelno >= 30]
+            caplog.clear()
+            await hook._call_provider("name this session", "session-xyz")
+            second_pass_warnings = [r for r in caplog.records if r.levelno >= 30]
+            second_pass_debugs = [r for r in caplog.records if r.levelno == 10]
+
+        assert first_pass_warnings, "First occurrence in a session must warn"
+        assert not second_pass_warnings, (
+            "Second occurrence in the SAME session must not re-warn"
+        )
+        assert second_pass_debugs, (
+            "Second occurrence should still be logged, just at DEBUG"
+        )
 
     @pytest.mark.asyncio
     async def test_resolver_exception_aborts_without_calling_provider(self) -> None:
@@ -434,7 +496,7 @@ class TestModelRoleResolution:
 
     @pytest.mark.asyncio
     async def test_resolver_empty_result_logs_warning(self, caplog) -> None:
-        """Aborting due to an empty resolution must be logged at WARNING."""
+        """Falling back due to an empty resolution must be logged at WARNING."""
         hook = _make_hook(
             providers={"provider-priority": _make_mock_provider()},
             model_role_resolver=_make_resolver(return_value=[]),
@@ -442,7 +504,7 @@ class TestModelRoleResolution:
         )
 
         with caplog.at_level("WARNING"):
-            await hook._call_provider("name this session")
+            await hook._call_provider("name this session", "session-1")
 
         warnings = [r for r in caplog.records if r.levelno >= 30]
         assert warnings, (

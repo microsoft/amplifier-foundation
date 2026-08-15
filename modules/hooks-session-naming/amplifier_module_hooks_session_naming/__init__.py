@@ -103,6 +103,12 @@ class SessionNamingHook:
         self.config = config
         self._defer_counts: dict[str, int] = {}
         self._pending_tasks: set[asyncio.Task] = set()
+        # Tracks which sessions have already received the "model_role
+        # resolved to no candidates, falling back" WARNING (see
+        # _call_provider). Naming retries every few turns for the life of a
+        # session, so without this a stable config gap would re-emit the
+        # identical warning on every retry.
+        self._role_fallback_warned: set[str] = set()
 
     async def on_orchestrator_complete(
         self, event: str, data: dict[str, Any]
@@ -248,7 +254,7 @@ class SessionNamingHook:
             # Call the provider — hard timeout caps stalled providers
             try:
                 response = await asyncio.wait_for(
-                    self._call_provider(prompt), timeout=10.0
+                    self._call_provider(prompt, session_id), timeout=10.0
                 )
             except asyncio.TimeoutError:
                 logger.warning(
@@ -454,7 +460,9 @@ class SessionNamingHook:
             truncated = truncated[:last_space]
         return truncated + "..."
 
-    async def _call_provider(self, prompt: str) -> str | None:
+    async def _call_provider(
+        self, prompt: str, session_id: str | None = None
+    ) -> str | None:
         """Call the LLM provider to generate name/description.
 
         Resolution order (highest to lowest priority):
@@ -466,14 +474,26 @@ class SessionNamingHook:
         at all), logs a debug message and falls back to #2 — that fallback is
         legitimate and intended.
 
-        But when a model_role_resolver IS registered and the resolution itself
-        fails (resolves to no candidates, or raises), that is a failure of an
-        explicitly-configured routing preference, not an absent one. Silently
-        substituting the fallback provider in that case would mean a transient
-        resolver error (e.g. a provider API hiccup while listing models) quietly
-        routes a cheap background chore onto the session's primary/expensive
-        model. Instead, abort this naming attempt (return None) and let the
-        self-retrying trigger try again on a later turn.
+        When a model_role_resolver IS registered and resolution itself raises
+        (e.g. a transient provider API hiccup while listing models), the
+        failure mode is unknown and possibly transient. Silently substituting
+        the fallback provider in that case could quietly route a cheap
+        background chore onto the session's primary/expensive model on every
+        retry until the transient error clears. So this case still aborts
+        (returns None) and lets the self-retrying trigger try again on a
+        later turn.
+
+        But when the resolver runs cleanly and simply resolves to *no
+        candidates* for the configured role (e.g. no "fast" model configured
+        for the active provider), that is a stable configuration gap, not a
+        transient error — retrying later changes nothing. Skipping silently
+        in that case means session naming is a feature that quietly never
+        runs, with only a log line nobody reads to explain why. So this case
+        falls back to #2 (the session's own default/priority provider)
+        instead of skipping, and logs a WARNING naming the unresolved role
+        and the provider substituted for it — once per session (via
+        ``session_id``), since naming retries every few turns and repeating
+        the identical warning on every retry would just be noise.
         """
         try:
             providers = self.coordinator.get("providers")
@@ -484,6 +504,7 @@ class SessionNamingHook:
             # Resolution order: model_role > priority provider
             provider = None
             model_override: str | None = None
+            role_had_no_candidates = False
 
             if self.config.model_role:
                 # Look up the model_role_resolver capability registered by
@@ -524,19 +545,42 @@ class SessionNamingHook:
                                 provider = p
                                 break
                     else:
+                        role_had_no_candidates = True
+
+            # Fallback: use first/priority provider. Reached when model_role
+            # is unset, no resolver capability is registered, OR the role
+            # resolved to no candidates (role_had_no_candidates, handled
+            # below with a loud warning instead of a silent substitution).
+            if provider is None:
+                fallback_key = next(iter(providers), None)
+                provider = providers.get(fallback_key) if fallback_key else None
+
+                if role_had_no_candidates and provider is not None:
+                    warn_key = session_id or ""
+                    if warn_key not in self._role_fallback_warned:
+                        self._role_fallback_warned.add(warn_key)
                         logger.warning(
-                            "model_role %r resolved to no candidates; skipping"
-                            " session naming for this turn rather than silently"
-                            " falling back to the priority (expensive) provider"
-                            " — will retry on a later turn",
+                            "model_role %r resolved to no candidates; session"
+                            " naming is falling back to provider %r (the"
+                            " session's own default) instead of skipping."
+                            " This uses whatever model that provider is"
+                            " already configured with, which may be more"
+                            " expensive than intended — configure a %r"
+                            " candidate in the routing matrix to route naming"
+                            " to a cheap model instead. (Further occurrences"
+                            " this session are logged at DEBUG.)",
+                            self.config.model_role,
+                            fallback_key,
                             self.config.model_role,
                         )
-                        return None
-
-            # Fallback: use first/priority provider (only reached when
-            # model_role is unset, or no resolver capability is registered)
-            if provider is None:
-                provider = next(iter(providers.values()), None)
+                    else:
+                        logger.debug(
+                            "model_role %r again resolved to no candidates;"
+                            " reusing fallback provider %r (already warned"
+                            " once this session)",
+                            self.config.model_role,
+                            fallback_key,
+                        )
 
             if not provider:
                 logger.warning("No provider available for session naming")
