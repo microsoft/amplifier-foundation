@@ -21,6 +21,13 @@ _GIT_PATH_PATTERN = re.compile(r"^(?P<path>[^@]+)(?:@(?P<ref>.+))?$")
 # file, zip+https, ...), so this can never collide with a scheme prefix.
 _WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 
+# RFC 8089 ("file" URI scheme) drive-letter form: the path component of a
+# `file:///C:/Users/x` URI is "/C:/Users/x" -- a Windows drive path carrying a
+# leading slash left over from the URI's authority separator. This is the
+# spelling Python's own ``Path.as_uri()`` emits on Windows, so it arrives in
+# real user configs; it is a *Windows* path despite starting with "/".
+_RFC8089_DRIVE_PATH_PATTERN = re.compile(r"^/[A-Za-z]:[\\/]")
+
 
 def _is_windows_absolute_path(uri: str) -> bool:
     """True for a native Windows absolute path: drive-letter or UNC form.
@@ -44,8 +51,34 @@ def _is_posix_style_absolute_path(path: str) -> bool:
     reasoning as the exclusion in ``_is_windows_absolute_path``: that
     spelling is ambiguous with a protocol-relative URL and is left unhandled
     here rather than guessed at.
+
+    Also NOT matched: the RFC 8089 drive-letter form (``/C:/Users/x``). It
+    starts with "/" but is a *Windows* path -- the leading slash is the
+    residue of a ``file://`` URI's authority separator, not a POSIX root.
+    Treating it as POSIX-shaped made ``file:///C:/Users/x`` -- precisely what
+    ``Path.as_uri()`` emits on Windows -- get rejected on Windows with a
+    message telling the user to convert it to a Windows path it already was.
     """
+    if _RFC8089_DRIVE_PATH_PATTERN.match(path):
+        return False
     return path.startswith("/") and not path.startswith("//")
+
+
+def strip_uri_drive_prefix(path: str) -> str:
+    """Normalize an RFC 8089 ``file://`` path component into a native path.
+
+    ``file:///C:/Users/x`` parses to the path component ``/C:/Users/x``. That
+    leading slash is URI syntax, not part of the filesystem path: passing it
+    to ``Path()`` on Windows yields a rooted-but-driveless path that resolves
+    against the *current* drive rather than the drive the user named. Strip it
+    so the drive letter leads, as Windows expects.
+
+    Every other shape (POSIX absolute, relative, native Windows, UNC) is
+    returned unchanged.
+    """
+    if _RFC8089_DRIVE_PATH_PATTERN.match(path):
+        return path[1:]
+    return path
 
 
 def describe_cross_platform_path_mismatch(path_str: str) -> str | None:

@@ -9,6 +9,7 @@ from amplifier_foundation.paths.resolution import (
     ParsedURI,
     ResolvedSource,
     describe_cross_platform_path_mismatch,
+    strip_uri_drive_prefix,
 )
 
 
@@ -52,6 +53,13 @@ class FileSourceHandler:
         mismatch = describe_cross_platform_path_mismatch(path_str)
         if mismatch:
             raise BundleNotFoundError(mismatch)
+
+        # A `file:///C:/Users/x` URI parses to the path "/C:/Users/x": the
+        # leading slash is the URI's authority separator, not a filesystem
+        # root. Left in place, Path() reads it as rooted-but-driveless and
+        # resolves it against whatever the *current* drive happens to be
+        # rather than the drive the user named.
+        path_str = strip_uri_drive_prefix(path_str)
 
         # Handle relative paths
         if path_str.startswith("./") or path_str.startswith("../"):

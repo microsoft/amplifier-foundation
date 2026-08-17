@@ -13,6 +13,7 @@ from amplifier_foundation.exceptions import BundleNotFoundError
 from amplifier_foundation.paths.resolution import ParsedURI
 from amplifier_foundation.paths.resolution import ResolvedSource
 from amplifier_foundation.paths.resolution import describe_cross_platform_path_mismatch
+from amplifier_foundation.paths.resolution import strip_uri_drive_prefix
 
 
 class ZipSourceHandler:
@@ -56,8 +57,15 @@ class ZipSourceHandler:
             if mismatch:
                 raise BundleNotFoundError(mismatch)
 
+            # A `zip+file:///C:/a.zip` URI parses to the path "/C:/a.zip":
+            # the leading slash is the URI's authority separator, not a
+            # filesystem root. Left in place, Path() reads it as rooted-but-
+            # driveless and resolves it against whatever the *current* drive
+            # happens to be rather than the drive the user named.
+            local_zip_path = strip_uri_drive_prefix(parsed.path)
+
             # Local zip file
-            zip_path = Path(parsed.path)
+            zip_path = Path(local_zip_path)
             source_uri = str(zip_path)
         else:
             # Remote zip (https, http)

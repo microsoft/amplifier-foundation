@@ -10,6 +10,7 @@ from amplifier_foundation.paths.resolution import (
     describe_cross_platform_path_mismatch,
     normalize_path,
     parse_uri,
+    strip_uri_drive_prefix,
 )
 
 
@@ -270,6 +271,109 @@ class TestDescribeCrossPlatformPathMismatch:
         """
         monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
         assert describe_cross_platform_path_mismatch("//server/share/bundle") is None
+
+    def test_rfc8089_drive_path_is_not_flagged_on_windows(self, monkeypatch) -> None:
+        """`file:///C:/...` is a *Windows* path and must not be rejected on Windows.
+
+        Regression: `file:///C:/Users/x` -- exactly what `Path.as_uri()` emits
+        on Windows -- parses to the path component "/C:/Users/x". Because that
+        starts with "/", the POSIX-shape check previously matched it and the
+        guard rejected a native Windows path on Windows, telling the user to
+        "update the source in settings.yaml to a Windows path" that it already
+        was. The leading slash is URI authority-separator syntax, not a POSIX
+        root.
+        """
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
+
+        assert describe_cross_platform_path_mismatch("/C:/Users/x/bundle") is None
+        # Lowercase drive letters and backslash separators are equally valid.
+        assert describe_cross_platform_path_mismatch("/c:/Users/x/bundle") is None
+        assert describe_cross_platform_path_mismatch(r"/C:\Users\x\bundle") is None
+
+        # Reached through the real parser, not just the predicate.
+        assert (
+            describe_cross_platform_path_mismatch(parse_uri("file:///C:/Users/x").path)
+            is None
+        )
+        assert (
+            describe_cross_platform_path_mismatch(
+                parse_uri("zip+file:///C:/archive.zip").path
+            )
+            is None
+        )
+
+    def test_rfc8089_drive_path_is_not_flagged_on_posix_either(
+        self, monkeypatch
+    ) -> None:
+        """Documents a deliberate scope boundary, not an endorsement.
+
+        The bare drive form (``C:/Users/x``) IS flagged on POSIX. The RFC 8089
+        form (``/C:/Users/x``) is not: ``_is_windows_absolute_path`` anchors on
+        the drive letter, so the leading slash defeats it. That was true before
+        the Windows-side fix and is unchanged by it -- this test pins the
+        existing behavior so the asymmetry is visible rather than latent.
+
+        Left alone deliberately: this fix addresses a Windows-side *false
+        rejection*. Adding POSIX-side detection here would be a new capability
+        with its own blast radius (``_is_windows_absolute_path`` has three
+        callers, including ``ParsedURI.is_file``), not part of this bug.
+        """
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "posix")
+
+        # The RFC 8089 form: unflagged, before and after this fix.
+        assert (
+            describe_cross_platform_path_mismatch(parse_uri("file:///C:/Users/x").path)
+            is None
+        )
+
+        # The bare drive form: flagged, and this fix must not blunt that.
+        message = describe_cross_platform_path_mismatch("C:/Users/x")
+        assert message is not None
+        assert "Windows-style absolute path" in message
+
+    def test_genuine_posix_path_still_flagged_on_windows(self, monkeypatch) -> None:
+        """The drive-letter carve-out must not blunt the original GAP-007 guard."""
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
+        message = describe_cross_platform_path_mismatch(
+            parse_uri("file:///home/bkrabach/dev/bundle").path
+        )
+        assert message is not None
+        assert "POSIX-style absolute path" in message
+        # A single-letter *directory* is not a drive letter -- no colon.
+        assert describe_cross_platform_path_mismatch("/c/Users/x") is not None
+
+
+class TestStripUriDrivePrefix:
+    """Tests for strip_uri_drive_prefix.
+
+    `file:///C:/Users/x` parses to "/C:/Users/x". Handing that to Path() on
+    Windows yields a rooted-but-driveless path that resolves against the
+    *current* drive rather than the drive the user named, so the leading
+    slash must be stripped before construction.
+    """
+
+    def test_strips_leading_slash_from_drive_paths(self) -> None:
+        assert strip_uri_drive_prefix("/C:/Users/x") == "C:/Users/x"
+        assert strip_uri_drive_prefix("/c:/Users/x") == "c:/Users/x"
+        assert strip_uri_drive_prefix(r"/C:\Users\x") == r"C:\Users\x"
+
+    def test_leaves_every_other_shape_untouched(self) -> None:
+        for unchanged in (
+            "/home/user/bundle",
+            "C:/Users/x",
+            r"C:\Users\x",
+            r"\\server\share",
+            "//server/share",
+            "./relative",
+            "../relative",
+            "package-name",
+            "",
+        ):
+            assert strip_uri_drive_prefix(unchanged) == unchanged
+
+    def test_single_letter_directory_is_not_a_drive(self) -> None:
+        """`/c/Users` has no colon, so it is a POSIX path, not a drive path."""
+        assert strip_uri_drive_prefix("/c/Users/x") == "/c/Users/x"
 
 
 class TestNormalizePath:
