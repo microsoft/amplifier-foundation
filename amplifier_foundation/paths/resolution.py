@@ -105,6 +105,8 @@ def parse_uri(uri: str) -> ParsedURI:
     - zip+file:///local/archive.zip#subdirectory=path/inside
     - file:///path/to/file
     - /absolute/path
+    - C:\absolute\path or C:/absolute/path (Windows)
+    - \\server\share\path (Windows UNC)
     - ./relative/path
     - package-name
     - package/subpath
@@ -134,6 +136,13 @@ def parse_uri(uri: str) -> ParsedURI:
 
     # Handle relative paths
     if uri.startswith("./") or uri.startswith("../"):
+        return ParsedURI(scheme="file", host="", path=uri, ref="", subpath="")
+
+    # Handle Windows absolute paths (drive-letter or UNC)
+    is_drive_path = (
+        len(uri) >= 3 and uri[0].isalpha() and uri[1] == ":" and uri[2] in "/\\"
+    )
+    if is_drive_path or uri.startswith("\\\\"):
         return ParsedURI(scheme="file", host="", path=uri, ref="", subpath="")
 
     # Handle http/https URLs
