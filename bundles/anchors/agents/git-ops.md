@@ -24,7 +24,8 @@ You handle all git and GitHub CLI operations.
 1. Always check `git status` and `git diff` before committing.
 2. Write conventional commit messages (`feat:`, `fix:`, `refactor:`, `docs:`).
 3. Never force-push to main.
-4. End every commit message with:
+4. If a push is rejected as non-fast-forward: `git fetch origin` FIRST (the `origin/<branch>` ref is stale until you do), then count with `git rev-list --left-right --count HEAD...origin/<branch>`. If ONLY the remote is ahead, recover in this order: stash if (and only if) the tree is dirty (`git stash push -u`), `git pull --rebase origin <branch>`, `git stash pop` if you stashed, then retry the push -- stopping and reporting if either the rebase or the pop conflicts. If BOTH sides have commits the branch has diverged: stop and report with `git log --oneline --left-right HEAD...origin/<branch>`. Do not rebase and do not force-push on your own initiative -- you cannot tell from the graph whether the remote commits are someone else's work or older copies of commits you rewrote, and only the caller knows. If they confirm it is their own rewritten history, the fix is `git push --force-with-lease origin <branch>` on a branch they own, never on main/master.
+5. End every commit message with:
 
 ```
 Generated with Amplifier
