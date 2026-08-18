@@ -1,0 +1,48 @@
+// This recipe scans your code repository and draws a visual map of everything inside it.
+digraph generate_bundle_docs {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Bundle Documentation Generator\nScans your repository, draws a visual map of everything inside"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="383fc33448c79a396f928c20b2049d0c8cce02caa13dbe933995287167690c6e"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done!", shape=oval, fillcolor="#e0e0e0"]
+
+    step_generate_bundle_dot [label="Scan the Repository\n\"What's in here?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'PYEOF' import json, sys, re from pathlib import Path  repo_path ="]
+    cond_step_enhance_bundle_dot [label="Make labels\nfriendly?", shape=diamond, fillcolor="#fff9c4"]
+    step_enhance_bundle_dot [label="Rewrite Labels\n\"Make it readable\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_write_bundle_dot [label="Save the Diagram\n\"Write files to disk\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'PYEOF' import json, subprocess, re, sys from pathlib import Path "]
+    step_summary [label="Wrap Up\n\"What did we create?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'PYEOF' import json  _gen_raw = r'''{{generation}}''' _write_raw ="]
+
+    start -> step_generate_bundle_dot
+    step_generate_bundle_dot -> cond_step_enhance_bundle_dot
+    cond_step_enhance_bundle_dot -> step_enhance_bundle_dot [label="enhance_diagrams != 'fals"]
+    step_enhance_bundle_dot -> step_write_bundle_dot
+    step_write_bundle_dot -> step_summary
+    cond_step_enhance_bundle_dot -> step_write_bundle_dot [label="skip", style=dashed]
+    step_summary -> done
+
+    subgraph cluster_legend {
+        label="Legend\n\"What do the colors mean?\""
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_bash [label="Script Step", shape=box, fillcolor="#bbdefb"]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_cond [label="Condition", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_bash -> leg_agent -> leg_cond -> leg_start [style=invis]
+    }
+}
