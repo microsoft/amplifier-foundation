@@ -168,17 +168,22 @@ def _build_child_env() -> dict[str, str]:
         if key in _ENV_ALLOWED_EXACT
         or any(key.startswith(prefix) for prefix in _ENV_ALLOWED_PREFIXES)
     }
-    # Force UTF-8 for the child's stdio. The child writes its result envelope to
-    # a PIPE (not a console), and on native Windows a piped stdout defaults to the
-    # locale ANSI codepage (e.g. cp1252) -- so any non-ASCII character in agent
-    # output (em dash, checkmark, non-Latin text -- all common in LLM output)
-    # raises UnicodeEncodeError and crashes the child BEFORE the envelope is
-    # written, turning a real result into an opaque RuntimeError. PYTHONUTF8=1
-    # puts the interpreter in UTF-8 mode (stdio + filesystem encoding);
-    # PYTHONIOENCODING is a belt-and-suspenders for any child that re-derives its
-    # stream encoding. These are set unconditionally rather than merely forwarded,
-    # so the child is UTF-8 even when the parent's environment is not. No-op on
-    # POSIX, where UTF-8 is already the effective default.
+    # Force UTF-8 for the child's stdio. The child writes to a PIPE (not a
+    # console), and on native Windows a piped stdout defaults to the locale ANSI
+    # codepage (e.g. cp1252). The result envelope itself is never at risk --
+    # json.dumps() defaults to ensure_ascii=True, so the envelope is pure ASCII by
+    # construction. The risk is everything AROUND it: log lines, tool output,
+    # third-party prints (em dash, checkmark, non-Latin text -- all common in LLM
+    # output), which _extract_framed_result deliberately tolerates and which land
+    # in the same pipe. Those get encoded in the ANSI codepage, and the parent
+    # then decodes the whole stream with stdout.decode("utf-8") and no error
+    # handler -- so the undecodable bytes raise UnicodeDecodeError in the PARENT,
+    # turning a successful child run into an opaque failure. PYTHONUTF8=1 puts the
+    # interpreter in UTF-8 mode (stdio + filesystem encoding); PYTHONIOENCODING is
+    # a belt-and-suspenders for any child that re-derives its stream encoding.
+    # These are set unconditionally rather than merely forwarded, so the child is
+    # UTF-8 even when the parent's environment is not. No-op on POSIX, where UTF-8
+    # is already the effective default.
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     return env
