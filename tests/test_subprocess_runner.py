@@ -1563,3 +1563,40 @@ class TestMentionMappingsSerialization:
         deserialized = deserialize_subprocess_config(serialized)
 
         assert deserialized["mention_mappings"] == {}
+
+
+class TestChildEnvForcesUtf8:
+    """GAP-6b: the child subprocess must run in UTF-8 mode.
+
+    The child writes to a PIPE. On native Windows a piped stdout defaults to the
+    locale ANSI codepage (e.g. cp1252). The result envelope itself is safe --
+    json.dumps() defaults to ensure_ascii=True -- but non-ASCII output around it
+    (logging, tool output, third-party prints) gets encoded in that codepage, and
+    the parent decodes the whole stream with stdout.decode("utf-8") and no error
+    handler, raising UnicodeDecodeError in the parent. _build_child_env() must
+    force UTF-8 so this cannot happen, regardless of the parent's own environment.
+    """
+
+    def test_child_env_sets_pythonutf8(self) -> None:
+        env = _build_child_env()
+        assert env.get("PYTHONUTF8") == "1"
+
+    def test_child_env_sets_pythonioencoding(self) -> None:
+        env = _build_child_env()
+        assert env.get("PYTHONIOENCODING") == "utf-8"
+
+    def test_child_env_forces_utf8_even_when_parent_has_none(self) -> None:
+        # Parent env with NO utf-8 hints must still yield a utf-8 child env.
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            env = _build_child_env()
+        assert env.get("PYTHONUTF8") == "1"
+        assert env.get("PYTHONIOENCODING") == "utf-8"
+
+    def test_child_env_overrides_hostile_parent_value(self) -> None:
+        # A parent that pins a NON-utf-8 io encoding must not win: the child is
+        # forced to utf-8 so the parent's stdout.decode("utf-8") cannot raise
+        # UnicodeDecodeError on output printed around the envelope.
+        with patch.dict("os.environ", {"PYTHONIOENCODING": "cp1252"}, clear=True):
+            env = _build_child_env()
+        assert env.get("PYTHONIOENCODING") == "utf-8"
+        assert env.get("PYTHONUTF8") == "1"
