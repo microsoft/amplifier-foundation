@@ -9,8 +9,7 @@ import pytest
 from amplifier_foundation.exceptions import BundleNotFoundError
 from amplifier_foundation.paths.resolution import ParsedURI
 from amplifier_foundation.sources.file import FileSourceHandler
-from amplifier_foundation.sources.git import GitSourceHandler
-from amplifier_foundation.sources.git import _is_full_commit_sha
+from amplifier_foundation.sources.git import GitSourceHandler, _is_full_commit_sha
 from amplifier_foundation.sources.http import HttpSourceHandler
 from amplifier_foundation.sources.zip import ZipSourceHandler
 
@@ -60,9 +59,16 @@ class TestFileSourceHandler:
             )
             result = await handler.resolve(parsed, Path(tmpdir) / "cache")
 
-            assert result.active_path == test_file
+            # FileSourceHandler.resolve() calls Path.resolve() internally. On
+            # Windows, tempfile.TemporaryDirectory() may hand back a path
+            # containing an 8.3 short component (e.g. "RUNNER~1") while
+            # resolve() returns the canonical long form (e.g. "runneradmin").
+            # Both spellings name the same file/directory, so resolve the
+            # expected side too rather than comparing raw/short vs.
+            # canonical/long.
+            assert result.active_path == test_file.resolve()
             # source_root is the parent directory for non-cached files
-            assert result.source_root == test_file.parent
+            assert result.source_root == test_file.parent.resolve()
 
     @pytest.mark.asyncio
     async def test_resolve_with_subpath(self) -> None:
@@ -83,7 +89,8 @@ class TestFileSourceHandler:
             )
             result = await handler.resolve(parsed, base / "cache")
 
-            assert result.active_path == subdir
+            # See resolve() note in test_resolve_existing_file above.
+            assert result.active_path == subdir.resolve()
             assert result.source_root == (base / "bundles").resolve()
 
 
@@ -497,13 +504,26 @@ class TestGitNetworkOpRetry343:
     """
 
     def test_retries_then_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A failure followed by a success resolves without raising."""
+        """A failure followed by a success resolves without raising.
+
+        GAP-030 cross-platform validation note: this test used to monkeypatch
+        ``git_mod.subprocess.run``, but the GAP-014/GAP-025 fix rewrote the
+        actual subprocess invocation to go through a new ``_run_git_subprocess``
+        helper (``subprocess.Popen`` + a wall-clock timeout), which
+        ``_run_git_network_op`` calls directly. Patching ``subprocess.run`` no
+        longer intercepted anything, so this test silently stopped testing the
+        retry loop and instead made a REAL network call to a nonexistent host
+        -- passing or failing for the wrong reason depending on DNS behavior,
+        not the reason its assertions claim. Patch the real seam instead:
+        ``_run_git_subprocess``, the function ``_run_git_network_op`` actually
+        calls per attempt.
+        """
         from amplifier_foundation.sources import git as git_mod
 
         calls: list[list[str]] = []
         sleeps: list[float] = []
 
-        def fake_run(args, **kwargs):  # noqa: ANN001, ANN202
+        def fake_run_subprocess(args, cwd, timeout_s):
             calls.append(args)
             if len(calls) == 1:
                 raise subprocess.CalledProcessError(
@@ -511,7 +531,7 @@ class TestGitNetworkOpRetry343:
                 )
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-        monkeypatch.setattr(git_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(git_mod, "_run_git_subprocess", fake_run_subprocess)
         monkeypatch.setattr(git_mod.time, "sleep", lambda s: sleeps.append(s))
 
         result = git_mod._run_git_network_op(["git", "clone", "url", "/tmp/x"])
@@ -523,18 +543,23 @@ class TestGitNetworkOpRetry343:
     def test_exhausts_attempts_and_reraises_real_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When every attempt fails, the original git error is raised."""
+        """When every attempt fails, the original git error is raised.
+
+        See the GAP-030 note on ``test_retries_then_succeeds`` above: patches
+        ``_run_git_subprocess`` (the real seam) rather than ``subprocess.run``
+        (bypassed since GAP-014/GAP-025 switched to ``subprocess.Popen``).
+        """
         from amplifier_foundation.sources import git as git_mod
 
         calls: list[list[str]] = []
 
-        def always_fail(args, **kwargs):  # noqa: ANN001, ANN202
+        def always_fail(args, cwd, timeout_s):
             calls.append(args)
             raise subprocess.CalledProcessError(
                 128, args, stderr="fatal: could not resolve host: github.com"
             )
 
-        monkeypatch.setattr(git_mod.subprocess, "run", always_fail)
+        monkeypatch.setattr(git_mod, "_run_git_subprocess", always_fail)
         monkeypatch.setattr(git_mod.time, "sleep", lambda _s: None)
 
         with pytest.raises(subprocess.CalledProcessError) as exc_info:
@@ -552,7 +577,20 @@ class TestGitNetworkOpRetry343:
         Servers without ``allowReachableSHA1InWant`` refuse the shallow fetch as
         a matter of course. That failure is a designed fallback, not an error,
         so retrying it would add seconds to a normal path.
+
+        GAP-030 cross-platform validation note: same seam fix as the two tests
+        above -- the network-touching fetch/clone calls go through
+        ``_run_git_subprocess`` (Popen-based) since GAP-014/GAP-025, not
+        ``subprocess.run``. The LOCAL git plumbing in ``_clone_at_commit``'s
+        own ``run_git()`` closure (init/remote add/checkout) still genuinely
+        uses ``subprocess.run`` directly, so it's faked the same way the
+        original (pre-GAP-014) version of this test faked it: unconditional
+        success. None of the assertions below depend on real git state, and
+        the previous version of this test didn't distinguish local plumbing
+        from network calls either -- it just happened to intercept both
+        through one seam because both used to go through subprocess.run.
         """
+        from amplifier_foundation.sources import git as git_mod
         from amplifier_foundation.sources.git import GitSourceHandler
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -560,16 +598,26 @@ class TestGitNetworkOpRetry343:
             cache_path = Path(tmpdir) / "repo"
             seen: list[list[str]] = []
 
-            def fake_run(args, **kwargs):  # noqa: ANN001, ANN202
+            def fake_local_run(args, **kwargs):  # noqa: ANN001, ANN202
+                # Local plumbing only (init/remote add/checkout) -- the
+                # network-touching fetch/clone below no longer goes through
+                # subprocess.run at all, so this never sees "fetch"/"clone".
+                seen.append(list(args))
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+            def fake_run_subprocess(args, cwd, timeout_s):
                 seen.append(list(args))
                 # Refuse the shallow SHA fetch; succeed at everything else.
                 if "fetch" in args:
                     raise subprocess.CalledProcessError(128, args, stderr="refused")
                 return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-            monkeypatch.setattr(subprocess, "run", fake_run)
+            monkeypatch.setattr(git_mod.subprocess, "run", fake_local_run)
+            monkeypatch.setattr(git_mod, "_run_git_subprocess", fake_run_subprocess)
 
-            handler._clone_at_commit("https://example.invalid/r.git", "a" * 40, cache_path)
+            handler._clone_at_commit(
+                "https://example.invalid/r.git", "a" * 40, cache_path
+            )
 
             fetch_calls = [c for c in seen if "fetch" in c]
             assert len(fetch_calls) == 1, (

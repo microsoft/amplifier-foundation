@@ -409,7 +409,10 @@ class TestBundleValidation:
         with pytest.raises(BundleValidationError) as exc_info:
             Bundle.from_dict(data, base_path=Path("/path/to/bundle"))
         error_msg = str(exc_info.value)
-        assert "/path/to/bundle" in error_msg
+        # str(Path) yields native separators, so the message contains
+        # "\\path\\to\\bundle" on Windows. Compare against the same
+        # rendering the code produces rather than a POSIX literal.
+        assert str(Path("/path/to/bundle")) in error_msg
 
     def test_error_shows_correct_format_example(self) -> None:
         """Error message includes example of correct format."""

@@ -2,10 +2,16 @@
 
 from pathlib import Path
 
-from amplifier_foundation.paths.construction import construct_agent_path
-from amplifier_foundation.paths.construction import construct_context_path
-from amplifier_foundation.paths.resolution import normalize_path
-from amplifier_foundation.paths.resolution import parse_uri
+from amplifier_foundation.paths.construction import (
+    construct_agent_path,
+    construct_context_path,
+)
+from amplifier_foundation.paths.resolution import (
+    describe_cross_platform_path_mismatch,
+    normalize_path,
+    parse_uri,
+    strip_uri_drive_prefix,
+)
 
 
 class TestParseUri:
@@ -135,6 +141,240 @@ class TestParseUri:
         assert result.scheme == "file"
         assert result.path == "./bundles/my-bundle"
 
+    def test_windows_drive_path_backslash(self) -> None:
+        """Native Windows backslash drive-letter paths resolve as file URIs.
+
+        Regression test for GAP-015: a bare Windows path like
+        C:\\Users\\x\\.amplifier\\cache\\... previously fell through every
+        branch, landed with scheme="" and no "/" in its path, and
+        `is_file` returned False -- causing "No handler for URI: ..." and
+        module activation failures in strict mode.
+        """
+        result = parse_uri(r"C:\Users\brkrabac\.amplifier\cache\bundle\modules\tool-x")
+        assert result.scheme == "file"
+        assert (
+            result.path == r"C:\Users\brkrabac\.amplifier\cache\bundle\modules\tool-x"
+        )
+        assert result.is_file
+        assert not result.is_package
+
+    def test_windows_drive_path_forward_slash(self) -> None:
+        """Windows drive-letter paths using forward slashes also resolve as file URIs.
+
+        Windows accepts both separators. Before the fix, this form was
+        actively MIS-parsed (not just unrecognized): because it contains a
+        "/", it fell into the package/subpath branch and was split into a
+        bogus package name "C:" and subpath "Users/...".
+        """
+        result = parse_uri("C:/Users/brkrabac/.amplifier/cache/bundle")
+        assert result.scheme == "file"
+        assert result.path == "C:/Users/brkrabac/.amplifier/cache/bundle"
+        assert result.is_file
+        assert result.subpath == ""
+
+    def test_windows_unc_path(self) -> None:
+        """Backslash UNC paths (\\\\server\\share\\...) resolve as file URIs."""
+        result = parse_uri(r"\\server\share\bundle")
+        assert result.scheme == "file"
+        assert result.path == r"\\server\share\bundle"
+        assert result.is_file
+
+    def test_single_letter_scheme_is_not_confused_with_drive_letter(self) -> None:
+        """A real multi-character scheme is unaffected by the drive-letter check.
+
+        Guards against a careless widening: every URI scheme this parser
+        recognizes is more than one character, so "X:" prefixes never
+        collide with "https://", "git+https://", etc.
+        """
+        result = parse_uri("https://example.com/bundle.yaml")
+        assert result.scheme == "https"
+        assert not result.is_file
+
+        result = parse_uri("git+https://github.com/org/repo@main")
+        assert result.scheme == "git+https"
+        assert not result.is_file
+
+    def test_posix_and_relative_paths_unaffected_by_windows_path_check(self) -> None:
+        """Existing POSIX/relative/package parsing is unchanged by the widening."""
+        assert parse_uri("/home/user/bundle").scheme == "file"
+        assert parse_uri("./relative/path").scheme == "file"
+        assert parse_uri("../relative/path").scheme == "file"
+        assert parse_uri("foundation/providers/anthropic").scheme == ""
+        assert parse_uri("package-name").is_package
+
+
+class TestDescribeCrossPlatformPathMismatch:
+    """Tests for describe_cross_platform_path_mismatch (GAP-007).
+
+    Regression test for GAP-007: a Linux-authored settings.yaml with a
+    `file:///home/x/...` bundle source, run on Windows, previously produced
+    "File not found: C:\\home\\x\\..." -- pathlib silently prepending the
+    current drive letter to a rooted-but-driveless path instead of failing
+    with a message that names the real problem (a config written for
+    another OS's filesystem). The mirror case exists on POSIX for a
+    Windows-shaped absolute path.
+
+    `os.name` is monkeypatched per-test so both branches are exercised
+    deterministically regardless of the OS actually running the suite.
+    """
+
+    def test_posix_path_on_windows_is_flagged(self, monkeypatch) -> None:
+        """A POSIX-absolute path is flagged as impossible when os.name == 'nt'."""
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
+        message = describe_cross_platform_path_mismatch(
+            "/home/bkrabach/dev/computer-use-improvements/amplifier-bundle-computer-use"
+        )
+        assert message is not None
+        assert "POSIX-style absolute path" in message
+        assert "Windows" in message
+        # Echo the original (unmangled) path, not a mangled local translation.
+        assert "/home/bkrabach/dev/computer-use-improvements" in message
+
+    def test_windows_path_on_posix_is_flagged(self, monkeypatch) -> None:
+        """A Windows drive-letter/UNC path is flagged as impossible when os.name != 'nt'."""
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "posix")
+        message = describe_cross_platform_path_mismatch(r"C:\Users\brkrabac\dev\bundle")
+        assert message is not None
+        assert "Windows-style absolute path" in message
+        assert r"C:\Users\brkrabac\dev\bundle" in message
+
+        message_unc = describe_cross_platform_path_mismatch(r"\\server\share\bundle")
+        assert message_unc is not None
+        assert "Windows-style absolute path" in message_unc
+
+    def test_native_absolute_paths_are_not_flagged(self, monkeypatch) -> None:
+        """A path native to the current OS is never a mismatch."""
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
+        assert (
+            describe_cross_platform_path_mismatch(r"C:\Users\brkrabac\dev\bundle")
+            is None
+        )
+        assert describe_cross_platform_path_mismatch(r"\\server\share\bundle") is None
+
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "posix")
+        assert describe_cross_platform_path_mismatch("/home/user/bundle") is None
+
+    def test_relative_paths_are_never_flagged(self, monkeypatch) -> None:
+        """Relative paths aren't absolute on any OS, so never a cross-OS mismatch."""
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
+        assert describe_cross_platform_path_mismatch("./relative/path") is None
+        assert describe_cross_platform_path_mismatch("../relative/path") is None
+        assert describe_cross_platform_path_mismatch("package-name") is None
+
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "posix")
+        assert describe_cross_platform_path_mismatch("./relative/path") is None
+
+    def test_forward_slash_unc_is_left_unhandled(self, monkeypatch) -> None:
+        """Forward-slash UNC (//server/share) is ambiguous with a protocol-
+        relative URL and is deliberately left unhandled here, consistent
+        with `_is_windows_absolute_path`'s existing exclusion of that form.
+        """
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
+        assert describe_cross_platform_path_mismatch("//server/share/bundle") is None
+
+    def test_rfc8089_drive_path_is_not_flagged_on_windows(self, monkeypatch) -> None:
+        """`file:///C:/...` is a *Windows* path and must not be rejected on Windows.
+
+        Regression: `file:///C:/Users/x` -- exactly what `Path.as_uri()` emits
+        on Windows -- parses to the path component "/C:/Users/x". Because that
+        starts with "/", the POSIX-shape check previously matched it and the
+        guard rejected a native Windows path on Windows, telling the user to
+        "update the source in settings.yaml to a Windows path" that it already
+        was. The leading slash is URI authority-separator syntax, not a POSIX
+        root.
+        """
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
+
+        assert describe_cross_platform_path_mismatch("/C:/Users/x/bundle") is None
+        # Lowercase drive letters and backslash separators are equally valid.
+        assert describe_cross_platform_path_mismatch("/c:/Users/x/bundle") is None
+        assert describe_cross_platform_path_mismatch(r"/C:\Users\x\bundle") is None
+
+        # Reached through the real parser, not just the predicate.
+        assert (
+            describe_cross_platform_path_mismatch(parse_uri("file:///C:/Users/x").path)
+            is None
+        )
+        assert (
+            describe_cross_platform_path_mismatch(
+                parse_uri("zip+file:///C:/archive.zip").path
+            )
+            is None
+        )
+
+    def test_rfc8089_drive_path_is_not_flagged_on_posix_either(
+        self, monkeypatch
+    ) -> None:
+        """Documents a deliberate scope boundary, not an endorsement.
+
+        The bare drive form (``C:/Users/x``) IS flagged on POSIX. The RFC 8089
+        form (``/C:/Users/x``) is not: ``_is_windows_absolute_path`` anchors on
+        the drive letter, so the leading slash defeats it. That was true before
+        the Windows-side fix and is unchanged by it -- this test pins the
+        existing behavior so the asymmetry is visible rather than latent.
+
+        Left alone deliberately: this fix addresses a Windows-side *false
+        rejection*. Adding POSIX-side detection here would be a new capability
+        with its own blast radius (``_is_windows_absolute_path`` has three
+        callers, including ``ParsedURI.is_file``), not part of this bug.
+        """
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "posix")
+
+        # The RFC 8089 form: unflagged, before and after this fix.
+        assert (
+            describe_cross_platform_path_mismatch(parse_uri("file:///C:/Users/x").path)
+            is None
+        )
+
+        # The bare drive form: flagged, and this fix must not blunt that.
+        message = describe_cross_platform_path_mismatch("C:/Users/x")
+        assert message is not None
+        assert "Windows-style absolute path" in message
+
+    def test_genuine_posix_path_still_flagged_on_windows(self, monkeypatch) -> None:
+        """The drive-letter carve-out must not blunt the original GAP-007 guard."""
+        monkeypatch.setattr("amplifier_foundation.paths.resolution.os.name", "nt")
+        message = describe_cross_platform_path_mismatch(
+            parse_uri("file:///home/bkrabach/dev/bundle").path
+        )
+        assert message is not None
+        assert "POSIX-style absolute path" in message
+        # A single-letter *directory* is not a drive letter -- no colon.
+        assert describe_cross_platform_path_mismatch("/c/Users/x") is not None
+
+
+class TestStripUriDrivePrefix:
+    """Tests for strip_uri_drive_prefix.
+
+    `file:///C:/Users/x` parses to "/C:/Users/x". Handing that to Path() on
+    Windows yields a rooted-but-driveless path that resolves against the
+    *current* drive rather than the drive the user named, so the leading
+    slash must be stripped before construction.
+    """
+
+    def test_strips_leading_slash_from_drive_paths(self) -> None:
+        assert strip_uri_drive_prefix("/C:/Users/x") == "C:/Users/x"
+        assert strip_uri_drive_prefix("/c:/Users/x") == "c:/Users/x"
+        assert strip_uri_drive_prefix(r"/C:\Users\x") == r"C:\Users\x"
+
+    def test_leaves_every_other_shape_untouched(self) -> None:
+        for unchanged in (
+            "/home/user/bundle",
+            "C:/Users/x",
+            r"C:\Users\x",
+            r"\\server\share",
+            "//server/share",
+            "./relative",
+            "../relative",
+            "package-name",
+            "",
+        ):
+            assert strip_uri_drive_prefix(unchanged) == unchanged
+
+    def test_single_letter_directory_is_not_a_drive(self) -> None:
+        """`/c/Users` has no colon, so it is a POSIX path, not a drive path."""
+        assert strip_uri_drive_prefix("/c/Users/x") == "/c/Users/x"
+
 
 class TestNormalizePath:
     """Tests for normalize_path function."""
@@ -142,12 +382,19 @@ class TestNormalizePath:
     def test_absolute_path(self) -> None:
         """Absolute paths remain absolute."""
         result = normalize_path("/home/user/file.txt")
-        assert result == Path("/home/user/file.txt")
+        # Compare against the RESOLVED form. normalize_path() calls .resolve(),
+        # and on Windows a POSIX-style leading slash is drive-RELATIVE, so
+        # resolve() anchors it to the current drive: "/home/user/file.txt"
+        # becomes "C:/home/user/file.txt". That is correct behaviour, not a
+        # bug -- resolving both sides tests the contract ("absolute stays
+        # absolute, canonicalised") instead of an accident of POSIX where the
+        # input already happens to be canonical.
+        assert result == Path("/home/user/file.txt").resolve()
 
     def test_relative_path_with_base(self) -> None:
         """Relative paths are resolved against base."""
         result = normalize_path("file.txt", relative_to=Path("/home/user"))
-        assert result == Path("/home/user/file.txt")
+        assert result == Path("/home/user/file.txt").resolve()
 
     def test_relative_path_without_base(self) -> None:
         """Relative paths without base use cwd."""
@@ -157,21 +404,21 @@ class TestNormalizePath:
     def test_path_object_input(self) -> None:
         """Accepts Path objects."""
         result = normalize_path(Path("/home/user/file.txt"))
-        assert result == Path("/home/user/file.txt")
+        assert result == Path("/home/user/file.txt").resolve()
 
     def test_tilde_path_expands_home(self) -> None:
         """Tilde paths expand to home directory."""
         result = normalize_path("~/some/file.txt")
         assert "~" not in str(result)
         assert result.is_absolute()
-        assert str(result).endswith("/some/file.txt")
+        assert str(result).endswith(str(Path("some/file.txt")))
 
     def test_tilde_path_with_base_expands_home(self) -> None:
         """Tilde paths expand even when relative_to is provided."""
         result = normalize_path("~/some/file.txt", relative_to=Path("/ignored"))
         assert "~" not in str(result)
         assert result.is_absolute()
-        assert str(result).endswith("/some/file.txt")
+        assert str(result).endswith(str(Path("some/file.txt")))
 
 
 class TestConstructPaths:
