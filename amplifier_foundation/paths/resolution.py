@@ -128,6 +128,10 @@ def parse_uri(uri: str) -> ParsedURI:
         path, subpath = _extract_fragment_subpath(uri[7:])
         return ParsedURI(scheme="file", host="", path=path, ref="", subpath=subpath)
 
+    # Handle Windows absolute paths
+    if re.match(r"^[A-Za-z]:[\\/]", uri) or uri.startswith("\\\\"):
+        return ParsedURI(scheme="file", host="", path=uri, ref="", subpath="")
+
     # Handle absolute paths
     if uri.startswith("/"):
         return ParsedURI(scheme="file", host="", path=uri, ref="", subpath="")
