@@ -1270,9 +1270,12 @@ Bundles support multiple source formats for modules:
 | Local path | `./modules/my-module` | Modules within the bundle |
 | Relative path | `../shared-module` | Sibling directories |
 | Git URL | `git+https://github.com/org/repo@main` | External modules |
+| Git pinned to commit | `git+https://github.com/org/repo@32d4052dad46016f91ce698646580473e4121344` | Reproducible installs (eval runs, CI) |
 | Git with subpath | `git+https://github.com/org/repo@main#subdirectory=modules/foo` | Module within larger repo |
 
 **Local paths are resolved relative to the bundle's location.**
+
+**Commit SHA pinning**: A ref that is a full 40-character hex commit SHA pins the source to that exact commit. Pinned sources are automatically skipped by `amplifier update` (a pinned ref can never have updates). Short/abbreviated SHAs are rejected by design — an ambiguous ref defeats reproducibility. Note that a typo'd but valid-looking SHA fails only after a full-history clone fallback: the fast single-commit fetch fails, git falls back to a full clone, and checkout then fails with a clear error (a failed pinned resolve can leave a cache entry behind, and a subsequent resolve of the same URI may serve it — clear the cache entry if a pin fails).
 
 ---
 
