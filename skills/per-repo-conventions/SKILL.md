@@ -5,9 +5,9 @@ description: >
   transition (design, coding, debugging, verification, opening a PR). Loads the
   canonical per-repo-conventions guidance from
   foundation:docs/PER_REPO_CONVENTIONS.md — the discovery pattern for AGENTS.md,
-  PR templates, CONTRIBUTING.md, and contextual files (PRINCIPLES.md,
-  SMOKE_TESTS.md, KNOWN_ISSUES.md), plus the re-read cadence and verification
-  gradient.
+  PR templates, CONTRIBUTING.md, and contextual files (VISION.md, PRINCIPLES.md,
+  SMOKE_TESTS.md, KNOWN_ISSUES.md), plus the re-read cadence, the verification
+  gradient, and the steering pattern for repos with a governing contract.
 ---
 
 # Per-Repo Conventions
@@ -25,6 +25,7 @@ current objective.
 That document is the single source of truth. It covers discovery order (repo
 root + subdirectory walk, most-specific-wins), the always-loaded files
 (`AGENTS.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `CONTRIBUTING.md`,
-`README.md`), the contextual files (`PRINCIPLES.md`, `SMOKE_TESTS.md`,
-`KNOWN_ISSUES.md`), when to read and re-read them, the verification gradient,
+`README.md`), the contextual files (`VISION.md`, `PRINCIPLES.md`,
+`SMOKE_TESTS.md`, `KNOWN_ISSUES.md`), when to read and re-read them, the
+verification gradient, how a repo with a governing contract steers against it,
 and author guidance.
