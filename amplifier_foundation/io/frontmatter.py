@@ -13,6 +13,13 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
     Extracts YAML between --- delimiters at the start of the text.
 
+    A leading UTF-8 BOM (U+FEFF) is tolerated. Editors on Windows (Notepad,
+    PowerShell ``Set-Content``, ``Out-File``) write UTF-8 *with* a BOM by
+    default; when such a file is decoded as plain ``utf-8`` the BOM survives
+    as a leading U+FEFF character. Without stripping it the opening ``---``
+    is no longer at position 0, the pattern below does not match, and the
+    frontmatter is silently discarded rather than reported as an error.
+
     Args:
         text: Markdown text with optional YAML frontmatter.
 
@@ -23,6 +30,8 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     Raises:
         yaml.YAMLError: If frontmatter contains invalid YAML.
     """
+    text = text.lstrip("\ufeff")
+
     # Match --- at start, then content, then ---
     pattern = r"^---\s*\n(.*?)\n---\s*\n?"
     match = re.match(pattern, text, re.DOTALL)
