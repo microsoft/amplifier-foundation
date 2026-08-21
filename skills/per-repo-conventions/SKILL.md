@@ -7,7 +7,8 @@ description: >
   foundation:docs/PER_REPO_CONVENTIONS.md — the discovery pattern for AGENTS.md,
   PR templates, CONTRIBUTING.md, and contextual files (VISION.md, PRINCIPLES.md,
   SMOKE_TESTS.md, KNOWN_ISSUES.md), plus the re-read cadence, the verification
-  gradient, and the steering pattern for repos with a governing contract.
+  gradient, the steering pattern for repos with a governing contract, and the
+  pre-publication leak defense for repos that publish publicly.
 ---
 
 # Per-Repo Conventions
@@ -28,4 +29,5 @@ root + subdirectory walk, most-specific-wins), the always-loaded files
 `README.md`), the contextual files (`VISION.md`, `PRINCIPLES.md`,
 `SMOKE_TESTS.md`, `KNOWN_ISSUES.md`), when to read and re-read them, the
 verification gradient, how a repo with a governing contract steers against it,
-and author guidance.
+how a repo that publishes publicly defends against leaks before the push, and
+author guidance.
