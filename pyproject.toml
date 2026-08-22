@@ -64,7 +64,8 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "modules/tool-delegate/tests"]
+pythonpath = ["modules/tool-delegate"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
