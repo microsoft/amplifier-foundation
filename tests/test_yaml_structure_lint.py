@@ -358,11 +358,11 @@ class TestLintLogicEdgeCases:
 class TestSingleBundleRecipeStructure:
     """Verify validate-single-bundle.yaml has the yaml-structure-lint step."""
 
-    def test_version_is_2_1_0(self, single_bundle_recipe):
-        """Version must be bumped to 2.1.0."""
+    def test_version_is_current(self, single_bundle_recipe):
+        """Version must match the recipe's current release."""
         data, _ = single_bundle_recipe
-        assert data["version"] == "2.1.0", (
-            f"Expected version '2.1.0', got '{data['version']}'"
+        assert data["version"] == "2.2.0", (
+            f"Expected version '2.2.0', got '{data['version']}'"
         )
 
     def test_yaml_structure_lint_step_exists(self, single_bundle_steps):

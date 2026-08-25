@@ -244,6 +244,17 @@ steps:
           }))
           exit(0)
 
+      # amplifier_foundation is not guaranteed to be importable in every
+      # environment this recipe runs in (it is run against third-party bundle
+      # repos). Degrade to a no-op rather than killing the whole run: an
+      # unhandled ImportError here produces no JSON, and quality-classification
+      # parses this step's output unguarded with on_error: "fail".
+      try:
+          from amplifier_foundation.validator import check_body_is_instruction
+      except ImportError:
+          def check_body_is_instruction(content):
+              return {"verdict": "SKIPPED", "prose_chars": 0, "prose_preview": "", "reason": "amplifier_foundation not available"}
+
       # Valid model roles per role taxonomy v2 (2026-03-01)
       # Update when roles are added/removed from the routing matrix schema
       VALID_MODEL_ROLES = {
@@ -530,6 +541,18 @@ steps:
           else:
               result["example_count"] = 0
               result["examples_with_context"] = 0
+
+          # Check whether the body (below frontmatter) reads as instruction, not
+          # documentation -- everything below frontmatter is sent to the model
+          # as system instruction (WARNING level, not ERROR)
+          body_check = check_body_is_instruction(content)
+          if body_check["verdict"] == "FLAG":
+              result["warnings"].append({
+                  "severity": "WARNING",
+                  "code": "PROSE_BELOW_FRONTMATTER",
+                  "message": f"{Path(file_path).name}: body has {body_check['prose_chars']} chars of documentation-style prose below the frontmatter: \"{body_check['prose_preview']}\"",
+                  "remediation": "Everything below the frontmatter is sent to the model as system instruction. Move descriptive prose into the frontmatter description field (metadata, never sent) or delete it. Keep @mention pointers to instruction files."
+              })
 
           return result
 
