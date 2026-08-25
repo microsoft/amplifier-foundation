@@ -7,5 +7,5 @@ providers:
   - module: provider-anthropic
     source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
     config:
-      default_model: claude-opus-4-6
+      default_model: claude-opus-5
       raw: true
