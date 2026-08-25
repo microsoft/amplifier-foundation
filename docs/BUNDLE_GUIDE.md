@@ -181,8 +181,6 @@ The second form costs tokens in every turn of every session and tells the model 
 
 `Bundle.compose()` applies *later replaces earlier* to `instruction`, and the registry composes includes first, then the current bundle. So the body that becomes the system prompt is the **root** bundle's. An included bundle's body is discarded — unless the root has no body of its own, in which case the last included body with content survives. Don't rely on that fallback; keep every body correct on its own terms.
 
-**Enforced by** `foundation:recipes/validate-bundle-repo.yaml`, `validate-single-bundle.yaml`, and `validate-agents.yaml`, which emit a `PROSE_BELOW_FRONTMATTER` warning.
-
 ---
 
 ## The Behavior Pattern
