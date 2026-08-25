@@ -3,7 +3,7 @@ bundle:
   name: anchors-amp-dev
   version: 0.1.0
   description: |
-    Experimental lean bundle driven by a small set of behavioral principles.
+    Lean bundle driven by a small set of behavioral principles.
     A minimal system prompt, thin purposeful agents, and a standard tool roster.
     Explores how far concise behavior-shaping -- principles loaded once at the
     head of the system prompt -- can carry an Amplifier session at a fraction of
