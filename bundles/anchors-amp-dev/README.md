@@ -1,11 +1,11 @@
-# Experimental Behavioral-Anchor Bundle — Amplifier-Dev Variant
+# Anchors Bundle — Amplifier-Dev Variant
 
 A lean experimental bundle that shapes the agent's conduct with a short, explicit
 set of **behavioral principles** at the top of the system prompt — specialized for
 developing **on the Amplifier ecosystem itself** (multi-repo coordination, bundle
 authoring, DTU validation).
 
-This is the [`anchors`](../anchors/) experiment extended with an
+This is the [`anchors`](../anchors/) bundle extended with an
 amplifier-dev domain: one additional expert agent and a small set of dev-domain
 context files, layered on the same principle-driven core.
 
@@ -28,7 +28,7 @@ amplifier bundle use anchors-amp-dev
 
 ## The idea
 
-Same bet as the base behavioral-anchor experiment: a handful of sharp, named
+Same bet as the base `anchors` bundle: a handful of sharp, named
 principles — re-read on every turn — steer conduct more cheaply and reliably than
 verbose policy text. This variant asks whether that same lean core can carry
 **domain-specialized** work (developing Amplifier) by adding only a thin domain
@@ -46,6 +46,6 @@ The principle core:
 - **`amplifier-dev-expert`** agent — authority for multi-repo development, dependency/push order, DTU validation, and bundle/agent authoring.
 - **`context/amplifier-dev/`** — `ecosystem-map.md`, `dev-workflows.md`, `testing-patterns.md`, loaded by the expert agent on demand.
 
-Everything else mirrors the base experiment: a minimal system prompt and the same
+Everything else mirrors the base `anchors` bundle: a minimal system prompt and the same
 thin, delegation-aware agent roster (explorer, architect, builder, debugger,
 researcher, git-ops).
