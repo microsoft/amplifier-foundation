@@ -18,7 +18,7 @@ and loaded the same way any other bundle would be.
 from __future__ import annotations
 
 # Core classes
-from amplifier_foundation.bundle import Bundle
+from amplifier_foundation.bundle import Bundle, SessionPreInitializer
 from amplifier_foundation.configurator import SessionConfigurator
 from amplifier_foundation.configurator import (
     RuntimeOverlay,
@@ -130,6 +130,7 @@ __all__ = [
     "SessionConfigurator",
     "RuntimeOverlay",
     "TransitionResult",
+    "SessionPreInitializer",
     # Overlay capability name constants (producer-neutral; use these instead of hardcoded strings)
     "RUNTIME_SKILL_OVERLAY_CAPABILITY",
     "RUNTIME_CONTEXT_OVERLAY_CAPABILITY",

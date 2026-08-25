@@ -7,6 +7,7 @@ from amplifier_foundation.bundle._prepared import (
     BundleModuleResolver,
     BundleModuleSource,
     PreparedBundle,
+    SessionPreInitializer,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "BundleModuleResolver",
     "BundleModuleSource",
     "PreparedBundle",
+    "SessionPreInitializer",
 ]

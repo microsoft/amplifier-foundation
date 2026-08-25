@@ -4,27 +4,51 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from dataclasses import field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import Any
-from typing import Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from amplifier_core import AmplifierSession
 
     from amplifier_foundation.modules.activator import ModuleActivator
 
 from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFoundError
 
-from amplifier_foundation.spawn_utils import ProviderPreference
-from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
-
 from amplifier_foundation.bundle._dataclass import Bundle
+from amplifier_foundation.session.capabilities import (
+    WORKING_DIR_CAPABILITY,
+    set_working_dir,
+)
+from amplifier_foundation.spawn_utils import (
+    ProviderPreference,
+    apply_provider_preferences_with_resolution,
+)
 
 logger = logging.getLogger(__name__)
+
+SessionPreInitializer = Callable[["AmplifierSession"], Awaitable[None]]
+
+
+async def _run_session_pre_initializer(
+    session: AmplifierSession,
+    before_initialize: SessionPreInitializer,
+) -> None:
+    """Run the transient pre-initializer and clean up if it aborts setup."""
+    try:
+        await before_initialize(session)
+    except BaseException:
+        try:
+            await session.cleanup()
+        except BaseException:
+            logger.debug(
+                "Failed to clean up after pre-initialization callback failure",
+                exc_info=True,
+            )
+        raise
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # mentions:resolved event helpers
@@ -354,6 +378,13 @@ class PreparedBundle:
 
         return bundles_for_resolver
 
+    def _register_bundle_package_paths(self, session: Any) -> None:
+        """Expose activated bundle package paths before provider initialization."""
+        if self.bundle_package_paths:
+            session.coordinator.register_capability(
+                "bundle_package_paths", list(self.bundle_package_paths)
+            )
+
     def _create_system_prompt_factory(
         self,
         bundle: "Bundle",
@@ -504,6 +535,7 @@ class PreparedBundle:
         display_system: Any = None,
         session_cwd: Path | None = None,
         is_resumed: bool = False,
+        before_initialize: SessionPreInitializer | None = None,
     ) -> Any:
         """Create an AmplifierSession with the resolver properly mounted.
 
@@ -527,6 +559,8 @@ class PreparedBundle:
                 Defaults to bundle.base_path if not provided.
             is_resumed: Whether this session is being resumed (vs newly created).
                 Controls whether session:start or session:resume events are emitted.
+            before_initialize: Optional callback invoked after static session
+                capabilities are installed and immediately before provider initialization.
 
         Returns:
             Initialized AmplifierSession ready for execute().
@@ -560,22 +594,17 @@ class PreparedBundle:
         # Mount the resolver before initialization
         await session.coordinator.mount("module-source-resolver", self.resolver)
 
-        # Register bundle package paths for inheritance by child sessions
-        # These are src/ directories from bundles like python-dev that need to be
-        # on sys.path for their modules to import shared code
-        if self.bundle_package_paths:
-            session.coordinator.register_capability(
-                "bundle_package_paths", list(self.bundle_package_paths)
-            )
+        self._register_bundle_package_paths(session)
 
         # Register session working directory capability
         # This provides a unified way for tools/hooks to discover the working directory
         # instead of using Path.cwd() which returns the wrong value in server deployments.
         # The value can be updated during the session (e.g., if assistant "cd"s to subdir).
         effective_working_dir = session_cwd or self.bundle.base_path or Path.cwd()
-        session.coordinator.register_capability(
-            "session.working_dir", str(effective_working_dir.resolve())
-        )
+        set_working_dir(session.coordinator, effective_working_dir)
+
+        if before_initialize is not None:
+            await _run_session_pre_initializer(session, before_initialize)
 
         # Initialize the session (loads all modules)
         await session.initialize()
@@ -686,6 +715,7 @@ class PreparedBundle:
         session_cwd: Path | None = None,
         provider_preferences: list[ProviderPreference] | None = None,
         self_delegation_depth: int = 0,
+        before_initialize: SessionPreInitializer | None = None,
     ) -> dict[str, Any]:
         """Spawn a sub-session with a child bundle.
 
@@ -719,6 +749,8 @@ class PreparedBundle:
             self_delegation_depth: Current delegation depth for depth limiting.
                 When > 0, registered as a coordinator capability so
                 depth-limiting tools can read it via get_capability().
+            before_initialize: Optional callback invoked after static child-session
+                capabilities are installed and immediately before provider initialization.
 
         Returns:
             Dict with "output" (response) and "session_id".
@@ -818,6 +850,7 @@ class PreparedBundle:
 
         # Mount resolver and initialize
         await child_session.coordinator.mount("module-source-resolver", self.resolver)
+        self._register_bundle_package_paths(child_session)
 
         # Register session working directory capability for child session
         # Inherit from parent session if available, otherwise use session_cwd or defaults
@@ -826,15 +859,18 @@ class PreparedBundle:
             effective_child_cwd = session_cwd
         elif parent_session:
             # Try to inherit working_dir from parent session
-            parent_wd = parent_session.coordinator.get_capability("session.working_dir")
+            parent_wd = parent_session.coordinator.get_capability(
+                WORKING_DIR_CAPABILITY
+            )
             effective_child_cwd = (
                 Path(parent_wd) if parent_wd else (self.bundle.base_path or Path.cwd())
             )
         else:
             effective_child_cwd = self.bundle.base_path or Path.cwd()
-        child_session.coordinator.register_capability(
-            "session.working_dir", str(effective_child_cwd.resolve())
-        )
+        set_working_dir(child_session.coordinator, effective_child_cwd)
+
+        if before_initialize is not None:
+            await _run_session_pre_initializer(child_session, before_initialize)
 
         await child_session.initialize()
 
