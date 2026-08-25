@@ -183,12 +183,14 @@ Check each agent's description against these criteria:
 
 ## Instruction Structure
 
-The markdown body after frontmatter becomes the agent's system prompt. Recommended structure:
+The markdown body after frontmatter becomes the agent's system prompt. It is instruction addressed to the agent — never a description of the agent for a human reader. That belongs in the frontmatter `meta.description`, which is metadata and is never sent to the model. See [What Goes Below the Frontmatter](BUNDLE_GUIDE.md#what-goes-below-the-frontmatter) for the general rule and the enforcing validators.
+
+Recommended structure:
 
 ```markdown
 # Agent Name
 
-[One-line role description]
+You are [role]. You [what you do, in one line].
 
 **Execution model:** You run as a one-shot sub-session. Work with what 
 you're given and return complete results.

@@ -129,7 +129,59 @@ includes:
 - No `tools:`, `session:`, or `hooks:` declarations (inherited from foundation)
 - Uses behavior pattern for its unique capabilities
 - References consolidated instructions file
-- Minimal markdown body
+- Minimal markdown body — see [What Goes Below the Frontmatter](#what-goes-below-the-frontmatter)
+
+---
+
+## What Goes Below the Frontmatter
+
+**Everything below the frontmatter is sent to the model as system instruction.** It is not documentation, and it is not free.
+
+The loader assigns the markdown body to `bundle.instruction` (`amplifier_foundation/registry.py`), and the prepared bundle emits it **first** — ahead of every context file:
+
+```python
+# amplifier_foundation/bundle/_prepared.py
+main_instruction = captured_bundle.instruction or ""
+...
+return f"{main_instruction}\n\n---\n\n{all_context}"
+```
+
+Agent files (`agents/*.md`) and mode files (`modes/*.md`) take the same path.
+
+### The rule
+
+Below the frontmatter, write **only**:
+
+- instruction addressed to the model, and/or
+- `@mention` pointers to instruction files.
+
+Do **not** write a description of the bundle. That is what the frontmatter `description:` field is for — it is manifest metadata and is never sent to the model.
+
+### The test
+
+Read the body aloud as though you are the model receiving it. Instruction addresses the model:
+
+```markdown
+✅ You have access to the recipe system for multi-step orchestration.
+   Delegate all recipe authoring to `recipes:recipe-author`.
+```
+
+Documentation describes the artifact to a human reader:
+
+```markdown
+❌ # Recipe Bundle
+
+   A lean, principle-driven bundle. Behavior is shaped by a short set of
+   named principles loaded once at the head of the system prompt.
+```
+
+The second form costs tokens in every turn of every session and tells the model a third-person description of itself instead of what to do. If you want that text for humans, put it in `README.md` or in the frontmatter `description:`.
+
+### Which body actually reaches the prompt
+
+`Bundle.compose()` applies *later replaces earlier* to `instruction`, and the registry composes includes first, then the current bundle. So the body that becomes the system prompt is the **root** bundle's. An included bundle's body is discarded — unless the root has no body of its own, in which case the last included body with content survives. Don't rely on that fallback; keep every body correct on its own terms.
+
+**Enforced by** `foundation:recipes/validate-bundle-repo.yaml`, `validate-single-bundle.yaml`, and `validate-agents.yaml`, which emit a `PROSE_BELOW_FRONTMATTER` warning.
 
 ---
 
