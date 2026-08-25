@@ -131,10 +131,4 @@ agents:
     - anchors:researcher
 ---
 
-# Anchors
-
-A lean, principle-driven bundle. Behavior is shaped by a short set
-of named principles loaded once at the head of the system prompt, backed by thin
-purposeful agents and a standard tool roster.
-
 @anchors:context/system.md

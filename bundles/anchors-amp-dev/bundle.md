@@ -136,10 +136,4 @@ agents:
     - foundation:session-analyst
 ---
 
-# Behavioral Anchor
-
-A lean, principle-driven experimental bundle. Behavior is shaped by a short set
-of named principles loaded once at the head of the system prompt, backed by thin
-purposeful agents and a standard tool roster.
-
 @anchors-amp-dev:context/system.md
