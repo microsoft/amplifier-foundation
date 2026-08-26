@@ -1,9 +1,17 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.6.1
+# Repository-Wide Bundle Validator Recipe v3.7.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.7.0 - NEW PHASE 2.55: Body Instruction Check
+#        - Everything below a bundle.md / agents/*.md YAML frontmatter is loaded
+#          verbatim as the session's system instruction and emitted FIRST, ahead
+#          of every context file. Documentation prose there is a defect.
+#        - Emits PROSE_BELOW_FRONTMATTER at WARNING level; never fails the build.
+#        - Scope is bundle.md + agents/*.md. modes/*.md are NOT covered.
+#        - Skips test fixtures; degrades to a clean skip when amplifier_foundation
+#          is not importable.
 # v3.6.1 - Fix two false-positive defects
 #        - Standalone completeness (Phase 3): Bundle.session is dict[str, Any],
 #          but the check used getattr(session, 'orchestrator'/'context'), which
@@ -204,7 +212,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.6.1"
+version: "3.7.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -2854,6 +2862,124 @@ steps:
     depends_on: ["repo-discovery"]
 
   # ============================================================================
+  # PHASE 2.55: Body Instruction Check (v3.7.0)
+  # Everything below a bundle.md / agent.md file's YAML frontmatter is loaded
+  # verbatim as the session's system instruction. Descriptive/documentation
+  # prose there is a defect -- only instruction (or @mention pointers to
+  # instruction files) belongs below the frontmatter. WARNING level (not
+  # ERROR) -- a large fraction of the current ecosystem trips this check.
+  #
+  # Scope: bundle.md and agents/*.md. Mode files (modes/*.md) are NOT covered.
+  # The mode-validation step above checks a mode's frontmatter description
+  # budget and its advertising references -- it does not inspect the body for
+  # prose. Extending this check to modes is deliberately left for a follow-up.
+  # ============================================================================
+
+  - id: "body-instruction-check"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      # amplifier_foundation is not guaranteed to be importable in every
+      # environment this recipe runs in. Report a clean skip rather than
+      # dying silently into the downstream json.loads fallback.
+      try:
+          from amplifier_foundation.validator import check_body_is_instruction
+      except ImportError:
+          print(json.dumps({
+              "phase": "body_instruction_check",
+              "skipped": True,
+              "passed": True,
+              "reason": "amplifier_foundation not importable",
+              "files_checked": 0,
+              "errors": [],
+              "warnings": []
+          }))
+          sys.exit(0)
+
+      repo_path = "{{repo_path}}"
+      path = Path(repo_path).resolve()
+
+      results = {
+          "phase": "body_instruction_check",
+          "files_checked": 0,
+          "errors": [],
+          "warnings": []
+      }
+
+      # Find all bundle.md files (root + nested behaviors/providers/etc.) and
+      # agent definition files anywhere in the repo.
+      bundle_files = list(path.rglob("bundle.md"))
+      agent_files = list(path.rglob("*/agents/*.md")) + list(path.glob("agents/*.md"))
+
+      # Test fixtures are deliberately synthetic -- they exist to exercise the
+      # validators and are not shipped instruction. Flagging them is noise.
+      EXCLUDED_DIRS = {"test-fixtures", "tests", "node_modules", ".git", ".venv"}
+
+      # Deduplicate (rglob/glob patterns can overlap)
+      seen = set()
+      unique_files = []
+      for f in bundle_files + agent_files:
+          if EXCLUDED_DIRS & set(f.parts):
+              continue
+          resolved = f.resolve()
+          if resolved not in seen:
+              seen.add(resolved)
+              unique_files.append(f)
+
+      if not unique_files:
+          results["skipped"] = True
+          results["passed"] = True
+          results["reason"] = "No bundle.md or agents/*.md files found"
+          print(json.dumps(results))
+          sys.exit(0)
+
+      for file_path in sorted(unique_files):
+          try:
+              content = file_path.read_text(encoding="utf-8", errors="replace")
+          except Exception:
+              continue
+
+          results["files_checked"] += 1
+          rel_path = str(file_path.relative_to(path))
+
+          check = check_body_is_instruction(content)
+          if check["verdict"] == "FLAG":
+              results["warnings"].append({
+                  "type": "prose_below_frontmatter",
+                  "file": rel_path,
+                  "message": (
+                      f"{rel_path}: body has {check['prose_chars']} chars of "
+                      f"documentation-style prose below the frontmatter: "
+                      f"\"{check['prose_preview']}\""
+                  ),
+                  "severity": "WARNING",
+                  "fix": (
+                      "Everything below the frontmatter is sent to the model as "
+                      "system instruction. Move descriptive prose into the "
+                      "frontmatter description field (metadata, never sent) or "
+                      "delete it. Keep @mention pointers to instruction files."
+                  )
+              })
+
+      results["passed"] = True  # WARNING-only check -- never fails the build
+      results["summary"] = {
+          "files_checked": results["files_checked"],
+          "warnings": len(results["warnings"])
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "body_instruction_check_results"
+    parse_json: true
+    timeout: 120
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
   # PHASE 2.6: Quality Classification (Deterministic)
   # Enhanced in v3.0.0 to incorporate all new validation phases
   # ============================================================================
@@ -2940,6 +3066,13 @@ steps:
           mode_validation = json.loads(mode_validation_raw)
       except (json.JSONDecodeError, ValueError):
           mode_validation = {"passed": True, "skipped": True, "errors": [], "warnings": []}
+
+      # v3.7.0: Parse body instruction check results
+      body_instruction_raw = '''{{body_instruction_check_results}}'''
+      try:
+          body_instruction = json.loads(body_instruction_raw)
+      except (json.JSONDecodeError, ValueError):
+          body_instruction = {"passed": True, "skipped": True, "errors": [], "warnings": []}
 
       # Handle case where individual validation was skipped
       if individual.get("skipped", False):
@@ -3054,6 +3187,7 @@ steps:
               "structure_lint_issues": [],  # v3.4.0
               "behavior_reference_hygiene_issues": [],  # v3.5.0
               "mode_validation_issues": [],  # v3.6.0
+              "body_instruction_issues": [],  # v3.7.0
               # v3.2.0: Environment status tracking
               "environment_status": {
                   "validation_mode": env_check.get("validation_mode", "unknown"),
@@ -3239,6 +3373,17 @@ steps:
                       "fix": warning.get("fix", "")
                   })
 
+          # v3.7.0: Body instruction check warnings (prose below frontmatter)
+          if not body_instruction.get("skipped", False):
+              for warning in body_instruction.get("warnings", []):
+                  results["body_instruction_issues"].append({
+                      "type": warning.get("type"),
+                      "file": warning.get("file"),
+                      "message": warning.get("message"),
+                      "severity": "WARNING",
+                      "fix": warning.get("fix", "")
+                  })
+
           # Determine overall quality level
           # Priority: critical > needs_work > polish > good
           
@@ -3266,6 +3411,7 @@ steps:
           warning_count += len([i for i in results["experiment_issues"] if i.get("severity") == "WARNING"])
           warning_count += len(results["behavior_reference_hygiene_issues"])  # v3.5.0: all are WARNING
           warning_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"])  # v3.6.0
+          warning_count += len(results["body_instruction_issues"])  # v3.7.0: all are WARNING
           if recipe_quality == "polish":
               warning_count += 1
           
@@ -3310,7 +3456,8 @@ steps:
               "structure_lint_errors": len(results["structure_lint_issues"]),
               "behavior_ref_hygiene_warnings": len(results["behavior_reference_hygiene_issues"]),  # v3.5.0
               "mode_validation_errors": len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"]),  # v3.6.0
-              "mode_validation_warnings": len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"])  # v3.6.0
+              "mode_validation_warnings": len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"]),  # v3.6.0
+              "body_instruction_warnings": len(results["body_instruction_issues"])  # v3.7.0
           }
 
           # v3.3.0: Recipe validation summary
@@ -3337,7 +3484,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
-    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation"]
+    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation", "body-instruction-check"]
 
   # ============================================================================
   # PHASE 2.75: Initialize Optional Outputs
@@ -3989,6 +4136,11 @@ steps:
       {{mode_validation_results}}
       ```
 
+      **Body Instruction Check (v3.7.0):**
+      ```json
+      {{body_instruction_check_results}}
+      ```
+
       **Bundle Doc Freshness (Phase 6 v3):**
       ```json
       {{bundle_doc_freshness}}
@@ -4108,6 +4260,19 @@ steps:
         - Per mode-design-discipline §4 advertising rule: the LLM infers modes by name
       - If no issues: "Mode validation: all N modes passed description budget and advertising checks"
       - If mode_validation_results.skipped == true: "Mode validation: skipped (no modes/*.md files found)"
+
+      ### Body Instruction Check (v3.7.0)
+      Use body_instruction_check_results to report:
+      - files_checked: total number of bundle.md and agents/*.md files checked
+      - For each WARNING of type prose_below_frontmatter:
+        - [WARNING] the file's message (names the file, prose char count, and a preview)
+        - The fix: everything below the frontmatter is sent to the model as system
+          instruction -- move descriptive prose into the frontmatter description
+          field (metadata, never sent) or delete it; keep @mention pointers to
+          instruction files
+      - If no issues: "Body instruction check: all N files have instruction-only bodies"
+      - If body_instruction_check_results.skipped == true: "Body instruction check: skipped (no bundle.md or agents/*.md files found)"
+      - This is WARNING-level only -- it never fails the build on its own
 
       ### Standalone Completeness
       | Bundle | Orchestrator | Context | Provider | Status |

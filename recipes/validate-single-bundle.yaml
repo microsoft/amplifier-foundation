@@ -9,6 +9,13 @@
 # CHANGELOG
 # =============================================================================
 #
+# v2.2.0:
+#   - NEW: Body Instruction Check (Step 1.5) - warns when the bundle body below
+#     the frontmatter reads as documentation rather than instruction. The body
+#     is sent to the model as system instruction, emitted ahead of all context.
+#     WARNING level only; degrades to a clean skip if amplifier_foundation is
+#     not importable.
+#
 # v2.1.0 (2026-04-20):
 #   - NEW FEATURE: YAML Structure Lint (Step 0) — runs BEFORE dependency tracing
 #     * Detects 'includes:' nested under 'bundle:' (silently dropped by parser)
@@ -44,7 +51,7 @@ description: |
   
   For example, if a behavior is not in this bundle's includes chain,
   its context files won't be counted.
-version: "2.1.0"
+version: "2.2.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "single", "dependency-tracing", "yaml-lint"]
 
@@ -466,6 +473,75 @@ steps:
     depends_on: ["yaml-structure-lint"]
 
   # ============================================================================
+  # STEP 1.5: Body Instruction Check
+  # Everything below the bundle's YAML frontmatter is loaded verbatim as the
+  # session's system instruction. Descriptive/documentation prose there is a
+  # defect -- only instruction (or @mention pointers to instruction files)
+  # belongs below the frontmatter. WARNING level (not ERROR).
+  # ============================================================================
+
+  - id: "body-instruction-check"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      # amplifier_foundation is not guaranteed to be importable in every
+      # environment this recipe runs in. Report a clean skip so generate-report
+      # sees valid JSON instead of a crashed step's output.
+      try:
+          from amplifier_foundation.validator import check_body_is_instruction
+      except ImportError:
+          print(json.dumps({
+              "phase": "body_instruction_check",
+              "skipped": True,
+              "reason": "amplifier_foundation not importable",
+              "warnings": [],
+              "errors": []
+          }))
+          sys.exit(0)
+
+      def check_bundle_body(bundle_path: str) -> dict:
+          results = {
+              "phase": "body_instruction_check",
+              "bundle_path": bundle_path,
+              "warnings": [],
+              "errors": []
+          }
+
+          path = Path(bundle_path).resolve()
+          try:
+              content = path.read_text(encoding="utf-8")
+          except Exception as e:
+              results["errors"].append({
+                  "severity": "ERROR",
+                  "code": "READ_ERROR",
+                  "message": f"Failed to read bundle file: {e}"
+              })
+              return results
+
+          check = check_body_is_instruction(content)
+          if check["verdict"] == "FLAG":
+              results["warnings"].append({
+                  "severity": "WARNING",
+                  "code": "PROSE_BELOW_FRONTMATTER",
+                  "message": f"{path.name}: body has {check['prose_chars']} chars of documentation-style prose below the frontmatter: \"{check['prose_preview']}\"",
+                  "remediation": "Everything below the frontmatter is sent to the model as system instruction. Move descriptive prose into the frontmatter description field (metadata, never sent) or delete it. Keep @mention pointers to instruction files."
+              })
+
+          return results
+
+      print(json.dumps(check_bundle_body("{{bundle_path}}")))
+      EOF
+    output: "body_instruction_results"
+    parse_json: true
+    timeout: 30
+    on_error: "continue"
+    depends_on: ["trace-dependencies"]
+
+  # ============================================================================
   # STEP 2: Context analysis using ONLY traced dependencies
   # ============================================================================
 
@@ -680,7 +756,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
-    depends_on: ["trace-dependencies"]
+    depends_on: ["trace-dependencies", "body-instruction-check"]
 
   # ============================================================================
   # STEP 3: Generate validation report for this bundle
@@ -708,6 +784,11 @@ steps:
       **Context Analysis:**
       ```json
       {{context_results}}
+      ```
+
+      **Body Instruction Check:**
+      ```json
+      {{body_instruction_results}}
       ```
 
       **Generate a report with:**
@@ -745,6 +826,9 @@ steps:
       
       **Issues:**
       List any errors or warnings found, with recommended fixes.
+      Include any warnings from body_instruction_results (PROSE_BELOW_FRONTMATTER) --
+      the bundle body below the frontmatter is sent to the model as system
+      instruction, so documentation-style prose there is a WARNING-level issue.
       
       **Key Files:**
       List the top 5 largest context files with their token counts and source category.
