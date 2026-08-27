@@ -45,6 +45,7 @@ Agent's explicit tool declarations are always honored, even when parent excludes
 | `context_turns` | integer | 5 | Number of turns when context_depth is 'recent' |
 | `context_scope` | enum | "conversation" | Which content: conversation, agents, full |
 | `provider_preferences` | array | - | Ordered provider/model preferences |
+| `max_llm_calls` | integer | - | Override the Layer 1 LLM-call budget for this delegation (per session leg). `0` disables the budget for this call. Only takes effect when `settings.max_llm_calls` is configured -- see "Layer 1 call budget" below. |
 
 ## Configuration
 
@@ -70,6 +71,16 @@ modules:
         - delegate  # Default: spawned agents can't further delegate
       exclude_hooks: []
       timeout: 300
+      max_llm_calls: null      # Layer 1 call budget (spec: 298-replacement).
+                                # None/unset (default): ships dark -- no
+                                # budget is injected into any child session;
+                                # today's behavior is unchanged. Set to a
+                                # positive integer to enforce a per-leg
+                                # LLM-call budget (see below). 0 is
+                                # equivalent to null (explicit no-budget).
+      budget_warn_ratio: 0.8    # Fraction of max_llm_calls at which a
+                                # one-shot "start converging" warning fires.
+                                # Only meaningful when max_llm_calls is set.
 ```
 
 ### Structured Return Contract
@@ -135,6 +146,74 @@ opt-in matrix.
 `findings_count`, `evidence_backed_count` (findings with a non-empty `evidence`),
 `not_covered_count`, and `artifacts_count` (all `int | None`, `None` alongside
 `contract_conformant is None`).
+
+## Layer 1 call budget
+
+This module can bound how many main-loop LLM calls a delegated child
+session may make in one leg, as a first line of defense in front of
+`settings.timeout`'s wall-clock backstop (see spec: 298-replacement,
+"Layered Bounding for Delegated Sessions"). The enforcement mechanism is
+the child's own orchestrator `max_iterations` config (e.g.
+`amplifier-module-loop-streaming`'s streaming loop) -- this module does not
+count LLM calls itself; it only injects a value into the child's
+`orchestrator_config` at spawn time.
+
+**Ships dark.** `settings.max_llm_calls` defaults to `None`, which means no
+budget is injected at all -- every child session gets exactly the
+`orchestrator_config` its parent would have given it anyway (rank 4 below).
+Nothing about this feature is active until an operator sets
+`settings.max_llm_calls` to a positive integer.
+
+### Precedence (highest first)
+
+| Rank | Source | Key | Status |
+|------|--------|-----|--------|
+| 1 | Per-call tool input | `max_llm_calls` | Implemented |
+| 2 | Per-agent frontmatter | `agents[agent_name]["budget"]["max_llm_calls"]` | **Not implemented -- see "Known gaps" below** |
+| 3 | This module's setting | `settings.max_llm_calls` | Implemented (default `null`) |
+| 4 | Inherited parent `orchestrator_config` | `max_iterations` (only if 1 and 3 are both absent) | Implemented (pre-existing inheritance path, untouched) |
+
+An explicit `0` at rank 1 means "no Layer 1 budget for this delegation" --
+the wall-clock backstop (`settings.timeout`) still applies. Negative values
+and booleans are rejected at the point they are supplied (fail loud, not a
+silent coercion).
+
+### Negotiated feature, not a contract requirement
+
+`max_iterations` is an **advisory** orchestrator config convention (see
+`amplifier-core/docs/contracts/ORCHESTRATOR_CONTRACT.md`), not a required
+one. If a budget was requested but the child's orchestrator doesn't
+implement `max_iterations` at all (a third-party orchestrator, or one with
+no budget support), the child's `orchestrator:complete` metadata will carry
+no `llm_call_budget` key. This module detects that and:
+
+- logs a warning naming the agent and the fact that only the wall-clock
+  backstop applies
+- sets `metadata.budget_enforced: false` on the returned `ToolResult`
+
+so the gap is loud, never silent.
+
+### Known gaps
+
+- **Per-agent frontmatter override (precedence rank 2) is not
+  implemented.** A top-level `budget:` block in an agent `.md` file's
+  frontmatter does **not** currently survive into
+  `coordinator.config["agents"][name]`:
+  `amplifier_foundation.bundle._dataclass._load_agent_file_metadata` only
+  forwards a fixed allowlist of top-level frontmatter keys (`tools`,
+  `providers`, `hooks`, `session`, `provider_preferences`, `model_role`,
+  `agents`) -- `budget` is not among them, and is silently dropped. This was
+  verified empirically (not just read from the source) -- see
+  `tests/test_delegate_call_budget.py`'s
+  `test_agent_frontmatter_budget_key_is_dropped`. Ranks 1, 3, and 4 of the
+  precedence chain ship and work today; rank 2 is a follow-up that requires
+  a change in `amplifier-foundation`'s agent-frontmatter loader, not this
+  module.
+- **Cross-provider healthy-`llm_calls` distribution is not yet measured.**
+  Any default set for `settings.max_llm_calls` today is a hypothesis, not a
+  measurement -- see the spec's staged-rollout plan (S0 telemetry-only -> S1
+  warn-only -> S2 generous enforcement -> S3 target enforcement) before
+  setting a production default.
 
 ## Note
 
