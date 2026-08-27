@@ -41,7 +41,9 @@ Tool Parameters:
 __amplifier_module_type__ = "tool"
 
 import asyncio
+import json
 import logging
+import re
 from typing import Any
 
 from amplifier_core import ModuleCoordinator, ToolResult
@@ -61,6 +63,124 @@ class ModelRoleUnresolvedError(RuntimeError):
     behavior. See ``delegate:model_role_unresolved`` for the always-emitted
     observability event that accompanies both the strict and default paths.
     """
+
+
+# ---------------------------------------------------------------------------
+# Structured delegation return contract (flag-gated; see features.return_contract
+# in this module's config, and _parse_return_contract() below for the parser).
+#
+# A sub-agent may append a fenced ```json block, shaped per RETURN_CONTRACT_SCHEMA,
+# to the end of its normal prose response. Only "findings" is required, and only
+# "claim" within each finding -- everything else defaults on parse. The parser
+# never rejects a partially-good return; see _parse_return_contract's docstring.
+#
+# RETURN_CONTRACT_SCHEMA and RETURN_CONTRACT_INSTRUCTION are kept as pure
+# literals (no computed expressions) even though neither lives inside a tool
+# class -- foundation's static token-cost estimator
+# (amplifier_foundation.bundle_docs.tool_schema) locates the FIRST `return {`
+# after `def input_schema` inside this file's one class and ast.literal_eval's
+# it (see the docstring warning on DelegateTool.input_schema below). These two
+# module-level constants sit above the class entirely so they cannot interfere
+# with that scan, but keeping them literal keeps them inspectable by any future
+# tooling that walks this module the same way.
+RETURN_CONTRACT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["findings"],
+    "properties": {
+        "summary": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["claim"],
+                "properties": {
+                    "claim": {"type": "string"},
+                    "evidence": {"type": "string"},
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                    },
+                },
+            },
+        },
+        "not_covered": {"type": "array", "items": {"type": "string"}},
+        "artifacts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+RETURN_CONTRACT_INSTRUCTION = """[STRUCTURED RETURN]
+After your normal prose answer, append ONE fenced json block as the LAST thing
+in your response:
+
+```json
+{
+  "summary": "at most 3 sentences -- the answer in brief",
+  "findings": [
+    {"claim": "one assertion, stated so it can be carried forward verbatim",
+     "evidence": "file:line, command run, or URL -- empty string if genuinely none",
+     "confidence": "high | medium | low"}
+  ],
+  "not_covered": ["a thing in scope you did NOT examine"],
+  "artifacts": [{"path": "file written or modified", "description": "what changed"}]
+}
+```
+
+Only "findings" is required, and only "claim" within each finding. If your task
+produced no investigative findings, return "findings": [] and describe the work
+done in "summary". Write your normal prose answer first, then this block."""
+
+
+def _return_contract_event_fields(contract: dict[str, Any]) -> dict[str, Any]:
+    """Five additive fields for the ``delegate:agent_completed`` event.
+
+    Shared by both the spawn and resume completion paths so the two emit
+    sites can never drift from each other.
+
+    ``contract_conformant`` and the four counts are all ``None`` together
+    when the return-contract feature is disabled -- this distinguishes
+    "feature off" from "feature on but the agent returned nothing usable"
+    (``False`` / ``0``), which a bare ``0`` would hide.
+    """
+    conformant = contract.get("conformant")
+    if conformant is None:
+        return {
+            "contract_conformant": None,
+            "findings_count": None,
+            "evidence_backed_count": None,
+            "not_covered_count": None,
+            "artifacts_count": None,
+        }
+
+    findings = contract.get("findings") or []
+    return {
+        "contract_conformant": conformant,
+        "findings_count": len(findings),
+        "evidence_backed_count": sum(
+            1 for f in findings if isinstance(f, dict) and f.get("evidence")
+        ),
+        "not_covered_count": len(contract.get("not_covered") or []),
+        "artifacts_count": len(contract.get("artifacts") or []),
+    }
+
+
+# Matches a fenced ```json ... ``` block, tolerant of ```JSON, surrounding
+# indentation, and trailing whitespace on the fence lines. The closing fence
+# must be alone on its own line so short "```" substrings inside the JSON
+# body's string values don't terminate the match early.
+_JSON_FENCE_PATTERN = re.compile(
+    r"^[ \t]*```[ \t]*json[ \t]*\r?\n(?P<body>.*?)\r?\n[ \t]*```[ \t]*$",
+    re.IGNORECASE | re.DOTALL | re.MULTILINE,
+)
 
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
@@ -144,6 +264,20 @@ class DelegateTool:
             "enabled", True
         )
 
+        # Structured delegation return contract (flag-gated; default OFF).
+        # See RETURN_CONTRACT_INSTRUCTION / RETURN_CONTRACT_SCHEMA above and
+        # _parse_return_contract() below for the full mechanism. `return_contract_reask`
+        # is parsed now so the config surface is stable across stages, but it is
+        # inert in Stage 1 -- the re-ask loop is a Stage 2 deferral (see spec §4.4).
+        return_contract_config = features.get("return_contract", {})
+        self.return_contract_enabled = return_contract_config.get("enabled", False)
+        self.return_contract_strip_block = return_contract_config.get(
+            "strip_block", True
+        )
+        self.return_contract_reask = return_contract_config.get(
+            "reask_on_nonconformance", False
+        )
+
         # Settings
         self.exclude_tools: list[str] = settings.get("exclude_tools", ["tool-delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
@@ -216,6 +350,24 @@ class DelegateTool:
                 "name": "provider_selection",
                 "enabled": self.provider_selection_enabled,
                 "description": "- Use provider_preferences to specify model/provider for the agent",
+                "disabled_note": None,
+            },
+            {
+                "name": "return_contract",
+                "enabled": self.return_contract_enabled,
+                "description": (
+                    "When a delegate result carries contract.findings, walk every "
+                    "finding before you write your answer, and carry each surviving "
+                    "claim into your response text with its evidence. A finding you "
+                    "do not mention is a finding you have decided to discard -- "
+                    "decide that deliberately, not by running out of attention.\n"
+                    "contract.not_covered is your resume decision list. Read it the "
+                    "moment the result arrives: resuming that session now is cheap; "
+                    "discovering the gap three turns later is not.\n"
+                    "contract.conformant: false means the agent returned "
+                    "unstructured prose. Its coverage is unknown -- do not treat "
+                    "its silence as completeness."
+                ),
                 "disabled_note": None,
             },
         ]
@@ -828,6 +980,159 @@ Agent usage notes:
 
         return inherited
 
+    def _parse_return_contract(self, response: str) -> tuple[dict[str, Any], str]:
+        """Parse an optional structured return contract from a sub-agent's response.
+
+        Looks for the LAST fenced ```json block in *response* (see
+        RETURN_CONTRACT_SCHEMA) and tolerantly normalizes it -- a partially-good
+        return is kept, never discarded outright. This is the single place that
+        decides whether a delegation "conformed" to the contract; both the spawn
+        and resume completion paths call it once and reuse the result for both
+        telemetry and the annotated ``ToolResult.output``.
+
+        Args:
+            response: The sub-agent's final text -- normal prose, optionally
+                followed by a fenced json block.
+
+        Returns:
+            A ``(contract, cleaned_response)`` tuple.
+
+            ``contract`` always has the shape::
+
+                {
+                    "conformant": bool | None,  # None only when the feature is disabled
+                    "reason": str | None,       # populated when conformant is False
+                    "summary": str | None,
+                    "findings": list[dict],
+                    "not_covered": list[str],
+                    "artifacts": list[dict],
+                }
+
+            ``cleaned_response`` is *response* with the parsed block removed
+            when parsing succeeded and ``return_contract_strip_block`` is
+            enabled; otherwise it is byte-identical to *response*. This is
+            the one non-purely-additive behavior in the contract (see the
+            module docstring / README) and only ever fires when both the
+            feature and strip_block are enabled and the block parsed cleanly.
+
+        Invariants:
+            - NEVER raises. Any unexpected failure degrades to
+              ``conformant=False`` with ``reason=repr(exception)``.
+            - NEVER mutates *response* when ``conformant`` is not ``True``.
+            - Pure function of (response, self.return_contract_enabled,
+              self.return_contract_strip_block). No I/O, no coordinator access.
+        """
+        empty_contract: dict[str, Any] = {
+            "conformant": None,
+            "reason": None,
+            "summary": None,
+            "findings": [],
+            "not_covered": [],
+            "artifacts": [],
+        }
+
+        if not self.return_contract_enabled:
+            return dict(empty_contract), response
+
+        try:
+            match = None
+            for match in _JSON_FENCE_PATTERN.finditer(response):
+                pass  # keep iterating -- the LAST fenced json block wins
+
+            if match is None:
+                contract = dict(empty_contract)
+                contract["conformant"] = False
+                contract["reason"] = "no fenced json block found in agent response"
+                return contract, response
+
+            try:
+                parsed = json.loads(match.group("body"))
+            except (ValueError, TypeError) as e:
+                contract = dict(empty_contract)
+                contract["conformant"] = False
+                contract["reason"] = f"json parse failed: {e}"
+                return contract, response
+
+            if not isinstance(parsed, dict):
+                contract = dict(empty_contract)
+                contract["conformant"] = False
+                contract["reason"] = "contract block is not a JSON object"
+                return contract, response
+
+            raw_findings = parsed.get("findings")
+            if not isinstance(raw_findings, list):
+                contract = dict(empty_contract)
+                contract["conformant"] = False
+                contract["reason"] = "missing required 'findings' array"
+                return contract, response
+
+            # Normalize, never reject -- a partially-good return is kept.
+            findings: list[dict[str, Any]] = []
+            for item in raw_findings:
+                if not isinstance(item, dict):
+                    continue
+                claim = item.get("claim")
+                if not isinstance(claim, str) or not claim.strip():
+                    continue
+                evidence = item.get("evidence")
+                if not isinstance(evidence, str):
+                    evidence = ""
+                confidence = item.get("confidence")
+                if confidence not in ("high", "medium", "low"):
+                    confidence = "unspecified"
+                findings.append(
+                    {"claim": claim, "evidence": evidence, "confidence": confidence}
+                )
+
+            raw_not_covered = parsed.get("not_covered")
+            not_covered = (
+                [item for item in raw_not_covered if isinstance(item, str)]
+                if isinstance(raw_not_covered, list)
+                else []
+            )
+
+            raw_artifacts = parsed.get("artifacts")
+            artifacts: list[dict[str, Any]] = []
+            if isinstance(raw_artifacts, list):
+                for item in raw_artifacts:
+                    if not isinstance(item, dict):
+                        continue
+                    path = item.get("path")
+                    if not isinstance(path, str) or not path:
+                        continue
+                    description = item.get("description")
+                    if not isinstance(description, str):
+                        description = ""
+                    artifacts.append({"path": path, "description": description})
+
+            summary = parsed.get("summary")
+            if not isinstance(summary, str):
+                summary = None
+
+            contract = {
+                "conformant": True,
+                "reason": None,
+                "summary": summary,
+                "findings": findings,
+                "not_covered": not_covered,
+                "artifacts": artifacts,
+            }
+
+            if self.return_contract_strip_block:
+                cleaned = response[: match.start()] + response[match.end() :]
+                # Collapse the blank lines left behind by removing the block.
+                cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+            else:
+                cleaned = response
+
+            return contract, cleaned
+
+        except Exception as e:  # defensive -- this method must never raise
+            contract = dict(empty_contract)
+            contract["conformant"] = False
+            contract["reason"] = repr(e)
+            return contract, response
+
     async def execute(self, input: dict) -> ToolResult:
         """Execute agent delegation with structured parameters.
 
@@ -1180,6 +1485,17 @@ Agent usage notes:
                 )
                 effective_instruction = f"{context_text}\n\n[YOUR TASK]\n{instruction}"
 
+            # Structured delegation return contract (flag-gated; additive).
+            # Per-agent opt-out: an agent's meta.return_contract: false (forwarded
+            # into agent config by _dataclass.py) suppresses injection even when
+            # the feature is globally enabled. Defaults to inheriting the global
+            # flag -- this is an opt-out, not a per-agent opt-in matrix (see spec §3.6).
+            agent_cfg = (agents or {}).get(agent_name, {})
+            if self.return_contract_enabled and agent_cfg.get("return_contract", True):
+                effective_instruction = (
+                    f"{effective_instruction}\n\n{RETURN_CONTRACT_INSTRUCTION}"
+                )
+
             # Extract orchestrator config from parent session for inheritance.
             # Guard with isinstance to handle non-dict orchestrator values gracefully
             # (e.g. when orchestrator is a string like "loop-basic").
@@ -1252,6 +1568,14 @@ Agent usage notes:
             else:
                 result = await spawn_coro
 
+            # Structured delegation return contract: parse the sub-agent's
+            # response once (no-op when the feature is disabled -- see
+            # _parse_return_contract). Reused below for both the completion
+            # telemetry and the annotated output.
+            contract, cleaned_response = self._parse_return_contract(
+                result.get("output", "")
+            )
+
             # Emit delegate:agent_completed event
             if hooks:
                 await hooks.emit(
@@ -1263,6 +1587,7 @@ Agent usage notes:
                         "success": True,
                         "tool_call_id": tool_call_id,
                         "parallel_group_id": parallel_group_id,
+                        **_return_contract_event_fields(contract),
                     },
                 )
 
@@ -1280,17 +1605,23 @@ Agent usage notes:
                     ),
                 }
 
-            # Return output with session_id for multi-turn capability
+            # Return output with session_id for multi-turn capability.
+            # "response" is `cleaned_response` -- byte-identical to
+            # result["output"] whenever the feature is disabled, parsing
+            # failed, or strip_block is off; the fenced json block is only
+            # ever removed from it on a successful, flag-enabled parse (see
+            # _parse_return_contract). "contract" is purely additive.
             session_id_result = result["session_id"]
             return ToolResult(
                 success=True,
                 output={
-                    "response": result["output"],
+                    "response": cleaned_response,
                     "session_id": session_id_result,
                     "agent": agent_name,
                     "turn_count": result.get("turn_count", 1),
                     "status": result.get("status", "success"),
                     "metadata": result.get("metadata", {}),
+                    "contract": contract,
                     **(
                         {"provider_routing": provider_routing}
                         if provider_routing
@@ -1466,16 +1797,40 @@ Agent usage notes:
                     },
                 )
 
+            # Structured delegation return contract (flag-gated; additive).
+            # Opt-out is resolved via `agent_name`, which is the same identity
+            # `_resolve_agent_for_session` computed above (before the try block)
+            # for event emission -- consistent with the spawn path's opt-out.
+            effective_instruction = instruction
+            if self.return_contract_enabled:
+                agents_cfg = self.coordinator.config.get("agents", {})
+                agent_cfg = (
+                    agents_cfg.get(agent_name, {})
+                    if isinstance(agents_cfg, dict)
+                    else {}
+                )
+                if agent_cfg.get("return_contract", True):
+                    effective_instruction = (
+                        f"{instruction}\n\n{RETURN_CONTRACT_INSTRUCTION}"
+                    )
+
             # Resume agent session (with optional session-level timeout)
             resume_coro = resume_fn(
                 sub_session_id=full_session_id,
-                instruction=instruction,
+                instruction=effective_instruction,
             )
             if self.timeout is not None:
                 async with asyncio.timeout(self.timeout):
                     result = await resume_coro
             else:
                 result = await resume_coro
+
+            # Structured delegation return contract (see the spawn path for
+            # the full explanation) -- computed once, reused for telemetry
+            # and the annotated output below.
+            contract, cleaned_response = self._parse_return_contract(
+                result.get("output", "")
+            )
 
             # Emit delegate:agent_completed event
             if hooks:
@@ -1488,20 +1843,24 @@ Agent usage notes:
                         "success": True,
                         "tool_call_id": tool_call_id,
                         "parallel_group_id": parallel_group_id,
+                        **_return_contract_event_fields(contract),
                     },
                 )
 
-            # Return output with session info
+            # Return output with session info. "response" is `cleaned_response`
+            # -- see the spawn path's comment for the exact byte-identity
+            # guarantee this preserves in the disabled/non-conformant paths.
             session_id_result = result["session_id"]
             return ToolResult(
                 success=True,
                 output={
-                    "response": result["output"],
+                    "response": cleaned_response,
                     "session_id": session_id_result,
                     "agent": agent_name,
                     "turn_count": result.get("turn_count", 1),
                     "status": result.get("status", "success"),
                     "metadata": result.get("metadata", {}),
+                    "contract": contract,
                 },
             )
 

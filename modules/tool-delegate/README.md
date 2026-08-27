@@ -61,12 +61,80 @@ modules:
         max_turns: 10
       provider_selection:
         enabled: true
+      return_contract:
+        enabled: false        # default OFF; purely additive when on
+        strip_block: true     # remove the parsed json block from `response`
+        reask_on_nonconformance: false  # reserved for a future stage; inert today
     settings:
       exclude_tools:
         - delegate  # Default: spawned agents can't further delegate
       exclude_hooks: []
       timeout: 300
 ```
+
+### Structured Return Contract
+
+Flag-gated, default **off**. When `features.return_contract.enabled` is `true`, this
+tool appends a short instruction to every spawned/resumed agent's instruction, asking
+it to append a fenced ` ```json ` block to the end of its normal prose answer:
+
+```json
+{
+  "summary": "at most 3 sentences -- the answer in brief",
+  "findings": [
+    {"claim": "one assertion, carried forward verbatim",
+     "evidence": "file:line, command run, or URL -- empty string if genuinely none",
+     "confidence": "high | medium | low"}
+  ],
+  "not_covered": ["a thing in scope the agent did NOT examine"],
+  "artifacts": [{"path": "file written or modified", "description": "what changed"}]
+}
+```
+
+Only `findings` is required, and only `claim` within each finding -- everything else
+defaults on parse. The parser (`_parse_return_contract`) is tolerant: a partially-good
+block is normalized and kept, never discarded outright.
+
+On return, `ToolResult.output` gains one additive `contract` key:
+
+```jsonc
+{
+  "response": "...",        // the json block is stripped when parsing succeeded
+                             // and strip_block is enabled; untouched otherwise
+  "contract": {
+    "conformant": true,      // false on parse failure, null when the feature is off
+    "reason": null,          // populated string when conformant is false
+    "summary": "...",
+    "findings": [ /* ... */ ],
+    "not_covered": [ /* ... */ ],
+    "artifacts": [ /* ... */ ]
+  },
+  "session_id": "...", "agent": "...", "turn_count": 1, "status": "success", "metadata": {}
+}
+```
+
+**Non-conformance never fails the delegation.** If no fenced json block is found, it
+fails to parse, or it's missing the required `findings` array, `contract.conformant`
+is `false` with a `reason`, and `response` is byte-identical to what the agent
+actually returned -- the fallback is indistinguishable from this feature not existing.
+
+**Per-agent opt-out** -- an agent can opt out even when the feature is globally
+enabled, via its `meta:` frontmatter:
+
+```yaml
+meta:
+  name: git-ops
+  return_contract: false
+```
+
+This is an opt-**out** that defaults to inheriting the global flag, not a per-agent
+opt-in matrix.
+
+**Telemetry** -- no new events. `delegate:agent_completed` gains five additive fields:
+`contract_conformant` (`bool | None`, `None` when the feature is off),
+`findings_count`, `evidence_backed_count` (findings with a non-empty `evidence`),
+`not_covered_count`, and `artifacts_count` (all `int | None`, `None` alongside
+`contract_conformant is None`).
 
 ## Note
 
