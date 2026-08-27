@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 from amplifier_core.testing import MockCoordinator
-
 from amplifier_module_tool_delegate import mount
 
 EXPECTED_DELEGATE_EVENTS = [
@@ -18,6 +17,7 @@ EXPECTED_DELEGATE_EVENTS = [
     "delegate:agent_completed",
     "delegate:agent_cancelled",
     "delegate:error",
+    "delegate:model_role_unresolved",
 ]
 
 
@@ -25,7 +25,7 @@ EXPECTED_DELEGATE_EVENTS = [
 async def test_delegate_events_discoverable_via_collect_contributions():
     """Events registered by tool-delegate are discoverable via collect_contributions.
 
-    After mount(), all 5 delegate events must appear when collect_contributions
+    After mount(), all 6 delegate events must appear when collect_contributions
     is called for the 'observability.events' channel.
     """
     coordinator = MockCoordinator()
