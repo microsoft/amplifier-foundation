@@ -132,6 +132,25 @@ Agents follow the **Honest Stopping** rule: when they can't satisfy a required i
 
 The agent's job is honest reporting; your job is to examine every "N/A" before it can pass for a satisfied requirement.
 
+### Reading a Structured Agent Return
+
+When the `return_contract` feature is enabled (see `tool-delegate`'s config), a delegate
+result may carry a `contract` field alongside `response`: `contract.findings` (each a
+`claim` + `evidence` + `confidence`), `contract.not_covered`, and `contract.artifacts`.
+This is the same doctrine above, given a machine-readable field instead of leaving it to
+be excavated from prose:
+
+- **Walk every entry in `contract.findings`** before you write your answer. A finding you
+  do not carry forward into your response text is one you have decided to discard —
+  decide that on purpose, not by running out of attention.
+- **`contract.not_covered` is the machine-readable form of the "N/A" doctrine above** —
+  it is the agent telling you, in a field instead of a sentence you might skim, exactly
+  what it did not examine. Read it the moment the result arrives: resuming that session
+  *now* is cheap; discovering the gap three turns later is not.
+- **`contract.conformant: false` means the agent returned unstructured prose.** Its
+  coverage is unknown — do not treat its silence on any topic as evidence it looked and
+  found nothing. Fall back to reading `response` the way you always have.
+
 ---
 
 ## Why Delegation Matters
