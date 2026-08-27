@@ -183,6 +183,51 @@ _JSON_FENCE_PATTERN = re.compile(
 )
 
 
+def _check_call_budget_type(value: int) -> None:
+    """Raise if ``value`` is not a valid LLM-call budget integer.
+
+    Rejects ``bool`` (a ``bool`` is an ``int`` subclass in Python;
+    ``True``/``False`` must never silently become ``1``/``0`` here), any
+    other non-``int``, and negative values. Mirrors the validation
+    discipline established for ``settings.timeout`` in the #298 branch
+    (``_validate_timeout``): fail loud at the point the value is supplied,
+    never at spawn time.
+
+    Deliberately does NOT collapse ``0`` -- callers that must distinguish
+    "explicitly zero" from "not supplied" (e.g. the per-call precedence
+    rank in ``_resolve_call_budget``) need the raw value. Callers for whom
+    the two are equivalent should use ``_validate_call_budget`` instead.
+    """
+    if isinstance(value, bool):
+        raise TypeError(f"max_llm_calls must be an integer, not a bool: {value!r}")
+    if not isinstance(value, int):
+        raise TypeError(
+            "max_llm_calls must be an integer or None, got "
+            f"{type(value).__name__}: {value!r}"
+        )
+    if value < 0:
+        raise ValueError(f"max_llm_calls must be >= 0, got {value}")
+
+
+def _validate_call_budget(value: Any) -> int | None:
+    """Validate + collapse a Layer 1 LLM-call budget value.
+
+    ``None`` and ``0`` both mean "no Layer 1 budget" -- collapsed to
+    ``None`` so this caller only needs one falsy check. Use this for
+    sources where "unset" and "explicitly zero" are equivalent (this
+    module's own ``settings.max_llm_calls`` default). For the per-call
+    override, where an explicit ``0`` must override a non-zero default
+    rather than being indistinguishable from "not supplied", use
+    ``_check_call_budget_type`` directly and let
+    ``DelegateTool._resolve_call_budget`` do the collapse at the point it
+    knows the value was explicitly given.
+    """
+    if value is None:
+        return None
+    _check_call_budget_type(value)
+    return value or None  # 0 -> None (explicit opt-out)
+
+
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
     """Mount the agent delegation tool.
 
@@ -288,6 +333,20 @@ class DelegateTool:
         # for every caller that currently relies on the quiet fallback; the
         # "delegate:model_role_unresolved" event is emitted either way.
         self.strict_model_role: bool = settings.get("strict_model_role", False)
+
+        # Layer 1 (per-leg LLM-call budget, spec: 298-replacement) settings.
+        # Ships DARK at S0: default None means "inject no budget at all" --
+        # today's behavior (whatever max_iterations the parent's own
+        # orchestrator config already carries, typically unlimited -- see
+        # _spawn_new_session's orchestrator_config build) is completely
+        # unchanged until settings.max_llm_calls is explicitly set to a
+        # positive integer. See _resolve_call_budget for the precedence
+        # chain, and the module README's "Known gaps" section for why a
+        # per-agent frontmatter override (spec §6.1) is NOT implemented.
+        self.max_llm_calls: int | None = _validate_call_budget(
+            settings.get("max_llm_calls")
+        )
+        self.budget_warn_ratio: float = float(settings.get("budget_warn_ratio", 0.8))
 
         # Build feature registry for dynamic description composition
         self._feature_registry = self._build_feature_registry()
@@ -615,6 +674,16 @@ Agent usage notes:
                         "Use when the task requires a different capability than the agent's default "
                         "(e.g., 'vision' for image-related work, 'reasoning' for architecture). "
                         "Available roles are shown in the session context."
+                    ),
+                },
+                "max_llm_calls": {
+                    "type": "integer",
+                    "description": (
+                        "Override the LLM-call budget for this delegation (per session "
+                        "leg). Raise for known-large tasks; 0 disables the budget for "
+                        "this call (a wall-clock backstop still applies). Only takes "
+                        "effect when this session's settings.max_llm_calls is "
+                        "configured -- most deployments do not set one yet."
                     ),
                 },
             },
@@ -1262,6 +1331,30 @@ Agent usage notes:
                             "default model."
                         )
 
+        # Layer 1 call-budget: per-call override (spec: 298-replacement,
+        # highest-precedence rank). None means "no override supplied" --
+        # falls through to this module's own settings.max_llm_calls default
+        # in _resolve_call_budget. Validated eagerly here (not deferred to
+        # spawn) so a bad value is reported against the call that supplied
+        # it, matching the "Validate instruction" check just below.
+        #
+        # Deliberately NOT collapsed via _validate_call_budget: an explicit
+        # 0 here must be distinguishable from "not supplied" (None), so
+        # _resolve_call_budget can tell "opt out of the budget for this one
+        # call" apart from "say nothing, use the module default" -- the
+        # collapse (0 -> None) happens there, once that distinction has
+        # already been used.
+        raw_max_llm_calls = input.get("max_llm_calls")
+        call_budget_override: int | None = None
+        if raw_max_llm_calls is not None:
+            try:
+                _check_call_budget_type(raw_max_llm_calls)
+            except (TypeError, ValueError) as e:
+                return ToolResult(
+                    success=False, error={"message": f"Invalid max_llm_calls: {e}"}
+                )
+            call_budget_override = raw_max_llm_calls
+
         # Validate instruction (always required)
         if not instruction:
             return ToolResult(
@@ -1355,7 +1448,45 @@ Agent usage notes:
             parallel_group_id=parallel_group_id,
             raw_model_role=raw_model_role,
             agents=agents,
+            call_budget_override=call_budget_override,
         )
+
+    def _resolve_call_budget(
+        self,
+        agent_name: str,
+        call_override: int | None,
+    ) -> int | None:
+        """Resolve the per-leg LLM-call budget for a delegation.
+
+        ``None`` means "no Layer 1 budget for this delegation" -- Layer 3
+        (the delegate's own wall-clock ``settings.timeout``) still applies
+        regardless.
+
+        Precedence (highest first):
+          1. ``call_override`` -- the per-call ``max_llm_calls`` tool input,
+             already validated by ``execute()``.
+          2. ``self.max_llm_calls`` -- this module's ``settings.max_llm_calls``
+             default (``None`` at S0 -- ships dark).
+
+        NOT implemented: a per-agent frontmatter override
+        (``agents[agent_name]["budget"]["max_llm_calls"]``, spec §6.1,
+        precedence rank 2 of 4). Verified empirically that a top-level
+        ``budget:`` block in an agent ``.md``'s frontmatter is dropped --
+        ``amplifier_foundation.bundle._dataclass._load_agent_file_metadata``
+        only forwards a fixed allowlist of top-level keys (``tools``,
+        ``providers``, ``hooks``, ``session``, ``provider_preferences``,
+        ``model_role``, ``agents``); ``budget`` is not among them. Wiring
+        this rank now would silently no-op for every agent file. See
+        ``tests/test_delegate_call_budget.py``'s
+        ``test_agent_frontmatter_budget_key_is_dropped`` for the
+        reproducing test, and the module README's "Known gaps" section.
+        ``agent_name`` is accepted (and intentionally unused today) so this
+        signature does not need to change again once that gap is closed.
+        """
+        del agent_name  # unused until per-agent frontmatter budget lands
+        if call_override is not None:
+            return call_override or None  # 0 -> None (explicit opt-out)
+        return self.max_llm_calls
 
     async def _spawn_new_session(
         self,
@@ -1371,6 +1502,7 @@ Agent usage notes:
         parallel_group_id: str | None = None,
         raw_model_role: str = "",
         agents: dict | None = None,
+        call_budget_override: int | None = None,
     ) -> ToolResult:
         """Spawn a new agent sub-session.
 
@@ -1385,6 +1517,9 @@ Agent usage notes:
             context_turns: Number of recent turns (when context_depth="recent")
             provider_preferences: Resolved provider preferences list
             hooks: Hook coordinator for event emission
+            call_budget_override: Per-call Layer 1 budget override (spec:
+                298-replacement), already validated by execute(). None means
+                "no override" -- falls through to settings.max_llm_calls.
             tool_call_id: Orchestrator tool call ID (enriches event payloads)
             parallel_group_id: Parallel group ID (enriches event payloads)
             raw_model_role: Raw model role string for routing tracking
@@ -1499,16 +1634,30 @@ Agent usage notes:
             # Extract orchestrator config from parent session for inheritance.
             # Guard with isinstance to handle non-dict orchestrator values gracefully
             # (e.g. when orchestrator is a string like "loop-basic").
-            orchestrator_config = None
+            orchestrator_config: dict[str, Any] = {}
             parent_config = parent_session.config or {}
             session_config = parent_config.get("session", {})
             orch_section = session_config.get("orchestrator", {})
             if isinstance(orch_section, dict):
                 if orch_config := orch_section.get("config"):
-                    orchestrator_config = orch_config
+                    # Copy: never mutate the parent's own config dict below.
+                    orchestrator_config = dict(orch_config)
                     logger.debug(
                         f"Inheriting orchestrator config: {orchestrator_config}"
                     )
+
+            # Layer 1: resolve the per-leg LLM-call budget for this child
+            # (spec: 298-replacement). None means "no Layer 1 budget" --
+            # the key is then left untouched, so whatever max_iterations
+            # the parent's own inherited orchestrator config already
+            # carries (rank 4 -- typically unlimited) is what the child
+            # gets. Ships dark at S0: settings.max_llm_calls defaults to
+            # None, so this is a no-op until a caller opts in.
+            call_budget = self._resolve_call_budget(agent_name, call_budget_override)
+            if call_budget is not None:
+                orchestrator_config["max_iterations"] = call_budget
+                orchestrator_config["budget_warn_ratio"] = self.budget_warn_ratio
+            orchestrator_config_out: dict[str, Any] | None = orchestrator_config or None
 
             # Calculate self-delegation depth for child session
             # Named agents reset to 0, self-delegation increments
@@ -1557,7 +1706,7 @@ Agent usage notes:
                 sub_session_id=sub_session_id,
                 tool_inheritance=tool_inheritance,
                 hook_inheritance=hook_inheritance,
-                orchestrator_config=orchestrator_config,
+                orchestrator_config=orchestrator_config_out,
                 provider_preferences=provider_preferences,
                 self_delegation_depth=child_self_delegation_depth,
                 session_metadata=session_metadata,
@@ -1591,6 +1740,31 @@ Agent usage notes:
                     },
                 )
 
+            # Negotiated-feature seam (spec: 298-replacement §4.4). A budget
+            # was requested (call_budget is not None) but the child's
+            # orchestrator reported no llm_call_budget telemetry -- either
+            # it doesn't implement max_iterations at all (e.g. a
+            # third-party orchestrator, or loop-basic), or it silently
+            # ignored the config key. Layer 1 bounding is NOT active for
+            # this delegation in that case; only the wall-clock backstop
+            # (settings.timeout) applies. Silence is the failure mode this
+            # spec exists to eliminate, so make it loud rather than let the
+            # caller believe a budget is enforced when it is not.
+            result_metadata = result.get("metadata") or {}
+            budget_enforced = True
+            if call_budget is not None:
+                budget_enforced = "llm_call_budget" in result_metadata
+                if not budget_enforced:
+                    logger.warning(
+                        "Delegate requested an LLM-call budget of %s for agent "
+                        "%r, but the child's orchestrator reported no budget "
+                        "telemetry. Layer 1 bounding is NOT active for this "
+                        "delegation; only the %ss wall-clock backstop applies.",
+                        call_budget,
+                        agent_name,
+                        self.timeout,
+                    )
+
             # Build provider routing summary (only when routing was requested)
             # Always include both keys for a stable dict shape — consumers
             # can safely read provider_routing["model_role"] without KeyError.
@@ -1604,6 +1778,12 @@ Agent usage notes:
                         else None
                     ),
                 }
+
+            # Merge the budget_enforced flag into the metadata bag we
+            # forward, without mutating the child's own returned dict.
+            output_metadata = dict(result_metadata)
+            if call_budget is not None:
+                output_metadata["budget_enforced"] = budget_enforced
 
             # Return output with session_id for multi-turn capability.
             # "response" is `cleaned_response` -- byte-identical to
@@ -1620,7 +1800,7 @@ Agent usage notes:
                     "agent": agent_name,
                     "turn_count": result.get("turn_count", 1),
                     "status": result.get("status", "success"),
-                    "metadata": result.get("metadata", {}),
+                    "metadata": output_metadata,
                     "contract": contract,
                     **(
                         {"provider_routing": provider_routing}
