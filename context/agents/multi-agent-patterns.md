@@ -4,22 +4,39 @@ This context provides patterns for orchestrating multiple agents effectively.
 
 ---
 
-## Parallel Agent Dispatch
+## Plan the Whole Set, Then Dispatch
 
-**CRITICAL**: For non-trivial investigations or tasks, use MULTIPLE agents to get richer results. Different agents have different tools, perspectives, and context that complement each other.
+**Delegations emitted in ONE turn run concurrently. Delegations split across turns run
+sequentially — and you sit idle through each one.**
 
-When investigating or analyzing, dispatch multiple agents IN PARALLEL in a single message:
+Before your first delegate call, write down every delegation the task needs. Then emit,
+in a single turn, every one of them that does not consume another delegation's output.
 
 ```python
+# ONE turn - all three run at once, total time = the slowest one
 delegate(agent="foundation:explorer", instruction="Survey the authentication module structure")
 delegate(agent="python-dev:code-intel", instruction="Trace the call hierarchy of authenticate()")
-delegate(agent="foundation:zen-architect", instruction="Review auth module for design patterns")
+delegate(agent="foundation:git-ops", instruction="Summarize recent commits touching auth/")
 ```
 
-**Why parallel matters:**
-- Each agent brings different tools (LSP vs grep vs design analysis)
-- Deterministic tools (LSP) find actual code paths; text search finds references and docs
-- TOGETHER they reveal: actual behavior + dead code + documentation gaps + design issues
+**Two reasons this matters, and the second is the one usually missed:**
+
+1. **Richer results** — each agent brings different tools and perspective; together they
+   reveal actual behavior + dead code + documentation gaps + design issues.
+2. **Wall-clock** — a task delegated in three sequential waves takes roughly the sum of
+   those waves. The same agents batched into one wave take the length of the longest.
+   Sequential waves of independent work are pure waste.
+
+### The Independence Test
+
+Before dispatching a wave, ask: **would I write any of these instructions differently if I
+had the others' results first?**
+
+- **No** → they are independent. They belong in the SAME turn. Emit them now.
+- **Yes** → only the ones that consume a result wait. Everything else still goes now.
+
+And before dispatching wave N+1, ask: **could this have gone out with wave N?** If yes, you
+already paid for the mistake — batch the remainder.
 
 ---
 

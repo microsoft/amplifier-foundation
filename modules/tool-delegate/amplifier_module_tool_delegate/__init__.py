@@ -257,8 +257,21 @@ Special agent values:
         # Add usage notes
         base_description += """
 
+BATCH YOUR DELEGATIONS. Every delegate call you emit in a single turn runs
+CONCURRENTLY. Delegations you split across separate turns run SEQUENTIALLY, and
+you block on each one before planning the next.
+
+Before emitting any delegate call, enumerate every delegation this task needs.
+Emit ALL of them that do not consume another delegation's output in THIS turn.
+Only a delegation that literally needs a prior result as input belongs in a
+later turn.
+
+- Two independent delegations in one turn: finishes in the time of the slower one
+- The same two split across two turns: takes the sum, plus your own planning turn
+- "I'll see what the first one says first" is the failure mode - if you would not
+  change the second instruction based on the first result, it was independent
+
 Agent usage notes:
-- Launch multiple agents concurrently when tasks are independent
 - When an agent completes, it returns a single message back to you
 - Each agent invocation is stateless - provide complete context in your instruction
 - DEFAULT TO DELEGATION - only do simple single-step work yourself"""
