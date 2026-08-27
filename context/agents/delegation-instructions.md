@@ -276,21 +276,34 @@ Use session resumption when:
 
 ---
 
-## Scaling with Multiple Instances
+## Wave Discipline: Batch Everything Independent
 
-For large codebases or complex investigations, dispatch MULTIPLE instances of the same agent with different scopes:
+**Every delegate call in one turn runs concurrently. Every delegate call in a separate turn
+runs sequentially, and you block on the previous one first.**
+
+Plan your full delegation set before dispatching any of it. Emit every independently
+resolvable delegation in a single turn — different agents, same agent with different
+scopes, or both.
 
 ```python
-# Parallel dispatch - independent surveys
+# One turn, three concurrent agents - different specialists
+delegate(agent="foundation:explorer", instruction="Survey auth/", context_depth="none")
+delegate(agent="python-dev:code-intel", instruction="Trace authenticate() callers")
+delegate(agent="foundation:git-ops", instruction="Summarize recent auth/ commits")
+
+# One turn, three concurrent instances - same agent, split scope
 delegate(agent="foundation:explorer", instruction="Survey auth/", context_depth="none")
 delegate(agent="foundation:explorer", instruction="Survey api/", context_depth="none")
 delegate(agent="foundation:explorer", instruction="Survey models/", context_depth="none")
 ```
 
-**When to scale:**
-- Large codebase with distinct areas
-- Multiple independent questions to answer
-- Time-sensitive investigations where parallelism helps
+**Only a delegation that consumes another delegation's output belongs in a later turn.**
+Everything else goes now. Before you dispatch a second wave, ask whether it could have
+gone out with the first — if it could have, batch what remains rather than repeating the
+mistake.
+
+**When to scale out:** large codebase with distinct areas; multiple independent questions;
+any investigation where you would otherwise wait on one agent before starting the next.
 
 ---
 
