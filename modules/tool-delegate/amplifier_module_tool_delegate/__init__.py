@@ -133,6 +133,27 @@ class DelegateTool:
         # Build feature registry for dynamic description composition
         self._feature_registry = self._build_feature_registry()
 
+        # Maps sub_session_id -> the raw (un-sanitized) agent_name recorded at
+        # spawn time. This is the authoritative source for agent identity on
+        # resume: it is the exact same string emitted in delegate:agent_spawned,
+        # so counters that pair spawned/resumed/completed events by "agent"
+        # stay correct. Populated in _spawn_new_session(); consulted in
+        # _resume_existing_session() via _resolve_agent_for_session().
+        #
+        # Scope: this cache lives on the DelegateTool instance, which is
+        # constructed once per mounted session (see mount()) and persists for
+        # the lifetime of the parent session/coordinator. It does NOT survive
+        # across process restarts or a resume issued from a *different*
+        # parent session than the one that spawned the sub-session -- that
+        # cold-cache case falls back to parsing the agent name out of the
+        # session_id suffix (see _resolve_agent_for_session), which is lossy
+        # (sanitized: lowercased, non-alphanumeric chars collapsed to hyphens)
+        # but always available since
+        # amplifier_foundation.tracing.generate_sub_session_id guarantees the
+        # "{parent_span}-{child_span}_{sanitized_agent_name}" shape for every
+        # sub-session id this tool creates.
+        self._session_agents: dict[str, str] = {}
+
     def _build_feature_registry(self) -> list[dict[str, Any]]:
         """Build registry of features with their descriptions.
 
@@ -995,6 +1016,12 @@ Agent usage notes:
             parent_session_id=parent_session_id,
         )
 
+        # Record the raw agent_name for this sub-session so a later resume
+        # (via _resume_existing_session) can recover the exact identity used
+        # here, instead of re-deriving a lossy, sanitized approximation from
+        # the session_id suffix. See _resolve_agent_for_session().
+        self._session_agents[sub_session_id] = agent_name
+
         # Resolve agents from coordinator config if not provided directly
         if agents is None:
             try:
@@ -1255,6 +1282,44 @@ Agent usage notes:
                 )
             return ToolResult(success=False, error={"message": error_msg})
 
+    def _resolve_agent_for_session(self, session_id: str) -> str:
+        """Resolve the agent identity for a (possibly resumed) sub-session.
+
+        Source priority (most to least reliable):
+        1. ``self._session_agents`` -- the raw agent_name recorded by THIS
+           tool instance when it originally spawned ``session_id``. Exact
+           match to the ``agent`` field emitted in ``delegate:agent_spawned``,
+           so spawned/resumed/completed events pair correctly under the same
+           agent identity.
+        2. The session_id suffix -- ``generate_sub_session_id`` always
+           produces IDs shaped ``{parent_span}-{child_span}_{sanitized_name}``
+           (see amplifier_foundation.tracing). The sanitizer maps every
+           non-alphanumeric character -- including "_" itself -- to "-", so
+           the suffix after the LAST "_" is unambiguous and always present.
+           This is a deterministic parse of a documented format, not a guess,
+           but it is lossy: the sanitized name is lowercased and punctuation
+           (e.g. the ":" in "foundation:explorer") is collapsed to hyphens.
+           Used when the cache misses -- e.g. resuming a sub-session spawned
+           by a different parent session/process than the one calling this
+           method now.
+
+        Args:
+            session_id: Full sub-session ID to resolve.
+
+        Returns:
+            The agent name, or "unknown" if neither source yields one.
+        """
+        cached = self._session_agents.get(session_id)
+        if cached:
+            return cached
+
+        if "_" in session_id:
+            suffix = session_id.rsplit("_", 1)[-1]
+            if suffix:
+                return suffix
+
+        return "unknown"
+
     async def _resume_existing_session(
         self,
         session_id: str,
@@ -1278,15 +1343,32 @@ Agent usage notes:
         """
         parent_session_id = self.coordinator.session_id
 
+        # Resolve agent identity BEFORE the try block (and before emitting
+        # any events), from the most reliable in-repo source available
+        # (spawn-time cache, or the session_id suffix convention as
+        # fallback). This is what lets delegate:agent_resumed -- and every
+        # delegate:error / delegate:agent_cancelled / delegate:agent_completed
+        # event on this path -- carry a real "agent" value instead of
+        # omitting the field entirely. Computed outside the try/except so it
+        # is unconditionally bound in every except branch below (pyright:
+        # a name only assigned inside a try body is "possibly unbound" in
+        # its except clauses, since any earlier statement could have raised
+        # first).
+        agent_name = self._resolve_agent_for_session(session_id)
+
         try:
             # Use session_id as-is (no short ID resolution - LLMs can handle full IDs)
             full_session_id = session_id
 
-            # Emit delegate:agent_resumed event
+            # Emit delegate:agent_resumed event.
+            # Payload shape is kept consistent with delegate:agent_spawned's
+            # "agent" field (see _spawn_new_session) so downstream counters
+            # can pair spawned/resumed/completed events by agent identity.
             if hooks:
                 await hooks.emit(
                     "delegate:agent_resumed",
                     {
+                        "agent": agent_name,
                         "session_id": full_session_id,
                         "parent_session_id": parent_session_id,
                         "tool_call_id": tool_call_id,
@@ -1320,6 +1402,7 @@ Agent usage notes:
                 await hooks.emit(
                     "delegate:agent_completed",
                     {
+                        "agent": agent_name,
                         "sub_session_id": full_session_id,
                         "parent_session_id": parent_session_id,
                         "success": True,
@@ -1327,11 +1410,6 @@ Agent usage notes:
                         "parallel_group_id": parallel_group_id,
                     },
                 )
-
-            # Extract agent name from session ID if possible
-            agent_name = "unknown"
-            if "_" in full_session_id:
-                agent_name = full_session_id.split("_")[-1]
 
             # Return output with session info
             session_id_result = result["session_id"]
@@ -1353,6 +1431,7 @@ Agent usage notes:
                 await hooks.emit(
                     "delegate:error",
                     {
+                        "agent": agent_name,
                         "session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "error": str(e),
@@ -1368,6 +1447,7 @@ Agent usage notes:
                 await hooks.emit(
                     "delegate:error",
                     {
+                        "agent": agent_name,
                         "session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "error": f"Session not found: {str(e)}",
@@ -1391,6 +1471,7 @@ Agent usage notes:
                 await hooks.emit(
                     "delegate:agent_cancelled",
                     {
+                        "agent": self._resolve_agent_for_session(session_id),
                         "session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "tool_call_id": tool_call_id,
@@ -1399,10 +1480,9 @@ Agent usage notes:
             raise
 
         except TimeoutError:
-            # Extract agent name for the message
-            resume_agent = "unknown"
-            if "_" in session_id:
-                resume_agent = session_id.split("_")[-1]
+            # Resolve agent name for the message the same way as everywhere
+            # else on this path (cache first, session_id suffix fallback).
+            resume_agent = self._resolve_agent_for_session(session_id)
             timeout_msg = (
                 f"Resumed agent '{resume_agent}' timed out after {self.timeout}s "
                 f"(delegate tool session-level timeout). "
@@ -1414,6 +1494,7 @@ Agent usage notes:
                 await hooks.emit(
                     "delegate:error",
                     {
+                        "agent": resume_agent,
                         "session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "error": timeout_msg,
@@ -1432,6 +1513,7 @@ Agent usage notes:
                 await hooks.emit(
                     "delegate:error",
                     {
+                        "agent": self._resolve_agent_for_session(session_id),
                         "session_id": session_id,
                         "parent_session_id": parent_session_id,
                         "error": error_msg,
