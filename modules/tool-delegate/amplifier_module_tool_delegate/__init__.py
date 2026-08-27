@@ -20,6 +20,12 @@ Config Options:
 - settings.exclude_tools: Tools spawned agents should NOT inherit (default: ["tool-delegate"])
 - settings.exclude_hooks: Hooks spawned agents should NOT inherit (default: [])
 - settings.timeout: Maximum total execution time for child session in seconds (default: None/disabled)
+- settings.strict_model_role: When True, a model_role that resolves to no
+  candidates raises ModelRoleUnresolvedError instead of silently falling
+  back to the session default model (default: False). Regardless of this
+  setting, the no-candidates case always emits a
+  "delegate:model_role_unresolved" event so the silent substitution is
+  observable.
 
 Tool Parameters:
 - agent: Agent to delegate to (e.g., 'foundation:explorer', 'self')
@@ -43,6 +49,18 @@ from amplifier_foundation import ProviderPreference
 from amplifier_foundation.tracing import generate_sub_session_id
 
 logger = logging.getLogger(__name__)
+
+
+class ModelRoleUnresolvedError(RuntimeError):
+    """Raised when ``model_role`` resolves to no candidates under strict mode.
+
+    Only raised when ``settings.strict_model_role`` is ``True``. Signals
+    that the requested ``model_role`` could not be resolved to any
+    provider/model candidate against the installed providers, and the
+    caller has opted out of the default silent-fallback-to-session-default
+    behavior. See ``delegate:model_role_unresolved`` for the always-emitted
+    observability event that accompanies both the strict and default paths.
+    """
 
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
@@ -70,6 +88,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
             "delegate:agent_completed",
             "delegate:agent_cancelled",
             "delegate:error",
+            "delegate:model_role_unresolved",
         ],
     )
 
@@ -129,6 +148,12 @@ class DelegateTool:
         self.exclude_tools: list[str] = settings.get("exclude_tools", ["tool-delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
         self.timeout: int | None = settings.get("timeout", None)
+        # When True, model_role resolving to no candidates raises
+        # ModelRoleUnresolvedError instead of silently falling back to the
+        # session default model. Default False preserves existing behavior
+        # for every caller that currently relies on the quiet fallback; the
+        # "delegate:model_role_unresolved" event is emitted either way.
+        self.strict_model_role: bool = settings.get("strict_model_role", False)
 
         # Build feature registry for dynamic description composition
         self._feature_registry = self._build_feature_registry()
@@ -883,12 +908,54 @@ Agent usage notes:
                     # Resolver returns list[ProviderPreference] (foundation public type).
                     provider_preferences = list(resolved)
                 else:
+                    resolver_name = getattr(resolver, "name", type(resolver).__name__)
                     logger.warning(
                         "model_role '%s' resolved to no candidates against "
                         "installed providers (resolver=%s)",
                         raw_model_role,
-                        getattr(resolver, "name", type(resolver).__name__),
+                        resolver_name,
                     )
+
+                    # Silent-substitution hazard: with provider_preferences
+                    # left None, the delegation proceeds and quietly lands
+                    # on the session's default model -- indistinguishable
+                    # from a caller who never asked for routing at all. This
+                    # can also occur after list_models retry-exhaustion
+                    # (persistent provider outage) leaves the resolver with
+                    # nothing to match. Always emit a structured event here,
+                    # regardless of strict_model_role, so operators can
+                    # detect the substitution even when they haven't opted
+                    # into fail-loud mode.
+                    unresolved_hooks = (
+                        self.coordinator.get("hooks")
+                        if hasattr(self.coordinator, "get")
+                        else None
+                    )
+                    if unresolved_hooks:
+                        await unresolved_hooks.emit(
+                            "delegate:model_role_unresolved",
+                            {
+                                "model_role": raw_model_role,
+                                "agent": agent_name,
+                                "resolver": resolver_name,
+                                "fallback_behavior": "session_default",
+                            },
+                        )
+
+                    # Default behavior (preserved for every existing caller):
+                    # warn + emit the event above, then fall through with
+                    # provider_preferences left None -- session default
+                    # model is used. Only when the operator has explicitly
+                    # opted into strict_model_role do we fail loud instead.
+                    if self.strict_model_role:
+                        raise ModelRoleUnresolvedError(
+                            f"model_role '{raw_model_role}' resolved to no "
+                            f"candidates against installed providers "
+                            f"(resolver={resolver_name}). strict_model_role "
+                            "is enabled, so this delegation is refused "
+                            "instead of silently substituting the session "
+                            "default model."
+                        )
 
         # Validate instruction (always required)
         if not instruction:

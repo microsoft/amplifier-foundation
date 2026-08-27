@@ -6,10 +6,8 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from amplifier_foundation.spawn_utils import ProviderPreference
 from amplifier_module_tool_delegate import DelegateTool
-
 
 # =============================================================================
 # Helpers
@@ -21,6 +19,7 @@ def _make_delegate_tool(
     spawn_fn=None,
     agents: dict | None = None,
     model_role_resolver=None,
+    settings: dict | None = None,
 ) -> DelegateTool:
     """Create a DelegateTool with mocked coordinator for model_role testing.
 
@@ -69,7 +68,10 @@ def _make_delegate_tool(
     parent_session.config = {"session": {"orchestrator": {}}}
     coordinator.session = parent_session
 
-    config: dict = {"features": {}, "settings": {"exclude_tools": []}}
+    config: dict = {
+        "features": {},
+        "settings": {"exclude_tools": [], **(settings or {})},
+    }
     return DelegateTool(coordinator, config)
 
 
@@ -86,7 +88,9 @@ def _make_resolver(
     """
     resolver = MagicMock()
     resolver.name = name
-    resolver.resolve = AsyncMock(return_value=return_value if return_value is not None else [])
+    resolver.resolve = AsyncMock(
+        return_value=return_value if return_value is not None else []
+    )
     return resolver
 
 
@@ -114,7 +118,9 @@ class TestDelegateModelRole:
         # Mock the resolver to return a resolved preference
         resolver = _make_resolver(
             return_value=[
-                ProviderPreference(provider="anthropic", model="claude-haiku-3.5", config={}),
+                ProviderPreference(
+                    provider="anthropic", model="claude-haiku-3.5", config={}
+                ),
             ]
         )
         tool = _make_delegate_tool(
@@ -156,6 +162,7 @@ class TestDelegateModelRole:
         resolver.resolve.assert_called_once()
         call_args = resolver.resolve.call_args
         assert call_args[0][0] == "fast"  # raw_model_role
+
     @pytest.mark.asyncio
     async def test_provider_preferences_overrides_model_role(self):
         """Explicit provider_preferences wins over model_role when both provided."""
@@ -200,6 +207,7 @@ class TestDelegateModelRole:
 
         # Resolver should NOT have been called
         resolver.resolve.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_model_role_resolution_includes_config(self):
         """Config from resolved model_role is preserved in ProviderPreference."""
@@ -216,9 +224,11 @@ class TestDelegateModelRole:
         # Resolver returns a result with non-empty config
         resolver = _make_resolver(
             return_value=[
-                ProviderPreference(provider="anthropic",
+                ProviderPreference(
+                    provider="anthropic",
                     model="claude-sonnet-4-6",
-                    config={"reasoning_effort": "high"}),
+                    config={"reasoning_effort": "high"},
+                ),
             ]
         )
         tool = _make_delegate_tool(
@@ -255,6 +265,7 @@ class TestDelegateModelRole:
         assert prefs[0].config == {"reasoning_effort": "high"}, (
             f"Expected config={{'reasoning_effort': 'high'}}, got {prefs[0].config!r}"
         )
+
     @pytest.mark.asyncio
     async def test_model_role_without_matrix_falls_through(self):
         """model_role with no routing matrix falls through gracefully."""
@@ -327,9 +338,7 @@ class TestModelRoleObservabilityWarnings:
             )
         )
 
-        with caplog.at_level(
-            logging.WARNING, logger="amplifier_module_tool_delegate"
-        ):
+        with caplog.at_level(logging.WARNING, logger="amplifier_module_tool_delegate"):
             result = await tool.execute(
                 {
                     "agent": "test-agent",
@@ -359,6 +368,7 @@ class TestModelRoleObservabilityWarnings:
         assert any("coding" in str(m) for m in warning_messages), (
             f"Expected WARNING mentioning 'coding' role; got: {warning_messages}"
         )
+
     @pytest.mark.asyncio
     async def test_model_role_without_matrix_logs_warning(self, caplog):
         """model_role with no model_role_resolver capability logs WARNING (not just DEBUG)."""
@@ -411,6 +421,208 @@ class TestModelRoleObservabilityWarnings:
 
 
 # =============================================================================
+# Tests: openai_improvement-doc — fail loud when model_role resolves to no
+# candidates. Covers:
+#   (a) default mode: "delegate:model_role_unresolved" event emitted AND the
+#       existing quiet-fallback behavior (provider_preferences stays None,
+#       delegation still succeeds) is preserved.
+#   (b) strict mode (settings.strict_model_role=True): raises
+#       ModelRoleUnresolvedError naming the role and the resolver, instead
+#       of falling back.
+#   (c) normal resolution: no "delegate:model_role_unresolved" event is
+#       emitted when the resolver returns candidates.
+# =============================================================================
+
+
+def _hooks_returning(mock_hooks):
+    """Build a coordinator.get side_effect that returns mock_hooks for "hooks"."""
+
+    def _get(key):
+        if key == "hooks":
+            return mock_hooks
+        if key == "providers":
+            return {"provider-anthropic": MagicMock()}
+        return None
+
+    return _get
+
+
+class TestModelRoleUnresolvedEvent:
+    """delegate:model_role_unresolved must be emitted whenever model_role
+    resolves to no candidates -- regardless of strict_model_role -- and the
+    quiet fallback must remain the default behavior (event is additive,
+    not a behavior change) unless strict_model_role is explicitly enabled.
+    """
+
+    @pytest.mark.asyncio
+    async def test_default_mode_emits_event_and_preserves_fallback(self):
+        """(a) Default mode: event emitted, and the delegation still
+        succeeds with provider_preferences left None (quiet fallback to the
+        session default model is preserved -- only its observability
+        changes). This assertion on the emitted event fails against
+        unpatched main, which never emits any event on this path.
+        """
+        spawn_fn = AsyncMock(
+            return_value={
+                "output": "done",
+                "session_id": "child-001",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+        )
+        resolver = _make_resolver(return_value=[], name="test-matrix")
+        tool = _make_delegate_tool(
+            spawn_fn=spawn_fn,
+            agents={"test-agent": {"description": "A test agent"}},
+            model_role_resolver=resolver,
+            # strict_model_role omitted -- must default to False
+        )
+        mock_hooks = MagicMock()
+        mock_hooks.emit = AsyncMock()
+        tool.coordinator.get = MagicMock(side_effect=_hooks_returning(mock_hooks))
+
+        result = await tool.execute(
+            {
+                "agent": "test-agent",
+                "instruction": "Write some code",
+                "context_depth": "none",
+                "model_role": "coding",
+            }
+        )
+
+        # Fallback behavior preserved: delegation succeeds, no provider pin.
+        assert result.success is True
+        spawn_fn.assert_called_once()
+        _, kwargs = spawn_fn.call_args
+        assert kwargs["provider_preferences"] is None
+
+        # The new structured event was emitted with the documented payload.
+        unresolved_calls = [
+            call
+            for call in mock_hooks.emit.call_args_list
+            if call.args[0] == "delegate:model_role_unresolved"
+        ]
+        assert len(unresolved_calls) == 1, (
+            f"Expected exactly one delegate:model_role_unresolved event; "
+            f"got {len(unresolved_calls)}. All emit calls: "
+            f"{[c.args[0] for c in mock_hooks.emit.call_args_list]}"
+        )
+        payload = unresolved_calls[0].args[1]
+        assert payload["model_role"] == "coding"
+        assert payload["agent"] == "test-agent"
+        assert payload["resolver"] == "test-matrix"
+        assert payload["fallback_behavior"] == "session_default"
+
+    @pytest.mark.asyncio
+    async def test_strict_mode_raises_instead_of_falling_back(self):
+        """(b) strict_model_role=True: raises ModelRoleUnresolvedError
+        naming the role and the resolver, instead of silently falling back.
+        """
+        from amplifier_module_tool_delegate import ModelRoleUnresolvedError
+
+        spawn_fn = AsyncMock()
+        resolver = _make_resolver(return_value=[], name="test-matrix")
+        tool = _make_delegate_tool(
+            spawn_fn=spawn_fn,
+            agents={"test-agent": {"description": "A test agent"}},
+            model_role_resolver=resolver,
+            settings={"strict_model_role": True},
+        )
+        mock_hooks = MagicMock()
+        mock_hooks.emit = AsyncMock()
+        tool.coordinator.get = MagicMock(side_effect=_hooks_returning(mock_hooks))
+
+        with pytest.raises(ModelRoleUnresolvedError) as exc_info:
+            await tool.execute(
+                {
+                    "agent": "test-agent",
+                    "instruction": "Write some code",
+                    "context_depth": "none",
+                    "model_role": "coding",
+                }
+            )
+
+        # Error message must name both the role and the resolver.
+        message = str(exc_info.value)
+        assert "coding" in message, f"Expected role 'coding' in message: {message}"
+        assert "test-matrix" in message, (
+            f"Expected resolver 'test-matrix' in message: {message}"
+        )
+
+        # Fail loud means no spawn happened at all.
+        spawn_fn.assert_not_called()
+
+        # The event is still emitted -- strict mode adds a raise, it doesn't
+        # replace the observability event.
+        unresolved_calls = [
+            call
+            for call in mock_hooks.emit.call_args_list
+            if call.args[0] == "delegate:model_role_unresolved"
+        ]
+        assert len(unresolved_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_normal_resolution_emits_no_unresolved_event(self):
+        """(c) When model_role resolves normally (candidates found), no
+        delegate:model_role_unresolved event is emitted.
+        """
+        spawn_fn = AsyncMock(
+            return_value={
+                "output": "done",
+                "session_id": "child-001",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+        )
+        resolver = _make_resolver(
+            return_value=[
+                ProviderPreference(
+                    provider="anthropic", model="claude-haiku-3.5", config={}
+                ),
+            ],
+            name="test-matrix",
+        )
+        tool = _make_delegate_tool(
+            spawn_fn=spawn_fn,
+            agents={"test-agent": {"description": "A test agent"}},
+            model_role_resolver=resolver,
+        )
+        mock_hooks = MagicMock()
+        mock_hooks.emit = AsyncMock()
+        tool.coordinator.get = MagicMock(side_effect=_hooks_returning(mock_hooks))
+
+        result = await tool.execute(
+            {
+                "agent": "test-agent",
+                "instruction": "Write some code",
+                "context_depth": "none",
+                "model_role": "coding",
+            }
+        )
+
+        assert result.success is True
+        unresolved_calls = [
+            call
+            for call in mock_hooks.emit.call_args_list
+            if call.args[0] == "delegate:model_role_unresolved"
+        ]
+        assert unresolved_calls == [], (
+            f"Expected no delegate:model_role_unresolved event on normal "
+            f"resolution; got {len(unresolved_calls)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_strict_mode_defaults_to_false(self):
+        """strict_model_role defaults to False when settings omit it entirely,
+        preserving the fallback behavior for every existing caller/config.
+        """
+        tool = _make_delegate_tool(model_role_resolver=None)
+        assert tool.strict_model_role is False
+
+
+# =============================================================================
 # Tests: Fix 3 — provider_routing in ToolResult output
 # =============================================================================
 
@@ -433,7 +645,9 @@ class TestProviderRoutingInResult:
 
         resolver = _make_resolver(
             return_value=[
-                ProviderPreference(provider="anthropic", model="claude-sonnet-4-6", config={}),
+                ProviderPreference(
+                    provider="anthropic", model="claude-sonnet-4-6", config={}
+                ),
             ]
         )
         tool = _make_delegate_tool(
@@ -469,6 +683,7 @@ class TestProviderRoutingInResult:
         )
         assert len(routing["resolved"]) >= 1
         assert routing["resolved"][0]["provider"] == "anthropic"
+
     @pytest.mark.asyncio
     async def test_provider_routing_in_result_on_failure(self):
         """Failed model_role resolution returns provider_routing with resolved=None."""
@@ -516,6 +731,7 @@ class TestProviderRoutingInResult:
             "Empty resolution should produce resolved=None"
         )
 
+
 # =============================================================================
 # Tests: Fix 2 — delegate:agent_spawned event includes routing intent
 # =============================================================================
@@ -539,7 +755,9 @@ class TestAgentSpawnedEventIncludesRouting:
 
         resolver = _make_resolver(
             return_value=[
-                ProviderPreference(provider="anthropic", model="claude-haiku-3.5", config={}),
+                ProviderPreference(
+                    provider="anthropic", model="claude-haiku-3.5", config={}
+                ),
             ]
         )
         tool = _make_delegate_tool(
@@ -561,9 +779,7 @@ class TestAgentSpawnedEventIncludesRouting:
                 mock_hooks
                 if key == "hooks"
                 else (
-                    {"provider-anthropic": MagicMock()}
-                    if key == "providers"
-                    else None
+                    {"provider-anthropic": MagicMock()} if key == "providers" else None
                 )
             )
         )
@@ -604,6 +820,7 @@ class TestAgentSpawnedEventIncludesRouting:
         )
         assert len(payload["provider_preferences"]) >= 1
         assert payload["provider_preferences"][0]["provider"] == "anthropic"
+
 
 # =============================================================================
 # Tests: input_schema shaping of the model_role parameter
