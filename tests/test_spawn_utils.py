@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock
 import asyncio
 from unittest.mock import MagicMock
@@ -1333,3 +1334,177 @@ class TestListModelsConfigurableKnobs:
 
         monkeypatch.setenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", "not-a-number")
         assert su._get_ttl_seconds() == su.LIST_MODELS_CACHE_TTL_SECONDS
+
+
+class TestOverrideOutranksTiedPriorityZeroPrimary:
+    """Regression tests for openai_improvement-ejq.
+
+    An override selecting a non-primary provider instance must STRICTLY
+    win child provider resolution, even when the user's primary provider
+    is declared FIRST at priority=0 (the natural "make this my default
+    model" config).
+
+    Before the fix, `_apply_single_override` only ever promoted the
+    overridden target to priority=0 and never touched anyone else's
+    priority. When the primary was ALSO priority=0 (having been declared
+    first -- the ordinary shape of a user's default-provider config), the
+    two tied at priority=0 and a stable sort broke the tie by declaration
+    order, silently handing resolution back to the primary regardless of
+    which instance the override selected. In a 5-run live eval, 100% of
+    sub-agent LLM calls ran the primary instead of the role-resolved /
+    agent-frontmatter `provider_preferences` selection -- completely
+    silently.
+
+    `_pick_default_provider` below simulates the production tie-break
+    rule exactly as documented in the bug report, and exactly matching the
+    `candidates.sort(key=lambda c: c[0])` stable-sort-by-priority idiom
+    `_find_provider_instance` already uses elsewhere in this module: the
+    provider with the lowest `config.priority` wins; a tie is broken by
+    declaration order (first in the list wins), because Python's
+    `sort`/`sorted` are stable.
+    """
+
+    @staticmethod
+    def _pick_default_provider(mount_plan: dict) -> dict:
+        """Simulate production's priority-based default-provider selection."""
+        providers = mount_plan["providers"]
+        candidates = [
+            (p.get("config", {}).get("priority", 0), i) for i, p in enumerate(providers)
+        ]
+        candidates.sort(key=lambda c: c[0])
+        return providers[candidates[0][1]]
+
+    def test_override_second_instance_outranks_priority_zero_primary_same_type(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two instances of the SAME provider type: the primary is declared
+        FIRST at priority=0 (typical user default-model config); the
+        override picks the SECOND instance by its explicit `id`. The
+        second instance must strictly win resolution -- not merely tie.
+        """
+        mount_plan = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-primary",
+                    "config": {
+                        "priority": 0,
+                        "default_model": "claude-primary-model",
+                    },
+                },
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-secondary",
+                    "config": {"priority": 10},
+                },
+            ]
+        }
+        prefs = [
+            ProviderPreference(
+                provider="anthropic-secondary", model="claude-secondary-model"
+            )
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="amplifier_foundation.spawn_utils"):
+            result = apply_provider_preferences(mount_plan, prefs)
+
+        selected = self._pick_default_provider(result)
+        assert selected["id"] == "anthropic-secondary", (
+            "The overridden (secondary) instance must win child provider "
+            "resolution, not silently lose a priority=0 tie to the "
+            "first-declared primary."
+        )
+        assert selected["config"]["default_model"] == "claude-secondary-model"
+
+        # The primary must have been demoted strictly below the target --
+        # not merely left tied with it at priority=0.
+        primary = result["providers"][0]
+        assert primary["id"] == "anthropic-primary"
+        assert primary["config"]["priority"] > selected["config"]["priority"]
+
+        # A tie-demotion occurred -- it must be observable.
+        assert any(
+            "tie-break" in r.message and "anthropic-primary" in r.message
+            for r in caplog.records
+        ), "Expected a debug-level tie-break log noting the demoted instance"
+
+    @pytest.mark.asyncio
+    async def test_override_cross_provider_outranks_priority_zero_primary(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Cross-provider case: primary is a DIFFERENT provider type (openai)
+        than the override target (anthropic) -- the mechanism must be
+        provider-agnostic, not special-cased to same-module-type
+        disambiguation.
+        """
+        mount_plan = {
+            "providers": [
+                {
+                    "module": "provider-openai",
+                    "config": {"priority": 0, "default_model": "gpt-primary-model"},
+                },
+                {
+                    "module": "provider-anthropic",
+                    "config": {"priority": 20},
+                },
+            ]
+        }
+        prefs = [
+            ProviderPreference(provider="anthropic", model="claude-secondary-model")
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="amplifier_foundation.spawn_utils"):
+            result = await apply_provider_preferences_with_resolution(
+                mount_plan, prefs, coordinator=None
+            )
+
+        selected = self._pick_default_provider(result)
+        assert selected["module"] == "provider-anthropic", (
+            "The overridden anthropic instance must win child provider "
+            "resolution over the priority=0, first-declared openai primary."
+        )
+        assert selected["config"]["default_model"] == "claude-secondary-model"
+
+        primary = result["providers"][0]
+        assert primary["module"] == "provider-openai"
+        assert primary["config"]["priority"] > selected["config"]["priority"]
+
+        assert any("tie-break" in r.message for r in caplog.records), (
+            "Expected a debug-level tie-break log for the cross-provider case too"
+        )
+
+    def test_override_selecting_primary_itself_no_demotion_needed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When the override selects the primary itself, there is no tie to
+        break (the target IS the priority=0 instance) -- no other provider
+        should be touched and no tie-break log should fire.
+        """
+        mount_plan = {
+            "providers": [
+                {"module": "provider-anthropic", "config": {"priority": 0}},
+                {"module": "provider-openai", "config": {"priority": 20}},
+            ]
+        }
+        prefs = [
+            ProviderPreference(provider="anthropic", model="claude-override-model")
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="amplifier_foundation.spawn_utils"):
+            result = apply_provider_preferences(mount_plan, prefs)
+
+        selected = self._pick_default_provider(result)
+        assert selected["module"] == "provider-anthropic"
+        assert selected["config"]["default_model"] == "claude-override-model"
+        assert selected["config"]["priority"] == 0
+
+        # Secondary is untouched -- it never tied with the target, so no
+        # demotion should have been applied.
+        secondary = result["providers"][1]
+        assert secondary["config"]["priority"] == 20
+        assert "default_model" not in secondary["config"]
+
+        assert not any("tie-break" in r.message for r in caplog.records), (
+            "No tie-break demotion should occur when the override target "
+            "is already the sole priority=0 instance"
+        )

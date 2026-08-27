@@ -747,11 +747,16 @@ def _apply_single_override(
             are never overridden.
 
     Returns:
-        New mount plan with override applied.
+        New mount plan with override applied. The overridden (target)
+        provider is guaranteed to STRICTLY outrank every other provider in
+        this child mount plan's priority ordering (see the tie-break note
+        below) -- it is never merely tied with another instance.
     """
     # Clone mount plan and providers list
     new_plan = dict(mount_plan)
     new_providers = []
+
+    target_priority = 0
 
     for i, p in enumerate(providers):
         p_copy = dict(p)
@@ -764,7 +769,7 @@ def _apply_single_override(
                     if key not in PROTECTED_CONFIG_KEYS:
                         p_copy["config"][key] = value
             # Then enforce invariants — these always win
-            p_copy["config"]["priority"] = 0
+            p_copy["config"]["priority"] = target_priority
             p_copy["config"]["default_model"] = model
             logger.info(
                 "Provider preference applied: %s (priority=0, model=%s)",
@@ -773,6 +778,42 @@ def _apply_single_override(
             )
 
         new_providers.append(p_copy)
+
+    # The promotion above only ever RAISES the target's priority -- it never
+    # touches anyone else's. If another instance in this child's provider
+    # list already sits at (or below) the target's new priority, provider
+    # resolution ties at that priority and the tie is broken by declaration
+    # order (first-declared wins), silently handing the child's session back
+    # to whichever instance happens to be declared first -- even though an
+    # override was explicitly applied to select a *different* instance. This
+    # is the substitution-class failure fixed here (see
+    # openai_improvement-ejq): a sub-agent's chosen provider must STRICTLY
+    # win its own child's resolution, never merely tie for it.
+    #
+    # Fix: demote every other instance in THIS CHILD MOUNT PLAN ONLY whose
+    # priority would tie or beat the target's, to strictly below it. This
+    # never touches the root/parent session's provider configuration --
+    # `providers`/`new_providers` here are always the child mount plan's own
+    # provider list (see `apply_provider_preferences` /
+    # `apply_provider_preferences_with_resolution`, the only callers).
+    for i, p_copy in enumerate(new_providers):
+        if i == target_idx:
+            continue
+        other_priority = p_copy["config"].get("priority", 0)
+        if other_priority <= target_priority:
+            demoted_priority = target_priority + 1
+            p_copy["config"]["priority"] = demoted_priority
+            logger.debug(
+                "Provider override tie-break: demoting '%s' (id=%s) from "
+                "priority=%s to priority=%s in this child's mount plan so "
+                "the overridden provider '%s' strictly outranks it instead "
+                "of losing a stable-sort tie by declaration order",
+                p_copy.get("module"),
+                p_copy.get("id"),
+                other_priority,
+                demoted_priority,
+                new_providers[target_idx].get("module"),
+            )
 
     new_plan["providers"] = new_providers
     return new_plan
