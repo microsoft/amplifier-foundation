@@ -1,0 +1,27 @@
+bundle:
+  name: behavior-delegation-batching
+  version: 0.1.0
+  description: |
+    Detects sequential delegation waves and injects a batching reminder before
+    the next wave is planned. Opt-in: compose this behavior explicitly.
+
+# Stage 2 ("Option C") of the plan-then-dispatch parallel-delegation work.
+# Reinforces the Stage 1 prose guidance (behaviors/agents.yaml,
+# behaviors/tasks.yaml) at the actual decision point: after wave N's results
+# land, before wave N+1 is planned.
+#
+# Ships opt-in and default-off. NOT composed into behaviors/agents.yaml, so
+# its effect can be measured in isolation from Stage 1's guidance edits.
+#
+# Usage:
+#   includes:
+#     - bundle: foundation:behaviors/delegation-batching
+
+hooks:
+  - module: hooks-delegation-batching
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-delegation-batching
+    config:
+      enabled: true
+      min_wave_index: 2
+      max_nudges: 3
+      narrow_wave_only: true
