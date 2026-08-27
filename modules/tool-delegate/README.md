@@ -30,11 +30,39 @@ Resume sessions using the full `session_id` returned by previous delegate calls:
 session_id: "abc123-def456-..._foundation:explorer"
 ```
 
-### Delegate Timeout
+### Layered bounding: call budget (Layer 1) + wall-clock backstop (Layer 3)
 
-Delegated spawn and resume operations time out after 1800 seconds by default.
-Configure `settings.timeout` with a positive finite number of seconds to change
-the limit, or set it explicitly to `null` to disable the delegate-level timeout.
+Delegated sessions are bounded two ways, and they are meant to be read as a
+pair, not independently:
+
+1. **Layer 1 -- per-leg LLM-call budget** (`settings.max_llm_calls`, off by
+   default). Enforced in the child's own orchestrator loop via
+   `max_iterations`; exhaustion is a normal turn ending (the child wraps up
+   with its own summary and the transcript stays complete and resumable).
+   This is the layer that should actually catch a runaway agent. See the
+   "Layer 1 call budget" section below.
+2. **Layer 2 -- provider HTTP timeouts.** Already shipped by every provider
+   in the ecosystem (120-600s). Not implemented in this module; a hung
+   single LLM call self-resolves as an `LLMError` well before Layer 3 would
+   ever fire.
+3. **Layer 3 -- wall-clock backstop** (`settings.timeout`, described below).
+   This is what this section documents. It is orchestrator-independent and
+   deliberately generous: it exists for the residual case Layer 1 cannot
+   cover -- an orchestrator with no call-budget support, or a single
+   hanging tool call with no internal timeout of its own. If this backstop
+   fires on a session that has a working Layer 1 budget, treat that as a
+   bug report about the budget, not evidence the backstop is too loose.
+
+#### Delegate Timeout (Layer 3)
+
+Delegated spawn and resume operations time out after **14400 seconds (4
+hours)** by default. This is roughly 12x the measured healthy upper bound
+for a delegated sub-session and roughly half the duration of the worst
+observed runaway -- generous enough that it should essentially never fire
+in front of a working Layer 1 budget, while still bounding the case where
+Layer 1 does not apply. Configure `settings.timeout` with a positive finite
+number of seconds to change the limit, or set it explicitly to `null` to
+disable the delegate-level timeout.
 
 A timeout returns `success: false` with structured output containing
 `status: timed_out`, the child `session_id`, the agent identity when available,
@@ -47,7 +75,10 @@ Do not immediately resume the returned session ID. The coordinated
 persistence-capable `amplifier-app-cli` spawner may persist the interrupted
 session after cancellation cleanup finishes, but the delegate timeout response
 does not claim that persistence is complete or that the session is ready to
-resume.
+resume. (This honest `resumable: false` reporting stays until
+`amplifier-app-cli#260` lands -- it is not on the critical path for Layer 1 or
+Layer 3 to ship, since Layer 1's own exit is a normal return and its
+`resumable: true` is already a fact today.)
 
 ### Tool Inheritance Fix
 
@@ -89,7 +120,7 @@ modules:
       exclude_tools:
         - delegate  # Default: spawned agents can't further delegate
       exclude_hooks: []
-      timeout: 1800  # Default; set to null to disable
+      timeout: 14400  # Layer 3 backstop default (4h); set to null to disable
       max_llm_calls: null      # Layer 1 call budget (spec: 298-replacement).
                                 # None/unset (default): ships dark -- no
                                 # budget is injected into any child session;

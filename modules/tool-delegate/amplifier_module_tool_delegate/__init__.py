@@ -19,10 +19,16 @@ Config Options:
 - features.provider_selection.enabled: Allow provider preferences (default: True)
 - settings.exclude_tools: Tools spawned agents should NOT inherit (default: ["tool-delegate"])
 - settings.exclude_hooks: Hooks spawned agents should NOT inherit (default: [])
-- settings.timeout: Maximum child-session execution time in seconds (default: 1800);
-  set explicitly to None/null to disable. Timeouts return the child session ID,
-  but callers must wait for app-layer cancellation cleanup and persistence before
-  attempting to resume it.
+- settings.timeout: Maximum child-session execution time in seconds (default: 14400,
+  i.e. 4 hours); set explicitly to None/null to disable. This is a Layer 3
+  wall-clock BACKSTOP -- orchestrator-independent and intentionally generous
+  (~12x the measured healthy upper bound). It exists for the cases a per-leg
+  LLM-call budget (settings.max_llm_calls) cannot cover: an orchestrator with no
+  budget support, or a single hung call. If a real orchestrator with a call
+  budget makes this timeout fire in practice, that is a signal the budget itself
+  needs attention, not that this default is too generous. Timeouts return the
+  child session ID, but callers must wait for app-layer cancellation cleanup and
+  persistence before attempting to resume it.
 - settings.strict_model_role: When True, a model_role that resolves to no
   candidates raises ModelRoleUnresolvedError instead of silently falling
   back to the session default model (default: False). Regardless of this
@@ -366,7 +372,7 @@ class DelegateTool:
         # Settings
         self.exclude_tools: list[str] = settings.get("exclude_tools", ["tool-delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
-        self.timeout = _validate_timeout(settings.get("timeout", 1800))
+        self.timeout = _validate_timeout(settings.get("timeout", 14400))
         self._detached_child_tasks: set[asyncio.Task[Any]] = set()
         # When True, model_role resolving to no candidates raises
         # ModelRoleUnresolvedError instead of silently falling back to the

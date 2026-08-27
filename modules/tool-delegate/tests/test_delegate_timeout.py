@@ -91,11 +91,11 @@ def _emissions(hooks: MagicMock) -> list[tuple[str, dict]]:
 
 
 def test_timeout_defaults_only_when_key_is_absent():
-    assert _make_tool().timeout == 1800
+    assert _make_tool().timeout == 14400
     assert _make_tool(timeout=None).timeout is None
 
 
-@pytest.mark.parametrize("timeout", [1, 0.5, 1800, 10**100])
+@pytest.mark.parametrize("timeout", [1, 0.5, 14400, 10**100])
 def test_timeout_accepts_positive_finite_non_bool_numbers(timeout):
     assert _make_tool(timeout=timeout).timeout == timeout
 
