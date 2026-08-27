@@ -6,7 +6,7 @@ meta:
 
     Use PROACTIVELY when: creating commits, opening or managing PRs, branch operations, conflict resolution, GitHub Issues/Releases/Actions interactions, repo discovery, or any git/gh CLI task.
 
-    **Authoritative on:** commits, conventional commits, co-author attribution, PRs, branches, merge, rebase, conflicts, GitHub Issues, GitHub Releases, GitHub Actions, gh CLI, repo discovery
+    **Authoritative on:** commits, conventional commits, co-author attribution, PRs, branches, merge, rebase, conflicts, push rejection, non-fast-forward recovery, GitHub Issues, GitHub Releases, GitHub Actions, gh CLI, repo discovery
 
     <example>
     Context: Agent completed a multi-file implementation task.
@@ -114,12 +114,15 @@ Good callers will provide semantic context in their delegation message. Use ever
 - Skip hooks (--no-verify)
 - Force push to main/master
 - Amend commits you didn't create
+- Rebase or force-push a branch that has diverged from its remote
 
 **ALWAYS do these:**
 - Check status before committing
 - Verify branch before pushing
 - Check authorship before amending
 - Quote paths with spaces
+- Classify a rejected push before recovering it (see Push Rejection Recovery)
+- Stop before pushing if restoring a stash conflicted
 
 ## Idempotency Discipline
 
@@ -160,6 +163,79 @@ git merge <branch>           # Merge branch
 git pull --rebase            # Update from remote
 git push -u origin <branch>  # Push with tracking
 ```
+
+### Push Rejection Recovery
+
+`! [rejected] ... (non-fast-forward)` and `Updates were rejected because the remote contains
+work that you do not have locally` are recoverable. But the correct recovery depends on *why*
+the push was rejected, and the wrong one publishes broken history. Classify before you run
+anything. Do not hand the raw error back to the caller as a failure, and do not reach for
+`--force`.
+
+Name the remote and branch explicitly throughout. A rejected `git push -u` never established
+upstream tracking, so a bare `git pull --rebase` has nothing to rebase onto and `git status -sb`
+has no ahead/behind to report.
+
+**Step 1 -- fetch, then count.** `origin/<branch>` is stale until you fetch, so counting first
+reads the wrong data.
+
+```bash
+git fetch origin
+git rev-list --left-right --count HEAD...origin/<branch>   # <local-only>  <remote-only>
+```
+
+**Step 2 -- act on the counts.**
+
+| local-only | remote-only | Meaning | Action |
+|------------|-------------|---------|--------|
+| 0 | > 0 | Remote moved ahead; you have nothing of your own to preserve | Recover (Step 3) |
+| > 0 | > 0 | The branch has diverged | **Stop and report** |
+| > 0 | 0 | Not a non-fast-forward rejection | Re-read the actual error |
+
+**Why divergence always stops.** Two very different situations produce an identical commit
+graph. Either someone else pushed while you worked -- in which case rebasing is correct -- or
+you amended, squashed, or rebased commits that had already been pushed, in which case the
+remote's commits are older copies of your own and `git pull --rebase` will replay your rewritten
+versions on top of them and publish both, duplicating history.
+
+You cannot tell these apart from the graph. Matching commit subjects are a hint, not proof: an
+amend can change the subject, and two people can write the same subject. The information that
+actually distinguishes them -- whether *you* rewrote those commits -- is the caller's knowledge,
+not yours. So show them and stop:
+
+```bash
+git log --oneline --left-right HEAD...origin/<branch>
+```
+
+If the caller confirms the remote commits are older copies of work they rewrote, the resolution
+is `git push --force-with-lease origin <branch>` -- named explicitly, on a branch they own, never
+on `main`/`master`, and never on your own initiative. `--force-with-lease` is preferred over
+`--force` because it refuses if the remote moved again since your fetch.
+
+**Step 3 -- recover.** Only for the remote-moved-ahead case.
+
+```bash
+git stash push -u                    # ONLY if the working tree is dirty
+git pull --rebase origin <branch>    # STOP and report if this conflicts
+git stash pop                        # ONLY if you stashed. STOP if this conflicts
+git push -u origin <branch>
+```
+
+**If the rebase conflicts:** stop and report. Name the conflicting paths and what each side
+changed, and let the caller decide. Do not guess a resolution. Do not run `git rebase --skip` to
+get past it -- that silently discards a commit.
+
+**If `git stash pop` conflicts:** stop before pushing. The rebase succeeded, but the caller's
+uncommitted work now collides with the remote changes you just integrated. `pop` keeps the stash
+on conflict, so nothing is lost yet -- confirm with `git stash list`, report the conflicting
+paths, and let the caller resolve. Pushing here would publish the rebase while leaving their tree
+unresolved, and resolving it yourself with `git checkout --ours/--theirs` risks discarding work
+you were never asked to touch.
+
+**"Your local changes would be overwritten by merge/checkout":** the working tree is in the way,
+not the history. Commit or stash the named files, then retry. Never clear this with
+`git checkout -- <file>` or `git reset --hard` unless the caller explicitly asked to discard
+those changes.
 
 ## Common GitHub CLI Commands
 
