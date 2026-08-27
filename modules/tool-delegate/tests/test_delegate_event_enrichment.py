@@ -568,3 +568,134 @@ class TestResumeEventEnrichment:
         assert "parallel_group_id" in resumed_payload
         assert resumed_payload["tool_call_id"] == ""
         assert resumed_payload["parallel_group_id"] is None
+
+
+# =============================================================================
+# Tests: agent identity on resume (regression tests for openai_improvement-9n6)
+#
+# Production symptom: when a delegation is RESUMED via session_id, the parent
+# stream got delegate:agent_completed with agent: null and NO agent_resumed
+# event at all. Fan-out counted from agent_spawned undercounted ~18%, and
+# completions on the resumed leg could not be attributed to an agent.
+# =============================================================================
+
+
+class TestResumeAgentIdentity:
+    """delegate:agent_resumed and delegate:agent_completed carry a real,
+    non-null "agent" identity on the resume path -- sourced from the
+    spawn-time cache when available, or the session_id suffix convention
+    as a fallback (see DelegateTool._resolve_agent_for_session).
+    """
+
+    @pytest.mark.asyncio
+    async def test_resumed_and_completed_events_carry_agent_from_spawn_cache(self):
+        """Resuming a session this DelegateTool instance previously spawned
+        must emit agent_resumed AND agent_completed with "agent" equal to
+        the exact agent_name used at spawn time (the most reliable source:
+        an in-memory cache keyed by sub_session_id, populated in
+        _spawn_new_session). On unpatched main, agent_resumed has no
+        "agent" key at all (KeyError) and agent_completed's "agent" key is
+        likewise absent -- this test fails loudly on unpatched main.
+        """
+        hooks = _make_hooks()
+
+        async def spawn_side_effect(**kwargs):
+            # Echo back the real generated sub_session_id, like the
+            # production spawn capability does (PreparedBundle.spawn()
+            # returns child_session.session_id, which is seeded from the
+            # sub_session_id this tool generated).
+            return {
+                "output": "spawned",
+                "session_id": kwargs["sub_session_id"],
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+
+        async def resume_side_effect(**kwargs):
+            return {
+                "output": "resumed",
+                "session_id": kwargs["sub_session_id"],
+                "status": "success",
+                "turn_count": 2,
+                "metadata": {},
+            }
+
+        spawn_fn = AsyncMock(side_effect=spawn_side_effect)
+        resume_fn = AsyncMock(side_effect=resume_side_effect)
+
+        tool = _make_delegate_tool(
+            hooks=hooks,
+            spawn_fn=spawn_fn,
+            resume_fn=resume_fn,
+            agents={"test-agent": {"description": "A test agent"}},
+        )
+
+        spawn_result = await tool.execute(
+            {
+                "agent": "test-agent",
+                "instruction": "Do something",
+                "context_depth": "none",
+            }
+        )
+        assert spawn_result.success
+        real_session_id = spawn_result.output["session_id"]
+
+        hooks.emit.reset_mock()
+
+        resume_result = await tool.execute(
+            {
+                "session_id": real_session_id,
+                "instruction": "Continue",
+            }
+        )
+        assert resume_result.success
+
+        emitted = {args[0]: args[1] for args, _ in hooks.emit.call_args_list}
+
+        assert "delegate:agent_resumed" in emitted
+        resumed_payload = emitted["delegate:agent_resumed"]
+        assert resumed_payload["agent"] == "test-agent"
+        assert resumed_payload["agent"] is not None
+
+        assert "delegate:agent_completed" in emitted
+        completed_payload = emitted["delegate:agent_completed"]
+        assert completed_payload["agent"] == "test-agent"
+        assert completed_payload["agent"] is not None
+
+        # Result output should also carry the correct agent identity.
+        assert resume_result.output["agent"] == "test-agent"
+
+    @pytest.mark.asyncio
+    async def test_resume_falls_back_to_session_id_suffix_when_cache_misses(self):
+        """Resuming a session_id this DelegateTool instance never spawned
+        (cold cache -- e.g. a different parent session/process originally
+        spawned it) still resolves a real agent identity from the
+        session_id's sanitized suffix (the format guaranteed by
+        amplifier_foundation.tracing.generate_sub_session_id), rather than
+        silently emitting "unknown" or omitting "agent" entirely.
+        """
+        hooks = _make_hooks()
+        cold_session_id = "0000000000000000-fedcba0987654321_foundation-explorer"
+        resume_fn = AsyncMock(
+            return_value={
+                "output": "resumed",
+                "session_id": cold_session_id,
+                "status": "success",
+                "turn_count": 5,
+                "metadata": {},
+            }
+        )
+        tool = _make_delegate_tool(hooks=hooks, resume_fn=resume_fn)
+
+        result = await tool.execute(
+            {
+                "session_id": cold_session_id,
+                "instruction": "Continue",
+            }
+        )
+        assert result.success
+
+        emitted = {args[0]: args[1] for args, _ in hooks.emit.call_args_list}
+        assert emitted["delegate:agent_resumed"]["agent"] == "foundation-explorer"
+        assert emitted["delegate:agent_completed"]["agent"] == "foundation-explorer"
