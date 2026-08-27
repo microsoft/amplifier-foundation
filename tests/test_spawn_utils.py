@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -988,3 +989,347 @@ class TestProviderPreferenceConfigWiring:
         assert result_config["temperature"] == 0.3
         # Existing protected key untouched
         assert result_config["api_key"] == "sk-test"
+
+
+class TestListModelsSingleFlightMemoization:
+    """Regression tests: concurrent glob-pattern resolutions must coalesce
+    provider.list_models() into a single upstream call (per provider, per TTL
+    window) instead of firing one GET /v1/models per spawned child session.
+    """
+
+    def _make_coordinator(self, provider: AsyncMock) -> MagicMock:
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"provider-anthropic": provider}
+        return coordinator
+
+    @pytest.mark.asyncio
+    async def test_concurrent_resolutions_fetch_once(self) -> None:
+        """50 parallel spawns resolving the same pattern = 1 upstream call."""
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            return_value=["claude-sonnet-4-5", "claude-haiku-4-5"]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        results = await asyncio.gather(
+            *(
+                resolve_model_pattern("claude-haiku-*", "anthropic", coordinator)
+                for _ in range(50)
+            )
+        )
+
+        assert provider.list_models.await_count == 1
+        assert all(r.resolved_model == "claude-haiku-4-5" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_sequential_resolutions_reuse_within_ttl(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        coordinator = self._make_coordinator(provider)
+
+        for _ in range(5):
+            result = await resolve_model_pattern(
+                "claude-sonnet-*", "anthropic", coordinator
+            )
+            assert result.resolved_model == "claude-sonnet-4-5"
+
+        assert provider.list_models.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_after_ttl_expiry(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        coordinator = self._make_coordinator(provider)
+
+        import amplifier_foundation.spawn_utils as su
+
+        original_ttl = su.LIST_MODELS_CACHE_TTL_SECONDS
+        su.LIST_MODELS_CACHE_TTL_SECONDS = 0.05
+        try:
+            await resolve_model_pattern("claude-*", "anthropic", coordinator)
+            await asyncio.sleep(0.1)
+            await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        finally:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = original_ttl
+
+        assert provider.list_models.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exact_name_never_fetches(self) -> None:
+        provider = AsyncMock()
+        coordinator = self._make_coordinator(provider)
+
+        result = await resolve_model_pattern(
+            "claude-sonnet-4-5", "anthropic", coordinator
+        )
+
+        assert result.resolved_model == "claude-sonnet-4-5"
+        provider.list_models.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_providers_cached_independently(self) -> None:
+        provider_a = AsyncMock()
+        provider_a.list_models = AsyncMock(return_value=["m-a"])
+        coordinator_a = MagicMock()
+        coordinator_a.get.return_value = {"provider-anthropic": provider_a}
+
+        provider_b = AsyncMock()
+        provider_b.list_models = AsyncMock(return_value=["m-b"])
+        coordinator_b = MagicMock()
+        coordinator_b.get.return_value = {"provider-anthropic": provider_b}
+
+        await asyncio.gather(
+            resolve_model_pattern("m-*", "anthropic", coordinator_a),
+            resolve_model_pattern("m-*", "anthropic", coordinator_b),
+        )
+
+        assert provider_a.list_models.await_count == 1
+        assert provider_b.list_models.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failures_are_not_cached(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            side_effect=[RuntimeError("boom"), ["claude-sonnet-4-5"]]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        first = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        assert first.resolved_model is None
+
+        second = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        assert second.resolved_model == "claude-sonnet-4-5"
+        assert provider.list_models.await_count == 2
+
+
+class TestListModelsCacheHardening:
+    """Regression tests for the hardening pass on top of #302's single-flight
+    TTL cache (danshapiro): soft-failure non-answers must never poison the
+    cache, a failing fetch must be shared once (not re-run per waiter) and
+    must not persist past its own delivery, and a waiter must not block
+    forever on a hung shared fetch.
+
+    See repro_302.py / repro_302_hol.py for the standalone demonstrations
+    these tests mirror.
+    """
+
+    def _make_coordinator(
+        self, provider: AsyncMock, key: str = "provider-ollama"
+    ) -> MagicMock:
+        coordinator = MagicMock()
+        coordinator.get.return_value = {key: provider}
+        return coordinator
+
+    @pytest.mark.asyncio
+    async def test_empty_list_not_cached_then_refetches_and_later_caches(
+        self,
+    ) -> None:
+        """Mirrors repro_302.py CASE 1 (ollama-style soft failure -> []).
+
+        An empty result must never be cached -- the next call must refetch
+        live -- but once a genuinely non-empty result comes back, THAT one
+        is cached normally (no refetch on the following call).
+        """
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            side_effect=[[], [], ["qwen3.6-35b-a3b", "llama4:70b"]]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        first = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        assert first.resolved_model is None
+        assert provider.list_models.await_count == 1
+
+        # [] must NOT have been cached -- this call refetches live.
+        second = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        assert second.resolved_model is None
+        assert provider.list_models.await_count == 2
+
+        # Server "recovers": a genuinely non-empty result comes back.
+        third = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        assert third.resolved_model == "qwen3.6-35b-a3b"
+        assert provider.list_models.await_count == 3
+
+        # The non-empty result IS cached -- a 4th call must not refetch.
+        fourth = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        assert fourth.resolved_model == "qwen3.6-35b-a3b"
+        assert provider.list_models.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_degraded_single_model_list_bounded_by_ttl(self) -> None:
+        """Mirrors repro_302.py CASE 2 (chat-completions degraded fallback).
+
+        A degraded single-model fallback list (e.g. chat-completions
+        returning `[configured_model]` on ANY exception) is NON-empty, so
+        it is indistinguishable at this generic, provider-agnostic cache
+        layer from a legitimately single-model catalog -- and
+        `test_sequential_resolutions_reuse_within_ttl` above requires a
+        genuine single-model result to be cached, so this layer cannot
+        special-case "list of length 1" without breaking that contract.
+
+        What the hardening DOES guarantee: the poisoning window is bounded
+        by the (now-configurable, see TestListModelsConfigurableKnobs) TTL
+        instead of being permanent -- once the TTL expires, a subsequent
+        real catalog fetch replaces the degraded entry rather than being
+        stuck behind it indefinitely.
+        """
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            side_effect=[
+                ["local-default"],  # degraded fallback while "down"
+                ["qwen3.6-35b-a3b", "qwen3.6-8b", "local-default"],  # recovered
+            ]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        import amplifier_foundation.spawn_utils as su
+
+        original_ttl = su.LIST_MODELS_CACHE_TTL_SECONDS
+        su.LIST_MODELS_CACHE_TTL_SECONDS = 0.05
+        try:
+            degraded = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+            # The degraded list is non-empty, so it is cached like any other
+            # answer -- pattern doesn't match it, so resolution fails, but
+            # this is a real answer as far as the cache can tell.
+            assert degraded.resolved_model is None
+            assert provider.list_models.await_count == 1
+
+            await asyncio.sleep(0.1)  # TTL expires
+
+            recovered = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        finally:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = original_ttl
+
+        # Once the (bounded, configurable) TTL has passed, the degraded
+        # entry is gone and a fresh, real catalog is fetched and resolved
+        # correctly -- not permanently poisoned.
+        assert provider.list_models.await_count == 2
+        # Two matches ("qwen3.6-35b-a3b", "qwen3.6-8b"); descending sort picks
+        # "qwen3.6-8b" ("8" > "3" at the first differing character).
+        assert recovered.resolved_model == "qwen3.6-8b"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_failure_shared_once_then_fresh_fetch(self) -> None:
+        """A failing fetch is shared once across every concurrent waiter --
+        not re-run as a full retry campaign per waiter -- and does not
+        persist past its own delivery: the next NEW caller after the wave
+        settles gets a genuinely fresh fetch.
+        """
+        provider = AsyncMock()
+        started = asyncio.Event()
+
+        async def flaky_list_models() -> list[str]:
+            started.set()
+            await asyncio.sleep(0.05)
+            raise RuntimeError("boom")
+
+        provider.list_models = AsyncMock(side_effect=flaky_list_models)
+        coordinator = self._make_coordinator(provider, key="provider-anthropic")
+
+        results = await asyncio.gather(
+            *(
+                resolve_model_pattern("claude-*", "anthropic", coordinator)
+                for _ in range(20)
+            )
+        )
+
+        # The failure was delivered to every one of the 20 waiters...
+        assert all(r.resolved_model is None for r in results)
+        # ...but the provider was only actually called once for the whole
+        # wave (not once per waiter re-running its own retry campaign).
+        assert provider.list_models.await_count == 1
+
+        # The next NEW caller, after the failed wave has settled, starts a
+        # genuinely fresh fetch rather than adopting the dead failed task.
+        provider.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        result = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        assert result.resolved_model == "claude-sonnet-4-5"
+        assert provider.list_models.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_waiter_timeout_falls_through_to_direct_call(self) -> None:
+        """A caller must not block forever on someone else's in-flight
+        fetch -- past the configured wait timeout it falls through to a
+        direct, uncached provider.list_models() call of its own.
+        """
+        provider = AsyncMock()
+        release = asyncio.Event()
+        calls = 0
+
+        async def hangs_then_direct_succeeds() -> list[str]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                # The shared fetch: held open past the wait timeout.
+                await release.wait()
+                return ["claude-sonnet-4-5"]
+            # This caller's own direct fallback call, once it gives up
+            # waiting on the (still-hanging) shared fetch.
+            return ["claude-haiku-4-5"]
+
+        provider.list_models = AsyncMock(side_effect=hangs_then_direct_succeeds)
+        coordinator = self._make_coordinator(provider, key="provider-anthropic")
+
+        import amplifier_foundation.spawn_utils as su
+
+        original_timeout = su.LIST_MODELS_WAIT_TIMEOUT_SECONDS
+        su.LIST_MODELS_WAIT_TIMEOUT_SECONDS = 0.05
+        try:
+            result = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        finally:
+            su.LIST_MODELS_WAIT_TIMEOUT_SECONDS = original_timeout
+            release.set()
+            # Let the still-in-flight shared fetch drain cleanly instead of
+            # leaving a pending task for the loop to warn about at teardown.
+            entry = su._MODEL_LIST_CACHE.get(provider)
+            if entry is not None and entry.task is not None:
+                await asyncio.wait_for(entry.task, timeout=1)
+
+        assert result.resolved_model == "claude-haiku-4-5"
+        assert calls == 2
+
+
+class TestListModelsConfigurableKnobs:
+    """Regression tests for making the TTL and wait-timeout configurable via
+    environment variables while preserving the existing module-global
+    monkey-patch surface (`su.LIST_MODELS_CACHE_TTL_SECONDS = ...` etc.).
+    """
+
+    def test_ttl_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import amplifier_foundation.spawn_utils as su
+
+        monkeypatch.delenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", raising=False)
+        assert su._get_ttl_seconds() == su.LIST_MODELS_CACHE_TTL_SECONDS
+
+        monkeypatch.setenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", "5")
+        assert su._get_ttl_seconds() == 5.0
+
+    def test_ttl_module_global_still_monkeypatchable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import amplifier_foundation.spawn_utils as su
+
+        monkeypatch.delenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", raising=False)
+        original = su.LIST_MODELS_CACHE_TTL_SECONDS
+        try:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = 123.0
+            assert su._get_ttl_seconds() == 123.0
+        finally:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = original
+
+    def test_wait_timeout_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import amplifier_foundation.spawn_utils as su
+
+        monkeypatch.delenv("AMPLIFIER_LIST_MODELS_WAIT_TIMEOUT_SECONDS", raising=False)
+        assert su._get_wait_timeout_seconds() == su.LIST_MODELS_WAIT_TIMEOUT_SECONDS
+
+        monkeypatch.setenv("AMPLIFIER_LIST_MODELS_WAIT_TIMEOUT_SECONDS", "2.5")
+        assert su._get_wait_timeout_seconds() == 2.5
+
+    def test_invalid_env_value_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import amplifier_foundation.spawn_utils as su
+
+        monkeypatch.setenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", "not-a-number")
+        assert su._get_ttl_seconds() == su.LIST_MODELS_CACHE_TTL_SECONDS

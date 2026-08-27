@@ -9,13 +9,236 @@ when spawning sub-sessions. It supports:
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
-from dataclasses import dataclass
-from dataclasses import field
+import os
+import time
+import weakref
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# TTL for memoizing provider.list_models() during pattern resolution.
+# Every child/delegate spawn with a glob-pattern model hint resolves the
+# pattern by querying the provider live. Parallel delegate waves (e.g. recipe
+# fan-out) otherwise fire one identical GET /v1/models per spawned session.
+# Model catalogs change rarely, so a short TTL is functionally exact while
+# collapsing a whole wave into a single upstream call.
+#
+# Overridable via AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS (see
+# _get_ttl_seconds()). This module-level name is kept as the fallback/default
+# -- and remains directly monkey-patchable (`su.LIST_MODELS_CACHE_TTL_SECONDS
+# = ...`) -- so existing tests and callers are unaffected.
+LIST_MODELS_CACHE_TTL_SECONDS = 60.0
+
+# Maximum time a caller will wait on another caller's in-flight
+# list_models() fetch before falling through to a direct, uncached call of
+# its own (bounds head-of-line blocking: a single hung/slow fetch must not
+# stall an entire delegate wave indefinitely).
+#
+# Overridable via AMPLIFIER_LIST_MODELS_WAIT_TIMEOUT_SECONDS (see
+# _get_wait_timeout_seconds()); same fallback/monkey-patch contract as
+# LIST_MODELS_CACHE_TTL_SECONDS above.
+LIST_MODELS_WAIT_TIMEOUT_SECONDS = 20.0
+
+
+def _get_ttl_seconds() -> float:
+    """Resolve the cache TTL: env override first, module global fallback.
+
+    Reads the module global by name on every call (not a captured default),
+    so direct monkey-patching (`su.LIST_MODELS_CACHE_TTL_SECONDS = ...`, as
+    the existing test suite does) keeps working unchanged.
+    """
+    raw = os.environ.get("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS=%r; "
+                "falling back to default %.1fs",
+                raw,
+                LIST_MODELS_CACHE_TTL_SECONDS,
+            )
+    return LIST_MODELS_CACHE_TTL_SECONDS
+
+
+def _get_wait_timeout_seconds() -> float:
+    """Resolve the single-flight wait timeout: env override first, fallback.
+
+    Same env-first/module-global-fallback contract as _get_ttl_seconds().
+    """
+    raw = os.environ.get("AMPLIFIER_LIST_MODELS_WAIT_TIMEOUT_SECONDS")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid AMPLIFIER_LIST_MODELS_WAIT_TIMEOUT_SECONDS=%r; "
+                "falling back to default %.1fs",
+                raw,
+                LIST_MODELS_WAIT_TIMEOUT_SECONDS,
+            )
+    return LIST_MODELS_WAIT_TIMEOUT_SECONDS
+
+
+@dataclass
+class _ModelListCacheEntry:
+    """Per-provider memoization state for list_models().
+
+    `models`/`expires_at` are populated ONLY by a fetch that produced a
+    genuinely non-empty result (see `_fetch_and_store`). Several shipped
+    providers convert a failed fetch into a *successful-looking* return
+    value instead of raising -- ollama returns `[]` on connection errors,
+    chat-completions returns a degraded 1-model fallback list on any
+    exception, azure-openai returns `[]` unconditionally on error. Caching
+    any of those would silently poison model resolution for the full TTL
+    window even after the provider recovers. Treating an empty result as a
+    cache miss (never populating `models`/`expires_at`) means the very next
+    resolution call refetches live instead of being stuck on stale, wrong
+    "success" data.
+
+    `task` holds the shared in-flight fetch (see `_list_models_cached`):
+    concurrent callers await the same asyncio.Task rather than each
+    re-running their own fetch (and, with provider-level retries, their own
+    full retry campaign). A task is only ever left installed here while it
+    is still running or has succeeded; a task that failed clears itself
+    (see `_fetch_and_store`) so the next new caller starts a fresh fetch
+    instead of adopting an already-raised task.
+    """
+
+    expires_at: float = 0.0
+    models: Any = None
+    task: asyncio.Task[Any] | None = None
+    lock: asyncio.Lock | None = None
+    loop_id: int = 0
+
+
+_MODEL_LIST_CACHE: weakref.WeakKeyDictionary[Any, _ModelListCacheEntry] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+async def _fetch_and_store(
+    provider: Any, provider_name: str, entry: _ModelListCacheEntry
+) -> Any:
+    """Run the actual provider.list_models() call as the body of a shared Task.
+
+    This is the one place that talks to the provider; `_list_models_cached`
+    only ever schedules this as a Task and awaits it, so the lock in
+    `_list_models_cached` never has to be held across the network call.
+    """
+    try:
+        models = await provider.list_models()
+    except BaseException:
+        # A failed fetch must not persist as "the" shared in-flight attempt.
+        # Clear it now (synchronously, before this coroutine actually
+        # completes) so the next caller that acquires the entry lock sees
+        # entry.task is None and starts a fresh fetch, rather than adopting
+        # a task that has already raised.
+        entry.task = None
+        raise
+
+    if models:
+        entry.models = models
+        entry.expires_at = time.monotonic() + _get_ttl_seconds()
+    else:
+        # Soft failure: the provider answered without raising, but the
+        # answer is not a real one (see class docstring). Never cache it --
+        # leave entry.models as None (still "no answer yet") and clear the
+        # task so the next resolution retries live instead of being stuck
+        # on this non-answer for the full TTL.
+        logger.debug(
+            "Provider '%s' returned an empty model list -- treating as a "
+            "cache miss, not caching",
+            provider_name,
+        )
+        entry.task = None
+
+    return models
+
+
+async def _list_models_cached(provider: Any, provider_name: str) -> Any:
+    """Return provider.list_models(), memoized per provider with single-flight.
+
+    Concurrent resolutions against the same provider coalesce onto a single
+    shared asyncio.Task: the first caller schedules the fetch, every other
+    caller awaits that same Task instead of running its own fetch (or, with
+    provider-level retries, its own full retry campaign). This holds for
+    both success AND failure -- a failure is delivered once to every waiter
+    that piled up during the window.
+
+    A waiter is bounded: if the shared fetch doesn't finish within
+    `_get_wait_timeout_seconds()`, this falls through to a direct, uncached
+    `provider.list_models()` call of its own rather than blocking forever
+    (the shared fetch is shielded and keeps running for whoever is still
+    waiting on it).
+
+    Cache entries are keyed by the provider instance (weakly referenced), so
+    they expire naturally with the provider. Only a non-empty result is
+    ever cached (see `_fetch_and_store`); empty results and raised
+    exceptions both propagate to callers without poisoning the cache.
+    """
+    try:
+        entry = _MODEL_LIST_CACHE.get(provider)
+    except TypeError:
+        # Provider not weak-referenceable/unhashable -- pass through uncached.
+        return await provider.list_models()
+
+    now = time.monotonic()
+    if entry is not None and entry.models is not None and entry.expires_at > now:
+        return entry.models
+
+    loop_id = id(asyncio.get_running_loop())
+    if entry is None:
+        entry = _ModelListCacheEntry()
+        try:
+            _MODEL_LIST_CACHE[provider] = entry
+        except TypeError:
+            return await provider.list_models()
+    # asyncio primitives are bound to their event loop; rotate the lock (and
+    # drop any task from that other loop, which could never be safely
+    # awaited here) if this provider is being driven from a different loop
+    # than before.
+    if entry.lock is None or entry.loop_id != loop_id:
+        entry.lock = asyncio.Lock()
+        entry.loop_id = loop_id
+        entry.task = None
+
+    # The lock only guards entry/task bookkeeping -- deciding whether a
+    # fetch is already in flight -- never the network call itself. Holding
+    # it across the await would serialize everyone who arrives after the
+    # lock is released but before the fetch finishes into their own
+    # sequential retry campaigns, exactly the head-of-line problem this is
+    # meant to fix.
+    async with entry.lock:
+        now = time.monotonic()
+        if entry.models is not None and entry.expires_at > now:
+            return entry.models
+        if entry.task is None or entry.task.done():
+            entry.task = asyncio.ensure_future(
+                _fetch_and_store(provider, provider_name, entry)
+            )
+        task = entry.task
+
+    wait_timeout = _get_wait_timeout_seconds()
+    try:
+        async with asyncio.timeout(wait_timeout):
+            # Shielded: a timeout here cancels only this caller's wait, not
+            # the shared fetch itself -- other waiters (and a subsequent
+            # cache read) still benefit from it completing in the background.
+            return await asyncio.shield(task)
+    except TimeoutError:
+        logger.warning(
+            "Timed out after %.1fs waiting for an in-flight list_models() "
+            "fetch from provider '%s'; falling through to a direct call",
+            wait_timeout,
+            provider_name,
+        )
+        return await provider.list_models()
+
 
 PROTECTED_CONFIG_KEYS = frozenset(
     {
@@ -206,7 +429,7 @@ async def resolve_model_pattern(
         if providers:
             provider = _find_provider_instance(providers, provider_name, coordinator)
             if provider and hasattr(provider, "list_models"):
-                models = await provider.list_models()
+                models = await _list_models_cached(provider, provider_name)
                 # Handle both list of strings and list of model objects
                 available_models = [
                     m if isinstance(m, str) else getattr(m, "id", str(m))
