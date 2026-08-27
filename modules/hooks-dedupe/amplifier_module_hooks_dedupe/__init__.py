@@ -48,7 +48,7 @@ turn boundary in a way that could support them.
 Config surface (all keys optional; ships default-OFF):
 
     hooks:
-      - module: hooks-tool-dedupe
+      - module: hooks-dedupe
         config:
           enabled: false                       # Stage 1 ships default-OFF
           tools: ["read_file", "load_skill"]
@@ -87,7 +87,7 @@ from amplifier_core import HookResult
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ToolDedupeHook", "mount"]
+__all__ = ["DedupeHook", "mount"]
 
 #: Default tool allowlist. Adding "load_skill" here *is* the entirety of the
 #: skill-load dedupe mechanism -- no separate code path exists for it.
@@ -163,7 +163,7 @@ def _build_key_and_target(tool_name: str, tool_input: Any) -> tuple[_Key, str] |
     return None
 
 
-class ToolDedupeHook:
+class DedupeHook:
     """Coalesces byte-identical repeated tool results within one parallel
     tool batch of one session. See module docstring for the full contract.
     """
@@ -314,7 +314,7 @@ async def mount(
     """
     config = config or {}
 
-    hook = ToolDedupeHook(
+    hook = DedupeHook(
         hooks=coordinator.hooks,
         enabled=bool(config.get("enabled", False)),
         tools=config.get("tools", list(DEFAULT_TOOLS)),
@@ -327,7 +327,7 @@ async def mount(
     # already-short marker and no-ops, rather than dedupe hashing an
     # already-truncated string.
     coordinator.hooks.register(
-        "tool:post", hook.handle_tool_post, priority=5, name="hooks-tool-dedupe"
+        "tool:post", hook.handle_tool_post, priority=5, name="hooks-dedupe"
     )
 
     # Declare the events we emit so the session capture hooks (hooks-logging
@@ -337,12 +337,12 @@ async def mount(
     # hooks-deprecation.
     coordinator.register_contributor(
         "observability.events",
-        "hooks-tool-dedupe",
+        "hooks-dedupe",
         lambda: ["dedupe:coalesced", "dedupe:divergent"],
     )
 
     return {
-        "name": "hooks-tool-dedupe",
+        "name": "hooks-dedupe",
         "version": "0.1.0",
         "description": "Coalesces byte-identical repeated tool results within one parallel tool batch",
         "config": {

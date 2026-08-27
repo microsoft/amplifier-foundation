@@ -1,4 +1,4 @@
-"""Tests for hooks-tool-dedupe: the same-batch read coalescer.
+"""Tests for hooks-dedupe: the same-batch read coalescer.
 
 Pure-function and hook-level tests only -- no session, no network, no
 provider. Mirrors the test plan in the implementation spec (yoc-dedup-spec.md
@@ -15,10 +15,10 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from amplifier_module_hooks_tool_dedupe import (
+from amplifier_module_hooks_dedupe import (
     DEFAULT_MAX_BATCHES,
     DEFAULT_MIN_BYTES,
-    ToolDedupeHook,
+    DedupeHook,
 )
 
 
@@ -32,7 +32,7 @@ class FakeHooks:
         self.emitted.append((event, dict(data)))
 
 
-def make_hook(**overrides) -> tuple[ToolDedupeHook, FakeHooks]:
+def make_hook(**overrides) -> tuple[DedupeHook, FakeHooks]:
     hooks = FakeHooks()
     kwargs = {
         "hooks": hooks,
@@ -42,7 +42,7 @@ def make_hook(**overrides) -> tuple[ToolDedupeHook, FakeHooks]:
         "max_batches": DEFAULT_MAX_BATCHES,
     }
     kwargs.update(overrides)
-    return ToolDedupeHook(**kwargs), hooks
+    return DedupeHook(**kwargs), hooks
 
 
 def read_post_data(
@@ -453,7 +453,7 @@ async def test_mount_registers_tool_post_at_priority_5():
     """priority=5 is load-bearing: must run before hooks-tool-truncation's
     priority=10 (spec Section 4.3)."""
     coordinator = FakeCoordinator()
-    result = await __import__("amplifier_module_hooks_tool_dedupe").mount(
+    result = await __import__("amplifier_module_hooks_dedupe").mount(
         coordinator, {"enabled": True}
     )
 
@@ -461,21 +461,21 @@ async def test_mount_registers_tool_post_at_priority_5():
     event, _handler, priority, name = coordinator.registered[0]
     assert event == "tool:post"
     assert priority == 5
-    assert name == "hooks-tool-dedupe"
-    assert result["name"] == "hooks-tool-dedupe"
+    assert name == "hooks-dedupe"
+    assert result["name"] == "hooks-dedupe"
 
 
 @pytest.mark.asyncio
 async def test_mount_declares_observability_events():
     coordinator = FakeCoordinator()
-    from amplifier_module_hooks_tool_dedupe import mount
+    from amplifier_module_hooks_dedupe import mount
 
     await mount(coordinator, {"enabled": True})
 
     assert len(coordinator.contributors) == 1
     channel, name = coordinator.contributors[0]
     assert channel == "observability.events"
-    assert name == "hooks-tool-dedupe"
+    assert name == "hooks-dedupe"
     assert coordinator._contributor_callback is not None
     assert coordinator._contributor_callback() == [
         "dedupe:coalesced",
@@ -488,7 +488,7 @@ async def test_mount_defaults_to_disabled():
     """Stage 1 ships default-OFF: mounting with no config must be a total
     no-op at runtime."""
     coordinator = FakeCoordinator()
-    from amplifier_module_hooks_tool_dedupe import mount
+    from amplifier_module_hooks_dedupe import mount
 
     result = await mount(coordinator, None)
     assert result["config"]["enabled"] is False

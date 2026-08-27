@@ -46,8 +46,8 @@ hooks:
   # above) so every sub-session in a delegation tree inherits it, since a
   # parallel tool batch -- the case this hook targets -- is always within
   # one session.
-  - module: hooks-tool-dedupe
-    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-tool-dedupe
+  - module: hooks-dedupe
+    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-dedupe
     config:
       enabled: false                       # Stage 1 ships default-OFF
       tools: ["read_file", "load_skill"]

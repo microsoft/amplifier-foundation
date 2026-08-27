@@ -23,7 +23,7 @@ wheels = [
 ]
 
 [[package]]
-name = "amplifier-module-hooks-tool-dedupe"
+name = "amplifier-module-hooks-dedupe"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
