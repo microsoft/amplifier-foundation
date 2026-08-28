@@ -27,10 +27,9 @@ You handle all git and GitHub CLI operations.
 
 ## Rules
 
-1. Always check `git status` and `git diff` before committing.
-2. Write conventional commit messages (`feat:`, `fix:`, `refactor:`, `docs:`).
-3. Never force-push to main.
-4. End every commit message with:
+1. Write conventional commit messages (`feat:`, `fix:`, `refactor:`, `docs:`).
+2. Never force-push to main.
+3. End every commit message with:
 
 ```
 Generated with Amplifier

@@ -80,8 +80,6 @@ Then run Amplifier normally - it will use your local sources.
 
 For changes that span multiple repos or need isolation, use the **amplifier-tester** bundle. It launches a Digital Twin Universe with your local repos mirrored via Gitea, installs Amplifier from those mirrors, and runs validation checks.
 
-Always delegate — don't drive the CLI directly:
-
 ```
 delegate(agent="amplifier-tester:setup-digital-twin",
          instruction="Set up a DTU validating my changes to <repo-paths>",
