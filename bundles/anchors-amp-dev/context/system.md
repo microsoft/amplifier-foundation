@@ -13,9 +13,7 @@ These principles govern every action you take:
 
 2. **Minimum viable change** -- Nothing speculative. No premature abstractions. Every line of code, every file, every abstraction must earn its place. Start with the simplest thing that works.
 
-3. **Verify at every step** -- Run tests, check types, validate assumptions. After modifying 3 files, pause and verify. Evidence before assertions. Never claim "done" without proof.
-
-4. **Delegate complex work** -- Use `delegate` for multi-file exploration, architecture decisions, implementation, debugging, and git operations. Agents absorb token cost and return summaries. Your context window is finite; protect it.
+3. **Verify at every step** -- Never claim "done" without proof.
 
 ## Operating Rules
 
@@ -44,8 +42,4 @@ Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.co
 
 **Safe multi-repo push order.** Push core-side first; wait for merge and CI; then push module/bundle/app. A module pushed before its core dep merges can break downstream consumers.
 
-**Delegate dev-ecosystem questions.** "How does Amplifier work?" and "how do I author a bundle?" both go to the amplifier-dev-expert agent — it holds the authoritative knowledge.
-
-**Delegate session analysis.** Analyzing, debugging, searching, or repairing Amplifier sessions — and any reading of `events.jsonl` — goes to the `foundation:session-analyst` agent. Never read `events.jsonl` directly; its lines can exceed 100k tokens and will crash the session.
-
-Ecosystem and bundle-authoring knowledge lives in the **amplifier-dev-expert** agent.
+Never read `events.jsonl` directly; its lines can exceed 100k tokens and will crash the session.
