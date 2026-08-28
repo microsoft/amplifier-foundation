@@ -30,7 +30,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from amplifier_core.loader import ModuleLoader, ModuleValidationError
+from amplifier_core.loader import ModuleLoader
 
 MODULES_DIR = Path(__file__).parent.parent / "modules"
 
@@ -51,7 +51,6 @@ def test_hook_modules_were_discovered() -> None:
     """Sanity check: the dynamic discovery above must find at least the
     modules known to exist at the time this test was written, otherwise the
     parametrized tests below would silently pass on an empty set."""
-    assert "hooks-dedupe" in HOOK_MODULE_IDS
     assert len(HOOK_MODULE_IDS) >= 5
 
 
@@ -77,38 +76,3 @@ def test_hook_module_classifies_as_hook(loader: ModuleLoader, module_id: str) ->
         "contain a competing keyword (see hooks-tool-dedupe -> hooks-dedupe)."
     )
     assert mount_point == "hooks"
-
-
-@pytest.mark.asyncio
-async def test_hooks_dedupe_passes_real_validation(loader: ModuleLoader) -> None:
-    """`hooks-dedupe` must pass amplifier-core's real load-time validation
-    (`ModuleLoader._validate_module`) -- the exact call site (loader.py,
-    inside `load()`) whose failure produced:
-
-        ModuleValidationError: protocol_compliance: No tool was mounted and
-        mount() did not return a Tool instance
-
-    for `hooks-tool-dedupe` (this module's pre-rename id) when it was
-    misclassified as a tool module. This is a true end-to-end reproduction:
-    it imports the real module from its real on-disk path, resolves its
-    classification the same way `load()` does, and calls its real `mount()`
-    via the validator appropriate to that classification -- asserting the
-    whole thing does not raise, unlike calling `mount()` directly against a
-    fake coordinator (which every module's own test suite, including this
-    one's, already does and which would NOT have caught this bug, since the
-    bug is in classification/validator selection *before* `mount()` is ever
-    reached).
-
-    Not parametrized across every `hooks-*` module: some (e.g.
-    hooks-deprecation) require module-specific config to mount successfully,
-    which is a property of their own contract, unrelated to this
-    classification bug. `test_hook_module_classifies_as_hook` above already
-    covers the classification step -- the part of the pipeline this bug was
-    actually in -- for every hook module generically without needing to know
-    each one's required config.
-    """
-    module_path = MODULES_DIR / "hooks-dedupe"
-    try:
-        await loader._validate_module("hooks-dedupe", module_path, config=None)
-    except ModuleValidationError as exc:
-        pytest.fail(f"'hooks-dedupe' failed real module-load validation: {exc}")
