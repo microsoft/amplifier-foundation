@@ -39,21 +39,6 @@ tools:
       skills:
         - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
 
-hooks:
-  # Same-batch read/skill coalescer. Ships default-OFF (see config below):
-  # mounting this hook has zero runtime effect until a caller explicitly
-  # sets enabled: true. Wired via the `agents` behavior (like tool-delegate
-  # above) so every sub-session in a delegation tree inherits it, since a
-  # parallel tool batch -- the case this hook targets -- is always within
-  # one session.
-  - module: hooks-dedupe
-    source: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-dedupe
-    config:
-      enabled: false                       # Stage 1 ships default-OFF
-      tools: ["read_file", "load_skill"]
-      min_bytes: 1000
-      max_batches: 8
-
 context:
   include:
     - foundation:context/agents/delegation-instructions.md

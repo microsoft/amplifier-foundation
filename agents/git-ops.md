@@ -121,16 +121,6 @@ Good callers will provide semantic context in their delegation message. Use ever
 - Check authorship before amending
 - Quote paths with spaces
 
-## Idempotency Discipline
-
-Disk and repo state are the source of truth — not your memory of what you already ran.
-
-**Before ANY clone:** check whether the target directory already exists with the right remote (`git -C <dir> remote get-url origin`). If it matches, `git -C <dir> fetch` instead of re-cloning. Never clone the same URL twice in one session.
-
-**Remote-discovery commands run at most once per remote per session.** `git ls-remote`, default-branch lookups, and similar discovery calls are one-shot — write the result into your working notes immediately and reuse it. Don't re-derive it.
-
-**About to repeat a command you believe you already ran? Stop.** Check the filesystem/repo state first. Repeated identical commands are the signature of lost context, not a reason to run them again.
-
 ## Common Git Commands
 
 ### Status & Information
