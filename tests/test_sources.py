@@ -11,6 +11,7 @@ from amplifier_foundation.paths.resolution import ParsedURI
 from amplifier_foundation.sources.file import FileSourceHandler
 from amplifier_foundation.sources.git import GitSourceHandler, _is_full_commit_sha
 from amplifier_foundation.sources.http import HttpSourceHandler
+from amplifier_foundation.sources.protocol import SourceStatus
 from amplifier_foundation.sources.zip import ZipSourceHandler
 
 
@@ -380,6 +381,50 @@ class TestIsFullCommitSha:
         assert _is_full_commit_sha("main") is False
         assert _is_full_commit_sha("feat/some-branch") is False
         assert _is_full_commit_sha("v1.0.0") is False
+
+
+class TestShaPredicatesAgree:
+    """Invariant: the full-SHA rule is encoded twice and must not drift.
+
+    `_is_full_commit_sha` (regex, sources/git.py) and `SourceStatus.is_pinned`
+    (length + charset, sources/protocol.py) independently encode "40-char hex
+    commit SHA". A code comment claims they agree; this test checks it.
+
+    Note: `is_pinned` additionally treats v-prefixed version tags as pinned.
+    That branch is deliberate divergence outside the shared SHA rule, so
+    tag-shaped refs are excluded from the equality set and covered separately.
+    """
+
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "32d4052dad46016f91ce698646580473e4121344",  # 40-hex lowercase
+            "32D4052DAD46016F91CE698646580473E4121344",  # 40-hex uppercase
+            "32D4052dad46016F91ce698646580473E4121344",  # 40-hex mixed case
+            "3" * 39,  # one char too short
+            "3" * 41,  # one char too long
+            "g" + "3" * 39,  # 40 chars, non-hex
+            "main",  # branch name
+            "feat/some-branch",  # branch name with slash
+        ],
+    )
+    def test_predicates_agree_on_sha_classification(self, ref: str) -> None:
+        status = SourceStatus(
+            source_uri=f"git+https://example.com/org/repo@{ref}",
+            is_cached=True,
+            cached_ref=ref,
+        )
+        assert _is_full_commit_sha(ref) == status.is_pinned
+
+    def test_version_tag_is_pinned_but_not_a_sha(self) -> None:
+        """Documents the intentional divergence: tags pin without being SHAs."""
+        status = SourceStatus(
+            source_uri="git+https://example.com/org/repo@v1.0.0",
+            is_cached=True,
+            cached_ref="v1.0.0",
+        )
+        assert _is_full_commit_sha("v1.0.0") is False
+        assert status.is_pinned is True
 
 
 class TestGitSourceHandlerShaRefs:

@@ -10,7 +10,16 @@ Quick reference for source URIs. For complete details, see `parse_uri()` docstri
 | **Local directory** | `/path/to/bundle/` (finds `bundle.md` inside) |
 | **Git HTTPS** | `git+https://github.com/org/repo@main` |
 | **Git SSH** | `git+ssh://git@github.com/org/repo@main` |
+| **Git pinned to commit** | `git+https://github.com/org/repo@32d4052dad46016f91ce698646580473e4121344` |
 | **Subdirectory** | `git+https://github.com/org/repo@main#subdirectory=path/to/bundle` |
+
+### Pinning to a Commit SHA
+
+A ref that is a full 40-character hex commit SHA pins the source to that exact commit. Use this for reproducible installs — evaluation runs, CI, anywhere "same URI, same code" must hold.
+
+- Pinned sources are automatically **skipped by `amplifier update`** — a pinned ref can never have updates.
+- Short/abbreviated SHAs are **rejected by design**: an ambiguous ref defeats reproducibility. Use the full 40 characters.
+- A typo'd but valid-looking SHA is expensive: the fast single-commit fetch fails, git falls back to a **full-history clone**, and checkout then fails with a clear error (a failed pinned resolve can leave a cache entry behind, and a subsequent resolve of the same URI may serve it — clear the cache entry if a pin fails). A wrong SHA costs a full-history download before it errors.
 
 ## Common Examples
 
