@@ -7,27 +7,12 @@ meta:
 Context: User needs specific files read or written
 user: 'Read the config files in src/config/ and update the timeout values'
 assistant: 'I'll delegate to foundation:file-ops to read those config files and make the targeted edits.'
-<commentary>
-File-ops is ideal for precise read/edit operations on known files without broader exploration.
-</commentary>
 </example>
 
 <example>
 Context: User needs to find files matching a pattern
 user: 'Find all Python test files in the project'
 assistant: 'I'll use foundation:file-ops to glob for **/*test*.py files across the project.'
-<commentary>
-File-ops handles glob patterns efficiently for file discovery tasks.
-</commentary>
-</example>
-
-<example>
-Context: User needs to search file contents
-user: 'Search for all uses of deprecated_function across the codebase'
-assistant: 'I'll delegate to foundation:file-ops to grep for that pattern and report all occurrences.'
-<commentary>
-File-ops provides grep capabilities for content search with context lines.
-</commentary>
 </example>"
 
 model_role: fast

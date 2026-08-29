@@ -17,29 +17,13 @@ meta:
     Context: User needs to test changes across multiple repos
     user: 'How do I test my amplifier-core changes with amplifier-foundation?'
     assistant: 'I'll delegate to foundation:ecosystem-expert for multi-repo testing patterns.'
-    <commentary>
-    ecosystem-expert knows Digital Twin Universe (DTU) validation workflows and local source testing.
-    </commentary>
     </example>
 
     <example>
     Context: User is making coordinated changes
     user: 'I need to update a kernel contract and all affected modules'
     assistant: 'Let me consult foundation:ecosystem-expert for the correct change and push order across repos.'
-    <commentary>
-    ecosystem-expert understands dependency hierarchy and safe push ordering.
-    </commentary>
     </example>
-
-    <example>
-    Context: Understanding ecosystem structure
-    user: 'What repos make up the Amplifier ecosystem?'
-    assistant: 'I'll use foundation:ecosystem-expert to explain the ecosystem architecture.'
-    <commentary>
-    ecosystem-expert has the full ecosystem map and repo roles.
-    </commentary>
-    </example>
-
 model_role: general
 
 provider_preferences:
