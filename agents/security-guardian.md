@@ -12,14 +12,12 @@ meta:
     Context: User has just implemented a new API endpoint for user data updates.
     user: 'I\'ve added a new endpoint for updating user profiles. Here\'s the code...'
     assistant: 'I\'ll review this new endpoint for security vulnerabilities using the security-guardian agent.'
-    <commentary>Since new user data handling functionality was added, use security-guardian to check for vulnerabilities.</commentary>
     </example>
 
     <example>
     Context: Preparing for a production deployment.
     user: 'We\'re ready to deploy version 2.0 to production'
     assistant: 'Before deploying to production, let me run a security review with the security-guardian agent.'
-    <commentary>Pre-deployment security review is a critical checkpoint that requires security-guardian — this is non-optional.</commentary>
     </example>
 
 

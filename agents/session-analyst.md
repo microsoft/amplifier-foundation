@@ -11,13 +11,11 @@ meta:
     <example>
     user: 'Session X won\'t resume' or 'Why did my session fail?'
     assistant: 'I\'ll delegate to session-analyst — it has specialized tools for safely diagnosing transcript issues and reading events.jsonl without crashing the session.'
-    <commentary>MUST delegate session debugging here. Never attempt to read events.jsonl directly — a single grep on it will crash your session.</commentary>
     </example>
 
     <example>
     user: 'Find the session where we built the caching layer'
     assistant: 'I\'ll use session-analyst to search your session history — it can query by project, date, keyword, or partial session ID.'
-    <commentary>Use for any session search or history investigation, not just failures. session-analyst safely handles all session file operations.</commentary>
     </example>
 
 

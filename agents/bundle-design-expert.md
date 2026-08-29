@@ -12,14 +12,12 @@ meta:
       <context>User is planning a new bundle</context>
       <user>I want to create a bundle that provides code review with different strictness modes</user>
       <assistant>I'll delegate to the bundle-design-expert who owns the full design-through-implementation lifecycle.</assistant>
-      <commentary>bundle-design-expert designs AND builds bundles — mechanism selection, behavioral modeling, and YAML authoring are all in scope.</commentary>
       </example>
 
       <example>
       <context>User wants to author an agent description</context>
       <user>How do I write a good agent description?</user>
       <assistant>Delegating to bundle-design-expert for agent authoring guidance — it knows the WHY/WHEN/WHAT/HOW framework and context sink pattern.</assistant>
-      <commentary>Agent authoring is bundle authoring. bundle-design-expert is the authority on meta.description structure, the description rubric, and context architecture.</commentary>
       </example>
 model_role: general
 

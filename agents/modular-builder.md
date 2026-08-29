@@ -11,13 +11,11 @@ meta:
     <example>
     user: 'Implement the CacheService from the spec in specs/cache-spec.md'
     assistant: 'I\'ll use modular-builder to implement the CacheService.'
-    <commentary>Clear specification exists with all required details — perfect for modular-builder. No design work needed.</commentary>
     </example>
 
     <example>
     user: 'Add a caching layer to improve performance'
     assistant: 'I\'ll first use zen-architect to analyze and design the caching approach, then modular-builder will implement it.'
-    <commentary>Under-specified task needs design first. Two-phase: architect → builder. Ambiguous or under-specified tasks go through zen-architect first.</commentary>
     </example>
 
 model_role: [coding, general]

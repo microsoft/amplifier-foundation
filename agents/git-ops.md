@@ -12,14 +12,12 @@ meta:
     Context: Agent completed a multi-file implementation task.
     user: 'Commit this work'
     assistant: 'I\'ll delegate to git-ops with a summary of what we accomplished and context_depth=recent so it has conversation history for a quality commit message.'
-    <commentary>Always tell git-ops WHAT was accomplished semantically. Pass context_depth so it receives conversation history for richer commit messages.</commentary>
     </example>
 
     <example>
     Context: Feature branch complete, ready for PR.
     user: 'Create a PR for this feature'
     assistant: 'I\'ll delegate to git-ops with the full summary and context_depth=all, context_scope=agents so it can write a comprehensive PR description.'
-    <commentary>PRs need the full story. Use context_depth=all so git-ops sees the entire conversation arc. Include issue refs and draft/ready preference.</commentary>
     </example>
 
 
