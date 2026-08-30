@@ -36,10 +36,18 @@
 # - Implicit tool dependencies
 #
 # PASS THRESHOLDS (explicit criteria for "good enough"):
-# - Has at least ONE of: MUST, ALWAYS, REQUIRED, PROACTIVELY, DO NOT (activation trigger)
-# - Has at least ONE <example> block
-# - Description >= 100 characters
+# - No structural errors (valid YAML, has meta.name, meta.description)
 # - Has explicit tools section (even if empty [])
+# - Description >= 100 characters
+# - Description token budget respected (provisional: WARN >300 tok,
+#   ERROR >600 tok -- see foundation:context/shared/
+#   description-authoring-principles.md V5)
+#
+# NOTE: presence of MUST/ALWAYS/REQUIRED/PROACTIVELY keywords and
+# <example> blocks are reported as METRICS, not pass/fail gates. A
+# measured eval campaign found these keywords/examples do not by
+# themselves indicate quality, and requiring them measurably harmed
+# compliant models (see description-authoring-principles.md V1, V3, V6).
 #
 # Usage:
 #   amplifier tool invoke recipes operation=execute \
@@ -64,7 +72,7 @@ description: |
   
   This recipe helps maintain agent quality across the Amplifier ecosystem by codifying
   the audit criteria discovered in manual reviews.
-version: "1.2.4"
+version: "1.3.0"
 author: "Amplifier Foundation Team"
 tags: ["agents", "validation", "quality", "audit", "tools", "descriptions"]
 
@@ -500,13 +508,27 @@ steps:
           description = meta.get("description", "")
           result["description_length"] = len(description) if description else 0
           result["has_examples"] = "<example>" in description.lower() if description else False
-          
-          # Check for strong activation triggers
+
+          # Description token budget estimate (Foundation's standard formula:
+          # len(content) // 4 -- see experiments/bundle-configurator/
+          # amplifier_configurator/tokens.py). Reported as a metric; see
+          # quality-classification for the WARN/ERROR gate.
+          result["description_tokens"] = len(description) // 4 if description else 0
+
+          # Track activation-keyword usage as a METRIC, not a pass/fail gate.
+          # A measured eval campaign found requiring these keywords does not
+          # by itself indicate quality and measurably harmed compliant models
+          # (see foundation:context/shared/description-authoring-principles.md
+          # V1, V3, V6). has_strong_trigger/triggers_found are reported for
+          # visibility only.
           STRONG_TRIGGERS = ["MUST", "ALWAYS", "REQUIRED", "PROACTIVELY", "DO NOT"]
           result["has_strong_trigger"] = any(
               trigger in description.upper() 
               for trigger in STRONG_TRIGGERS
           ) if description else False
+          result["absolute_keyword_count"] = sum(
+              description.upper().count(trigger) for trigger in STRONG_TRIGGERS
+          ) if description else 0
           
           # Track which triggers were found (for reporting)
           result["triggers_found"] = [
@@ -521,7 +543,19 @@ steps:
                   "severity": "WARNING",
                   "code": "SHORT_DESCRIPTION",
                   "message": f"Description is too short ({result['description_length']} chars, minimum {MIN_DESCRIPTION_LENGTH})",
-                  "remediation": "Expand description to include WHY/WHEN/WHAT guidance and activation triggers"
+                  "remediation": "Expand description to explain WHAT the agent does and WHEN to delegate to it"
+              })
+
+          # Check for <commentary> tags -- validated for removal with no
+          # quality loss (description-authoring-principles.md V3). WARNING,
+          # not ERROR: existing agents carrying these still load fine.
+          result["commentary_count"] = description.lower().count("<commentary>") if description else 0
+          if result["commentary_count"] > 0:
+              result["warnings"].append({
+                  "severity": "WARNING",
+                  "code": "COMMENTARY_TAG_PRESENT",
+                  "message": f"Description contains {result['commentary_count']} <commentary> tag(s) -- validated for removal with no quality loss",
+                  "remediation": "Delete <commentary> tags; the example itself should be self-explanatory (see description-authoring-principles.md V3)"
               })
 
           # Check if examples have Context labels (quality check)
@@ -537,6 +571,14 @@ steps:
                       "code": "EXAMPLES_MISSING_CONTEXT",
                       "message": f"Only {examples_with_context}/{len(example_blocks)} examples have 'Context:' labels",
                       "remediation": "Add 'Context: [situation]' line at start of each <example> block to help LLM understand when to match"
+                  })
+
+              if len(example_blocks) > 2:
+                  result["warnings"].append({
+                      "severity": "WARNING",
+                      "code": "TOO_MANY_EXAMPLES",
+                      "message": f"Description has {len(example_blocks)} <example> blocks (>2) -- validated cap is 2",
+                      "remediation": "Trim to at most 2 examples (description-authoring-principles.md V3)"
                   })
           else:
               result["example_count"] = 0
@@ -621,8 +663,19 @@ steps:
       # 1. No structural errors (valid YAML, has meta.name, meta.description)
       # 2. Has explicit tools section (even if empty)
       # 3. Description >= 100 characters
-      # 4. Has at least ONE strong trigger (MUST, ALWAYS, REQUIRED, PROACTIVELY, DO NOT)
-      # 5. Has at least ONE <example> block
+      # 4. Description token budget respected (provisional: WARN >300 tok,
+      #    ERROR >600 tok -- description-authoring-principles.md V5)
+      #
+      # has_strong_trigger / has_examples / commentary_count /
+      # absolute_keyword_count are reported as METRICS below, not gates.
+      # A measured eval campaign found these do not by themselves indicate
+      # quality, and requiring them measurably harmed compliant models
+      # (see foundation:context/shared/description-authoring-principles.md
+      # V1, V3, V6). Do not reintroduce them as pass/fail criteria.
+
+      # Provisional token thresholds (see description-authoring-principles.md V5)
+      DESCRIPTION_TOKEN_WARN = 300
+      DESCRIPTION_TOKEN_ERROR = 600
 
       def classify_agent(agent: dict) -> dict:
           """Classify a single agent's quality level."""
@@ -636,6 +689,7 @@ steps:
           has_strong_trigger = agent.get("has_strong_trigger", False)
           has_examples = agent.get("has_examples", False)
           description_length = agent.get("description_length", 0)
+          description_tokens = agent.get("description_tokens", 0)
           has_model_role = agent.get("has_model_role", False)
           model_role_issues = agent.get("model_role_issues", [])
           has_model_role_errors = any(i.startswith("ERROR:") for i in model_role_issues)
@@ -650,15 +704,12 @@ steps:
           elif description_length < 100:
               quality = "needs_work"
               reason = f"Description too short ({description_length} chars)"
-          elif not has_strong_trigger and not has_examples:
+          elif description_tokens > DESCRIPTION_TOKEN_ERROR:
               quality = "needs_work"
-              reason = "Missing both strong triggers AND examples"
-          elif not has_strong_trigger:
+              reason = f"Description is {description_tokens} tokens (>{DESCRIPTION_TOKEN_ERROR} threshold -- must shorten)"
+          elif description_tokens > DESCRIPTION_TOKEN_WARN:
               quality = "polish"
-              reason = "Has examples but missing strong triggers (MUST/ALWAYS/REQUIRED)"
-          elif not has_examples:
-              quality = "polish"
-              reason = "Has strong triggers but missing <example> blocks"
+              reason = f"Description is {description_tokens} tokens (>{DESCRIPTION_TOKEN_WARN} threshold -- consider trimming)"
           elif has_model_role_errors:
               quality = "needs_work"
               reason = "Invalid or deprecated model_role values"
@@ -898,70 +949,56 @@ steps:
       
       Agents classified as "good" have ALREADY PASSED. Do NOT suggest improvements for them.
 
+      **How to judge description quality is governed by the canonical**
+      **`foundation:context/shared/description-authoring-principles.md`** --
+      this prompt does not restate it. In summary: trigger phrasing should
+      state the deciding factor (a decision rule), not lean on bare
+      imperatives; examples are capped at 2 with no `<commentary>` tags;
+      stale examples (describing a capability the agent no longer has) are
+      a defect.
+
       **What is NOT an Issue (do not flag these):**
-      - Minor style differences (e.g., "MUST be used" vs "ALWAYS use" - both are strong)
+      - Whether the description happens to use MUST/ALWAYS/REQUIRED/
+        PROACTIVELY -- their presence or absence is not itself a quality
+        signal (a measured eval campaign found requiring them harmed
+        compliant models; see description-authoring-principles.md V1, V6)
       - Reasonable alternative approaches to documentation
       - "Could be slightly better" items for agents that meet thresholds
       - Personal preferences about wording or structure
-      - Agents that have strong triggers but use different words than the examples
-      
+      - Exactly 1-2 examples with no `<commentary>` -- this is the target
+        shape, not a gap
+
       **Only flag genuine issues:**
-      - Truly weak/passive triggers ("Use when..." with no imperative language)
+      - A WHEN clause that gives no deciding factor at all (not "weak
+        phrasing" -- literally no signal for when to delegate)
       - Complete absence of examples in agents that need them
+      - More than 2 examples, or any `<commentary>` tag (see V3)
+      - An example describing a capability the agent no longer has (stale,
+        see V2)
       - Critical missing guidance that would confuse users
 
       **Quality Criteria to Check (for agents needing work only):**
-      
-      ### 1. Activation Triggers (SUGGESTION if weak)
-      
-      **Strong triggers** use imperative language that COMPELS action:
-      - "MUST be used when..."
-      - "ALWAYS use this agent for..."
-      - "REQUIRED for..."
-      - "Use PROACTIVELY when..."
-      - "DO NOT attempt this yourself..."
-      
-      **Weak triggers** (need improvement):
-      - "Use when..." (passive)
-      - "Can be used for..." (ambiguous)
-      - "Helpful for..." (vague)
-      - "This agent helps with..." (passive description)
-      
-      **CONCRETE BEFORE/AFTER EXAMPLES:**
-      
-      ❌ WEAK: "This agent helps with security reviews"
-      ✅ STRONG: "MUST be used when reviewing authentication code, handling user data, or before production deployments"
-      
-      ❌ WEAK: "Use when you need to explore code"
-      ✅ STRONG: "ALWAYS delegate multi-file exploration tasks. NEVER read more than 2 files yourself - delegate to this agent instead."
-      
-      Check: Does the description clearly tell the LLM WHEN to delegate to this agent?
 
-      ### 2. Example Blocks (SUGGESTION if missing)
-      
-      Good agent descriptions include `<example>` blocks showing:
-      ```
-      <example>
-      Context: [situation]
-      user: '[example request]'
-      assistant: '[how assistant should respond]'
-      <commentary>
-      [why this triggers this agent]
-      </commentary>
-      </example>
-      ```
-      
-      Check: Does the description have at least one `<example>` block?
+      ### 1. WHEN Clause Quality (SUGGESTION if missing a deciding factor)
 
-      ### 3. WHY/WHEN/WHAT Guidance (SUGGESTION if incomplete)
-      
+      Check: Does the description state a concrete condition or context
+      shape that should cause delegation (a decision rule), rather than
+      either (a) nothing at all, or (b) a bare imperative with no
+      supporting context? See description-authoring-principles.md V6 for
+      the before/after example.
+
+      ### 2. Example Blocks (SUGGESTION if missing, or if >2/has <commentary>)
+
+      Check: Does the description have 1-2 `<example>` blocks, with no
+      `<commentary>` tags, that reflect what the agent actually does today?
+
+      ### 3. WHAT/WHEN Guidance (SUGGESTION if incomplete)
+
       Good descriptions answer:
-      - **WHY**: Why does this agent exist? What problem does it solve?
-      - **WHEN**: When should this agent be invoked? What triggers it?
       - **WHAT**: What does this agent do? What are its capabilities?
-      - **HOW**: How does it work? What tools/approach does it use?
-      
-      Check: Are these four aspects covered in the description?
+      - **WHEN**: What's the deciding factor for delegating to it?
+
+      Check: Are both aspects covered in the description?
 
       **Read the actual agent files** at {{repo_path}} to analyze the full descriptions.
 
@@ -1212,16 +1249,18 @@ steps:
 
       ## Metadata
       - **Validated**: [timestamp]
-      - **Recipe**: validate-agents v1.2.1
-      - **Quality Thresholds**:
-        - Strong trigger: MUST, ALWAYS, REQUIRED, PROACTIVELY, or DO NOT
-        - Examples: At least one <example> block
-        - Description: >= 100 characters
-        - Tools: Explicit tools: section (even if empty)
+      - **Recipe**: validate-agents v1.3.0
+      - **Quality Thresholds**: see
+        `foundation:context/shared/description-authoring-principles.md`
+        (canonical -- not restated here). Gates: no structural errors,
+        explicit tools section, description >= 100 chars, description
+        token budget (provisional WARN >300 / ERROR >600 tok).
+        MUST/ALWAYS/REQUIRED/PROACTIVELY keyword presence and <example>
+        count are reported as metrics, not gates.
       - **Severity Guide**:
         - ERROR (critical): Invalid YAML, missing required fields (will break)
-        - WARNING (needs_work): No explicit tools, relying on inheritance (may break)
-        - SUGGESTION (polish): Weak triggers, missing examples (quality improvement)
+        - WARNING (needs_work): No explicit tools, relying on inheritance, or description over budget (may break or bloat every session)
+        - SUGGESTION (polish): Missing WHEN deciding factor, missing examples, >2 examples, or <commentary> tags present (quality improvement)
 
       Make the report actionable with clear next steps and concrete examples.
       
