@@ -107,6 +107,10 @@ The bundles reference is loaded here since it's not in the intro list:
 
 @foundation:docs/AGENT_AUTHORING.md
 
+### Description Authoring Principles
+
+@foundation:context/shared/description-authoring-principles.md
+
 ---
 
 ## Context Architecture Patterns

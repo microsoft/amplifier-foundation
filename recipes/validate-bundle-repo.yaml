@@ -1,9 +1,30 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.7.0
+# Repository-Wide Bundle Validator Recipe v3.8.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.8.0 - NEW PHASE 2.8: Agent Description Budget Validation
+#        - Walks agents/*.md files and applies the same description-budget +
+#          example/commentary checks validate-agents.yaml enforces, so a
+#          repo-wide scan catches agent description bloat on its own.
+#        - Check A: description token budget (PROVISIONAL -- see foundation:
+#          context/shared/description-authoring-principles.md V5):
+#          WARNING >300 tokens (agent_description_high)
+#          ERROR   >600 tokens (agent_description_excessive)
+#          Tighter than the mode-tier thresholds (500/800) because agent
+#          descriptions are paid by every session with the agent in its
+#          catalog, not only sessions that use it.
+#        - Check B: <example>/<commentary> detection (description-authoring-
+#          principles.md V3): WARNING on any <commentary> tag, WARNING on
+#          >2 <example> blocks.
+#        - quality-classification incorporates agent_description_issues
+#        - synthesize-report includes Agent Description Budget Validation section
+#        - Remediation pointers throughout the recipe now point to the
+#          canonical context/shared/description-authoring-principles.md
+#          instead of AGENT_AUTHORING.md's old "Description Requirements
+#          (Critical)" section header (renamed, and no longer states the
+#          thresholds inline -- see foundation PR de-inverting validate-agents.yaml)
 # v3.7.0 - NEW PHASE 2.55: Body Instruction Check
 #        - Everything below a bundle.md / agents/*.md YAML frontmatter is loaded
 #          verbatim as the session's system instruction and emitted FIRST, ahead
@@ -138,7 +159,7 @@
 #     <500 tokens    OK     (concise, on-point)
 #     500-800        WARNING (mode_description_high — consider trimming)
 #     >800           ERROR  (mode_description_excessive — must shorten)
-#     See foundation:docs/AGENT_AUTHORING.md §"Description Requirements (Critical)"
+#     See foundation:context/shared/description-authoring-principles.md (V5)
 # 14. Unadvertised modes (advertised: false) are not referenced by name in agent-readable files
 #     (.md files in context/, agents/, behaviors/, skills/, modes/ — excluding the mode's own file)
 #     Patterns checked: /<mode-name> and name="<mode-name>"/name='<mode-name>'
@@ -212,7 +233,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.7.0"
+version: "3.8.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -2786,9 +2807,8 @@ steps:
                   ),
                   "fix": (
                       "Shorten the description to <500 tokens. "
-                      "See foundation:docs/AGENT_AUTHORING.md "
-                      "\u00a7'Description Requirements (Critical)' and "
-                      "modes/.../mode-design-discipline skill."
+                      "See foundation:context/shared/description-authoring-principles.md "
+                      "(V5) and modes/.../mode-design-discipline skill."
                   )
               })
               detail["issues"].append("mode_description_excessive")
@@ -2805,9 +2825,8 @@ steps:
                   ),
                   "fix": (
                       "Trim description toward <500 tokens. "
-                      "See foundation:docs/AGENT_AUTHORING.md "
-                      "\u00a7'Description Requirements (Critical)' and "
-                      "modes/.../mode-design-discipline skill."
+                      "See foundation:context/shared/description-authoring-principles.md "
+                      "(V5) and modes/.../mode-design-discipline skill."
                   )
               })
               detail["issues"].append("mode_description_high")
@@ -2856,6 +2875,171 @@ steps:
       print(json.dumps(results))
       EOF
     output: "mode_validation_results"
+    parse_json: true
+    timeout: 120
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
+  # PHASE 2.8: Agent Description Budget Validation
+  #
+  # Walks all agents/*.md files in the repo and applies the same description
+  # budget + example/commentary checks validate-agents.yaml enforces, so a
+  # bundle-repo-wide scan catches agent description bloat even when
+  # validate-agents.yaml is not run separately.
+  #
+  # Check A -- Description token budget (PROVISIONAL, see foundation:context/
+  # shared/description-authoring-principles.md V5)
+  #   For each agent file's meta.description:
+  #   WARNING >300 tokens  (agent_description_high)
+  #   ERROR   >600 tokens  (agent_description_excessive)
+  #   Token estimate: len(description) // 4 -- same formula as Phase 2.7
+  #   Check A (mode descriptions), applied at the tighter agent-tier ceiling
+  #   because agent descriptions are paid by every session with the agent
+  #   in its catalog, not only sessions that use it.
+  #
+  # Check B -- <example>/<commentary> detection (description-authoring-
+  # principles.md V3)
+  #   WARNING: any <commentary> tag present (commentary_present)
+  #   WARNING: more than 2 <example> blocks (too_many_examples)
+  # ============================================================================
+
+  - id: "agent-description-validation"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      from pathlib import Path
+
+      repo_path = "{{repo_path}}"
+      path = Path(repo_path).resolve()
+
+      results = {
+          "phase": "agent_description_validation",
+          "agents_checked": 0,
+          "errors": [],
+          "warnings": [],
+          "agent_details": []
+      }
+
+      EXCLUDED_DIRS = {"test-fixtures", "tests", "node_modules", ".git", ".venv"}
+
+      agent_files = list(path.rglob("*/agents/*.md")) + list(path.glob("agents/*.md"))
+      seen = set()
+      unique_agent_files = []
+      for f in agent_files:
+          if EXCLUDED_DIRS & set(f.parts):
+              continue
+          resolved = f.resolve()
+          if resolved not in seen:
+              seen.add(resolved)
+              unique_agent_files.append(f)
+
+      def extract_description(agent_file: Path) -> str:
+          try:
+              content = agent_file.read_text(encoding="utf-8", errors="replace")
+          except Exception:
+              return ""
+          match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+          if not match:
+              return ""
+          try:
+              import yaml
+              fm = yaml.safe_load(match.group(1))
+          except Exception:
+              return ""
+          if not isinstance(fm, dict):
+              return ""
+          meta = fm.get("meta", {})
+          if not isinstance(meta, dict):
+              return ""
+          description = meta.get("description", "")
+          return description if isinstance(description, str) else str(description or "")
+
+      for agent_file in sorted(unique_agent_files):
+          description = extract_description(agent_file)
+          rel_path = str(agent_file.relative_to(path))
+          results["agents_checked"] += 1
+          detail = {"file": rel_path, "issues": []}
+
+          token_count = len(description) // 4
+          detail["description_tokens"] = token_count
+
+          if token_count > 600:
+              results["errors"].append({
+                  "type": "agent_description_excessive",
+                  "file": rel_path,
+                  "tokens": token_count,
+                  "severity": "ERROR",
+                  "message": (
+                      f"Agent description in {rel_path} is {token_count} tokens "
+                      f"(>600 threshold -- must shorten)."
+                  ),
+                  "fix": (
+                      "Shorten the description to <300 tokens. See "
+                      "foundation:context/shared/description-authoring-principles.md "
+                      "V5 (provisional tier)."
+                  )
+              })
+              detail["issues"].append("agent_description_excessive")
+          elif token_count > 300:
+              results["warnings"].append({
+                  "type": "agent_description_high",
+                  "file": rel_path,
+                  "tokens": token_count,
+                  "severity": "WARNING",
+                  "message": (
+                      f"Agent description in {rel_path} is {token_count} tokens "
+                      f"(>300 threshold -- consider trimming)."
+                  ),
+                  "fix": (
+                      "Trim description toward <300 tokens. See "
+                      "foundation:context/shared/description-authoring-principles.md "
+                      "V5 (provisional tier)."
+                  )
+              })
+              detail["issues"].append("agent_description_high")
+
+          commentary_count = description.lower().count("<commentary>") if description else 0
+          detail["commentary_count"] = commentary_count
+          if commentary_count > 0:
+              results["warnings"].append({
+                  "type": "commentary_present",
+                  "file": rel_path,
+                  "severity": "WARNING",
+                  "message": f"{rel_path}: description has {commentary_count} <commentary> tag(s)",
+                  "fix": (
+                      "Delete <commentary> tags -- validated for removal with no "
+                      "quality loss. See description-authoring-principles.md V3."
+                  )
+              })
+              detail["issues"].append("commentary_present")
+
+          example_count = len(re.findall(r'<example>', description, re.IGNORECASE)) if description else 0
+          detail["example_count"] = example_count
+          if example_count > 2:
+              results["warnings"].append({
+                  "type": "too_many_examples",
+                  "file": rel_path,
+                  "severity": "WARNING",
+                  "message": f"{rel_path}: description has {example_count} <example> blocks (>2)",
+                  "fix": "Trim to at most 2 examples. See description-authoring-principles.md V3."
+              })
+              detail["issues"].append("too_many_examples")
+
+          results["agent_details"].append(detail)
+
+      results["passed"] = len(results["errors"]) == 0
+      results["summary"] = {
+          "agents_checked": results["agents_checked"],
+          "errors": len(results["errors"]),
+          "warnings": len(results["warnings"])
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "agent_description_validation_results"
     parse_json: true
     timeout: 120
     on_error: "continue"
@@ -3074,6 +3258,13 @@ steps:
       except (json.JSONDecodeError, ValueError):
           body_instruction = {"passed": True, "skipped": True, "errors": [], "warnings": []}
 
+      # Phase 2.8: Parse agent description budget validation results
+      agent_description_raw = '''{{agent_description_validation_results}}'''
+      try:
+          agent_description_validation = json.loads(agent_description_raw)
+      except (json.JSONDecodeError, ValueError):
+          agent_description_validation = {"passed": True, "skipped": True, "errors": [], "warnings": []}
+
       # Handle case where individual validation was skipped
       if individual.get("skipped", False):
           # v3.2.0: Check if this is an environment limitation (not a bundle problem)
@@ -3188,6 +3379,7 @@ steps:
               "behavior_reference_hygiene_issues": [],  # v3.5.0
               "mode_validation_issues": [],  # v3.6.0
               "body_instruction_issues": [],  # v3.7.0
+              "agent_description_issues": [],  # Phase 2.8
               # v3.2.0: Environment status tracking
               "environment_status": {
                   "validation_mode": env_check.get("validation_mode", "unknown"),
@@ -3384,6 +3576,25 @@ steps:
                       "fix": warning.get("fix", "")
                   })
 
+          # Phase 2.8: Agent description budget errors and warnings
+          if not agent_description_validation.get("skipped", False):
+              for error in agent_description_validation.get("errors", []):
+                  results["agent_description_issues"].append({
+                      "type": error.get("type"),
+                      "file": error.get("file"),
+                      "message": error.get("message"),
+                      "severity": "ERROR",
+                      "fix": error.get("fix", "")
+                  })
+              for warning in agent_description_validation.get("warnings", []):
+                  results["agent_description_issues"].append({
+                      "type": warning.get("type"),
+                      "file": warning.get("file"),
+                      "message": warning.get("message"),
+                      "severity": "WARNING",
+                      "fix": warning.get("fix", "")
+                  })
+
           # Determine overall quality level
           # Priority: critical > needs_work > polish > good
           
@@ -3394,6 +3605,7 @@ steps:
           critical_count += len([i for i in results["completeness_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["experiment_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"])  # v3.6.0
+          critical_count += len([i for i in results["agent_description_issues"] if i.get("severity") == "ERROR"])  # Phase 2.8
 
           # Recipe validation impact
           recipe_quality = recipe_validation.get("quality_level", "good")
@@ -3412,6 +3624,7 @@ steps:
           warning_count += len(results["behavior_reference_hygiene_issues"])  # v3.5.0: all are WARNING
           warning_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"])  # v3.6.0
           warning_count += len(results["body_instruction_issues"])  # v3.7.0: all are WARNING
+          warning_count += len([i for i in results["agent_description_issues"] if i.get("severity") == "WARNING"])  # Phase 2.8
           if recipe_quality == "polish":
               warning_count += 1
           
@@ -3457,7 +3670,9 @@ steps:
               "behavior_ref_hygiene_warnings": len(results["behavior_reference_hygiene_issues"]),  # v3.5.0
               "mode_validation_errors": len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"]),  # v3.6.0
               "mode_validation_warnings": len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"]),  # v3.6.0
-              "body_instruction_warnings": len(results["body_instruction_issues"])  # v3.7.0
+              "body_instruction_warnings": len(results["body_instruction_issues"]),  # v3.7.0
+              "agent_description_errors": len([i for i in results["agent_description_issues"] if i.get("severity") == "ERROR"]),  # Phase 2.8
+              "agent_description_warnings": len([i for i in results["agent_description_issues"] if i.get("severity") == "WARNING"])  # Phase 2.8
           }
 
           # v3.3.0: Recipe validation summary
@@ -4141,6 +4356,11 @@ steps:
       {{body_instruction_check_results}}
       ```
 
+      **Agent Description Budget Validation (Phase 2.8):**
+      ```json
+      {{agent_description_validation_results}}
+      ```
+
       **Bundle Doc Freshness (Phase 6 v3):**
       ```json
       {{bundle_doc_freshness}}
@@ -4249,7 +4469,7 @@ steps:
       - modes_checked: total number of modes/*.md files with a mode: block
       - For each ERROR of type mode_description_excessive (>800 tokens):
         - [ERROR] "Mode '<name>' description is N tokens — must shorten to <500"
-        - Refer author to foundation:docs/AGENT_AUTHORING.md §"Description Requirements (Critical)"
+        - Refer author to foundation:context/shared/description-authoring-principles.md (V5)
           and modes/.../mode-design-discipline skill
       - For each WARNING of type mode_description_high (>500 tokens):
         - [WARNING] "Mode '<name>' description is N tokens — consider trimming toward <500"
@@ -4271,6 +4491,22 @@ steps:
           field (metadata, never sent) or delete it; keep @mention pointers to
           instruction files
       - If no issues: "Body instruction check: all N files have instruction-only bodies"
+
+      ### Agent Description Budget Validation (Phase 2.8)
+      Use agent_description_validation_results to report:
+      - agents_checked: total number of agents/*.md files with a meta.description
+      - For each ERROR of type agent_description_excessive (>600 tokens, provisional):
+        - [ERROR] "Agent description in <file> is N tokens -- must shorten to <300"
+        - Refer author to foundation:context/shared/description-authoring-principles.md V5
+      - For each WARNING of type agent_description_high (>300 tokens, provisional):
+        - [WARNING] "Agent description in <file> is N tokens -- consider trimming toward <300"
+        - Same reference as above
+      - For each WARNING of type commentary_present:
+        - [WARNING] "<file>: description has N <commentary> tag(s) -- delete them (V3)"
+      - For each WARNING of type too_many_examples:
+        - [WARNING] "<file>: description has N <example> blocks (>2) -- trim to 2 (V3)"
+      - If no issues: "Agent description validation: all N agents within budget, no commentary/example bloat"
+      - If agent_description_validation_results.skipped == true: "Agent description validation: skipped (no agents/*.md files found)"
       - If body_instruction_check_results.skipped == true: "Body instruction check: skipped (no bundle.md or agents/*.md files found)"
       - This is WARNING-level only -- it never fails the build on its own
 

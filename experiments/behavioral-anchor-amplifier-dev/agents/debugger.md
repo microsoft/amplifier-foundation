@@ -9,7 +9,6 @@ meta:
     Context: A test is failing for unknown reasons.
     user: 'usage.py throws a KeyError after the last change.'
     assistant: 'I'll delegate to debugger to find the root cause systematically.'
-    <commentary>Errors with unknown cause trigger debugger's hypothesis-driven diagnosis.</commentary>
     </example>
 
 model_role: [coding, general]

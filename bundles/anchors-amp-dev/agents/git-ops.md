@@ -9,7 +9,6 @@ meta:
     Context: Work is complete and needs committing.
     user: 'Commit this and open a PR.'
     assistant: 'I'll delegate to git-ops to create the commit and open the PR.'
-    <commentary>Any git/gh operation routes to git-ops for consistent commits and safety.</commentary>
     </example>
 
 model_role: [fast, general]

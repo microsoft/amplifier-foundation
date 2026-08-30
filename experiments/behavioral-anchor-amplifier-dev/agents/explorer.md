@@ -10,7 +10,6 @@ meta:
     Context: User wants to understand a flow spanning several files.
     user: 'How does the fingerprint run.sh pipe results into the report?'
     assistant: 'I'll delegate to explorer to trace the flow across run.sh and the report scripts.'
-    <commentary>Multi-file survey -- explorer maps it without burning parent context.</commentary>
     </example>
 
 model_role: [general, fast]

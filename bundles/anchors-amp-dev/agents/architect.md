@@ -10,7 +10,6 @@ meta:
     Context: A feature needs design before code exists.
     user: 'Add a caching layer to the measurement harness.'
     assistant: 'I'll use architect to analyze options and produce a spec before any code is written.'
-    <commentary>Under-specified work needs design first -- architect produces the spec builder implements.</commentary>
     </example>
 
 model_role: [reasoning, general]

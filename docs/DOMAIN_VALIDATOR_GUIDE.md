@@ -56,8 +56,14 @@ Every validator MUST define what "passing" means:
 # ✅ No structural errors
 # ✅ Has explicit `tools:` section (even if empty)
 # ✅ Description ≥ 100 characters
-# ✅ Has at least ONE strong trigger (MUST, ALWAYS, REQUIRED, PROACTIVELY, DO NOT)
-# ✅ Has at least ONE `<example>` block
+# ✅ Description token budget respected (provisional WARN >300 / ERROR >600
+#   tokens -- see foundation:context/shared/description-authoring-principles.md V5)
+#
+# NOTE: MUST/ALWAYS/REQUIRED/PROACTIVELY keyword presence and <example> count
+# are reported as METRICS, not gates -- a measured eval campaign found
+# requiring them harmed compliant models (description-authoring-principles.md
+# V1, V3, V6). An earlier version of this example incorrectly required them;
+# see the PR that fixed validate-agents.yaml's own inverted thresholds.
 ```
 
 ### Domain-Specific Thresholds
@@ -663,7 +669,7 @@ Reference these as working examples:
 
 The **gold standard** for domain validators, demonstrating:
 - ✅ Deterministic quality classification (Phase 2.5)
-- ✅ Explicit PASS thresholds (trigger + examples + tools + 100 chars)
+- ✅ Explicit PASS thresholds (structural + tools + 100 chars + description token budget)
 - ✅ Conditional execution (skip LLM when all agents good)
 - ✅ Quick-approval path (uses claude-haiku for speed)
 - ✅ "Not an issue" guidance in LLM prompts
@@ -680,10 +686,12 @@ The **gold standard** for domain validators, demonstrating:
     # Explicit thresholds - code, not LLM judgment
     thresholds = {
         "min_description_length": 100,
-        "requires_trigger": True,
-        "requires_examples": True,
-        "requires_explicit_tools": True
+        "requires_explicit_tools": True,
+        "description_token_warn": 300,   # provisional, see V5
+        "description_token_error": 600,  # provisional, see V5
     }
+    # has_strong_trigger / has_examples are reported as metrics, not gates
+    # -- see description-authoring-principles.md V1, V3, V6
     # ... classification logic ...
     EOF
 
@@ -712,7 +720,7 @@ Validates a single bundle file for:
 
 **Recipe**: `@foundation:recipes/validate-bundle-repo.yaml`
 
-The **second gold standard** for domain validators, demonstrating all the patterns from validate-agents plus infrastructure handling:
+The **second gold standard** for domain validators, demonstrating all the patterns from validate-agents (including its own Phase 2.8 agent-description budget check) plus infrastructure handling:
 
 - ✅ Graceful degradation when `amplifier_foundation` unavailable
 - ✅ Domain-specific structural thresholds (loads + entry point + no orphans)
