@@ -97,6 +97,22 @@ model_role at call time.
 | test-coverage | coding | Test coverage analysis |
 | integration-specialist | general | External API/MCP integration |
 | post-task-cleanup | fast | Codebase hygiene after tasks |
+| bundle-design-expert | general | Bundle design, mechanism selection, behavioral modeling |
+| ecosystem-expert | general | Multi-repo coordination across core/foundation/modules/bundles |
+| foundation-expert | general | Foundation ecosystem navigation, examples, patterns, philosophy |
+| shell-exec | fast | Shell command execution with output capture |
+
+### Agent Catalog Cost
+
+The delegate tool's own description is `base description + sum(each available
+agent's meta.description)`, concatenated verbatim -- measured at 15,688
+characters for foundation's current 16 agents. This is loaded into context on
+**every turn**, not only when an agent is actually delegated to. Every
+character added to any agent's `meta.description` is therefore an every-turn
+cost paid by every session that has that agent in its catalog, not a
+one-time cost paid only by callers. See
+`context/shared/description-authoring-principles.md` for the token budgets
+and phrasing guidance this implies.
 
 ### Key Implementation Files
 
