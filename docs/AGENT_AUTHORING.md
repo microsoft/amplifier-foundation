@@ -37,9 +37,10 @@ bundle:                        meta:
 ### What Makes a Good Description
 
 Answer three questions:
-1. **WHEN** should I use this agent? (Activation triggers)
-2. **WHAT** does it do? (Core capability)
-3. **HOW** do I invoke it? (Examples)
+1. **WHAT** does it do? (Core capability)
+2. **WHEN** should I delegate to it? (The deciding factor -- see
+   description-authoring-principles.md V6 for phrasing)
+3. **HOW** do I invoke it? (≤2 examples)
 
 ### Pattern
 
@@ -47,41 +48,33 @@ Answer three questions:
 meta:
   name: my-agent
   description: |
-    [WHEN to use - activation triggers]. Use PROACTIVELY when [condition].
-    
-    [WHAT it does - core capability in 1-2 sentences].
-    
-    Examples:
-    
+    [WHAT it does - core capability in 1-2 sentences]. [WHEN to delegate -
+    the deciding factor, not a bare imperative -- see
+    description-authoring-principles.md V6].
+
     <example>
     user: '[Example user request]'
     assistant: 'I'll use my-agent to [action].'
-    <commentary>[Why this agent is the right choice]</commentary>
     </example>
 ```
 
+See `context/shared/description-authoring-principles.md` for trigger
+phrasing (decision rules over bare absolutes), the example cap (≤2, no
+`<commentary>`), and the token budget.
+
 ### Real Example
+
+Matches the currently shipped `agents/bug-hunter.md` description:
 
 ```yaml
 meta:
   name: bug-hunter
-  description: |
-    Specialized debugging expert. Use PROACTIVELY when user reports errors,
-    unexpected behavior, or test failures.
-    
-    Examples:
-    
-    <example>
-    user: 'The pipeline is throwing a KeyError somewhere'
-    assistant: 'I'll use bug-hunter to systematically track down this KeyError.'
-    <commentary>Bug reports trigger bug-hunter delegation.</commentary>
-    </example>
-    
-    <example>
-    user: 'Tests are failing after the recent changes'
-    assistant: 'Let me use bug-hunter to investigate the test failures.'
-    <commentary>Test failures are a clear debugging task.</commentary>
-    </example>
+  description: "Specialized debugging expert focused on finding and fixing
+    bugs systematically. Use PROACTIVELY. It MUST BE USED when user has
+    reported or you are encountering errors, unexpected behavior, or test
+    failures. Examples: <example>user: 'The synthesis pipeline is throwing
+    a KeyError somewhere' assistant: 'I'll use the bug-hunter agent to
+    systematically track down and fix this KeyError.'</example>"
 ```
 
 ### Anti-Patterns
@@ -95,12 +88,12 @@ meta:
 meta:
   description: "Analyzes code for quality issues"
 
-# ✅ Clear triggers + capability + examples
+# ✅ Clear capability + trigger + example
 meta:
   description: |
-    Use PROACTIVELY when user reports errors or test failures.
     Systematic debugging with hypothesis-driven root cause analysis.
-    
+    Use when user reports errors, unexpected behavior, or test failures.
+
     <example>
     user: 'The build is failing'
     assistant: 'I'll use bug-hunter to investigate.'
@@ -109,34 +102,37 @@ meta:
 
 ---
 
-## Description Requirements (Critical)
+## Description Requirements
 
 The `meta.description` field is the **ONLY** discovery mechanism for agents. When the
 task tool presents available agents to the LLM, this description is all it sees to
 decide which agent to use.
 
-**Poor descriptions cause delegation failures.** One-liner descriptions are unacceptable.
+**How to write it is governed by the canonical
+[description-authoring-principles.md](../context/shared/description-authoring-principles.md)**
+-- trigger phrasing (decision rules over bare absolutes), the example policy
+(≤2 examples, no `<commentary>`), staleness/deletion, and provider
+disposition all live there and are not restated here.
 
 ### Required Elements
 
-Every agent description MUST include:
+Every agent description should cover:
 
-#### 1. WHY - The Purpose
-What problem does this agent solve? What value does it provide?
+#### 1. WHAT - The Capability
+What does this agent do? What value does it provide?
 
-#### 2. WHEN - Activation Triggers  
-Explicit conditions that should cause delegation to this agent.
-Use keywords: MUST, REQUIRED, ALWAYS, PROACTIVELY, "Use when..."
+#### 2. WHEN - The Deciding Factor
+The condition that should cause delegation, phrased as a decision rule
+(see description-authoring-principles.md V6) rather than a bare imperative.
 
-#### 3. WHAT - Domain/Taxonomy Terms
-Keywords and concepts this agent is authoritative on.
-Pattern: `**Authoritative on:** term1, term2, term3, "multi-word concept"`
+#### 3. Authoritative On (optional)
+Domain terms this agent owns, so questions in that domain route here.
+Pattern: `**Authoritative on:** term1, term2, "multi-word concept"`
 
-This serves as the agent's "taxonomy" - terms that should trigger delegation.
-
-#### 4. HOW - Usage Examples
-Concrete examples showing user request → delegation rationale.
-Use `<example>` blocks with `<commentary>` tags.
+#### 4. Examples
+Up to 2 `<example>` blocks (no `<commentary>`) showing a real request and
+the resulting delegation. Each example must reflect what the agent
+actually does today.
 
 ### Template
 
@@ -144,40 +140,34 @@ Use `<example>` blocks with `<commentary>` tags.
 meta:
   name: my-agent
   description: |
-    [ONE SENTENCE: What this agent does and why it matters]
-    
-    Use PROACTIVELY when [primary trigger condition].
-    
+    [ONE SENTENCE: What this agent does]
+
+    Use when [the deciding factor -- context shape, not a bare imperative].
+
     **Authoritative on:** [comma-separated domain terms/keywords]
-    
-    **MUST be used for:**
-    - [Condition 1]
-    - [Condition 2]
-    
+
     <example>
     user: '[Example user request]'
     assistant: 'I'll delegate to [agent] because [reason].'
-    <commentary>
-    [Why this triggers the agent - helps LLMs learn the pattern]
-    </commentary>
     </example>
 ```
 
 ### Anti-Patterns
 
 ❌ One-liner descriptions: `"Helps with debugging"`
-❌ No trigger conditions: Missing WHEN to use
+❌ No indication of WHEN to delegate
 ❌ No taxonomy terms: LLM can't match domain questions
 ❌ No examples: LLM doesn't learn delegation patterns
+❌ More than 2 examples, or any `<commentary>` tag
+❌ An example describing a capability the agent no longer has (stale --
+see description-authoring-principles.md V2)
 
-### Audit Your Agents
+### Description Token Budget
 
-Check each agent's description against these criteria:
-- [ ] >100 words (not a one-liner)
-- [ ] Has explicit trigger conditions
-- [ ] Lists domain terms ("Authoritative on:")
-- [ ] Includes at least one example
-- [ ] Explains the value proposition
+**Provisional** (pending A/B calibration -- see
+description-authoring-principles.md V5): WARN above 300 tokens, ERROR
+above 600 tokens. Enforced by `foundation:recipes/validate-agents.yaml`
+and `foundation:recipes/validate-bundle-repo.yaml`.
 
 ---
 
