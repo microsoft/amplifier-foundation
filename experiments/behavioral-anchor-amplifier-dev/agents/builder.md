@@ -9,7 +9,6 @@ meta:
     Context: A complete spec exists.
     user: 'Implement the CacheService from specs/cache-spec.md.'
     assistant: 'I'll use builder to implement it from the spec.'
-    <commentary>Spec with file paths and success criteria exists -- builder implements directly.</commentary>
     </example>
 
 model_role: [coding, general]

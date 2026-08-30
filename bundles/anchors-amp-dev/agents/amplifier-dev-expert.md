@@ -12,7 +12,6 @@ meta:
     Context: A change spans amplifier-core and a dependent module.
     user: 'I need to update a kernel contract and the modules that consume it.'
     assistant: 'I'll consult amplifier-dev-expert for the correct change and push order across repos.'
-    <commentary>Cross-repo dependency ordering is this agent's core domain.</commentary>
     </example>
 
 model_role: [reasoning, general]

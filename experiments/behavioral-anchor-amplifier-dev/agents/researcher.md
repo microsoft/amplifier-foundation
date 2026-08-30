@@ -9,7 +9,6 @@ meta:
     Context: Answer requires external docs.
     user: 'What are the rate limits on the Anthropic API?'
     assistant: 'I'll use researcher to look up the current Anthropic API limits.'
-    <commentary>External documentation lookup -- not in the local codebase -- routes to researcher.</commentary>
     </example>
 
 model_role: [research, general]
