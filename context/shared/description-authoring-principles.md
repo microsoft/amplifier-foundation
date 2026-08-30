@@ -78,8 +78,9 @@ field, read on every turn whether or not the tool is ever called.
 Agent tiers are lower than mode tiers because agent descriptions are paid
 **by every session that has the agent in its catalog**, regardless of
 whether it's ever delegated to — mode descriptions are paid only by sessions
-that load that mode. Treat the agent-tier numbers as provisional until the
-in-flight A/B wave (P1-P3, see below) reports.
+that load that mode. Treat the agent-tier numbers as provisional — the 2026-08-30
+delegation wave (P1-P3, see below) reported on delegation *frequency*, not on
+token-ceiling calibration; that calibration remains open.
 
 ## V6 — Provider disposition: absolutes for invariants, decision rules for judgment
 
@@ -134,16 +135,25 @@ descriptions exactly as it applies to any other doc content.
 
 ---
 
-## Provisional — in-flight A/B wave (do not treat as settled)
+## Settled — the P1-P3 delegation wave (2026-08-30, 18 runs, pre-registered gates)
 
-An A/B wave is in progress evaluating:
+- **P1+P3** (tested together): relaxed decision-rule language + 6 negative
+  examples did **not** reduce gpt-5.6-sol's root delegation — median 7 (7,
+  6, 11) vs control's 6 (8, 6, 6); gate required ≤4. Quality unaffected
+  (3/3, both providers); claude-opus unaffected (0 delegates, all arms).
+- **P2:** stripping all advocacy and all `<example>` blocks at assembly time
+  (delegate description 14,562 → 8,060 chars) also did not reduce sol's
+  delegation — median 9, higher than control. Quality unaffected, both
+  providers.
 
-- **P1** — relaxed delegate-tool language (softening imperative framing in
-  the delegate tool's own description, not just the agents it lists)
-- **P2** — assembly-time example stripping (dropping `<example>` blocks
-  from the catalog view entirely, keeping them only in the agent's own file)
-- **P3** — negative examples (showing a case where delegation should
-  *not* happen, alongside the positive trigger cases)
+**Conclusion:** sol-class over-delegation is model-intrinsic, not a
+promptable framing effect — description language is not a delegation-
+*frequency* lever. V1-V6 above stand on their original evidence (token cost,
+stability, quality-neutrality — real every-turn wire savings) but must not
+be sold as delegation-behavior fixes. The lever is mechanical spawn budgets,
+not description wording — separate work.
 
-Do not cite P1-P3 as settled findings. When the wave reports, update the
-provisional tiers in the V5 table and remove this section.
+The wave measured delegation counts and wire sizes, not V5's token-ceiling
+thresholds — **agent `meta.description` budgets in V5 remain provisional.**
+It supplies real distribution data (8,060 / 14,562 / 16,461 chars across
+arms) but WARN/ERROR calibration is still open.
