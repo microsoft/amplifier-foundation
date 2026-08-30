@@ -669,7 +669,8 @@ Place agent files in `agents/` with proper frontmatter:
 ---
 meta:
   name: my-agent
-  description: "Description shown when listing agents. Include usage examples..."
+  description: "Description shown when listing agents. See AGENT_AUTHORING.md
+    and context/shared/description-authoring-principles.md for how to write it."
 ---
 
 # My Agent
@@ -1605,10 +1606,11 @@ Extract to separate repo only when:
 
 ### Use Descriptive Agent Metadata
 
-The `meta.description` is shown when listing agents. Include:
-- What the agent does
-- When to use it
-- Usage examples in the description string
+The `meta.description` is shown when listing agents. For what to include
+and how to phrase it (capability, deciding factor, up to 2 examples, no
+`<commentary>`, token budget), see
+[AGENT_AUTHORING.md](AGENT_AUTHORING.md#description-requirements) and the
+canonical `context/shared/description-authoring-principles.md`.
 
 ### No Root pyproject.toml
 
