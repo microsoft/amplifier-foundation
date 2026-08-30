@@ -18,6 +18,12 @@ For each required item, exactly one of three cases applies - handle each explici
 
 **A fabricated attestation is worse than an honest gap.** It tells the next person a gate passed when it didn't, and quietly defeats the system that gate exists to protect. An honest "I couldn't satisfy X - here's why" is recoverable; a hidden one is not.
 
+## Resource Hygiene — Clean Up What You Create
+
+Any long-lived resource you provision (container, VM, environment, background server, tmux session) is yours until you either destroy it or hand its ID to a named owner in your completion report. Silent survivors are a defect.
+
+For fan-out work: stateless sub-agents cannot see the running total - the **orchestrator** owns a cumulative ledger and a ceiling. Before each wave: count what exists, compare to budget, clean up before launching more. Blanket approval of an activity is not approval of unbounded resource accumulation.
+
 ## Git Commit Message Guidelines
 
 When creating git commit messages, always insert the following at the end of your commit message:
