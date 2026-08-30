@@ -154,6 +154,10 @@ Use --local flag to override provider per project.
 
 **Rule**: Each concept lives in exactly ONE place.
 
+> Applied to description fields (agent `meta.description`, skill/mode
+> `description`, tool descriptions) specifically: see
+> `context/shared/description-authoring-principles.md`.
+
 **Good organization**:
 - ✅ Command syntax → `docs/USER_ONBOARDING.md#quick-reference`
 - ✅ Architecture → `docs/ARCHITECTURE.md`
