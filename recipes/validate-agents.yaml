@@ -1,8 +1,31 @@
 # validate-agents.yaml
-# Agent Definition Validator Recipe v1.3.1
+# Agent Definition Validator Recipe v1.4.0
 # Validates agent definitions in a bundle repository for quality, tool access, and structural requirements
 #
 # CHANGELOG:
+# v1.4.0 - Example-policy tightening: <example> blocks REJECTED ENTIRELY
+#        - Guidance changed from "at most 2 examples, no <commentary>" to
+#          "no <example> blocks at all" (foundation:context/shared/
+#          description-authoring-principles.md V3). The eval evidence
+#          (P2 delegation wave: stripping ALL examples + commentary did
+#          not reduce delegation quality) supports full removal, not just
+#          a cap.
+#        - Any <example> block in meta.description is now a structural
+#          ERROR (was: only >2 blocks warned). New code EXAMPLE_BLOCK_PRESENT.
+#        - <commentary> tag presence is now ERROR (was WARNING) --
+#          consistency: it only ever occurs inside a now-banned example.
+#        - Removed the EXAMPLES_MISSING_CONTEXT / TOO_MANY_EXAMPLES checks
+#          (moot once examples are banned outright, not merely capped).
+#        - Both new/changed ERRORs feed into the existing has_errors ->
+#          "critical" classification path -- no classify_agent changes
+#          needed, the severity mapping already treats any ERROR as
+#          critical.
+#        - Description Quality (Phase 4) prompt updated to stop treating
+#          "1-2 examples, no commentary" as a target shape, and to note
+#          example/commentary presence is now caught deterministically in
+#          Phase 2 (structural-validation), not judged by the LLM.
+#        - Report synthesis (Phase 6) severity guide and metadata updated
+#          to match.
 # v1.3.1 - BUG 2(i) fix: honor the injected AMPLIFIER_PYTHON interpreter
 #          (NOTE: patch bump of the authoritative `version:` field, which was
 #          already at 1.3.0 — ahead of this changelog's prior 1.2.x entries,
@@ -47,17 +70,20 @@
 #
 # PASS THRESHOLDS (explicit criteria for "good enough"):
 # - No structural errors (valid YAML, has meta.name, meta.description)
+# - No <example> or <commentary> blocks in the description (v1.4.0: ERROR --
+#   description-authoring-principles.md V3 bans them entirely, not just >2)
 # - Has explicit tools section (even if empty [])
 # - Description >= 100 characters
 # - Description token budget respected (provisional: WARN >300 tok,
 #   ERROR >600 tok -- see foundation:context/shared/
 #   description-authoring-principles.md V5)
 #
-# NOTE: presence of MUST/ALWAYS/REQUIRED/PROACTIVELY keywords and
-# <example> blocks are reported as METRICS, not pass/fail gates. A
-# measured eval campaign found these keywords/examples do not by
-# themselves indicate quality, and requiring them measurably harmed
-# compliant models (see description-authoring-principles.md V1, V3, V6).
+# NOTE: presence of MUST/ALWAYS/REQUIRED/PROACTIVELY keywords is reported
+# as a METRIC, not a pass/fail gate. A measured eval campaign found these
+# keywords do not by themselves indicate quality, and requiring them
+# measurably harmed compliant models (see description-authoring-
+# principles.md V1, V6). <example>/<commentary> blocks, by contrast, ARE a
+# gate as of v1.4.0 -- see PASS THRESHOLDS above and V3.
 #
 # Usage:
 #   amplifier tool invoke recipes operation=execute \
@@ -68,9 +94,10 @@ name: validate-agents
 description: |
   Validates Amplifier agent definitions in a bundle repository against:
   
-  - **Structural Requirements** (ERROR): Valid YAML frontmatter, required meta fields
+  - **Structural Requirements** (ERROR): Valid YAML frontmatter, required meta fields,
+    no `<example>`/`<commentary>` blocks in the description (v1.4.0)
   - **Tool Access** (WARNING): Explicit tools section, appropriate tools for role
-  - **Description Quality** (SUGGESTION): Activation triggers, examples, WHY/WHEN/WHAT guidance
+  - **Description Quality** (SUGGESTION): Activation triggers, WHY/WHEN/WHAT guidance
   
   Produces a validation report with findings categorized by severity and actionable remediation.
   
@@ -120,7 +147,7 @@ steps:
           results["errors"].append({
               "type": "import_error",
               "message": "PyYAML not available - required for parsing agent frontmatter",
-              "suggestion": "pip install pyyaml"
+              "suggestion": "uv pip install pyyaml"
           })
 
       # Check repo path exists
@@ -556,43 +583,35 @@ steps:
                   "remediation": "Expand description to explain WHAT the agent does and WHEN to delegate to it"
               })
 
-          # Check for <commentary> tags -- validated for removal with no
-          # quality loss (description-authoring-principles.md V3). WARNING,
-          # not ERROR: existing agents carrying these still load fine.
+          # Check for <commentary> tags -- v1.4.0: ERROR, not WARNING.
+          # <commentary> only ever occurs inside an <example> block, and
+          # example blocks are now rejected entirely (see below), so this
+          # is treated with the same severity for consistency.
           result["commentary_count"] = description.lower().count("<commentary>") if description else 0
           if result["commentary_count"] > 0:
-              result["warnings"].append({
-                  "severity": "WARNING",
+              result["errors"].append({
+                  "severity": "ERROR",
                   "code": "COMMENTARY_TAG_PRESENT",
-                  "message": f"Description contains {result['commentary_count']} <commentary> tag(s) -- validated for removal with no quality loss",
-                  "remediation": "Delete <commentary> tags; the example itself should be self-explanatory (see description-authoring-principles.md V3)"
+                  "message": f"Description contains {result['commentary_count']} <commentary> tag(s) -- <commentary> tags are rejected entirely",
+                  "remediation": "Delete <commentary> tags (and the <example> block containing them -- see description-authoring-principles.md V3)"
               })
 
-          # Check if examples have Context labels (quality check)
+          # Check for <example> blocks -- v1.4.0: REJECTED ENTIRELY, not
+          # merely capped at 2. description-authoring-principles.md V3: the
+          # eval evidence (P2 delegation wave) showed removing ALL examples
+          # does not reduce delegation quality, so any occurrence is now a
+          # structural ERROR, not a metric.
           if result["has_examples"]:
               example_blocks = re.findall(r'<example>(.*?)</example>', description, re.DOTALL | re.IGNORECASE)
-              examples_with_context = sum(1 for ex in example_blocks if 'Context:' in ex or 'context:' in ex)
               result["example_count"] = len(example_blocks)
-              result["examples_with_context"] = examples_with_context
-              
-              if example_blocks and examples_with_context < len(example_blocks):
-                  result["warnings"].append({
-                      "severity": "WARNING",
-                      "code": "EXAMPLES_MISSING_CONTEXT",
-                      "message": f"Only {examples_with_context}/{len(example_blocks)} examples have 'Context:' labels",
-                      "remediation": "Add 'Context: [situation]' line at start of each <example> block to help LLM understand when to match"
-                  })
-
-              if len(example_blocks) > 2:
-                  result["warnings"].append({
-                      "severity": "WARNING",
-                      "code": "TOO_MANY_EXAMPLES",
-                      "message": f"Description has {len(example_blocks)} <example> blocks (>2) -- validated cap is 2",
-                      "remediation": "Trim to at most 2 examples (description-authoring-principles.md V3)"
-                  })
+              result["errors"].append({
+                  "severity": "ERROR",
+                  "code": "EXAMPLE_BLOCK_PRESENT",
+                  "message": f"Description has {len(example_blocks)} <example> block(s) -- example blocks are rejected entirely, not merely capped",
+                  "remediation": "Delete all <example> blocks. State the trigger condition as a decision rule in the WHEN clause instead (description-authoring-principles.md V6). If a worked example is genuinely useful for human authors, put it in a body doc, not the description field (see V3)."
+              })
           else:
               result["example_count"] = 0
-              result["examples_with_context"] = 0
 
           # Check whether the body (below frontmatter) reads as instruction, not
           # documentation -- everything below frontmatter is sent to the model
@@ -676,12 +695,18 @@ steps:
       # 4. Description token budget respected (provisional: WARN >300 tok,
       #    ERROR >600 tok -- description-authoring-principles.md V5)
       #
-      # has_strong_trigger / has_examples / commentary_count /
-      # absolute_keyword_count are reported as METRICS below, not gates.
-      # A measured eval campaign found these do not by themselves indicate
-      # quality, and requiring them measurably harmed compliant models
-      # (see foundation:context/shared/description-authoring-principles.md
-      # V1, V3, V6). Do not reintroduce them as pass/fail criteria.
+      # has_strong_trigger / absolute_keyword_count are reported as METRICS
+      # below, not gates. A measured eval campaign found these do not by
+      # themselves indicate quality, and requiring them measurably harmed
+      # compliant models (see foundation:context/shared/
+      # description-authoring-principles.md V1, V6). Do not reintroduce
+      # them as pass/fail criteria.
+      #
+      # has_examples / commentary_count, by contrast, ARE gates as of
+      # v1.4.0: any <example>/<commentary> in the description is a
+      # structural ERROR (see structural-validation above), which already
+      # routes through has_errors -> "critical" below -- no separate
+      # classify_agent branch needed for them.
 
       # Provisional token thresholds (see description-authoring-principles.md V5)
       DESCRIPTION_TOKEN_WARN = 300
@@ -963,9 +988,14 @@ steps:
       **`foundation:context/shared/description-authoring-principles.md`** --
       this prompt does not restate it. In summary: trigger phrasing should
       state the deciding factor (a decision rule), not lean on bare
-      imperatives; examples are capped at 2 with no `<commentary>` tags;
-      stale examples (describing a capability the agent no longer has) are
-      a defect.
+      imperatives; `<example>`/`<commentary>` blocks are rejected entirely
+      (not merely capped -- see V3).
+
+      **Note on examples/commentary:** `<example>` and `<commentary>`
+      presence is already caught as a structural ERROR by Phase 2
+      (structural-validation), deterministically, before this LLM phase
+      ever runs. Do not re-judge it here -- this phase is about the WHEN
+      clause and WHAT/WHEN guidance only.
 
       **What is NOT an Issue (do not flag these):**
       - Whether the description happens to use MUST/ALWAYS/REQUIRED/
@@ -975,16 +1005,11 @@ steps:
       - Reasonable alternative approaches to documentation
       - "Could be slightly better" items for agents that meet thresholds
       - Personal preferences about wording or structure
-      - Exactly 1-2 examples with no `<commentary>` -- this is the target
-        shape, not a gap
+      - Absence of examples -- this is the required shape, not a gap
 
       **Only flag genuine issues:**
       - A WHEN clause that gives no deciding factor at all (not "weak
         phrasing" -- literally no signal for when to delegate)
-      - Complete absence of examples in agents that need them
-      - More than 2 examples, or any `<commentary>` tag (see V3)
-      - An example describing a capability the agent no longer has (stale,
-        see V2)
       - Critical missing guidance that would confuse users
 
       **Quality Criteria to Check (for agents needing work only):**
@@ -997,12 +1022,7 @@ steps:
       supporting context? See description-authoring-principles.md V6 for
       the before/after example.
 
-      ### 2. Example Blocks (SUGGESTION if missing, or if >2/has <commentary>)
-
-      Check: Does the description have 1-2 `<example>` blocks, with no
-      `<commentary>` tags, that reflect what the agent actually does today?
-
-      ### 3. WHAT/WHEN Guidance (SUGGESTION if incomplete)
+      ### 2. WHAT/WHEN Guidance (SUGGESTION if incomplete)
 
       Good descriptions answer:
       - **WHAT**: What does this agent do? What are its capabilities?
@@ -1259,18 +1279,20 @@ steps:
 
       ## Metadata
       - **Validated**: [timestamp]
-      - **Recipe**: validate-agents v1.3.0
+      - **Recipe**: validate-agents v1.4.0
       - **Quality Thresholds**: see
         `foundation:context/shared/description-authoring-principles.md`
-        (canonical -- not restated here). Gates: no structural errors,
+        (canonical -- not restated here). Gates: no structural errors
+        (including any `<example>`/`<commentary>` block in the
+        description -- rejected entirely per V3, not merely capped),
         explicit tools section, description >= 100 chars, description
         token budget (provisional WARN >300 / ERROR >600 tok).
-        MUST/ALWAYS/REQUIRED/PROACTIVELY keyword presence and <example>
-        count are reported as metrics, not gates.
+        MUST/ALWAYS/REQUIRED/PROACTIVELY keyword presence is reported as
+        a metric, not a gate.
       - **Severity Guide**:
-        - ERROR (critical): Invalid YAML, missing required fields (will break)
+        - ERROR (critical): Invalid YAML, missing required fields, or any `<example>`/`<commentary>` block in the description (will break, or is rejected per V3)
         - WARNING (needs_work): No explicit tools, relying on inheritance, or description over budget (may break or bloat every session)
-        - SUGGESTION (polish): Missing WHEN deciding factor, missing examples, >2 examples, or <commentary> tags present (quality improvement)
+        - SUGGESTION (polish): Missing WHEN deciding factor (quality improvement)
 
       Make the report actionable with clear next steps and concrete examples.
       

@@ -11,7 +11,7 @@ Foundation provides:
 ## Quick Start
 
 ```bash
-pip install git+https://github.com/microsoft/amplifier-foundation
+uv pip install git+https://github.com/microsoft/amplifier-foundation
 ```
 
 ### Load, Compose, and Execute

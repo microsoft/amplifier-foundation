@@ -41,11 +41,23 @@ content masquerading as documentation, and cost tokens on every load.
 
 Every agent's `meta.description` is concatenated into the delegate tool's
 own description, which loads into context on **every turn**, not just when
-that agent is used. `<commentary>` blocks inside `<example>` blocks were
-validated for removal with no quality loss. Policy: **at most 2 examples**,
-**no `<commentary>` tags**, and any example that ships must reflect what the
-agent actually does today — an example is a claim about current behavior,
-and a stale one is V2's problem wearing a WHEN-to-delegate costume.
+that agent is used. Policy: **no `<example>` blocks at all**, in any
+description surface — agent `meta.description`, skill frontmatter
+`description`, mode `description`, or tool description strings. (Superseded:
+an earlier version of this policy allowed "at most 2 examples, no
+`<commentary>` tags" — the eval evidence below shows the cap was
+unnecessarily generous.)
+
+The P2 delegation-wave test (see "Settled" section below) stripped ALL
+`<example>` blocks and all `<commentary>` tags at assembly time — delegate
+description dropped from 14,562 → 8,060 chars — with **no reduction in
+delegation quality** across both providers tested. Full removal costs
+nothing measurable in quality and saves real per-turn tokens on every
+session that has the agent in its catalog, whether or not it's ever
+delegated to. If a trigger condition needs to reach the model, state it as a
+decision rule in the WHEN clause (V6) — a worked dialogue example is not
+required to communicate it, and a stale one is V2's problem wearing a
+WHEN-to-delegate costume.
 
 ## V4 — Delegation-pushing scaffolding hurts modern models
 
@@ -117,14 +129,22 @@ or silently override.
 
 ## Example policy (all description surfaces)
 
-- **≤2 examples.** A third example is rarely teaching a new case — audit
-  whether it's actually a duplicate before adding it.
-- **No `<commentary>` tags.** The example itself should be self-explanatory;
-  if it needs a footnote explaining why it triggers the agent, the trigger
-  condition belongs in the WHEN clause, not in prose bolted onto the example.
-- **Examples must match shipped reality.** An example describing a
-  capability, tool, or workflow the artifact no longer has is stale content
-  (V2) — delete or update it, don't leave it as aspirational documentation.
+- **No `<example>` blocks.** Not "at most 2" — zero. Trigger conditions
+  belong in the WHEN clause as a decision rule (V6), not as a worked
+  dialogue example. An example block does not teach the model anything a
+  clear WHEN clause can't state directly, and it is paid on every turn
+  regardless of whether the agent is ever delegated to.
+- **No `<commentary>` tags.** Subsumed by the no-examples rule (commentary
+  only ever appeared inside example blocks) — stated separately because a
+  stray `<commentary>` tag outside an example block is still a defect.
+- **If a worked example is genuinely useful for human authors** (teaching a
+  new bundle author how to phrase a description, say), it belongs in a body
+  doc — AGENT_AUTHORING.md, a README, or the artifact's own markdown body —
+  never in the `description` field itself. The description field is
+  metadata sent to the model every turn; a doc file is read on demand.
+- **Any example still present in a shipped description is stale content**
+  (V2), whether or not it matches current behavior — delete it, don't
+  archive it in place.
 
 ## Staleness and deletion
 

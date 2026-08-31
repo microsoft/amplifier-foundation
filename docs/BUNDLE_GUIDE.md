@@ -712,6 +712,54 @@ Create README.md documenting:
 - The architecture (thin bundle + behavior pattern)
 - How to load/use it
 
+#### Install-Instructions Convention
+
+If your README shows install commands, follow these conventions
+(enforced by `foundation:recipes/validate-bundle-repo.yaml`'s
+`readme_install_recommendation` and `tool_install_convention` checks):
+
+**Recommend a behavior over the root bundle, unless this repo's purpose
+is to produce root bundles for users.** Most bundle repos are capability
+providers, not root-bundle sources -- their README's PRIMARY install
+example should target the repo's own behavior:
+
+```bash
+amplifier bundle add "git+https://github.com/org/my-repo#subdirectory=behaviors/my-capability.yaml" --app
+```
+
+not the bare root bundle:
+
+```bash
+# Only lead with this if THIS repo's purpose is to ship ready-to-run root
+# bundles for end users -- uncommon. Most repos provide a capability
+# others compose onto their OWN bundle, via the behavior pattern above.
+amplifier bundle add "git+https://github.com/org/my-repo" --app
+```
+
+If your repo genuinely exists to produce root bundles for users, leading
+with the root-bundle install is correct -- just make it a deliberate
+choice, not the unexamined default.
+
+**Always include `--app` on install commands targeting the Amplifier
+CLI.** `--app` is what makes `amplifier bundle add <uri>` compose into an
+installed CLI's configuration; omitting it is the most common README
+defect this convention exists to catch.
+
+**Tool install commands: `uv tool install`, not `pip install`.** If your
+bundle also ships a standalone CLI (see [Bundle with Root Python
+Package](#root-python-package)), show:
+
+```bash
+uv tool install "git+https://github.com/org/my-repo"
+```
+
+Always show the `git+https://` form, even when the package is also
+published to PyPI -- PyPI is an *additional* convenience form, never a
+replacement for the git+https instructions (a consumer who hasn't waited
+for a PyPI release still needs a working install path). Libraries (not
+standalone CLI tools) use `uv pip install` in place of `pip install` --
+see the Quick Start examples above.
+
 ---
 
 ## Creating Tool Modules

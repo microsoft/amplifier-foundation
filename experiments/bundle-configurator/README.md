@@ -18,13 +18,13 @@ A few terms used throughout this README:
 ## Install
 
 ```bash
-pip install "git+https://github.com/microsoft/amplifier-foundation@feat/bundle-configurator-experiment#subdirectory=experiments/bundle-configurator"
+uv pip install "git+https://github.com/microsoft/amplifier-foundation@feat/bundle-configurator-experiment#subdirectory=experiments/bundle-configurator"
 ```
 
 After this branch is merged to main:
 
 ```bash
-pip install "git+https://github.com/microsoft/amplifier-foundation#subdirectory=experiments/bundle-configurator"
+uv pip install "git+https://github.com/microsoft/amplifier-foundation#subdirectory=experiments/bundle-configurator"
 ```
 
 ## Using This in an Amplifier Chat Session
@@ -182,7 +182,7 @@ Test coverage:
 
 ```bash
 # Install dependencies
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 
 # Unit tests only (fast, no network calls)
 pytest tests/ -k "not integration"

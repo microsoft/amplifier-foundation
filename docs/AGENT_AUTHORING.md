@@ -36,11 +36,14 @@ bundle:                        meta:
 
 ### What Makes a Good Description
 
-Answer three questions:
+Answer two questions:
 1. **WHAT** does it do? (Core capability)
 2. **WHEN** should I delegate to it? (The deciding factor -- see
    description-authoring-principles.md V6 for phrasing)
-3. **HOW** do I invoke it? (≤2 examples)
+
+No third "HOW do I invoke it" question -- `<example>` blocks are rejected
+entirely (description-authoring-principles.md V3). A clear WHEN clause
+carries the trigger condition; no worked dialogue example is needed.
 
 ### Pattern
 
@@ -51,30 +54,23 @@ meta:
     [WHAT it does - core capability in 1-2 sentences]. [WHEN to delegate -
     the deciding factor, not a bare imperative -- see
     description-authoring-principles.md V6].
-
-    <example>
-    user: '[Example user request]'
-    assistant: 'I'll use my-agent to [action].'
-    </example>
 ```
 
 See `context/shared/description-authoring-principles.md` for trigger
-phrasing (decision rules over bare absolutes), the example cap (≤2, no
-`<commentary>`), and the token budget.
+phrasing (decision rules over bare absolutes), the example policy (no
+`<example>` blocks, no `<commentary>`), and the token budget.
 
 ### Real Example
 
-Matches the currently shipped `agents/bug-hunter.md` description:
+Illustrates the target shape under the current policy (no `<example>`
+block):
 
 ```yaml
 meta:
   name: bug-hunter
   description: "Specialized debugging expert focused on finding and fixing
-    bugs systematically. Use PROACTIVELY. It MUST BE USED when user has
-    reported or you are encountering errors, unexpected behavior, or test
-    failures. Examples: <example>user: 'The synthesis pipeline is throwing
-    a KeyError somewhere' assistant: 'I'll use the bug-hunter agent to
-    systematically track down and fix this KeyError.'</example>"
+    bugs systematically. Use when the user has reported or you are
+    encountering errors, unexpected behavior, or test failures."
 ```
 
 ### Anti-Patterns
@@ -84,20 +80,21 @@ meta:
 meta:
   description: "Helps with code stuff"
 
-# ❌ No examples - callers have to guess
+# ❌ <example> block - banned entirely, not just capped
 meta:
-  description: "Analyzes code for quality issues"
+  description: |
+    Analyzes code for quality issues.
 
-# ✅ Clear capability + trigger + example
+    <example>
+    user: 'Review this PR'
+    assistant: 'I'll use the reviewer agent.'
+    </example>
+
+# ✅ Clear capability + trigger, no example
 meta:
   description: |
     Systematic debugging with hypothesis-driven root cause analysis.
     Use when user reports errors, unexpected behavior, or test failures.
-
-    <example>
-    user: 'The build is failing'
-    assistant: 'I'll use bug-hunter to investigate.'
-    </example>
 ```
 
 ---
@@ -111,7 +108,7 @@ decide which agent to use.
 **How to write it is governed by the canonical
 [description-authoring-principles.md](../context/shared/description-authoring-principles.md)**
 -- trigger phrasing (decision rules over bare absolutes), the example policy
-(≤2 examples, no `<commentary>`), staleness/deletion, and provider
+(no `<example>` blocks, no `<commentary>`), staleness/deletion, and provider
 disposition all live there and are not restated here.
 
 ### Required Elements
@@ -129,10 +126,12 @@ The condition that should cause delegation, phrased as a decision rule
 Domain terms this agent owns, so questions in that domain route here.
 Pattern: `**Authoritative on:** term1, term2, "multi-word concept"`
 
-#### 4. Examples
-Up to 2 `<example>` blocks (no `<commentary>`) showing a real request and
-the resulting delegation. Each example must reflect what the agent
-actually does today.
+#### 4. Examples -- Not Permitted
+`<example>` blocks are rejected entirely (description-authoring-
+principles.md V3) -- do not add one. If a worked example is genuinely
+useful for a human reading the docs, put it in a body doc (this guide, a
+README, or the agent's own markdown body), never in the `description`
+field.
 
 ### Template
 
@@ -145,11 +144,6 @@ meta:
     Use when [the deciding factor -- context shape, not a bare imperative].
 
     **Authoritative on:** [comma-separated domain terms/keywords]
-
-    <example>
-    user: '[Example user request]'
-    assistant: 'I'll delegate to [agent] because [reason].'
-    </example>
 ```
 
 ### Anti-Patterns
@@ -157,10 +151,8 @@ meta:
 ❌ One-liner descriptions: `"Helps with debugging"`
 ❌ No indication of WHEN to delegate
 ❌ No taxonomy terms: LLM can't match domain questions
-❌ No examples: LLM doesn't learn delegation patterns
-❌ More than 2 examples, or any `<commentary>` tag
-❌ An example describing a capability the agent no longer has (stale --
-see description-authoring-principles.md V2)
+❌ Any `<example>` block, or any `<commentary>` tag -- both are banned
+entirely (description-authoring-principles.md V3), not merely capped
 
 ### Description Token Budget
 
@@ -467,7 +459,9 @@ Only put a file in behavior `context.include` if you can clearly defend "this mu
 ## Common Mistakes
 
 ### 1. Vague Description
-Callers don't know when to use the agent. Add activation triggers and examples.
+Callers don't know when to use the agent. Add a concrete WHEN clause
+(decision rule, not a worked example -- `<example>` blocks are rejected
+entirely, see description-authoring-principles.md V3).
 
 ### 2. Missing @mention Base
 Forgetting `@foundation:context/shared/common-agent-base.md` causes inconsistent behavior.
