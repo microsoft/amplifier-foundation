@@ -46,7 +46,7 @@ steps:
           from amplifier_foundation.bundle_docs import bundle_repo_dot
       except ImportError:
           print(json.dumps({
-              "error": "amplifier_foundation not installed — pip install amplifier-foundation",
+              "error": "amplifier_foundation not installed — uv pip install amplifier-foundation",
               "bundle_dot": "",
               "needs_regen": False,
           }))

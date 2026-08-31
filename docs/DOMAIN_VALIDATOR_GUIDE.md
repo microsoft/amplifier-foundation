@@ -59,11 +59,15 @@ Every validator MUST define what "passing" means:
 # ✅ Description token budget respected (provisional WARN >300 / ERROR >600
 #   tokens -- see foundation:context/shared/description-authoring-principles.md V5)
 #
-# NOTE: MUST/ALWAYS/REQUIRED/PROACTIVELY keyword presence and <example> count
-# are reported as METRICS, not gates -- a measured eval campaign found
-# requiring them harmed compliant models (description-authoring-principles.md
-# V1, V3, V6). An earlier version of this example incorrectly required them;
-# see the PR that fixed validate-agents.yaml's own inverted thresholds.
+# NOTE: MUST/ALWAYS/REQUIRED/PROACTIVELY keyword presence is reported as a
+# METRIC, not a gate -- a measured eval campaign found requiring it harmed
+# compliant models (description-authoring-principles.md V1, V6). An earlier
+# version of this example incorrectly required it; see the PR that fixed
+# validate-agents.yaml's own inverted thresholds.
+#
+# <example> blocks, however, ARE a gate: any <example> (or <commentary>)
+# block in a description is an ERROR (description-authoring-principles.md
+# V3 -- examples are banned entirely, not merely capped at 2).
 ```
 
 ### Domain-Specific Thresholds
@@ -79,7 +83,9 @@ Different domains have different PASS criteria. What makes an agent "good" diffe
 ```yaml
 # Behavioral quality criteria
 - Has strong trigger (MUST, ALWAYS, REQUIRED, PROACTIVELY, DO NOT)
-- Has at least one <example> block
+  -- reported as a metric, not a gate (see NOTE above)
+- Has NO <example> or <commentary> blocks -- ERROR if present
+  (description-authoring-principles.md V3: examples are banned entirely)
 - Has explicit tools: section
 - Description ≥ 100 characters
 ```

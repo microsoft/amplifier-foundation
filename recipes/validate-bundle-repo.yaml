@@ -1,9 +1,40 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.9.0
+# Repository-Wide Bundle Validator Recipe v3.10.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.10.0 - Example-policy tightening + NEW README install-convention checks
+#        - Phase 2.8 (agent description budget): <example> and <commentary>
+#          presence are now ERROR (was WARNING at >2 examples / any
+#          commentary). description-authoring-principles.md V3: examples
+#          are rejected entirely, not merely capped -- the eval evidence
+#          (P2 delegation wave) showed removing ALL examples does not
+#          reduce delegation quality. New/renamed codes:
+#          example_block_present (was too_many_examples), commentary_present
+#          (severity changed WARNING -> ERROR).
+#        - NEW PHASE 2.85: readme-install-convention-check. Two deterministic
+#          checks against the root README.md:
+#          Check A (readme_install_recommendation): the PRIMARY
+#          `amplifier bundle add` command should target a behavior
+#          (#subdirectory=behaviors/<name>.yaml), not the bare root bundle,
+#          unless context var root_bundle_repo: "true" (repo's own purpose
+#          is to ship root bundles for users). Findings:
+#          readme_recommends_root_bundle, readme_missing_app_flag (both
+#          severity needs_work).
+#          Check B (tool_install_convention): bare `pip install` in
+#          README.md instructional text is readme_pip_install (needs_work);
+#          docs/*.md are scanned at INFO level only (docs_pip_install). A
+#          repo shipping a CLI ([project.scripts] in pyproject.toml) with
+#          an install command but no git+https:// form anywhere is
+#          readme_missing_git_install (needs_work).
+#          No README, or a README with no bundle-add commands, is INFO
+#          only (no_readme, no_bundle_add_commands) -- not a defect.
+#        - quality-classification incorporates readme_convention_issues
+#          (severity "needs_work", counted like structural_issues, not
+#          ERROR/WARNING like the other v3.x checks)
+#        - synthesize-report includes README Install-Instructions
+#          Convention Check section
 # v3.9.0 - BUG 2 fix (interpreter injection) + NEW composable-surface check
 #        - BUG 2(i) (CRITICAL FIX): all 24 python3 heredocs used a BARE `python3`,
 #          ignoring the AMPLIFIER_PYTHON interpreter the executor injects into
@@ -226,6 +257,7 @@ description: |
   - **NEW in v3.5.0:** Behavior name collision detection (behavior vs root bundle name)
   - **NEW in v3.6.0:** Mode description token budget validation (WARNING >500, ERROR >800 tokens)
   - **NEW in v3.6.0:** Mode advertising-rule enforcement (unadvertised modes must not be named in agent-readable files)
+  - **NEW in v3.10.0:** README install-instructions convention (behavior-over-root recommendation, `--app` flag, `uv tool install`/`uv pip install` over bare `pip install`, git+https availability for shipped CLIs)
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Repository composition analysis (do pieces fit together correctly?)
@@ -250,10 +282,10 @@ description: |
       context='{"repo_path": "/path/to/repo"}'
   ```
   
-  Or install directly (if pip works):
+  Or install directly with uv:
   ```bash
-  pip install hatchling
-  pip install git+https://github.com/microsoft/amplifier-foundation@main
+  uv pip install hatchling
+  uv pip install git+https://github.com/microsoft/amplifier-foundation@main
   ```
   
   **v3.1.0 Enhancements:**
@@ -269,7 +301,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.9.0"
+version: "3.10.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -281,6 +313,9 @@ context:
   recipes_dir: "recipes"  # Optional: Subdirectory containing recipes (default: 'recipes')
   known_agents: ""  # Optional: JSON list of known external namespace:agent patterns for recipe validation
   enhance_diagrams: "true"  # Optional: LLM-enhanced DOT labels (true/false, default: true)
+  root_bundle_repo: "false"  # Optional (v3.10.0): set "true" if this repo's own purpose is to
+    # produce root bundles for users (uncommon) -- suppresses the
+    # readme_recommends_root_bundle finding
 
 steps:
   # ============================================================================
@@ -364,28 +399,30 @@ steps:
               "pep668": []
           }
           
-          # Standard pip commands (in correct order)
+          # Standard uv pip commands (in correct order)
           if not hatchling_available:
-              results["install_instructions"]["standard"].append("pip install hatchling")
+              results["install_instructions"]["standard"].append("uv pip install hatchling")
           if not foundation_available:
               results["install_instructions"]["standard"].append(
-                  "pip install git+https://github.com/microsoft/amplifier-core@main"
+                  "uv pip install git+https://github.com/microsoft/amplifier-core@main"
               )
               results["install_instructions"]["standard"].append(
-                  "pip install git+https://github.com/microsoft/amplifier-foundation@main"
+                  "uv pip install git+https://github.com/microsoft/amplifier-foundation@main"
               )
           
-          # PEP 668 commands (with --break-system-packages)
+          # PEP 668 commands (uv's --system flag targets the externally-managed
+          # interpreter directly; unlike bare pip, uv does not need
+          # --break-system-packages for this)
           if not hatchling_available:
               results["install_instructions"]["pep668"].append(
-                  "pip install --break-system-packages hatchling"
+                  "uv pip install --system hatchling"
               )
           if not foundation_available:
               results["install_instructions"]["pep668"].append(
-                  "pip install --break-system-packages git+https://github.com/microsoft/amplifier-core@main"
+                  "uv pip install --system git+https://github.com/microsoft/amplifier-core@main"
               )
               results["install_instructions"]["pep668"].append(
-                  "pip install --break-system-packages git+https://github.com/microsoft/amplifier-foundation@main"
+                  "uv pip install --system git+https://github.com/microsoft/amplifier-foundation@main"
               )
 
       # Check 3: pip wheel capability
@@ -628,7 +665,7 @@ steps:
               "type": "build_tools_unavailable",
               "message": "Build check skipped: hatchling not installed",
               "severity": "INFO",
-              "suggestion": "Install hatchling for full build validation: pip install hatchling"
+              "suggestion": "Install hatchling for full build validation: uv pip install hatchling"
           })
           result["environment_limitation"] = True
           print(json.dumps(result))
@@ -3059,32 +3096,44 @@ steps:
               })
               detail["issues"].append("agent_description_high")
 
+          # v3.10.0: <commentary> presence is now ERROR, not WARNING --
+          # consistency with <example> below (commentary only ever occurs
+          # inside a now-banned example block).
           commentary_count = description.lower().count("<commentary>") if description else 0
           detail["commentary_count"] = commentary_count
           if commentary_count > 0:
-              results["warnings"].append({
+              results["errors"].append({
                   "type": "commentary_present",
                   "file": rel_path,
-                  "severity": "WARNING",
-                  "message": f"{rel_path}: description has {commentary_count} <commentary> tag(s)",
+                  "severity": "ERROR",
+                  "message": f"{rel_path}: description has {commentary_count} <commentary> tag(s) -- rejected entirely",
                   "fix": (
-                      "Delete <commentary> tags -- validated for removal with no "
-                      "quality loss. See description-authoring-principles.md V3."
+                      "Delete <commentary> tags (and the <example> block containing "
+                      "them). See description-authoring-principles.md V3."
                   )
               })
               detail["issues"].append("commentary_present")
 
+          # v3.10.0: ANY <example> block is now ERROR (was WARNING at >2).
+          # description-authoring-principles.md V3: examples are rejected
+          # entirely, not merely capped -- the eval evidence (P2 delegation
+          # wave) showed removing ALL examples does not reduce delegation
+          # quality.
           example_count = len(re.findall(r'<example>', description, re.IGNORECASE)) if description else 0
           detail["example_count"] = example_count
-          if example_count > 2:
-              results["warnings"].append({
-                  "type": "too_many_examples",
+          if example_count > 0:
+              results["errors"].append({
+                  "type": "example_block_present",
                   "file": rel_path,
-                  "severity": "WARNING",
-                  "message": f"{rel_path}: description has {example_count} <example> blocks (>2)",
-                  "fix": "Trim to at most 2 examples. See description-authoring-principles.md V3."
+                  "severity": "ERROR",
+                  "message": f"{rel_path}: description has {example_count} <example> block(s) -- example blocks are rejected entirely, not merely capped",
+                  "fix": (
+                      "Delete all <example> blocks. State the trigger condition as "
+                      "a decision rule in the WHEN clause instead (V6). See "
+                      "description-authoring-principles.md V3."
+                  )
               })
-              detail["issues"].append("too_many_examples")
+              detail["issues"].append("example_block_present")
 
           results["agent_details"].append(detail)
 
@@ -3100,6 +3149,182 @@ steps:
     output: "agent_description_validation_results"
     parse_json: true
     timeout: 120
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
+  # PHASE 2.85: README Install-Instructions Convention Check (v3.10.0)
+  #
+  # Scans the ROOT README.md for two conventions:
+  #
+  # Check A -- readme_install_recommendation:
+  #   The PRIMARY `amplifier bundle add` command should target a behavior
+  #   (`#subdirectory=behaviors/<name>.yaml`), not the bare root bundle --
+  #   UNLESS this repo's own purpose is to produce root bundles for users
+  #   (uncommon; set context var root_bundle_repo: "true" to suppress).
+  #   Every `amplifier bundle add` command should include --app.
+  #   Findings: readme_recommends_root_bundle, readme_missing_app_flag
+  #   (both severity needs_work).
+  #
+  # Check B -- tool_install_convention:
+  #   `pip install` in README.md instructional text is a needs_work finding
+  #   (readme_pip_install) -- should be `uv tool install git+https://...`
+  #   for CLI tools, or `uv pip install` for libraries. docs/*.md are
+  #   scanned too, but only at INFO level (docs_pip_install). A repo that
+  #   ships a CLI ([project.scripts] in pyproject.toml) and shows an
+  #   install command but no git+https:// form anywhere is
+  #   readme_missing_git_install (needs_work) -- pypi MAY be offered in
+  #   addition to git+https, never as a replacement for it.
+  #
+  # No README, or a README with no `amplifier bundle add` commands at all,
+  # is reported at INFO level only -- absence of install docs is not
+  # itself the defect this check exists to catch.
+  # ============================================================================
+
+  - id: "readme-install-convention-check"
+    type: "bash"
+    command: |
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json
+      import re
+      from pathlib import Path
+
+      repo_path = "{{repo_path}}"
+      root_bundle_repo = "{{root_bundle_repo}}".strip().lower() == "true"
+      path = Path(repo_path).resolve()
+
+      results = {
+          "phase": "readme_install_convention",
+          "skipped": False,
+          "root_bundle_repo": root_bundle_repo,
+          "errors": [],
+          "warnings": [],
+          "info": []
+      }
+
+      readme_path = path / "README.md"
+      readme_text = ""
+      if not readme_path.exists():
+          results["skipped"] = True
+          results["info"].append({
+              "type": "no_readme",
+              "message": "No root README.md found -- install-instructions convention check skipped.",
+              "severity": "INFO"
+          })
+      else:
+          try:
+              readme_text = readme_path.read_text(encoding="utf-8", errors="replace")
+          except Exception as exc:
+              results["skipped"] = True
+              results["info"].append({
+                  "type": "readme_unreadable",
+                  "message": f"Could not read README.md: {exc}",
+                  "severity": "INFO"
+              })
+
+      # `amplifier bundle add <uri> [flags]` -- capture the URI and the rest
+      # of the line (where --app would appear).
+      bundle_add_pattern = re.compile(
+          r'amplifier\s+bundle\s+add\s+["\']?([^\s"\'`]+)["\']?([^\n]*)',
+          re.IGNORECASE
+      )
+      bundle_add_matches = list(bundle_add_pattern.finditer(readme_text)) if readme_text else []
+
+      if readme_text and not bundle_add_matches:
+          results["info"].append({
+              "type": "no_bundle_add_commands",
+              "message": "README.md has no `amplifier bundle add` commands -- nothing to evaluate for the install-recommendation check.",
+              "severity": "INFO"
+          })
+      elif bundle_add_matches:
+          first_uri, first_rest = bundle_add_matches[0].group(1), bundle_add_matches[0].group(2)
+          recommends_root = (
+              "#subdirectory=behaviors/" not in first_uri
+              and "#subdirectory=behaviors/" not in first_rest
+          )
+          if recommends_root and not root_bundle_repo:
+              results["warnings"].append({
+                  "type": "readme_recommends_root_bundle",
+                  "severity": "needs_work",
+                  "message": (
+                      "README.md's primary `amplifier bundle add` command installs "
+                      "the root bundle, not a behavior. Most repos are capability "
+                      "providers -- lead with `amplifier bundle add "
+                      "\"<repo>#subdirectory=behaviors/<name>.yaml\" --app` instead, "
+                      "unless this repo's own purpose IS to produce root bundles for "
+                      "users."
+                  ),
+                  "fix": "Recommend a behaviors/<name>.yaml install as the primary path, or set context var root_bundle_repo: \"true\" if this repo genuinely ships root bundles for users."
+              })
+
+          missing_app = [m.group(0) for m in bundle_add_matches if "--app" not in m.group(2)]
+          if missing_app:
+              results["warnings"].append({
+                  "type": "readme_missing_app_flag",
+                  "severity": "needs_work",
+                  "message": f"{len(missing_app)}/{len(bundle_add_matches)} `amplifier bundle add` command(s) in README.md are missing the --app flag.",
+                  "fix": "Add --app to every `amplifier bundle add` command shown in README.md."
+              })
+
+      if readme_text:
+          pip_install_count = len(re.findall(r'(?<!uv )pip install', readme_text))
+          if pip_install_count:
+              results["warnings"].append({
+                  "type": "readme_pip_install",
+                  "severity": "needs_work",
+                  "message": f"README.md shows `pip install` {pip_install_count} time(s) in instructional text.",
+                  "fix": "Use `uv tool install git+https://...` for CLI tools, or `uv pip install` for libraries, instead of bare `pip install`."
+              })
+
+          docs_dir = path / "docs"
+          if docs_dir.is_dir():
+              doc_pip_hits = []
+              for doc_file in sorted(docs_dir.rglob("*.md")):
+                  try:
+                      doc_text = doc_file.read_text(encoding="utf-8", errors="replace")
+                  except Exception:
+                      continue
+                  if re.search(r'(?<!uv )pip install', doc_text):
+                      doc_pip_hits.append(str(doc_file.relative_to(path)))
+              if doc_pip_hits:
+                  results["info"].append({
+                      "type": "docs_pip_install",
+                      "message": f"{len(doc_pip_hits)} doc file(s) under docs/ show `pip install`: {', '.join(doc_pip_hits[:10])}",
+                      "severity": "INFO"
+                  })
+
+          pyproject_path = path / "pyproject.toml"
+          ships_cli = False
+          if pyproject_path.exists():
+              try:
+                  ships_cli = "[project.scripts]" in pyproject_path.read_text(encoding="utf-8", errors="replace")
+              except Exception:
+                  ships_cli = False
+
+          has_install_command = bool(re.search(r'(uv tool install|uv pip install|pip install)', readme_text))
+          has_git_install = "git+https://" in readme_text
+
+          if ships_cli and has_install_command and not has_git_install:
+              results["warnings"].append({
+                  "type": "readme_missing_git_install",
+                  "severity": "needs_work",
+                  "message": "Repo ships a CLI ([project.scripts] in pyproject.toml) and README.md shows an install command, but no git+https:// form is shown anywhere.",
+                  "fix": "Always show a `uv tool install git+https://...` form, even when the package is also on PyPI -- PyPI is an additional convenience form, never a replacement."
+              })
+
+      results["passed"] = len(results["errors"]) == 0
+      results["summary"] = {
+          "bundle_add_commands_found": len(bundle_add_matches),
+          "warnings": len(results["warnings"]),
+          "errors": len(results["errors"]),
+          "info": len(results["info"])
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "readme_install_convention_results"
+    parse_json: true
+    timeout: 60
     on_error: "continue"
     depends_on: ["repo-discovery"]
 
@@ -3327,6 +3552,13 @@ steps:
       except (json.JSONDecodeError, ValueError):
           agent_description_validation = {"passed": True, "skipped": True, "errors": [], "warnings": []}
 
+      # v3.10.0: Parse README install-instructions convention check results
+      readme_convention_raw = '''{{readme_install_convention_results}}'''
+      try:
+          readme_convention = json.loads(readme_convention_raw)
+      except (json.JSONDecodeError, ValueError):
+          readme_convention = {"passed": True, "skipped": True, "errors": [], "warnings": [], "info": []}
+
       # Handle case where individual validation was skipped
       if individual.get("skipped", False):
           # v3.2.0: Check if this is an environment limitation (not a bundle problem)
@@ -3442,6 +3674,7 @@ steps:
               "mode_validation_issues": [],  # v3.6.0
               "body_instruction_issues": [],  # v3.7.0
               "agent_description_issues": [],  # Phase 2.8
+              "readme_convention_issues": [],  # v3.10.0
               # v3.2.0: Environment status tracking
               "environment_status": {
                   "validation_mode": env_check.get("validation_mode", "unknown"),
@@ -3676,6 +3909,25 @@ steps:
                       "fix": warning.get("fix", "")
                   })
 
+          # v3.10.0: README install-instructions convention findings.
+          # Severity is "needs_work" (not ERROR/WARNING) -- these are
+          # structural/convention findings, same tier as orphan_agents /
+          # no_composable_surface above, not blocking errors.
+          if not readme_convention.get("skipped", False):
+              for warning in readme_convention.get("warnings", []):
+                  results["readme_convention_issues"].append({
+                      "type": warning.get("type"),
+                      "message": warning.get("message"),
+                      "severity": warning.get("severity", "needs_work"),
+                      "fix": warning.get("fix", "")
+                  })
+              for info in readme_convention.get("info", []):
+                  results["readme_convention_issues"].append({
+                      "type": info.get("type"),
+                      "message": info.get("message"),
+                      "severity": "INFO"
+                  })
+
           # Determine overall quality level
           # Priority: critical > needs_work > polish > good
           
@@ -3695,6 +3947,7 @@ steps:
           
           needs_work_count = results["summary"]["needs_work"]
           needs_work_count += len([i for i in results["structural_issues"] if i.get("severity") == "needs_work"])
+          needs_work_count += len([i for i in results["readme_convention_issues"] if i.get("severity") == "needs_work"])  # v3.10.0
           if recipe_quality == "needs_work":
               needs_work_count += 1
           
@@ -3753,7 +4006,8 @@ steps:
               "mode_validation_warnings": len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"]),  # v3.6.0
               "body_instruction_warnings": len(results["body_instruction_issues"]),  # v3.7.0
               "agent_description_errors": len([i for i in results["agent_description_issues"] if i.get("severity") == "ERROR"]),  # Phase 2.8
-              "agent_description_warnings": len([i for i in results["agent_description_issues"] if i.get("severity") == "WARNING"])  # Phase 2.8
+              "agent_description_warnings": len([i for i in results["agent_description_issues"] if i.get("severity") == "WARNING"]),  # Phase 2.8
+              "readme_convention_needs_work": len([i for i in results["readme_convention_issues"] if i.get("severity") == "needs_work"])  # v3.10.0
           }
 
           # v3.3.0: Recipe validation summary
@@ -3780,7 +4034,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
-    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation", "body-instruction-check"]
+    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation", "body-instruction-check", "agent-description-validation", "readme-install-convention-check"]
 
   # ============================================================================
   # PHASE 2.75: Initialize Optional Outputs
@@ -4442,6 +4696,11 @@ steps:
       {{agent_description_validation_results}}
       ```
 
+      **README Install-Instructions Convention Check (v3.10.0):**
+      ```json
+      {{readme_install_convention_results}}
+      ```
+
       **Bundle Doc Freshness (Phase 6 v3):**
       ```json
       {{bundle_doc_freshness}}
@@ -4498,7 +4757,7 @@ steps:
       
       Install missing dependencies, then **re-run this recipe** for complete validation.
       
-      **Standard pip (if allowed):**
+      **Standard uv pip install:**
       ```bash
       [commands from install_instructions.standard]
       ```
@@ -4582,14 +4841,33 @@ steps:
       - For each WARNING of type agent_description_high (>300 tokens, provisional):
         - [WARNING] "Agent description in <file> is N tokens -- consider trimming toward <300"
         - Same reference as above
-      - For each WARNING of type commentary_present:
-        - [WARNING] "<file>: description has N <commentary> tag(s) -- delete them (V3)"
-      - For each WARNING of type too_many_examples:
-        - [WARNING] "<file>: description has N <example> blocks (>2) -- trim to 2 (V3)"
-      - If no issues: "Agent description validation: all N agents within budget, no commentary/example bloat"
+      - For each ERROR of type commentary_present (v3.10.0 -- was WARNING):
+        - [ERROR] "<file>: description has N <commentary> tag(s) -- rejected entirely (V3)"
+      - For each ERROR of type example_block_present (v3.10.0 -- replaces too_many_examples, was WARNING at >2):
+        - [ERROR] "<file>: description has N <example> block(s) -- example blocks are rejected entirely, not merely capped (V3)"
+      - If no issues: "Agent description validation: all N agents within budget, no commentary/example blocks"
       - If agent_description_validation_results.skipped == true: "Agent description validation: skipped (no agents/*.md files found)"
       - If body_instruction_check_results.skipped == true: "Body instruction check: skipped (no bundle.md or agents/*.md files found)"
-      - This is WARNING-level only -- it never fails the build on its own
+      - commentary_present and example_block_present ARE blocking (ERROR); the token-budget findings above stay WARNING/ERROR per their own thresholds
+
+      ### README Install-Instructions Convention Check (v3.10.0)
+      Use readme_install_convention_results to report:
+      - If skipped == true: "README install-instructions convention check: skipped (<reason from info>)"
+      - For each finding of type readme_recommends_root_bundle:
+        - [NEEDS WORK] the finding's message (README's primary install recommends the root bundle, not a behavior)
+        - The fix: lead with `amplifier bundle add "<repo>#subdirectory=behaviors/<name>.yaml" --app`, or set context var root_bundle_repo: "true" if this repo genuinely ships root bundles for users
+      - For each finding of type readme_missing_app_flag:
+        - [NEEDS WORK] the finding's message (N/M bundle-add commands missing --app)
+        - The fix: add --app to every `amplifier bundle add` command in README.md
+      - For each finding of type readme_pip_install:
+        - [NEEDS WORK] the finding's message (README shows bare `pip install`)
+        - The fix: `uv tool install git+https://...` for CLI tools, `uv pip install` for libraries
+      - For each finding of type readme_missing_git_install:
+        - [NEEDS WORK] the finding's message (repo ships a CLI, README shows an install command, but no git+https:// form anywhere)
+        - The fix: always show a git+https:// install form; PyPI may be offered additionally, never as a replacement
+      - INFO findings (no_readme, no_bundle_add_commands, docs_pip_install) are informational only -- do not treat as defects
+      - If no warnings: "README install-instructions convention: no findings"
+      - Severity is "needs_work" for all warnings here -- these feed needs_work_count, not critical_count
 
       ### Standalone Completeness
       | Bundle | Orchestrator | Context | Provider | Status |
@@ -4662,7 +4940,7 @@ steps:
 
       ## Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v3.6.0
+      - Recipe: validate-bundle-repo v3.10.0
       - Validation Mode: [mode from env_check]
       - Foundation: [version or "not available"]
       - Quality Thresholds:
