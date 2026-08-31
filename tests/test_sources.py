@@ -6,12 +6,14 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from amplifier_foundation.bundle import Bundle
 from amplifier_foundation.exceptions import BundleNotFoundError
-from amplifier_foundation.paths.resolution import ParsedURI
+from amplifier_foundation.paths.resolution import ParsedURI, ResolvedSource, parse_uri
 from amplifier_foundation.sources.file import FileSourceHandler
 from amplifier_foundation.sources.git import GitSourceHandler, _is_full_commit_sha
 from amplifier_foundation.sources.http import HttpSourceHandler
 from amplifier_foundation.sources.zip import ZipSourceHandler
+from amplifier_foundation.updates import update_bundle
 
 
 class TestFileSourceHandler:
@@ -353,6 +355,94 @@ def _make_fixture_repo(base: Path) -> tuple[Path, list[str]]:
 def _parsed_git_file_uri(repo: Path, ref: str) -> ParsedURI:
     """Build a ParsedURI for a git+file:// URI pointing at a local fixture repo."""
     return ParsedURI(scheme="git+file", host="", path=str(repo), ref=ref, subpath="")
+
+
+class TestGitSourceHandlerStatus:
+    """Tests for GitSourceHandler.get_status."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "source_uri",
+        [
+            "git+https://github.com/example/repository@main",
+            (
+                "git+https://github.com/example/repository@feat/status-uri"
+                "#subdirectory=modules/loop-pipeline"
+            ),
+        ],
+    )
+    async def test_get_status_preserves_source_uri_semantics(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_uri: str
+    ) -> None:
+        """Status URI round-trips its repo, ref, and optional subdirectory."""
+        parsed = parse_uri(source_uri)
+        handler = GitSourceHandler()
+
+        async def fake_get_remote_commit(_git_url: str, _ref: str) -> str:
+            return "a" * 40
+
+        monkeypatch.setattr(handler, "_get_remote_commit", fake_get_remote_commit)
+
+        status = await handler.get_status(parsed, tmp_path / "cache")
+
+        assert status.source_uri == source_uri
+        assert parse_uri(status.source_uri) == parsed
+
+    @pytest.mark.asyncio
+    async def test_update_bundle_preserves_subdirectory_active_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Update reinstalls the resolved module subdirectory, not its repo root."""
+        from amplifier_foundation.modules.activator import ModuleActivator
+
+        source_uri = (
+            "git+https://github.com/example/repository@main"
+            "#subdirectory=modules/loop-pipeline"
+        )
+        expected_parsed = parse_uri(source_uri)
+        cache_dir = tmp_path / "cache"
+        repository_root = cache_dir / "repository"
+        module_path = repository_root / "modules" / "loop-pipeline"
+        module_path.mkdir(parents=True)
+        (module_path / "pyproject.toml").write_text(
+            '[project]\nname = "test-loop-pipeline"\nversion = "0.0.0"\n'
+        )
+
+        updated_sources: list[ParsedURI] = []
+        installed_paths: list[Path] = []
+
+        async def fake_get_remote_commit(
+            _self: GitSourceHandler, _git_url: str, _ref: str
+        ) -> str:
+            return "a" * 40
+
+        async def fake_update(
+            _self: GitSourceHandler, parsed: ParsedURI, _cache_dir: Path
+        ) -> ResolvedSource:
+            updated_sources.append(parsed)
+            return ResolvedSource(active_path=module_path, source_root=repository_root)
+
+        async def fake_install_dependencies(
+            _self: ModuleActivator, path: Path
+        ) -> None:
+            installed_paths.append(path)
+
+        monkeypatch.setattr(
+            GitSourceHandler, "_get_remote_commit", fake_get_remote_commit
+        )
+        monkeypatch.setattr(GitSourceHandler, "update", fake_update)
+        monkeypatch.setattr(
+            ModuleActivator, "_install_dependencies", fake_install_dependencies
+        )
+
+        bundle = Bundle(
+            name="test",
+            session={"orchestrator": {"source": source_uri}},
+        )
+        await update_bundle(bundle, cache_dir=cache_dir)
+
+        assert updated_sources == [expected_parsed]
+        assert installed_paths == [module_path]
 
 
 class TestIsFullCommitSha:
