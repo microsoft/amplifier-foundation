@@ -193,8 +193,11 @@ def build_warning_text(
 ) -> str:
     """Build the AI context injection text block.
 
-    This is the text the AI sees in its conversation context.
-    It should be clear, actionable, and include all migration details.
+    This is the text the AI sees in its conversation context, wrapped in
+    ``<system-reminder source="hooks-deprecation">...</system-reminder>`` per
+    the ecosystem convention for hook-injected context (see
+    amplifier-module-hooks-status-context for the exemplar shape). The body
+    should be clear, actionable, and include all migration details.
     """
     if severity == "urgent":
         header = f"URGENT DEPRECATION WARNING: {config.bundle_name}"
@@ -220,7 +223,8 @@ def build_warning_text(
         lines.append("Migration steps:")
         lines.append(config.migration)
 
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    return f'<system-reminder source="hooks-deprecation">\n{body}\n</system-reminder>'
 
 
 def build_user_message(config: DeprecationConfig, severity: str) -> str:

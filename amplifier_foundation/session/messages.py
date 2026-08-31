@@ -65,13 +65,31 @@ def count_turns(messages: list[dict[str, Any]]) -> int:
     return len(get_turn_boundaries(messages))
 
 
+# Prefix match, deliberately without a closing ">", covering every real
+# injection shape the ecosystem actually emits: the bare "<system-reminder>"
+# tag, the documented "<system-reminder source=\"...\">" convention used by
+# hooks-status-context and hooks-todo-reminder, and the forthcoming plural
+# "<system-reminders>" envelope.
+#
+# A bare startswith("<system-reminder>") (exact tag, no attribute) never
+# matches the source-attr form real hooks emit, so it was structurally dead:
+# every injected reminder was passing through is_real_user_message() as a
+# genuine user message, corrupting turn slicing/repair.
+#
+# This is a prefix match on the start of the (stripped) content only, so a
+# genuine user message that merely mentions the tag mid-text is unaffected
+# because the tag isn't at position 0.
+_SYSTEM_REMINDER_PREFIX = "<system-reminder"
+
+
 def is_real_user_message(entry: dict[str, Any]) -> bool:
     """Return True if entry represents a genuine human user message.
 
     A 'real user message' is:
     - role is 'user'
     - no tool_call_id field
-    - content is NOT wrapped in <system-reminder> tags
+    - content is NOT wrapped in <system-reminder ...> (or <system-reminders>)
+      tags
 
     Content can be a string or a list of content blocks.
     Assistant messages and tool role messages return False.
@@ -92,7 +110,7 @@ def is_real_user_message(entry: dict[str, Any]) -> bool:
 
     # Check for system-reminder tags in string content
     if isinstance(content, str):
-        if content.strip().startswith("<system-reminder>"):
+        if content.strip().startswith(_SYSTEM_REMINDER_PREFIX):
             return False
 
     # Check for system-reminder tags in list content
@@ -101,7 +119,7 @@ def is_real_user_message(entry: dict[str, Any]) -> bool:
             if isinstance(block, dict):
                 text = block.get("text", "")
                 if isinstance(text, str) and text.strip().startswith(
-                    "<system-reminder>"
+                    _SYSTEM_REMINDER_PREFIX
                 ):
                     return False
 
