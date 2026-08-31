@@ -1,8 +1,18 @@
 # validate-agents.yaml
-# Agent Definition Validator Recipe v1.2.3
+# Agent Definition Validator Recipe v1.3.1
 # Validates agent definitions in a bundle repository for quality, tool access, and structural requirements
 #
 # CHANGELOG:
+# v1.3.1 - BUG 2(i) fix: honor the injected AMPLIFIER_PYTHON interpreter
+#          (NOTE: patch bump of the authoritative `version:` field, which was
+#          already at 1.3.0 — ahead of this changelog's prior 1.2.x entries,
+#          pre-existing header/field drift left otherwise untouched)
+#        - All 5 python3 heredocs used a BARE `python3`, ignoring the
+#          AMPLIFIER_PYTHON interpreter the executor injects into every bash step
+#          (validate-recipes.yaml already uses "${AMPLIFIER_PYTHON:-python3}"
+#          correctly). Converted ALL 5 heredocs to "${AMPLIFIER_PYTHON:-python3}"
+#          so agent validation runs on the interpreter that actually has the
+#          amplifier packages installed, matching the repo-wide validator.
 # v1.2.3 - Fixed multiline string interpolation bug
 #        - Remove frontmatter and meta fields from structural_results before JSON output
 #        - These fields contain multiline descriptions that break JSON parsing in downstream steps
@@ -72,7 +82,7 @@ description: |
   
   This recipe helps maintain agent quality across the Amplifier ecosystem by codifying
   the audit criteria discovered in manual reviews.
-version: "1.3.0"
+version: "1.3.1"
 author: "Amplifier Foundation Team"
 tags: ["agents", "validation", "quality", "audit", "tools", "descriptions"]
 
@@ -88,7 +98,7 @@ steps:
   - id: "environment-check"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
       from pathlib import Path
@@ -139,7 +149,7 @@ steps:
   - id: "agent-discovery"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       from pathlib import Path
 
@@ -237,7 +247,7 @@ steps:
   - id: "structural-validation"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       from pathlib import Path
@@ -652,7 +662,7 @@ steps:
   - id: "quality-classification"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
 
       # Parse structural_results as JSON (uses true/false, not True/False)
@@ -824,7 +834,7 @@ steps:
   - id: "initialize-optional-outputs"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       
       # Initialize default values for conditional phase outputs

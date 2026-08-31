@@ -1,9 +1,45 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.8.0
+# Repository-Wide Bundle Validator Recipe v3.9.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.9.0 - BUG 2 fix (interpreter injection) + NEW composable-surface check
+#        - BUG 2(i) (CRITICAL FIX): all 24 python3 heredocs used a BARE `python3`,
+#          ignoring the AMPLIFIER_PYTHON interpreter the executor injects into
+#          every bash step (validate-recipes.yaml, generate-bundle-docs.yaml, and
+#          bundle-behavioral-model.yaml already use "${AMPLIFIER_PYTHON:-python3}"
+#          correctly). A bare python3 without amplifier_foundation installed made
+#          Phase 0 mark foundation unavailable, silently SKIPPING the foundation-
+#          gated phases. Converted ALL 24 heredocs to "${AMPLIFIER_PYTHON:-python3}".
+#          BLAST RADIUS (intended): the interpreter switch now runs foundation on
+#          the correct interpreter, so the foundation-gated phases
+#          (individual_validation, standalone_completeness, and the report's
+#          foundation_available line) UNSKIP. Findings they now surface were
+#          always applicable — previously masked by the wrong interpreter, NOT a
+#          regression introduced here.
+#        - BUG 2(ii) (message + probe): the body-instruction check caught
+#          `ImportError` and hard-coded "amplifier_foundation not importable" — but
+#          the real failure in a STALE package copy is a missing SYMBOL
+#          (check_body_is_instruction), which also raises ImportError. Now binds
+#          the exception and reports it verbatim
+#          (f"check_body_is_instruction unavailable: {exc}"). Phase 0 hardened to
+#          probe the SYMBOL it gates (from amplifier_foundation.validator import
+#          check_body_is_instruction) via a NEW, separate capability flag
+#          (check_body_is_instruction_available) — kept distinct from
+#          foundation_available so a stale symbol does not over-skip the
+#          BundleRegistry-gated phases that do not need it.
+#        - NEW CHECK (no_composable_surface): a repo shipping agents/ and/or
+#          skills/ but NO behaviors/ directory has no composable per-behavior
+#          --app install surface. The existing orphan_agents check only fires when
+#          there is ALSO no root bundle, so the has-root case (and the skills-only
+#          case) passed silent. quality-classification now emits a sibling
+#          structural finding "no_composable_surface" (severity needs_work) naming
+#          the fix ("ship a behaviors/<name>.yaml so consumers can
+#          `amplifier bundle add ...#subdirectory=behaviors/<name>.yaml --app`"),
+#          scoped to NOT double-fire with orphan_agents. repo-discovery now records
+#          has_skills via a direct (path/"skills").is_dir() probe (skills use a
+#          skills/<name>/SKILL.md layout, not the bundle.md layout scan_dirs reads).
 # v3.8.0 - NEW PHASE 2.8: Agent Description Budget Validation
 #        - Walks agents/*.md files and applies the same description-budget +
 #          example/commentary checks validate-agents.yaml enforces, so a
@@ -233,7 +269,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.8.0"
+version: "3.9.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -256,7 +292,7 @@ steps:
   - id: "environment-check"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
       import subprocess
@@ -267,6 +303,7 @@ steps:
           "capabilities": {
               "foundation_available": False,
               "foundation_version": None,
+              "check_body_is_instruction_available": False,
               "hatchling_available": False,
               "pip_wheel_available": False
           },
@@ -287,6 +324,23 @@ steps:
               "skipped_checks": ["individual_validation", "standalone_completeness (full)"]
           })
           # Note: amplifier-core must be installed first (foundation depends on it)
+
+      # Check 1b (BUG 2ii): probe the SYMBOL the body-instruction check gates,
+      # not just the package. A stale package copy can import fine yet be missing
+      # check_body_is_instruction; probing the symbol here surfaces that at
+      # Phase 0 with the real cause instead of a misleading "not importable"
+      # much later. Kept as a SEPARATE capability so a stale symbol does not
+      # over-skip the BundleRegistry-gated phases (which don't need this symbol).
+      try:
+          from amplifier_foundation.validator import check_body_is_instruction  # noqa: F401
+          results["capabilities"]["check_body_is_instruction_available"] = True
+      except Exception as exc:
+          results["limitations"].append({
+              "component": "amplifier_foundation.validator.check_body_is_instruction",
+              "impact": "Cannot check that agent/bundle bodies are instructional prose",
+              "skipped_checks": ["body_instruction_check"],
+              "detail": f"check_body_is_instruction unavailable: {exc}"
+          })
 
       # Check 2: hatchling (enables Python package build validation)
       try:
@@ -398,7 +452,7 @@ steps:
   - id: "validate-all-flags"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
 
       validate_all = "{{validate_all}}"
@@ -431,7 +485,7 @@ steps:
   - id: "packaging-check"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
       from pathlib import Path
@@ -536,7 +590,7 @@ steps:
     type: "bash"
     condition: "{{packaging_check.has_pyproject}} == true"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import subprocess
       import sys
@@ -680,7 +734,7 @@ steps:
     type: "bash"
     condition: "{{packaging_check.has_pyproject}} != true"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       result = {
           "phase": "build_check",
@@ -705,7 +759,7 @@ steps:
   - id: "repo-discovery"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       from pathlib import Path
 
@@ -809,6 +863,10 @@ steps:
               "has_experiments": len(results["bundles_found"]["experiments"]) > 0,
               "has_providers": len(results["bundles_found"]["providers"]) > 0,
               "has_agents": len(results["bundles_found"]["agents"]) > 0,
+              # NEW (v3.9.0): skills use a skills/<name>/SKILL.md layout, not the
+              # bundle.md layout scan_dirs detects, so probe the directory
+              # directly for the composable-surface check.
+              "has_skills": (path / "skills").is_dir(),
               "directories": [d.name for d in path.iterdir() if d.is_dir() and not d.name.startswith(".")]
           }
 
@@ -858,7 +916,7 @@ steps:
   - id: "yaml-structure-lint"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
       from pathlib import Path
@@ -1042,7 +1100,7 @@ steps:
   - id: "validate-all-bundles"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
       import re
@@ -1212,7 +1270,7 @@ steps:
   - id: "behavior-hygiene-validation"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       import sys
@@ -1532,7 +1590,7 @@ steps:
   - id: "behavior-reference-hygiene"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       import sys
@@ -1735,7 +1793,7 @@ steps:
   - id: "standalone-completeness-validation"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
       import re
@@ -1959,7 +2017,7 @@ steps:
   - id: "experiments-validation"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
       import re
@@ -2098,7 +2156,7 @@ steps:
   - id: "context-sink-compliance"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       import sys
@@ -2281,7 +2339,7 @@ steps:
   - id: "tool-placement-analysis"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       import sys
@@ -2578,7 +2636,7 @@ steps:
     type: "bash"
     condition: "{{validation_flags.validate_recipes}} != 'true'"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
 
       result = {
@@ -2618,7 +2676,7 @@ steps:
   - id: "mode-validation"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       import sys
@@ -2907,7 +2965,7 @@ steps:
   - id: "agent-description-validation"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       from pathlib import Path
@@ -3062,7 +3120,7 @@ steps:
   - id: "body-instruction-check"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
       from pathlib import Path
@@ -3070,14 +3128,18 @@ steps:
       # amplifier_foundation is not guaranteed to be importable in every
       # environment this recipe runs in. Report a clean skip rather than
       # dying silently into the downstream json.loads fallback.
+      # BUG 2ii: catch the real failure and report it. A stale package copy
+      # imports fine but is missing the SYMBOL check_body_is_instruction — that
+      # raises ImportError too, so the old hard-coded "amplifier_foundation not
+      # importable" was misleading. Bind the exception and report it verbatim.
       try:
           from amplifier_foundation.validator import check_body_is_instruction
-      except ImportError:
+      except Exception as exc:
           print(json.dumps({
               "phase": "body_instruction_check",
               "skipped": True,
               "passed": True,
-              "reason": "amplifier_foundation not importable",
+              "reason": f"check_body_is_instruction unavailable: {exc}",
               "files_checked": 0,
               "errors": [],
               "warnings": []
@@ -3171,7 +3233,7 @@ steps:
   - id: "quality-classification"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
 
@@ -3404,6 +3466,7 @@ steps:
           has_behaviors = repo_structure.get("has_behaviors", False)
           has_standalone = repo_structure.get("has_standalone", False)
           has_agents = repo_structure.get("has_agents", False)
+          has_skills = repo_structure.get("has_skills", False)
           
           if not has_root and not has_behaviors and not has_standalone:
               results["structural_issues"].append({
@@ -3412,10 +3475,28 @@ steps:
                   "severity": "needs_work"
               })
           
-          if has_agents and not has_behaviors and not has_root:
+          orphan_agents_fired = has_agents and not has_behaviors and not has_root
+          if orphan_agents_fired:
               results["structural_issues"].append({
                   "type": "orphan_agents",
                   "message": "agents/ directory exists but no behaviors or root bundle to include them",
+                  "severity": "needs_work"
+              })
+          
+          # NEW (v3.9.0): a repo shipping agents/ and/or skills/ but no behaviors/
+          # has no composable per-behavior --app install surface. orphan_agents
+          # only fires when there is ALSO no root bundle, so the has-root case
+          # (and the skills-only case) previously passed silent. Report it as a
+          # distinct sibling finding, without double-firing with orphan_agents.
+          if (has_agents or has_skills) and not has_behaviors and not orphan_agents_fired:
+              results["structural_issues"].append({
+                  "type": "no_composable_surface",
+                  "message": (
+                      "Repo ships agents/ and/or skills/ but no behaviors/ directory, "
+                      "so there is no composable --app install surface. Ship a "
+                      "behaviors/<name>.yaml so consumers can `amplifier bundle add "
+                      "<repo>#subdirectory=behaviors/<name>.yaml --app`."
+                  ),
                   "severity": "needs_work"
               })
           
@@ -3708,7 +3789,7 @@ steps:
   - id: "initialize-optional-outputs"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       
       defaults = {
@@ -3996,7 +4077,7 @@ steps:
     depends_on: ["repo-discovery"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json, re, sys
       from pathlib import Path
 
@@ -4096,7 +4177,7 @@ steps:
     depends_on: ["bundle-doc-freshness-check"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       # v3: No per-entry-point .detail.md files — this step is a no-op.
       print(json.dumps({"skipped": True, "written": 0, "errors": []}))
@@ -4110,7 +4191,7 @@ steps:
     depends_on: ["bundle-doc-freshness-check"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json, sys
       from pathlib import Path
 
@@ -4187,7 +4268,7 @@ steps:
     depends_on: ["bundle-overview-regen-enhance"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json, subprocess, re, sys
       from pathlib import Path
 
