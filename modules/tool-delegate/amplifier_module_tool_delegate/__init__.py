@@ -240,104 +240,6 @@ def _validate_call_budget(value: Any) -> int | None:
     return value or None  # 0 -> None (explicit opt-out)
 
 
-# ---------------------------------------------------------------------------
-# SPAWN-BUDGET treatment (LOCAL PATCH -- not part of upstream
-# amplifier-foundation). See settings.max_spawns_per_session in this
-# module's docstring above. Distinct from the Layer 1 LLM-call budget
-# above: this caps the *count* of new sub-session spawns, not the number
-# of LLM calls within any one of them, and -- unlike
-# ``_validate_call_budget`` -- a bad value never raises. A misconfigured
-# spawn budget must never take down the whole delegate tool; it degrades
-# to unlimited (today's behavior) instead, with a logged warning.
-# ---------------------------------------------------------------------------
-
-
-def _parse_spawn_budget(value: Any) -> int | None:
-    """Defensively parse ``settings.max_spawns_per_session``.
-
-    Returns the parsed non-negative int budget, or ``None`` for
-    "unlimited" (no cap -- today's behavior, byte-identical when this
-    setting is absent). ``None`` is also returned -- with a logged
-    warning, never an exception -- for any value that cannot be
-    confidently parsed as a non-negative integer, so a typo or a bad
-    config value degrades to unlimited rather than either silently
-    blocking every new spawn or crashing tool construction.
-
-    Accepts:
-    - ``None`` -> ``None`` (unlimited; the default)
-    - ``int`` (not ``bool``) -> itself, when >= 0
-    - ``str`` -> ``int(value.strip())``, when that parses to a
-      non-negative int (e.g. ``"3"``, ``" 3 "``)
-
-    Rejects (warns, falls back to ``None`` / unlimited):
-    - ``bool`` (``bool`` is an ``int`` subclass in Python;
-      ``True``/``False`` must never silently become ``1``/``0`` here)
-    - a negative int, or a string that parses to a negative int
-    - ``float``, ``list``, ``dict``, or any other non-str/int type
-    - a string that does not parse as a base-10 integer (e.g. ``"lots"``)
-    """
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        logger.warning(
-            "max_spawns_per_session must be a non-negative integer (or a "
-            "numeric string), not a bool: %r. Falling back to unlimited "
-            "spawns.",
-            value,
-        )
-        return None
-    if isinstance(value, int):
-        if value < 0:
-            logger.warning(
-                "max_spawns_per_session must be >= 0, got %d. Falling back "
-                "to unlimited spawns.",
-                value,
-            )
-            return None
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = int(value.strip())
-        except ValueError:
-            logger.warning(
-                "max_spawns_per_session could not be parsed as an integer: "
-                "%r. Falling back to unlimited spawns.",
-                value,
-            )
-            return None
-        if parsed < 0:
-            logger.warning(
-                "max_spawns_per_session must be >= 0, got %d (from %r). "
-                "Falling back to unlimited spawns.",
-                parsed,
-                value,
-            )
-            return None
-        return parsed
-    logger.warning(
-        "max_spawns_per_session must be an integer, a numeric string, or "
-        "null; got %s: %r. Falling back to unlimited spawns.",
-        type(value).__name__,
-        value,
-    )
-    return None
-
-
-def _spawn_budget_message(used: int, limit: int) -> str:
-    """The judgment-respecting decline message for a budget-exceeded spawn.
-
-    Deliberately factual and non-scolding: states the cap, names the
-    caller's remaining tools, and reminds that resuming an existing
-    session is still unmetered. Kept short by design (<=60 words).
-    """
-    return (
-        f"Delegation budget reached ({used}/{limit} new agent sessions "
-        "used). Complete the remaining work directly with your own tools "
-        "-- you have filesystem, search, and bash. Resuming an existing "
-        "agent session (session_id=...) is still allowed."
-    )
-
-
 class _DelegateTimeoutExpired(Exception):
     """Internal signal that the delegate-owned timeout expired."""
 
@@ -492,17 +394,6 @@ class DelegateTool:
             settings.get("max_llm_calls")
         )
         self.budget_warn_ratio: float = float(settings.get("budget_warn_ratio", 0.8))
-
-        # SPAWN-BUDGET treatment (LOCAL PATCH). Hard cap on NEW sub-session
-        # spawns for the lifetime of this DelegateTool instance (one parent
-        # session). Resumes are never metered -- see execute()'s routing
-        # and _spawn_new_session's counter increment. Ships DARK: default
-        # None means "no cap at all", today's behavior, byte-identical,
-        # unless settings.max_spawns_per_session is explicitly set.
-        self.max_spawns_per_session: int | None = _parse_spawn_budget(
-            settings.get("max_spawns_per_session")
-        )
-        self._new_spawns_used: int = 0
 
         # Build feature registry for dynamic description composition
         self._feature_registry = self._build_feature_registry()
@@ -680,15 +571,6 @@ Special agent values:
         # Add self-delegation if enabled
         if self.self_delegation_enabled:
             base_description += '\n- agent="self": Spawn yourself as a sub-agent (maximum token conservation)'
-
-        # SPAWN-BUDGET treatment (LOCAL PATCH): one factual line, only when
-        # a budget is actually configured. No line at all when unlimited
-        # (today's behavior) -- see self.max_spawns_per_session.
-        if self.max_spawns_per_session is not None:
-            base_description += (
-                f"\n\nThis session has a budget of {self.max_spawns_per_session} "
-                "new agent sessions; resuming existing sessions is unmetered."
-            )
 
         # Add feature-based sections
         base_description += f"\n\n{feature_desc}"
@@ -1577,23 +1459,6 @@ Agent usage notes:
                 },
             )
 
-        # SPAWN-BUDGET treatment (LOCAL PATCH): reject at/over the cap with
-        # a normal ToolResult, never an exception. Resumes never reach this
-        # branch (handled above, by session_id). None means unlimited.
-        if (
-            self.max_spawns_per_session is not None
-            and self._new_spawns_used >= self.max_spawns_per_session
-        ):
-            return ToolResult(
-                success=False,
-                error={
-                    "message": _spawn_budget_message(
-                        self._new_spawns_used, self.max_spawns_per_session
-                    ),
-                    "code": "SPAWN_BUDGET_EXCEEDED",
-                },
-            )
-
         # Check agent exists in registry (with special handling for "self" and bundle paths)
         agents = self.coordinator.config.get("agents", {})
 
@@ -1986,22 +1851,6 @@ Agent usage notes:
             output_metadata = dict(result_metadata)
             if call_budget is not None:
                 output_metadata["budget_enforced"] = budget_enforced
-
-            # SPAWN-BUDGET treatment (LOCAL PATCH): count this new spawn --
-            # at the point it actually succeeded, not at the point it was
-            # merely requested (see execute()'s pre-spawn check above) and
-            # not on the timeout/error exception paths below (an infra
-            # failure should not cost the caller a slot) -- and append a
-            # remaining-budget footer so the caller can plan ahead. No-op,
-            # no footer, when unlimited (today's behavior).
-            if self.max_spawns_per_session is not None:
-                self._new_spawns_used += 1
-                remaining = max(self.max_spawns_per_session - self._new_spawns_used, 0)
-                cleaned_response = (
-                    f"{cleaned_response}\n\n"
-                    f"(new-session budget: {remaining} of "
-                    f"{self.max_spawns_per_session} remaining)"
-                )
 
             # Return output with session_id for multi-turn capability.
             # "response" is `cleaned_response` -- byte-identical to
