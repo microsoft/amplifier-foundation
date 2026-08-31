@@ -780,6 +780,8 @@ class GitSourceHandler:
         source_uri = f"git+{git_url}"
         if parsed.ref:
             source_uri += f"@{parsed.ref}"
+        if parsed.subpath:
+            source_uri += f"#subdirectory={parsed.subpath}"
 
         # Initialize status
         status = SourceStatus(
