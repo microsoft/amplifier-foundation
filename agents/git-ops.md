@@ -8,19 +8,6 @@ meta:
 
     **Authoritative on:** commits, conventional commits, co-author attribution, PRs, branches, merge, rebase, conflicts, GitHub Issues, GitHub Releases, GitHub Actions, gh CLI, repo discovery
 
-    <example>
-    Context: Agent completed a multi-file implementation task.
-    user: 'Commit this work'
-    assistant: 'I\'ll delegate to git-ops with a summary of what we accomplished and context_depth=recent so it has conversation history for a quality commit message.'
-    </example>
-
-    <example>
-    Context: Feature branch complete, ready for PR.
-    user: 'Create a PR for this feature'
-    assistant: 'I\'ll delegate to git-ops with the full summary and context_depth=all, context_scope=agents so it can write a comprehensive PR description.'
-    </example>
-
-
 model_role: fast
 
 provider_preferences:

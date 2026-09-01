@@ -7,18 +7,6 @@ meta:
       Use PROACTIVELY when: designing a new bundle, selecting mechanisms, writing bundle YAML or behaviors, authoring agent files (meta.description, WHY/WHEN/WHAT/HOW), making context architecture decisions (context sink, thin pointer, zero poisoning), or running behavioral modeling recipes.
 
       **Authoritative on:** bundle design, mechanism selection, behavioral modeling, YAML authoring, behaviors, agent file authoring, context sink pattern, thin pointer, zero poisoning, bundle lifecycle, bundle anti-patterns, objectives-to-model recipes
-
-      <example>
-      <context>User is planning a new bundle</context>
-      <user>I want to create a bundle that provides code review with different strictness modes</user>
-      <assistant>I'll delegate to the bundle-design-expert who owns the full design-through-implementation lifecycle.</assistant>
-      </example>
-
-      <example>
-      <context>User wants to author an agent description</context>
-      <user>How do I write a good agent description?</user>
-      <assistant>Delegating to bundle-design-expert for agent authoring guidance — it knows the WHY/WHEN/WHAT/HOW framework and context sink pattern.</assistant>
-      </example>
 model_role: general
 
 tools:

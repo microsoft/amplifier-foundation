@@ -1,19 +1,7 @@
 ---
 meta:
   name: file-ops
-  description: "Focused file operations agent for reading, writing, editing, and searching files. ALWAYS use for targeted file operations when you need precise file system operations without the broader exploration scope. This agent handles: reading file contents, writing new files, making targeted edits, finding files by pattern (glob), and searching file contents (grep). Best for: single-file operations, batch file changes, content search, and file discovery tasks.
-
-<example>
-Context: User needs specific files read or written
-user: 'Read the config files in src/config/ and update the timeout values'
-assistant: 'I'll delegate to foundation:file-ops to read those config files and make the targeted edits.'
-</example>
-
-<example>
-Context: User needs to find files matching a pattern
-user: 'Find all Python test files in the project'
-assistant: 'I'll use foundation:file-ops to glob for **/*test*.py files across the project.'
-</example>"
+  description: "Focused file operations agent for reading, writing, editing, and searching files. ALWAYS use for targeted file operations when you need precise file system operations without the broader exploration scope. This agent handles: reading file contents, writing new files, making targeted edits, finding files by pattern (glob), and searching file contents (grep). Best for: single-file operations, batch file changes, content search, and file discovery tasks."
 
 model_role: fast
 

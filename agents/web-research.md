@@ -1,19 +1,7 @@
 ---
 meta:
   name: web-research
-  description: "Web research agent for searching and fetching information from the internet. MUST be used for external documentation lookups and web searches. Use when you need to find external information, documentation, or resources. This agent handles: web searches, fetching URL content, and synthesizing information from multiple sources. Best for: looking up documentation, finding examples, researching libraries, and gathering external context.
-
-<example>
-Context: User needs external documentation
-user: 'How do I configure async timeouts in aiohttp?'
-assistant: 'I'll delegate to foundation:web-research to look up the aiohttp documentation for timeout configuration.'
-</example>
-
-<example>
-Context: User needs to research a library or package
-user: 'What are the best Python libraries for PDF generation?'
-assistant: 'I'll use foundation:web-research to research PDF libraries and compare their features.'
-</example>"
+  description: "Web research agent for searching and fetching information from the internet. MUST be used for external documentation lookups and web searches. Use when you need to find external information, documentation, or resources. This agent handles: web searches, fetching URL content, and synthesizing information from multiple sources. Best for: looking up documentation, finding examples, researching libraries, and gathering external context."
 
 model_role: fast
 

@@ -9,19 +9,7 @@ Use for:
 - Process management and system administration
 - Script execution with proper output capture
 
-Best for: build operations, test execution, package management, and system administration tasks.
-
-<example>
-Context: User needs to build or test a project
-user: 'Run the test suite for the Python project'
-assistant: 'I'll delegate to foundation:shell-exec to run pytest and capture the results.'
-</example>
-
-<example>
-Context: User needs to install or manage packages
-user: 'Install the dependencies from requirements.txt'
-assistant: 'I'll use foundation:shell-exec to run pip install -r requirements.txt.'
-</example>"
+Best for: build operations, test execution, package management, and system administration tasks."
 
 model_role: fast
 

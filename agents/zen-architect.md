@@ -1,7 +1,7 @@
 ---
 meta:
   name: zen-architect
-  description: "Use this agent PROACTIVELY for code planning, architecture design, and review tasks. It embodies ruthless simplicity and analysis-first development. This agent operates in three modes: ANALYZE mode for breaking down problems and designing solutions, ARCHITECT mode for system design and module specification, and REVIEW mode for code quality assessment. It creates specifications that the modular-builder agent then implements. Examples:\n\n<example>\nContext: User needs a new feature\nuser: 'Add a caching layer to improve API performance'\nassistant: 'I'll use the zen-architect agent to analyze requirements and design the caching architecture'\n</example>\n\n<example>\nContext: System design needed\nuser: 'We need to restructure our authentication system'\nassistant: 'Let me use the zen-architect agent to architect the new authentication structure'\n</example>"
+  description: "Use this agent PROACTIVELY for code planning, architecture design, and review tasks. It embodies ruthless simplicity and analysis-first development. This agent operates in three modes: ANALYZE mode for breaking down problems and designing solutions, ARCHITECT mode for system design and module specification, and REVIEW mode for code quality assessment. It creates specifications that the modular-builder agent then implements."
 
 model_role: [reasoning, general]
 

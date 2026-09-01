@@ -8,16 +8,6 @@ meta:
 
     **Authoritative on:** module implementation, bricks-and-studs pattern, self-contained modules, test writing, LSP-assisted code navigation, contract-based development, spec-to-code translation
 
-    <example>
-    user: 'Implement the CacheService from the spec in specs/cache-spec.md'
-    assistant: 'I\'ll use modular-builder to implement the CacheService.'
-    </example>
-
-    <example>
-    user: 'Add a caching layer to improve performance'
-    assistant: 'I\'ll first use zen-architect to analyze and design the caching approach, then modular-builder will implement it.'
-    </example>
-
 model_role: [coding, general]
 
 provider_preferences:
