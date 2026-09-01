@@ -1,9 +1,63 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.10.0
+# Repository-Wide Bundle Validator Recipe v3.11.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.11.0 - NEW PHASE 0.6: module-dep-resolvability-check
+#        - Deterministic, no network, no LLM. `amplifier update` refreshes every
+#          bundle module with `uv pip install -e <cache-module-dir> --python
+#          <app venv> --quiet --no-sources`. --no-sources disables
+#          [tool.uv.sources] entirely; uv does not treat an already-installed
+#          editable as a resolution candidate. A module pyproject.toml that
+#          depends on a SIBLING distribution defined elsewhere in the same
+#          repo (root pyproject.toml or another modules/*/pyproject.toml) by
+#          BARE NAME -- or only via [tool.uv.sources] -- fails that refresh:
+#          "X was not found in the package registry".
+#        - REAL-WORLD EVIDENCE (two independent incidents, same defect class):
+#          (1) amplifier-engram: all 3 modules' pyproject.toml declared
+#          `dependencies = ["amplifier-engram"]` (bare name for the repo's own
+#          unpublished store library). `amplifier update` failed on a live
+#          user host with exactly the uv "not found in the package registry"
+#          error. Fixed by PEP 508 direct git references
+#          (`amplifier-engram @ git+https://github.com/bkrabach/amplifier-engram@main`).
+#          (2) amplifier-browser-bridge modules/tool-browser-bridge: same
+#          latent bare-name + [tool.uv.sources] pattern, found by survey while
+#          fixing (1); fix PR opened in parallel upstream. Same defect family
+#          as foundation PR #332 (BUNDLE_GUIDE.md's own module `source:`
+#          examples taught a relative path that only resolves under the
+#          AUTHORING context, not the actual RUNTIME resolution context) --
+#          all three are "a reference that is only valid in the context it
+#          was written in, not the context it is resolved in".
+#        - Builds a PEP 503-normalized set of every distribution name the repo
+#          itself defines (root pyproject.toml [project].name + every
+#          modules/*/pyproject.toml [project].name), then scans each module's
+#          [project].dependencies and [project.optional-dependencies] for a
+#          requirement naming one of those distributions without a PEP 508
+#          direct URL reference (`name @ <url>`).
+#        - Finding: module_dep_unresolvable_no_sources, severity ERROR (feeds
+#          critical_count, same tier as structure_lint/hygiene/mode_validation/
+#          agent_description ERRORs -- this is a real `amplifier update`
+#          breakage, not a style suggestion). Message names the exact failure
+#          mode and, when a [tool.uv.sources] entry exists for the dependency,
+#          states explicitly that --no-sources disables it (no protection).
+#          Fix names a PEP 508 direct git reference, with
+#          #subdirectory=modules/<name> when the dependency is itself a
+#          sibling module, plus the hatchling allow-direct-references = true
+#          note when the module's own build-backend is hatchling.
+#        - NEW context var published_distributions (v3.11.0): JSON list of
+#          repo-defined distribution names genuinely published to a real
+#          package registry -- same escape-hatch shape as root_bundle_repo.
+#          A bare-name reference to a published distribution DOES resolve
+#          under --no-sources, so its finding is downgraded ERROR -> INFO
+#          (module_dep_bare_name_but_published) instead of suppressed
+#          outright, so it stays visible without failing the build.
+#        - quality-classification incorporates module_dep_issues into
+#          critical_count exactly like the other ERROR-tier checks
+#        - synthesize-report includes Module Dependency Resolvability Check
+#          section + Executive Summary line
+#        - CRITICAL (repo lesson, v3.9.0): the new heredoc uses
+#          "${AMPLIFIER_PYTHON:-python3}", never bare python3
 # v3.10.0 - Example-policy tightening + NEW README install-convention checks
 #        - Phase 2.8 (agent description budget): <example> and <commentary>
 #          presence are now ERROR (was WARNING at >2 examples / any
@@ -258,6 +312,7 @@ description: |
   - **NEW in v3.6.0:** Mode description token budget validation (WARNING >500, ERROR >800 tokens)
   - **NEW in v3.6.0:** Mode advertising-rule enforcement (unadvertised modes must not be named in agent-readable files)
   - **NEW in v3.10.0:** README install-instructions convention (behavior-over-root recommendation, `--app` flag, `uv tool install`/`uv pip install` over bare `pip install`, git+https availability for shipped CLIs)
+  - **NEW in v3.11.0:** Module dependency resolvability (detects bare-name/uv.sources-only references from a module to a sibling in-repo distribution that break `amplifier update`'s per-module `--no-sources` refresh)
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Repository composition analysis (do pieces fit together correctly?)
@@ -301,7 +356,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.10.0"
+version: "3.11.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -316,6 +371,11 @@ context:
   root_bundle_repo: "false"  # Optional (v3.10.0): set "true" if this repo's own purpose is to
     # produce root bundles for users (uncommon) -- suppresses the
     # readme_recommends_root_bundle finding
+  published_distributions: ""  # Optional (v3.11.0): JSON list of repo-defined distribution
+    # names genuinely published to a real package registry (PyPI/etc). Bare-name
+    # sibling references to these DO resolve under `amplifier update`'s
+    # --no-sources refresh, so findings for them are downgraded ERROR -> INFO.
+    # Default "" (empty list): assume nothing is published.
 
 steps:
   # ============================================================================
@@ -613,6 +673,274 @@ steps:
       print(json.dumps(result))
       EOF
     output: "packaging_check"
+    parse_json: true
+    timeout: 30
+    on_error: "continue"
+    depends_on: ["environment-check"]
+
+  # ============================================================================
+  # PHASE 0.6: Module Dependency Resolvability Check (v3.11.0)
+  #
+  # Deterministic, no network, no LLM. `amplifier update` refreshes every
+  # bundle module with:
+  #   uv pip install -e <cache-module-dir> --python <app venv> --quiet --no-sources
+  # `--no-sources` disables [tool.uv.sources] entirely. If a module's
+  # pyproject.toml depends on a SIBLING distribution defined elsewhere in
+  # THIS repo (root pyproject.toml or another modules/*/pyproject.toml) by
+  # BARE NAME -- or only via a [tool.uv.sources] path/git source -- that
+  # refresh fails: "X was not found in the package registry" (uv does not
+  # treat an already-installed editable as a resolution candidate). Real
+  # incidents: amplifier-engram (all 3 modules failed the updater's refresh
+  # on a user host; fixed by PEP 508 direct references) and
+  # amplifier-browser-bridge modules/tool-browser-bridge (same latent
+  # pattern). See also foundation PR #332 (bundle-guide module-source
+  # docs taught the same broken relative-path pattern) -- all three are the
+  # same defect family: a reference that only resolves under the AUTHORING
+  # context, not the actual RUNTIME resolution context.
+  #
+  # Builds a PEP 503-normalized set of every distribution name THIS repo
+  # defines (root pyproject.toml [project].name + every
+  # modules/*/pyproject.toml [project].name), then scans each module's
+  # [project].dependencies and [project.optional-dependencies] for a
+  # requirement naming one of those distributions without a PEP 508 direct
+  # URL reference (`name @ <url>`). Escape hatch: context var
+  # published_distributions lists names genuinely published to a real
+  # registry -- their bare-name references DO resolve under --no-sources,
+  # so findings for them are downgraded ERROR -> INFO.
+  # ============================================================================
+
+  - id: "module-dep-resolvability-check"
+    type: "bash"
+    command: |
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json
+      import re
+      import sys
+      from pathlib import Path
+
+      repo_path = "{{repo_path}}"
+      published_raw = """{{published_distributions}}"""
+
+      result = {
+          "phase": "module_dep_resolvability_check",
+          "skipped": False,
+          "modules_checked": 0,
+          "repo_defined_distributions": [],
+          "published_distributions": [],
+          "errors": [],
+          "warnings": [],
+          "info": []
+      }
+
+      path = Path(repo_path).resolve()
+
+      try:
+          import tomllib
+      except ImportError:
+          try:
+              import tomli as tomllib
+          except ImportError:
+              result["skipped"] = True
+              result["passed"] = True
+              result["info"].append({
+                  "type": "missing_toml_parser",
+                  "message": "Cannot parse pyproject.toml files - tomllib/tomli not available",
+                  "severity": "INFO"
+              })
+              print(json.dumps(result))
+              sys.exit(0)
+
+      def normalize(name):
+          """PEP 503 normalization: lowercase, collapse [-_.] runs to a single '-'."""
+          return re.sub(r"[-_.]+", "-", name).lower()
+
+      def parse_req_name(req):
+          """Extract the distribution name from a PEP 508 requirement string."""
+          req = req.strip()
+          if not req or req.startswith("#"):
+              return None
+          match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", req)
+          if not match:
+              return None
+          return match.group(1)
+
+      def has_direct_reference(req):
+          """True if this requirement uses a PEP 508 direct URL ref (name @ url).
+
+          --no-sources only disables [tool.uv.sources]; a direct reference
+          embedded in the requirement string itself survives it.
+          """
+          without_marker = req.split(";", 1)[0]
+          return "@" in without_marker
+
+      def load_pyproject(pyproject_path):
+          try:
+              with open(pyproject_path, "rb") as f:
+                  return tomllib.load(f), None
+          except Exception as exc:
+              return None, str(exc)
+
+      # Escape hatch: names genuinely published to a real registry (PyPI/etc).
+      # Bare-name references to these DO resolve under --no-sources.
+      published_distributions = set()
+      if published_raw.strip():
+          try:
+              published_list = json.loads(published_raw)
+              if isinstance(published_list, list):
+                  published_distributions = {normalize(str(n)) for n in published_list}
+          except (json.JSONDecodeError, ValueError):
+              pass
+      result["published_distributions"] = sorted(published_distributions)
+
+      # --- Step 1: the set of distributions THIS repo defines ---
+      # normalized_name -> {"display": str, "kind": "root"|"module", "module_dir": str|None}
+      repo_defined = {}
+
+      root_pyproject = path / "pyproject.toml"
+      if root_pyproject.exists():
+          config, err = load_pyproject(root_pyproject)
+          if config is not None:
+              name = config.get("project", {}).get("name")
+              if name:
+                  repo_defined[normalize(name)] = {"display": name, "kind": "root", "module_dir": None}
+
+      modules_dir = path / "modules"
+      module_pyprojects = sorted(modules_dir.glob("*/pyproject.toml")) if modules_dir.is_dir() else []
+      for mp in module_pyprojects:
+          config, err = load_pyproject(mp)
+          if config is None:
+              continue
+          name = config.get("project", {}).get("name")
+          if name:
+              repo_defined[normalize(name)] = {"display": name, "kind": "module", "module_dir": mp.parent.name}
+
+      result["repo_defined_distributions"] = sorted(v["display"] for v in repo_defined.values())
+
+      if not module_pyprojects:
+          result["skipped"] = True
+          result["passed"] = True
+          result["info"].append({
+              "type": "no_modules_dir",
+              "message": "No modules/*/pyproject.toml files found - nothing to check.",
+              "severity": "INFO"
+          })
+          print(json.dumps(result))
+          sys.exit(0)
+
+      # --- Step 2: check each module's own declared dependencies ---
+      for mp in module_pyprojects:
+          module_name = mp.parent.name
+          config, err = load_pyproject(mp)
+          if config is None:
+              result["warnings"].append({
+                  "type": "module_pyproject_parse_error",
+                  "module": module_name,
+                  "message": f"Failed to parse {mp.relative_to(path)}: {err}",
+                  "severity": "WARNING"
+              })
+              continue
+
+          result["modules_checked"] += 1
+          project = config.get("project", {})
+          uv_sources = config.get("tool", {}).get("uv", {}).get("sources", {}) or {}
+          backend = config.get("build-system", {}).get("build-backend", "") or ""
+          is_hatchling = "hatchling" in backend
+
+          dep_lists = {"dependencies": project.get("dependencies", []) or []}
+          for extra_name, extra_deps in (project.get("optional-dependencies", {}) or {}).items():
+              dep_lists[f"optional-dependencies.{extra_name}"] = extra_deps or []
+
+          for dep_field, deps in dep_lists.items():
+              for req in deps:
+                  if not isinstance(req, str):
+                      continue
+                  dep_name = parse_req_name(req)
+                  if not dep_name:
+                      continue
+                  dep_norm = normalize(dep_name)
+
+                  if dep_norm not in repo_defined:
+                      continue  # not a sibling distribution from this repo
+
+                  if has_direct_reference(req):
+                      continue  # PEP 508 direct reference survives --no-sources
+
+                  uv_source_entry = None
+                  for src_name, src_value in uv_sources.items():
+                      if normalize(src_name) == dep_norm:
+                          uv_source_entry = src_value
+                          break
+
+                  sibling = repo_defined[dep_norm]
+                  base_message = (
+                      f"modules/{module_name}/pyproject.toml declares a {dep_field} on "
+                      f"'{dep_name}' by bare name, but '{sibling['display']}' is a sibling "
+                      "distribution defined in THIS repo (not on any package registry). "
+                      "`amplifier update` refreshes each module with "
+                      "`uv pip install -e <module-dir> --python <app venv> --quiet "
+                      "--no-sources`, which resolves bare names against the package "
+                      f"registry ONLY -- it will fail with \"{dep_name} was not found in "
+                      "the package registry\"."
+                  )
+                  if uv_source_entry is not None:
+                      base_message += (
+                          f" A [tool.uv.sources] entry exists for '{dep_name}' "
+                          f"({json.dumps(uv_source_entry)}), but --no-sources disables "
+                          "[tool.uv.sources] entirely during this refresh, so it provides "
+                          "no protection."
+                      )
+
+                  subdirectory_hint = (
+                      f"#subdirectory=modules/{sibling['module_dir']}" if sibling["kind"] == "module" else ""
+                  )
+                  fix = (
+                      f"Reference '{dep_name}' with a PEP 508 direct git reference instead "
+                      f"of a bare name, e.g. `{dep_name} @ "
+                      f"git+https://github.com/<org>/<repo>@main{subdirectory_hint}`."
+                  )
+                  if is_hatchling:
+                      fix += (
+                          " This module's build backend is hatchling: also set "
+                          "`allow-direct-references = true` under [tool.hatch.metadata] "
+                          "in its pyproject.toml, or the build will refuse the reference."
+                      )
+
+                  if dep_norm in published_distributions:
+                      result["info"].append({
+                          "type": "module_dep_bare_name_but_published",
+                          "module": module_name,
+                          "dependency": dep_name,
+                          "field": dep_field,
+                          "message": (
+                              base_message
+                              + f" '{dep_name}' is listed in the published_distributions "
+                              "context var, so this bare-name reference is expected to "
+                              "resolve fine against the real registry."
+                          ),
+                          "severity": "INFO"
+                      })
+                  else:
+                      result["errors"].append({
+                          "type": "module_dep_unresolvable_no_sources",
+                          "module": module_name,
+                          "dependency": dep_name,
+                          "field": dep_field,
+                          "message": base_message,
+                          "severity": "ERROR",
+                          "fix": fix
+                      })
+
+      result["passed"] = len(result["errors"]) == 0
+      result["summary"] = {
+          "modules_checked": result["modules_checked"],
+          "repo_defined_distributions": len(result["repo_defined_distributions"]),
+          "errors": len(result["errors"]),
+          "warnings": len(result["warnings"]),
+          "info": len(result["info"])
+      }
+      print(json.dumps(result))
+      EOF
+    output: "module_dep_resolvability_check"
     parse_json: true
     timeout: 30
     on_error: "continue"
@@ -3559,6 +3887,13 @@ steps:
       except (json.JSONDecodeError, ValueError):
           readme_convention = {"passed": True, "skipped": True, "errors": [], "warnings": [], "info": []}
 
+      # v3.11.0: Parse module dependency resolvability check results
+      module_dep_raw = '''{{module_dep_resolvability_check}}'''
+      try:
+          module_dep_resolvability = json.loads(module_dep_raw)
+      except (json.JSONDecodeError, ValueError):
+          module_dep_resolvability = {"passed": True, "skipped": True, "errors": [], "warnings": [], "info": []}
+
       # Handle case where individual validation was skipped
       if individual.get("skipped", False):
           # v3.2.0: Check if this is an environment limitation (not a bundle problem)
@@ -3675,6 +4010,7 @@ steps:
               "body_instruction_issues": [],  # v3.7.0
               "agent_description_issues": [],  # Phase 2.8
               "readme_convention_issues": [],  # v3.10.0
+              "module_dep_issues": [],  # v3.11.0
               # v3.2.0: Environment status tracking
               "environment_status": {
                   "validation_mode": env_check.get("validation_mode", "unknown"),
@@ -3928,6 +4264,31 @@ steps:
                       "severity": "INFO"
                   })
 
+          # v3.11.0: Module dependency resolvability findings. ERROR severity --
+          # these ARE blocking (feed critical_count below), same tier as
+          # structure_lint/hygiene/mode_validation/agent_description ERRORs,
+          # because the failure mode is a real `amplifier update` breakage, not
+          # a style suggestion. INFO findings (published_distributions escape
+          # hatch) are informational only.
+          if not module_dep_resolvability.get("skipped", False):
+              for error in module_dep_resolvability.get("errors", []):
+                  results["module_dep_issues"].append({
+                      "type": error.get("type"),
+                      "module": error.get("module"),
+                      "dependency": error.get("dependency"),
+                      "message": error.get("message"),
+                      "severity": "ERROR",
+                      "fix": error.get("fix", "")
+                  })
+              for info in module_dep_resolvability.get("info", []):
+                  results["module_dep_issues"].append({
+                      "type": info.get("type"),
+                      "module": info.get("module"),
+                      "dependency": info.get("dependency"),
+                      "message": info.get("message"),
+                      "severity": "INFO"
+                  })
+
           # Determine overall quality level
           # Priority: critical > needs_work > polish > good
           
@@ -3939,6 +4300,7 @@ steps:
           critical_count += len([i for i in results["experiment_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"])  # v3.6.0
           critical_count += len([i for i in results["agent_description_issues"] if i.get("severity") == "ERROR"])  # Phase 2.8
+          critical_count += len([i for i in results["module_dep_issues"] if i.get("severity") == "ERROR"])  # v3.11.0
 
           # Recipe validation impact
           recipe_quality = recipe_validation.get("quality_level", "good")
@@ -4007,7 +4369,8 @@ steps:
               "body_instruction_warnings": len(results["body_instruction_issues"]),  # v3.7.0
               "agent_description_errors": len([i for i in results["agent_description_issues"] if i.get("severity") == "ERROR"]),  # Phase 2.8
               "agent_description_warnings": len([i for i in results["agent_description_issues"] if i.get("severity") == "WARNING"]),  # Phase 2.8
-              "readme_convention_needs_work": len([i for i in results["readme_convention_issues"] if i.get("severity") == "needs_work"])  # v3.10.0
+              "readme_convention_needs_work": len([i for i in results["readme_convention_issues"] if i.get("severity") == "needs_work"]),  # v3.10.0
+              "module_dep_errors": len([i for i in results["module_dep_issues"] if i.get("severity") == "ERROR"])  # v3.11.0
           }
 
           # v3.3.0: Recipe validation summary
@@ -4034,7 +4397,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
-    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation", "body-instruction-check", "agent-description-validation", "readme-install-convention-check"]
+    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation", "body-instruction-check", "agent-description-validation", "readme-install-convention-check", "module-dep-resolvability-check"]
 
   # ============================================================================
   # PHASE 2.75: Initialize Optional Outputs
@@ -4701,6 +5064,11 @@ steps:
       {{readme_install_convention_results}}
       ```
 
+      **Module Dependency Resolvability Check (v3.11.0):**
+      ```json
+      {{module_dep_resolvability_check}}
+      ```
+
       **Bundle Doc Freshness (Phase 6 v3):**
       ```json
       {{bundle_doc_freshness}}
@@ -4734,6 +5102,7 @@ steps:
       - **Quality Breakdown**: X good, Y polish, Z needs_work, W critical
       - **Packaging**: PASS/FAIL/SKIPPED
       - **Hygiene**: PASS/FAIL (v3.0.0 checks)
+      - **Module Dependency Resolvability**: PASS/FAIL (v3.11.0 -- 0 module_dep_unresolvable_no_sources errors = PASS)
       - **Issues**: X errors, Y warnings, Z suggestions
 
       ## Environment Status (v3.2.0)
@@ -4868,6 +5237,33 @@ steps:
       - INFO findings (no_readme, no_bundle_add_commands, docs_pip_install) are informational only -- do not treat as defects
       - If no warnings: "README install-instructions convention: no findings"
       - Severity is "needs_work" for all warnings here -- these feed needs_work_count, not critical_count
+
+      ### Module Dependency Resolvability Check (v3.11.0)
+      Use module_dep_resolvability_check to report:
+      - modules_checked: total number of modules/*/pyproject.toml files checked
+      - repo_defined_distributions: list of distribution names this repo itself defines (root + modules)
+      - For each ERROR of type module_dep_unresolvable_no_sources:
+        - [ERROR] the finding's message (names the module, the bare sibling dependency, and the
+          exact `amplifier update` failure mode: `uv pip install -e ... --no-sources` resolves
+          bare names against the package registry only, and an already-installed editable is
+          NOT a resolution candidate)
+        - The fix: the finding's own `fix` field (PEP 508 direct git reference, with
+          `#subdirectory=modules/<name>` when the dependency is a sibling module, plus the
+          hatchling `allow-direct-references = true` note when applicable)
+        - If the message mentions a [tool.uv.sources] entry, make clear that entry provides
+          NO protection here -- `--no-sources` is exactly what disables it
+      - For each INFO of type module_dep_bare_name_but_published: informational only -- the
+        dependency is listed in published_distributions, so uv can resolve it against the real
+        registry even under --no-sources; do not treat as a defect
+      - If module_dep_resolvability_check.skipped == true: "Module dependency resolvability
+        check: skipped (no modules/*/pyproject.toml files found)"
+      - If no errors: "Module dependency resolvability: all N modules' sibling-distribution
+        dependencies use resolvable references"
+      - This check is ERROR severity (feeds critical_count, not needs_work_count) -- unlike the
+        README convention check above, this is a real `amplifier update` breakage, not a style
+        suggestion. Real-world precedent: amplifier-engram (all 3 modules broke the updater's
+        refresh on a live host) and amplifier-browser-bridge modules/tool-browser-bridge (same
+        latent pattern, fix in a parallel PR)
 
       ### Standalone Completeness
       | Bundle | Orchestrator | Context | Provider | Status |
