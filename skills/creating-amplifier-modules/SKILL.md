@@ -208,13 +208,7 @@ tools:
     source: git+https://github.com/org/repo@main#subdirectory=modules/tool-{name}
 ```
 
-For local development (relative path from bundle root):
-
-```yaml
-tools:
-  - module: tool-{name}
-    source: ./modules/tool-{name}
-```
+Use this self-referential git URL form even for modules that live in the bundle's own repo — it resolves the same way no matter which file declares it. A bare relative path (`source: ./modules/tool-{name}`) resolves relative to whichever bundle file is active at activation time, not the file that declares it, so it only works from a root `bundle.md`/`bundle.yaml` and breaks silently when the same line is used in a `behaviors/*.yaml` or other included file.
 
 ---
 

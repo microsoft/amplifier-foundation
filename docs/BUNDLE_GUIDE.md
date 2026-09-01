@@ -287,7 +287,7 @@ agents:
     instructions: my-bundle:agents/my-agent.md
     tools:
       - module: tool-special    # This agent gets specific tools
-        source: ./modules/tool-special
+        source: git+https://github.com/org/repo@main#subdirectory=modules/tool-special
 ```
 
 **Use when**: Agent needs bundle-specific tool configurations that differ from the parent bundle.
@@ -903,10 +903,10 @@ packages = ["amplifier_module_tool_{name}"]
 ```yaml
 tools:
   - module: tool-{name}
-    source: ./modules/tool-{name}    # local path
-    # OR for published modules:
-    # source: git+https://github.com/org/repo@main#subdirectory=modules/tool-{name}
+    source: git+https://github.com/org/repo@main#subdirectory=modules/tool-{name}
 ```
+
+Use this self-referential git URL form even when the module lives in the bundle's own repo — it works regardless of which file (`bundle.md`, a `behaviors/*.yaml`, etc.) declares it. A bare relative path (`./modules/tool-{name}`) resolves relative to whichever bundle file is active at activation time, not the file that declares it, so it breaks silently when used from anywhere other than the root bundle file.
 
 ---
 
@@ -1326,7 +1326,7 @@ includes:
 # Only declare tools NOT inherited from includes
 tools:
   - module: tool-name
-    source: ./modules/tool-name     # Local path
+    source: git+https://github.com/my-org/my-bundle@main#subdirectory=modules/tool-name
     config:
       setting: value
 
@@ -1366,12 +1366,12 @@ Bundles support multiple source formats for modules:
 
 | Format | Example | Use Case |
 |--------|---------|----------|
-| Local path | `./modules/my-module` | Modules within the bundle |
-| Relative path | `../shared-module` | Sibling directories |
 | Git URL | `git+https://github.com/org/repo@main` | External modules |
-| Git with subpath | `git+https://github.com/org/repo@main#subdirectory=modules/foo` | Module within larger repo |
+| Git with subpath | `git+https://github.com/org/repo@main#subdirectory=modules/foo` | Module within larger bundle repo (including the bundle's own modules) |
 
-**Local paths are resolved relative to the bundle's location.**
+**For modules that live in the bundle's own repo, use a self-referential git URL with `#subdirectory=`** — the same form used for every module in this repo (see `bundle.md`, `behaviors/*.yaml`). It is the one canonical form: it names the module the same way no matter which file in the bundle declares it.
+
+**Avoid bare relative paths** (`source: ./modules/foo`). They're still technically accepted, but they resolve relative to whichever bundle file is active when the module is activated — not necessarily the file that declares it. That makes them position-sensitive: they work from a root `bundle.md`/`bundle.yaml`, but silently resolve to the wrong directory (and fail with "File not found") when the same `source:` line lives in a file loaded via `includes:`, such as `behaviors/*.yaml`. The self-referential git URL form above has no such position-dependence.
 
 ---
 
