@@ -10,20 +10,6 @@ meta:
     - Cross-repo workflows and dependency management
     - Working memory patterns for long sessions
     - Understanding ecosystem architecture and dependencies
-
-    Examples:
-
-    <example>
-    Context: User needs to test changes across multiple repos
-    user: 'How do I test my amplifier-core changes with amplifier-foundation?'
-    assistant: 'I'll delegate to foundation:ecosystem-expert for multi-repo testing patterns.'
-    </example>
-
-    <example>
-    Context: User is making coordinated changes
-    user: 'I need to update a kernel contract and all affected modules'
-    assistant: 'Let me consult foundation:ecosystem-expert for the correct change and push order across repos.'
-    </example>
 model_role: general
 
 provider_preferences:

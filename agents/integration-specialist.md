@@ -1,7 +1,7 @@
 ---
 meta:
   name: integration-specialist
-  description: "Expert at integrating with external services, APIs, and MCP servers while maintaining simplicity. Also analyzes and manages dependencies for security, compatibility, and technical debt. MUST be used when connecting to external services, setting up MCP servers, handling API integrations, or analyzing project dependencies. Examples: <example>user: 'Set up integration with the new payment API' assistant: 'I'll use the integration-specialist agent to create a simple, direct integration with the payment API.'</example> <example>user: 'Connect our system to the MCP notification server' assistant: 'Let me use the integration-specialist agent to set up the MCP server connection properly.'</example>"
+  description: "Expert at integrating with external services, APIs, and MCP servers while maintaining simplicity. Also analyzes and manages dependencies for security, compatibility, and technical debt. MUST be used when connecting to external services, setting up MCP servers, handling API integrations, or analyzing project dependencies."
 
 model_role: general
 

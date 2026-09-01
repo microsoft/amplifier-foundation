@@ -8,17 +8,6 @@ meta:
 
     **Authoritative on:** session repair, transcript surgery, rewind/rollback, orphaned tool_calls, ordering violations, events.jsonl analysis, session search, transcript.jsonl, provider rejection errors, session history
 
-    <example>
-    user: 'Session X won\'t resume' or 'Why did my session fail?'
-    assistant: 'I\'ll delegate to session-analyst — it has specialized tools for safely diagnosing transcript issues and reading events.jsonl without crashing the session.'
-    </example>
-
-    <example>
-    user: 'Find the session where we built the caching layer'
-    assistant: 'I\'ll use session-analyst to search your session history — it can query by project, date, keyword, or partial session ID.'
-    </example>
-
-
 model_role: fast
 
 provider_preferences:

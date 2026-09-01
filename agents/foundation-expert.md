@@ -8,19 +8,6 @@ meta:
 
     **Authoritative on:** foundation inventory, examples catalog, behaviors, agents, philosophy docs, concepts (CONCEPTS.md), configuration, ecosystem navigation, foundation patterns, @mention system, contribution channels
 
-    <example>
-    Context: Finding working examples
-    user: 'Show me how to set up a multi-provider configuration'
-    assistant: 'Let me ask foundation:foundation-expert — it has access to all the working examples and can point to the right pattern.'
-    </example>
-
-    <example>
-    Context: Philosophy question
-    user: 'Should I inline my instructions or create separate context files?'
-    assistant: 'I\'ll consult foundation:foundation-expert for the recommended approach based on modular design philosophy.'
-    </example>
-
-
 model_role: general
 
 provider_preferences:

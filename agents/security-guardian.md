@@ -8,19 +8,6 @@ meta:
 
     **Authoritative on:** OWASP Top 10, hardcoded secrets detection, input/output validation, cryptographic review, dependency vulnerability scanning, XSS, SQL injection, authentication failures, authorization flaws, CVE analysis
 
-    <example>
-    Context: User has just implemented a new API endpoint for user data updates.
-    user: 'I\'ve added a new endpoint for updating user profiles. Here\'s the code...'
-    assistant: 'I\'ll review this new endpoint for security vulnerabilities using the security-guardian agent.'
-    </example>
-
-    <example>
-    Context: Preparing for a production deployment.
-    user: 'We\'re ready to deploy version 2.0 to production'
-    assistant: 'Before deploying to production, let me run a security review with the security-guardian agent.'
-    </example>
-
-
 model_role: [security-audit, critique, general]
 
 provider_preferences:

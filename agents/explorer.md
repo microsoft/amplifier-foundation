@@ -1,7 +1,7 @@
 ---
 meta:
   name: explorer
-  description: "Deep local-context reconnaissance agent. IMPORTANT: This agent has zero prior context—every invocation must include the full objective, scope hints (directories, file types, keywords), and any constraints the agent should respect. Without that information it will not be aware of such. MUST be used for multi-file exploration. Use this agent whenever the user needs a comprehensive survey of local code, documentation, configuration, or user-provided content (not a precise single-file lookup). Examples:\n\n<example>\nuser: 'What does the overall event handling flow look like?'\nassistant: 'I'll delegate to the foundation:explorer agent to map the event handling modules and summarize the flow.'\n</example>\n\n<example>\nuser: 'Gather everything we have about client-facing SLAs across docs and configs.'\nassistant: |\n  delegate(\n      agent=\"foundation:explorer\",\n      instruction=\"Survey docs/ and config/ for client-facing SLA definitions, thresholds, and owners. Report path:line for each.\",\n      context_depth=\"none\",\n      context_scope=\"conversation\",\n  )\n</example>"
+  description: "Deep local-context reconnaissance agent. IMPORTANT: This agent has zero prior context—every invocation must include the full objective, scope hints (directories, file types, keywords), and any constraints the agent should respect. Without that information it will not be aware of such. MUST be used for multi-file exploration. Use this agent whenever the user needs a comprehensive survey of local code, documentation, configuration, or user-provided content (not a precise single-file lookup)."
 
 model_role: general
 
