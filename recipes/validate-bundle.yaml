@@ -2,6 +2,27 @@
 # Multi-Bundle Validator Recipe with Accurate Dependency Tracing
 # Validates all bundles in a repo (root + /bundles/*) with proper dependency tracing.
 #
+# =============================================================================
+# CHANGELOG
+# =============================================================================
+#
+# v2.1.0:
+#   - Portability: declare a schema_version 2 dependency manifest (contract
+#     recipe-dependency-manifest.v1). The `agent: "foundation:zen-architect"`
+#     step below previously resolved out of the CALLING session's agent map;
+#     a caller without that agent failed at run time with
+#     "Agent 'foundation:zen-architect' not found in configuration". It now
+#     resolves from this recipe's own declared closure.
+#   - Self-referential on purpose: foundation's own recipe declares foundation
+#     as a dependency. Core 11 forbids inferring a source from the
+#     `foundation:` namespace prefix -- an undeclared dependency is never
+#     guessed, so it must be written down.
+#   - The `validate-single-bundle.yaml` sub-recipe invoked below carries its
+#     own manifest (v2.3.0); a sub-recipe declares its own closure rather than
+#     inheriting the parent's.
+#   - No behavior change under the legacy engine, which ignores both new
+#     top-level keys. Recipe logic, steps and prompts untouched.
+#
 # v2.0.0 MAJOR UPDATE: Now traces ACTUAL bundle dependencies via `includes:`
 # instead of scanning all behaviors in the repo. This ensures that:
 # - Token costs are correctly attributed to the bundles that actually use them
@@ -19,6 +40,22 @@
 #     recipe_path=foundation:recipes/validate-bundle.yaml \
 #     context='{"bundle_path": "/path/to/repo"}'
 
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+# ---------------------------------------------------------------------------
+
 name: validate-bundle
 description: |
   Validates Amplifier bundles with accurate dependency tracing.
@@ -32,7 +69,7 @@ description: |
   For example, if a behavior is only included by `bundles/amplifier-dev.yaml`
   and NOT by the root `bundle.md`, its context files will only be counted
   when validating `amplifier-dev`.
-version: "2.0.0"
+version: "2.1.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "context-health", "dependency-tracing"]
 
@@ -271,7 +308,7 @@ steps:
 
       ### Metadata
       - Validated: (current date/time)
-      - Recipe: validate-bundle v2.0.0
+      - Recipe: validate-bundle v2.1.0
       - Foundation available: (from env_check)
       - Dependency tracing: enabled
     output: "final_report"
