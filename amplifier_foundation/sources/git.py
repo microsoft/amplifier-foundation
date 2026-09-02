@@ -29,14 +29,33 @@ logger = logging.getLogger(__name__)
 # Metadata file name for tracking cache info
 CACHE_METADATA_FILE = ".amplifier_cache_meta.json"
 
-# Full 40-character hex commit SHA (case-insensitive, matching SourceStatus.is_pinned).
-# Short/abbreviated SHAs are intentionally NOT matched: they are ambiguous as refs
-# and fall through to the existing --branch clone path (and its clear error).
-_FULL_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+# Full hex commit SHA (case-insensitive). Two lengths, one per git object
+# format: 40 characters for the default SHA-1 format, 64 for the SHA-256
+# format (`git init --object-format=sha256`, git >= 2.29). A SHA-256 repo's
+# refs are 64 hex characters everywhere -- `rev-parse HEAD`, a PR URL, a
+# manifest pin -- so a resolver that recognises only 40 rejects every commit
+# pin such a repo can express.
+#
+# Short/abbreviated SHAs are intentionally NOT matched: they are ambiguous as
+# refs and fall through to the existing --branch clone path (and its clear
+# error). Nothing between 41 and 63 characters, or above 64, is a commit SHA
+# in any object format git currently has.
+#
+# Known, deliberate divergence: SourceStatus.is_pinned (sources/protocol.py)
+# still recognises only the 40-hex form, so a 64-hex ref resolves correctly
+# here but is not reported as pinned by get_status(). Widening is_pinned is a
+# one-line change in a different file, deliberately left to a follow-up rather
+# than smuggled in here; the effect until then is a needless ls-remote on
+# status, never a wrong resolve.
+_FULL_COMMIT_SHA_PATTERN = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 
 
 def _is_full_commit_sha(ref: str) -> bool:
-    """Check whether a ref is a full 40-hex-character commit SHA."""
+    """Check whether a ref is a full commit SHA.
+
+    Full means the complete hash for its object format: 40 hex characters for
+    SHA-1 repositories, 64 for SHA-256 repositories.
+    """
     return bool(_FULL_COMMIT_SHA_PATTERN.match(ref))
 
 
@@ -516,7 +535,8 @@ class GitSourceHandler:
 
         Args:
             git_url: Repository URL (without git+ prefix).
-            sha: Full 40-character commit SHA to pin.
+            sha: Full commit SHA to pin (40 hex characters for a SHA-1
+                repository, 64 for a SHA-256 one).
             cache_path: Destination directory for the clone.
 
         Raises:
@@ -558,7 +578,21 @@ class GitSourceHandler:
         try:
             # Cheap path: init + shallow fetch of the exact commit.
             cache_path.mkdir(parents=True, exist_ok=True)
-            run_git(["git", "init", "--quiet", str(cache_path)])
+            init_args = ["git", "init", "--quiet"]
+            if len(sha) == 64:
+                # The destination repository's object format must match the
+                # remote's, or the fetch below cannot name the commit at all:
+                # a SHA-1 destination fetching a 64-hex id from a SHA-256
+                # remote fails with "couldn't find remote ref <sha>" (measured
+                # on git 2.43). That failure is caught and degrades to the
+                # full-clone fallback -- correct, but it silently gives up the
+                # shallow fast path for every SHA-256 repository. `git clone`
+                # infers the format from the remote; `git init` cannot, so it
+                # has to be told. --object-format needs git >= 2.29; an older
+                # git rejects the flag and takes the same fallback it would
+                # have taken anyway.
+                init_args.append("--object-format=sha256")
+            run_git([*init_args, str(cache_path)])
             run_git(["git", "remote", "add", "origin", git_url], cwd=cache_path)
             # GAP-030 cross-platform validation: this used to call
             # _run_git_network_op (which RETRIES up to _CLONE_MAX_ATTEMPTS

@@ -57,8 +57,9 @@ class SourceStatus:
         """
         if not self.cached_ref:
             return False
-        # If ref looks like a full commit SHA, it's pinned
-        if len(self.cached_ref) == 40 and all(
+        # If ref looks like a full commit SHA (40-hex SHA-1 or 64-hex
+        # SHA-256), it's pinned
+        if len(self.cached_ref) in (40, 64) and all(
             c in "0123456789abcdef" for c in self.cached_ref.lower()
         ):
             return True
