@@ -877,3 +877,34 @@ class TestGitNetworkOpRetry343:
                 "designed trigger for the full-clone fallback"
             )
             assert any("clone" in c for c in seen), "should fall back to full clone"
+
+
+class TestSourceStatusIsPinned:
+    """recipes-sro: is_pinned recognises both SHA-1 and SHA-256 commit refs."""
+
+    def _status(self, ref: str):
+        from amplifier_foundation.sources.protocol import SourceStatus
+
+        return SourceStatus(
+            source_uri="git+https://example.invalid/repo",
+            is_cached=True,
+            cached_ref=ref,
+        )
+
+    def test_40_hex_sha1_is_pinned(self):
+        assert self._status("a" * 39 + "b").is_pinned is True
+
+    def test_64_hex_sha256_is_pinned(self):
+        assert self._status("0123456789abcdef" * 4).is_pinned is True
+
+    def test_branch_ref_is_not_pinned(self):
+        assert self._status("main").is_pinned is False
+
+    def test_version_tag_is_pinned(self):
+        assert self._status("v2.1.2").is_pinned is True
+
+    def test_non_hex_40_chars_not_pinned(self):
+        assert self._status("z" * 40).is_pinned is False
+
+    def test_non_hex_64_chars_not_pinned(self):
+        assert self._status("g" * 64).is_pinned is False
