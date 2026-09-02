@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from amplifier_foundation.spawn_utils import ProviderPreference
@@ -800,6 +801,183 @@ class TestProviderPurity:
         assert first, "First refusal in a session must warn"
         assert not second, "Second refusal in the SAME session must not re-warn"
         assert second_debug, "Repeat refusals must still be logged at DEBUG"
+
+
+# =============================================================================
+# Attribution: naming's own llm:* events must be distinguishable from root work
+# =============================================================================
+
+
+class _EmittingProvider:
+    """A provider that emits llm:* the way real providers do.
+
+    Real providers emit through ``self.coordinator.hooks.emit`` — an attribute
+    read bound to their own instance — which is why attribution has to happen
+    on a provider view rather than via a forwarding proxy.
+    """
+
+    def __init__(self, vendor: str = "anthropic") -> None:
+        self.coordinator = None
+        self._vendor = vendor
+        self.complete_calls: list = []
+
+    def get_info(self):
+        return SimpleNamespace(id=self._vendor)
+
+    async def complete(self, request, **kwargs):
+        self.complete_calls.append(request)
+        await self.coordinator.hooks.emit(
+            "llm:request", {"provider": self._vendor, "model": "test-model"}
+        )
+        await self.coordinator.hooks.emit(
+            "llm:response",
+            {"provider": self._vendor, "model": "test-model", "status": "ok"},
+        )
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    text='{"action": "set", "name": "N", "description": "D"}'
+                )
+            ]
+        )
+
+
+def _llm_events(coordinator) -> list[tuple[str, dict]]:
+    """(event, data) pairs for llm:* events emitted on a coordinator mock."""
+    return [
+        (call.args[0], call.args[1])
+        for call in coordinator.hooks.emit.call_args_list
+        if call.args and str(call.args[0]).startswith("llm:")
+    ]
+
+
+class TestNamingEventAttribution:
+    """The hook's own LLM calls must never look like the root agent's.
+
+    Providers write llm:request/llm:response into the SESSION's event stream,
+    and the kernel stamps session_id/parent_id defaults onto every event
+    (amplifier_core/session.py: set_default_fields(session_id, parent_id)).
+    Pre-fix, a naming call was therefore recorded with parent_id: null and no
+    marker at all — 321 such responses were counted as root agent work by
+    every scorer in the model_performance program.
+    """
+
+    @pytest.mark.asyncio
+    async def test_naming_llm_events_carry_purpose_marker(self) -> None:
+        """Every llm:* event a naming call emits carries data.purpose."""
+        provider = _EmittingProvider()
+        hook = _make_hook(providers={"anthropic-sonnet": provider})
+        provider.coordinator = hook.coordinator
+
+        result = await hook._call_provider("name this session", "session-attr")
+        assert result is not None
+
+        events = _llm_events(hook.coordinator)
+        assert [name for name, _ in events] == ["llm:request", "llm:response"], (
+            "The naming call must actually have emitted provider events"
+        )
+        for name, data in events:
+            assert data.get("purpose") == "session-naming", (
+                f"{name} emitted by session naming must be excludable by a "
+                f"scorer; got {data!r}"
+            )
+            assert data.get("origin_module") == "hooks-session-naming"
+
+    @pytest.mark.asyncio
+    async def test_original_provider_is_not_mutated(self) -> None:
+        """Foreground calls through the same provider stay unstamped.
+
+        The stamp must live on a naming-only view. If it were applied to the
+        shared provider instance, the root agent's own events would start
+        claiming to be session naming — the same attribution bug, inverted.
+        """
+        provider = _EmittingProvider()
+        hook = _make_hook(providers={"anthropic-sonnet": provider})
+        root_coordinator = hook.coordinator
+        provider.coordinator = root_coordinator
+
+        await hook._call_provider("name this session", "session-attr")
+
+        assert provider.coordinator is root_coordinator, (
+            "The shared provider instance must be left exactly as it was"
+        )
+
+        root_coordinator.hooks.emit.reset_mock()
+        await provider.complete(object())
+        for _, data in _llm_events(root_coordinator):
+            assert "purpose" not in data, (
+                "A non-naming call through the same provider must not be "
+                "stamped as session naming"
+            )
+
+    @pytest.mark.asyncio
+    async def test_stamped_view_is_built_once_per_provider(self) -> None:
+        """Providers create SDK clients lazily; don't build a view per turn."""
+        provider = _EmittingProvider()
+        hook = _make_hook(providers={"anthropic-sonnet": provider})
+        provider.coordinator = hook.coordinator
+
+        await hook._call_provider("name this session", "session-attr")
+        await hook._call_provider("name this session", "session-attr")
+
+        assert len(hook._stamped_providers) == 1
+        assert hook._stamped_provider(provider) is hook._stamped_provider(provider)
+
+    @pytest.mark.asyncio
+    async def test_unstampable_provider_skips_rather_than_leaks(
+        self, caplog
+    ) -> None:
+        """If events cannot be stamped, skip the call — loudly.
+
+        An unattributable naming call is worse than a missing session name:
+        it silently contaminates whatever reads the event stream.
+        """
+
+        class _FrozenProvider:
+            """Read-only ``coordinator`` — the copy cannot be re-pointed."""
+
+            def __init__(self) -> None:
+                self._coordinator = None
+                self.complete_calls: list = []
+
+            @property
+            def coordinator(self):
+                return self._coordinator
+
+            def get_info(self):
+                return SimpleNamespace(id="anthropic")
+
+            async def complete(self, request, **kwargs):  # pragma: no cover
+                self.complete_calls.append(request)
+                raise AssertionError("must not be called")
+
+        provider = _FrozenProvider()
+        hook = _make_hook(providers={"anthropic-sonnet": provider})
+        provider._coordinator = hook.coordinator
+
+        with caplog.at_level("WARNING"):
+            result = await hook._call_provider("name this session", "session-frozen")
+
+        assert result is None
+        assert not provider.complete_calls, (
+            "Must not issue the call at all when its events cannot be stamped"
+        )
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= 30]
+        assert any("session-naming" in m for m in warnings), (
+            "Skipping for lack of attribution must be loud, not silent"
+        )
+
+    @pytest.mark.asyncio
+    async def test_provider_without_coordinator_still_names(self) -> None:
+        """A provider that emits nothing has nothing to leak — don't skip it."""
+        provider = _make_mock_provider()
+        provider.coordinator = None
+        hook = _make_hook(providers={"provider-1": provider})
+
+        result = await hook._call_provider("name this session", "session-none")
+
+        assert result is not None
+        assert provider.complete.called
 
 
 # =============================================================================

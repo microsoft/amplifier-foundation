@@ -17,6 +17,7 @@ The module is entirely non-blocking: all LLM calls run as background asyncio tas
 - **Description updates**: Periodically updates the session description as the conversation evolves, only when scope meaningfully expands
 - **Smart context extraction**: Uses a bookend+sampling strategy for long conversations (first 3 turns, sampled middle, last 5 turns)
 - **Graceful deferral**: If the LLM signals insufficient context, retries on subsequent turns up to `max_retries` times
+- **Attributable**: Every `llm:*` event a naming call emits carries `data.purpose = "session-naming"`, so analyzers can exclude it from the session's own work (see [Event Attribution](#event-attribution))
 
 ## Configuration
 
@@ -73,6 +74,38 @@ Anthropic-pinned evaluation cell that emitted openai calls into the session's
 event stream (321 foreign responses across 12 capture roots; see
 `model_performance-egh`). Same-vendor siblings (`anthropic-sonnet` →
 `anthropic-haiku`) remain allowed: that is the intended cheap-model routing.
+
+## Event Attribution
+
+A provider emits `llm:request` / `llm:response` through the coordinator it was
+mounted with — the session's own — and the kernel stamps `session_id` and
+`parent_id` defaults onto every event
+(`amplifier_core/session.py`: `set_default_fields(...)`). A background naming
+call therefore lands in the session's `events.jsonl` with `parent_id: null` and,
+before this module stamped them, nothing at all to distinguish it from the root
+agent's own turns.
+
+Every event a naming call emits now carries:
+
+```json
+{"purpose": "session-naming", "origin_module": "hooks-session-naming"}
+```
+
+Excluding session naming from an analysis is then one predicate:
+
+```jq
+select(.data.purpose != "session-naming")
+```
+
+The stamp is applied to a naming-only *view* of the provider (a shallow copy
+carrying a wrapping coordinator), built once per provider per session. The
+shared provider instance is never mutated, so the foreground conversation's own
+events are unaffected. If a provider's events cannot be stamped, the naming call
+is **skipped** with a WARNING rather than emitted unattributably.
+
+Note: the provider call has a 10 s hard timeout. A timed-out call can leave a
+stamped `llm:request` with no matching `llm:response` — the stamp is what makes
+that orphan identifiable rather than mysterious.
 
 ### Optional Dependency: hooks-routing
 

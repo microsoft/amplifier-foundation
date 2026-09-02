@@ -6,6 +6,7 @@ the main conversation.
 """
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -17,6 +18,65 @@ from typing import Any
 from amplifier_core import HookResult
 
 logger = logging.getLogger(__name__)
+
+# Provenance stamped onto every event this module's own LLM call emits.
+# The provider writes llm:request / llm:response into the SESSION'S event
+# stream through the coordinator it was mounted with, and the kernel adds
+# session_id / parent_id defaults -- so without a stamp a naming call is
+# structurally indistinguishable from the root agent's own work, and every
+# scorer reading events.jsonl counts it as a root response.
+NAMING_PURPOSE = "session-naming"
+NAMING_ORIGIN = "hooks-session-naming"
+
+
+class _NamingHooks:
+    """Hook-registry view that stamps naming provenance on every event.
+
+    Wraps the real registry: ``emit``/``emit_and_collect`` add
+    ``purpose``/``origin_module`` to the payload before it reaches the
+    registry, so the fields land in ``data`` in events.jsonl (hooks-logging
+    copies unknown payload keys straight through). Everything else is
+    forwarded untouched.
+    """
+
+    def __init__(self, hooks: Any):
+        self._hooks = hooks
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._hooks, name)
+
+    @staticmethod
+    def _stamp(data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        stamped = dict(data)
+        stamped["purpose"] = NAMING_PURPOSE
+        stamped["origin_module"] = NAMING_ORIGIN
+        return stamped
+
+    async def emit(self, event: str, data: Any = None) -> Any:
+        return await self._hooks.emit(event, self._stamp(data))
+
+    async def emit_and_collect(
+        self, event: str, data: Any = None, timeout: float | None = None
+    ) -> Any:
+        return await self._hooks.emit_and_collect(event, self._stamp(data), timeout)
+
+
+class _NamingCoordinator:
+    """Coordinator view whose ``hooks`` stamp naming provenance.
+
+    Handed to a provider *copy* (see ``SessionNamingHook._stamped_provider``)
+    so the provider's own ``self.coordinator.hooks.emit`` calls are tagged.
+    Every other coordinator attribute is forwarded to the real one.
+    """
+
+    def __init__(self, coordinator: Any):
+        self._coordinator = coordinator
+        self.hooks = _NamingHooks(coordinator.hooks)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._coordinator, name)
 
 
 @dataclass
@@ -116,6 +176,14 @@ class SessionNamingHook:
         # Same dedup, for the "model_role resolved to a provider this session
         # never selected — refusing to borrow it" WARNING.
         self._cross_provider_refused: set[str] = set()
+        # Same dedup, for the "cannot stamp this provider's events" WARNING.
+        self._unstampable_warned: set[str] = set()
+        # id(real provider) -> (real provider, stamped copy). The copy is made
+        # once per provider per session: providers create their SDK client
+        # lazily, so a fresh copy on every naming call would build a fresh
+        # client (and connection pool) every few turns. The real provider is
+        # held alongside so its id() cannot be recycled under us.
+        self._stamped_providers: dict[int, tuple[Any, Any]] = {}
 
     async def on_orchestrator_complete(
         self, event: str, data: dict[str, Any]
@@ -589,6 +657,53 @@ class SessionNamingHook:
                 return key, provider
         return None, None
 
+    def _stamped_provider(self, provider: Any) -> Any | None:
+        """A view of ``provider`` whose emitted events carry naming provenance.
+
+        A provider emits ``llm:request`` / ``llm:response`` through the
+        coordinator it holds on ``self.coordinator`` — the ROOT session's
+        coordinator — and the kernel stamps ``session_id``/``parent_id``
+        defaults onto every event. So a naming call's events are otherwise
+        indistinguishable from the root agent's own, and every scorer reading
+        events.jsonl counts them as root responses.
+
+        Attribute reads inside the provider's own methods bind to its real
+        instance, so a forwarding proxy cannot intercept them — only a copy
+        with its own ``coordinator`` attribute can. The copy is shallow: the
+        SDK client, config and credentials are shared with the original.
+
+        Returns:
+            The stamped copy; the provider itself when it emits nothing
+            (no coordinator, so nothing can leak); or None when the copy
+            cannot be made or the coordinator cannot be swapped — the caller
+            must then SKIP the call rather than emit unattributable events
+            into the session's stream.
+        """
+        base = getattr(provider, "coordinator", None)
+        if base is None or not hasattr(base, "hooks"):
+            # Nothing is emitted through this provider, so nothing to stamp.
+            return provider
+        if isinstance(base, _NamingCoordinator):
+            return provider
+
+        cached = self._stamped_providers.get(id(provider))
+        if cached is not None and cached[0] is provider:
+            return cached[1]
+
+        try:
+            stamped = copy.copy(provider)
+            stamped.coordinator = _NamingCoordinator(base)
+        except Exception as e:
+            logger.debug("Could not build a stamped provider view: %s", e)
+            return None
+
+        if not isinstance(getattr(stamped, "coordinator", None), _NamingCoordinator):
+            # e.g. a frozen model that swallowed the assignment.
+            return None
+
+        self._stamped_providers[id(provider)] = (provider, stamped)
+        return stamped
+
     def _warn_once(self, session_id: str | None, seen: set[str], *args: Any) -> None:
         """WARNING the first time per session, DEBUG on every repeat.
 
@@ -776,6 +891,29 @@ class SessionNamingHook:
                 logger.warning("No provider available for session naming")
                 return None
 
+            # Attribution: the provider emits llm:request / llm:response into
+            # THIS session's event stream. Route those emits through a stamping
+            # coordinator so every one of them carries purpose="session-naming"
+            # and a scorer can exclude them from the root agent's own work.
+            # If the events cannot be stamped, SKIP the call — naming is a
+            # best-effort background chore, and an unattributable call is worse
+            # than a missing session name.
+            call_provider = self._stamped_provider(provider)
+            if call_provider is None:
+                self._warn_once(
+                    session_id,
+                    self._unstampable_warned,
+                    "Session naming cannot stamp provider %r's events with"
+                    " purpose=%r, so its llm:request/llm:response would be"
+                    " indistinguishable from this session's own work."
+                    " SKIPPING naming rather than emitting unattributable"
+                    " events. (Further occurrences this session are logged at"
+                    " DEBUG.)",
+                    provider_name,
+                    NAMING_PURPOSE,
+                )
+                return None
+
             # Make the request — model=None means use provider default.
             # metadata={"stream": False} signals to the provider that this is
             # a background utility call and must NOT take the streaming branch.
@@ -807,7 +945,7 @@ class SessionNamingHook:
             # Anthropic's "streaming is required for operations that may take
             # longer than 10 minutes" guard and makes naming fail every retry.
             # Providers without a thinking concept ignore this kwarg.
-            response = await provider.complete(request, extended_thinking=False)
+            response = await call_provider.complete(request, extended_thinking=False)
 
             if response and response.content:
                 # Extract text from content blocks
@@ -948,7 +1086,7 @@ async def mount(
 
     return {
         "name": "hooks-session-naming",
-        "version": "0.1.1",
+        "version": "0.2.0",
         "description": "Automatic session naming and description generation",
         "config": {
             "initial_trigger_turn": hook_config.initial_trigger_turn,
