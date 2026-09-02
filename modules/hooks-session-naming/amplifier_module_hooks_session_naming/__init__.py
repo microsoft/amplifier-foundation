@@ -26,7 +26,11 @@ class SessionNamingConfig:
     model_role routes naming to a cheap/fast model via the routing matrix.
     Defaults to "fast" — session naming is a simple classification task that
     does not need the priority/expensive model. Set to None to use the
-    priority provider explicitly.
+    session's own conversation provider explicitly.
+
+    Whatever model_role resolves to, naming only ever calls the session's own
+    conversation provider or a same-vendor sibling of it (see
+    ``SessionNamingHook._call_provider``).
     """
 
     initial_trigger_turn: int = 2
@@ -109,6 +113,9 @@ class SessionNamingHook:
         # session, so without this a stable config gap would re-emit the
         # identical warning on every retry.
         self._role_fallback_warned: set[str] = set()
+        # Same dedup, for the "model_role resolved to a provider this session
+        # never selected — refusing to borrow it" WARNING.
+        self._cross_provider_refused: set[str] = set()
 
     async def on_orchestrator_complete(
         self, event: str, data: dict[str, Any]
@@ -460,19 +467,167 @@ class SessionNamingHook:
             truncated = truncated[:last_space]
         return truncated + "..."
 
+    @staticmethod
+    def _priority_of(provider: Any) -> float:
+        """Selection priority for one provider (lower wins, default 100).
+
+        Mirrors the streaming orchestrator's own rule (``provider.priority``,
+        then ``provider.config["priority"]``, then 100) so that the provider
+        this module picks for an unpinned session is *the same one answering
+        the conversation*, not an independent guess. Non-numeric values (a
+        test double's auto-attribute, a misconfigured string) are ignored
+        rather than crashing the comparison.
+        """
+        candidates = [getattr(provider, "priority", None)]
+        config = getattr(provider, "config", None)
+        if isinstance(config, dict):
+            candidates.append(config.get("priority"))
+        for value in candidates:
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                return float(value)
+        return 100.0
+
+    @staticmethod
+    def _vendor_of(provider: Any) -> str | None:
+        """Vendor identity of a provider via the kernel contract
+        ``get_info().id`` (e.g. ``"anthropic"``), lowercased.
+
+        Returns None when the vendor cannot be established — callers must
+        treat that as "cannot prove same vendor" and refuse, never as "no
+        conflict". Two mount names sharing an id (anthropic-sonnet /
+        anthropic-haiku) are the SAME vendor.
+        """
+        get_info = getattr(provider, "get_info", None)
+        if not callable(get_info):
+            return None
+        try:
+            info = get_info()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("get_info() failed while checking provider vendor: %s", e)
+            return None
+        vendor = getattr(info, "id", None)
+        if vendor is None and isinstance(info, dict):
+            vendor = info.get("id")
+        if isinstance(vendor, str) and vendor.strip():
+            return vendor.strip().lower()
+        return None
+
+    def _same_vendor(self, a: Any, b: Any) -> bool:
+        """True only when both vendors are known AND equal (fail closed)."""
+        if a is b:
+            return True
+        vendor_a = self._vendor_of(a)
+        vendor_b = self._vendor_of(b)
+        return bool(vendor_a and vendor_b and vendor_a == vendor_b)
+
+    def _select_session_provider(
+        self, providers: dict[str, Any]
+    ) -> tuple[str | None, Any | None]:
+        """The provider answering THIS session — never an arbitrary one.
+
+        1. The conversation-scope pin, when the ``conversation.provider_pin``
+           capability reports one. A pin naming a provider that is no longer
+           mounted returns ``(None, None)``: refuse, never fall through to
+           another provider the user did not choose.
+        2. Otherwise priority ordering, identical to the orchestrator's rule,
+           with insertion order breaking ties — so the result *is* the
+           session's own conversation provider rather than
+           ``next(iter(providers.values()))`` reached by coincidence.
+        """
+        get_capability = getattr(self.coordinator, "get_capability", None)
+        pinned: str | None = None
+        if callable(get_capability):
+            try:
+                pin_capability = get_capability("conversation.provider_pin")
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("conversation.provider_pin lookup failed: %s", e)
+                pin_capability = None
+            current = getattr(pin_capability, "current", None)
+            if callable(current):
+                try:
+                    name = current()
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug("conversation.provider_pin.current() failed: %s", e)
+                    name = None
+                if isinstance(name, str) and name:
+                    pinned = name
+
+        if pinned is not None:
+            provider = providers.get(pinned)
+            if provider is None:
+                logger.warning(
+                    "This conversation is pinned to provider %r, which is no"
+                    " longer mounted. Skipping session naming rather than"
+                    " naming on a provider this session never pinned.",
+                    pinned,
+                )
+                return None, None
+            return pinned, provider
+
+        ranked = [
+            (self._priority_of(provider), index, name, provider)
+            for index, (name, provider) in enumerate(providers.items())
+        ]
+        if not ranked:
+            return None, None
+        ranked.sort(key=lambda entry: (entry[0], entry[1]))
+        _, _, name, provider = ranked[0]
+        return name, provider
+
+    @staticmethod
+    def _match_resolved_provider(
+        providers: dict[str, Any], resolved_name: str
+    ) -> tuple[str | None, Any | None]:
+        """Mounted provider whose mount name contains the resolved name."""
+        if not isinstance(resolved_name, str) or not resolved_name:
+            return None, None
+        needle = resolved_name.lower()
+        for key, provider in providers.items():
+            if needle in key.lower():
+                return key, provider
+        return None, None
+
+    def _warn_once(self, session_id: str | None, seen: set[str], *args: Any) -> None:
+        """WARNING the first time per session, DEBUG on every repeat.
+
+        Naming retries every few turns for the life of a session, so a stable
+        configuration gap would otherwise re-emit the identical warning
+        forever.
+        """
+        warn_key = session_id or ""
+        if warn_key not in seen:
+            seen.add(warn_key)
+            logger.warning(*args)
+        else:
+            logger.debug(*args)
+
     async def _call_provider(
         self, prompt: str, session_id: str | None = None
     ) -> str | None:
         """Call the LLM provider to generate name/description.
 
-        Resolution order (highest to lowest priority):
-          1. model_role — resolved via routing matrix (lazy import)
-          2. Fallback   — next(iter(providers.values()))
+        THE PROVIDER IS NEVER ARBITRARY. Every path lands on either the
+        session's own conversation provider or a same-vendor sibling of it;
+        there is no ``next(iter(providers.values()))`` here. A session pinned
+        to one provider can never emit a naming call on another vendor: the
+        historical bug was that ``model_role`` resolved through the routing
+        matrix (whose default matrix is openai) and, failing to match a mount,
+        fell through to whichever provider instance happened to be first in
+        the mount dict — an order-dependent, silent cross-provider borrow.
 
-        model_role resolution requires amplifier_module_hooks_routing. When that
-        module is not installed (no model_role_resolver capability registered
-        at all), logs a debug message and falls back to #2 — that fallback is
-        legitimate and intended.
+        Resolution order (highest to lowest priority):
+          1. model_role — resolved via the ``model_role_resolver`` capability,
+             ACCEPTED ONLY IF the resolved provider is mounted here and is the
+             same vendor as the session's own provider.
+          2. The session's own conversation provider (pin, else priority
+             order), with no model override.
+
+        model_role resolution requires a routing bundle. When none is
+        installed (no model_role_resolver capability registered at all), logs
+        a debug message and falls back to #2 — that fallback is legitimate
+        and intended.
 
         When a model_role_resolver IS registered and resolution itself raises
         (e.g. a transient provider API hiccup while listing models), the
@@ -489,11 +644,15 @@ class SessionNamingHook:
         transient error — retrying later changes nothing. Skipping silently
         in that case means session naming is a feature that quietly never
         runs, with only a log line nobody reads to explain why. So this case
-        falls back to #2 (the session's own default/priority provider)
-        instead of skipping, and logs a WARNING naming the unresolved role
-        and the provider substituted for it — once per session (via
+        falls back to #2 and logs a WARNING naming the unresolved role and
+        the provider substituted for it — once per session (via
         ``session_id``), since naming retries every few turns and repeating
         the identical warning on every retry would just be noise.
+
+        A resolved candidate that is NOT mounted here, or that belongs to a
+        different vendor than the session's own provider, is REFUSED the same
+        loud way: warn once, then name on the session's own provider with no
+        model override.
         """
         try:
             providers = self.coordinator.get("providers")
@@ -501,10 +660,20 @@ class SessionNamingHook:
                 logger.warning("No provider available for session naming")
                 return None
 
-            # Resolution order: model_role > priority provider
+            session_provider_name, session_provider = self._select_session_provider(
+                providers
+            )
+            if session_provider is None:
+                # _select_session_provider already logged the specific cause.
+                logger.debug("No session provider resolved for session naming")
+                return None
+
+            # Resolution order: model_role (same vendor only) > session provider
             provider = None
+            provider_name: str | None = None
             model_override: str | None = None
             role_had_no_candidates = False
+            refusal: tuple[str, str] | None = None
 
             if self.config.model_role:
                 # Look up the model_role_resolver capability registered by
@@ -519,7 +688,7 @@ class SessionNamingHook:
                 if resolver is None:
                     logger.debug(
                         "model_role %r set but no model_role_resolver capability"
-                        " registered, falling back to priority provider",
+                        " registered, falling back to the session's own provider",
                         self.config.model_role,
                     )
                 else:
@@ -538,49 +707,70 @@ class SessionNamingHook:
                     if resolved:
                         # ProviderPreference attrs: .provider, .model, .config
                         resolved_provider_name = resolved[0].provider
-                        model_override = resolved[0].model
-                        # Find the provider whose key contains the resolved name
-                        for key, p in providers.items():
-                            if resolved_provider_name.lower() in key.lower():
-                                provider = p
-                                break
+                        candidate_name, candidate = self._match_resolved_provider(
+                            providers, resolved_provider_name
+                        )
+                        if candidate is None:
+                            refusal = (
+                                str(resolved_provider_name),
+                                "no provider with that name is mounted in this session",
+                            )
+                        elif self._same_vendor(candidate, session_provider):
+                            provider = candidate
+                            provider_name = candidate_name
+                            model_override = resolved[0].model
+                        else:
+                            refusal = (
+                                str(candidate_name),
+                                "it is a different provider vendor than the one"
+                                " answering this session",
+                            )
                     else:
                         role_had_no_candidates = True
 
-            # Fallback: use first/priority provider. Reached when model_role
-            # is unset, no resolver capability is registered, OR the role
-            # resolved to no candidates (role_had_no_candidates, handled
-            # below with a loud warning instead of a silent substitution).
+            # Fall back to the session's OWN provider. Reached when model_role
+            # is unset, no resolver capability is registered, the role resolved
+            # to no candidates, or the resolved candidate was refused as
+            # foreign — the last two are announced loudly below rather than
+            # substituted silently.
             if provider is None:
-                fallback_key = next(iter(providers), None)
-                provider = providers.get(fallback_key) if fallback_key else None
+                provider = session_provider
+                provider_name = session_provider_name
+                model_override = None
 
-                if role_had_no_candidates and provider is not None:
-                    warn_key = session_id or ""
-                    if warn_key not in self._role_fallback_warned:
-                        self._role_fallback_warned.add(warn_key)
-                        logger.warning(
-                            "model_role %r resolved to no candidates; session"
-                            " naming is falling back to provider %r (the"
-                            " session's own default) instead of skipping."
-                            " This uses whatever model that provider is"
-                            " already configured with, which may be more"
-                            " expensive than intended — configure a %r"
-                            " candidate in the routing matrix to route naming"
-                            " to a cheap model instead. (Further occurrences"
-                            " this session are logged at DEBUG.)",
-                            self.config.model_role,
-                            fallback_key,
-                            self.config.model_role,
-                        )
-                    else:
-                        logger.debug(
-                            "model_role %r again resolved to no candidates;"
-                            " reusing fallback provider %r (already warned"
-                            " once this session)",
-                            self.config.model_role,
-                            fallback_key,
-                        )
+                if refusal is not None:
+                    refused_name, reason = refusal
+                    self._warn_once(
+                        session_id,
+                        self._cross_provider_refused,
+                        "model_role %r resolved to provider %r, but %s."
+                        " REFUSING to borrow it: session naming will run on"
+                        " %r, the provider answering this session. (Naming"
+                        " must never issue a call on a provider this session"
+                        " never selected. Further occurrences this session"
+                        " are logged at DEBUG.)",
+                        self.config.model_role,
+                        refused_name,
+                        reason,
+                        provider_name,
+                    )
+                elif role_had_no_candidates:
+                    self._warn_once(
+                        session_id,
+                        self._role_fallback_warned,
+                        "model_role %r resolved to no candidates; session"
+                        " naming is falling back to provider %r (the"
+                        " session's own conversation provider) instead of"
+                        " skipping. This uses whatever model that provider is"
+                        " already configured with, which may be more"
+                        " expensive than intended — configure a %r"
+                        " candidate in the routing matrix to route naming"
+                        " to a cheap model instead. (Further occurrences"
+                        " this session are logged at DEBUG.)",
+                        self.config.model_role,
+                        provider_name,
+                        self.config.model_role,
+                    )
 
             if not provider:
                 logger.warning("No provider available for session naming")
@@ -717,8 +907,12 @@ async def mount(
         max_retries: int (default: 3) - Max retries on defer
         model_role: str | None (default: "fast") - Model role resolved via routing matrix.
             Defaults to "fast" so naming uses a cheap model automatically.
-            Set to None to use the priority provider explicitly.
-            Falls back to priority provider silently when hooks-routing is not installed.
+            Set to None to use the session's own conversation provider explicitly.
+            A resolved candidate is honoured only when it is mounted in this
+            session AND shares the vendor of the session's own provider;
+            anything else is refused with a WARNING and naming runs on the
+            session's own provider. Falls back to that provider (debug-logged)
+            when no routing bundle is installed.
     """
     config = config or {}
 

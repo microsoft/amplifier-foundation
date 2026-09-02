@@ -41,24 +41,48 @@ hooks:
 matrix — the same mechanism used by the `delegate` tool and recipe agent steps.
 Session naming is a simple classification task; it does not need the priority model.
 
+**Naming never calls a provider this session did not select.** Every path below
+ends on either the session's own conversation provider or a *same-vendor* sibling
+of it. There is no arbitrary fallback.
+
 Resolution order:
 
 1. **`model_role`** — Resolved against the `model_role_resolver` capability
    (registered by whichever routing bundle is active — typically the
    matrix-based one shipped in `amplifier-bundle-routing-matrix`). Defaults to
-   `"fast"`.
+   `"fast"`. A resolved candidate is **accepted only if** it is mounted in this
+   session **and** its `get_info().id` matches the vendor of the session's own
+   provider. Anything else is refused with a WARNING (once per session).
 
-2. **Fallback** — `next(iter(providers.values()))` — the first/priority provider.
-   Used when `model_role` is `None`, or when resolution fails.
+2. **The session's own conversation provider** — the `conversation.provider_pin`
+   pin when one is set, otherwise the same priority ordering the streaming
+   orchestrator uses to pick the conversation provider (`provider.priority`,
+   then `provider.config["priority"]`, default 100, ties broken by mount order).
+   No model override is applied on this path.
+
+If the conversation is pinned to a provider that is no longer mounted, naming is
+**skipped** for that turn rather than run on some other provider.
+
+### Why the vendor check exists
+
+Session naming used to resolve `model_role` through the routing matrix (whose
+default matrix is openai) and, when the resolved name matched no mount, fall
+through to `next(iter(providers.values()))` — an order-dependent, silent borrow
+of whichever provider instance happened to be first in the mount dict. In an
+Anthropic-pinned evaluation cell that emitted openai calls into the session's
+event stream (321 foreign responses across 12 capture roots; see
+`model_performance-egh`). Same-vendor siblings (`anthropic-sonnet` →
+`anthropic-haiku`) remain allowed: that is the intended cheap-model routing.
 
 ### Optional Dependency: hooks-routing
 
 `hooks-routing` is an **optional runtime dependency**. The module degrades gracefully:
 
-- If `hooks-routing` is not installed, the module silently falls back to the priority
-  provider. No warning is emitted — falling back is the expected behaviour when the
-  routing module is absent.
-- To disable routing explicitly and always use the priority provider, set `model_role: null`.
+- If `hooks-routing` is not installed, the module falls back to the session's own
+  conversation provider (debug-logged). Falling back is the expected behaviour when
+  the routing module is absent.
+- To disable routing explicitly and always use the session's own provider, set
+  `model_role: null`.
 
 ## Async Behavior
 
