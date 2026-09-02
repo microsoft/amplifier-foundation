@@ -352,6 +352,54 @@ def _make_fixture_repo(base: Path) -> tuple[Path, list[str]]:
     return repo, [first_sha, second_sha]
 
 
+def _git_supports_sha256() -> bool:
+    """Whether the local git can create SHA-256 object-format repositories.
+
+    ``--object-format=sha256`` landed in git 2.29. Probed by actually creating
+    one rather than parsing ``git --version``: the flag was experimental for
+    several releases and a build can refuse it independently of its version
+    number, so the probe answers the question the tests actually care about.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = subprocess.run(
+            ["git", "init", "--quiet", "--object-format=sha256", "-b", "main", "probe"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+
+
+def _make_sha256_fixture_repo(base: Path) -> tuple[Path, list[str]]:
+    """Create a local SHA-256 object-format git repo with two commits.
+
+    Identical in shape to ``_make_fixture_repo``, but every object id is 64
+    hex characters instead of 40 -- the case a 40-only ref classifier rejects.
+
+    Returns:
+        (repo_path, [first_commit_sha, second_commit_sha])
+    """
+    repo = base / "fixture-repo-sha256"
+    repo.mkdir()
+    _git(["init", "--quiet", "--object-format=sha256", "-b", "main"], cwd=repo)
+    _git(["config", "user.email", "test@example.com"], cwd=repo)
+    _git(["config", "user.name", "Test"], cwd=repo)
+
+    (repo / "bundle.md").write_text("# Fixture Bundle\n")
+    (repo / "data.txt").write_text("version one\n")
+    _git(["add", "-A"], cwd=repo)
+    _git(["commit", "--quiet", "-m", "first"], cwd=repo)
+    first_sha = _git(["rev-parse", "HEAD"], cwd=repo)
+
+    (repo / "data.txt").write_text("version two\n")
+    _git(["add", "-A"], cwd=repo)
+    _git(["commit", "--quiet", "-m", "second"], cwd=repo)
+    second_sha = _git(["rev-parse", "HEAD"], cwd=repo)
+
+    return repo, [first_sha, second_sha]
+
+
 def _parsed_git_file_uri(repo: Path, ref: str) -> ParsedURI:
     """Build a ParsedURI for a git+file:// URI pointing at a local fixture repo."""
     return ParsedURI(scheme="git+file", host="", path=str(repo), ref=ref, subpath="")
@@ -454,6 +502,23 @@ class TestIsFullCommitSha:
     def test_accepts_uppercase_sha(self) -> None:
         assert _is_full_commit_sha("32D4052DAD46016F91CE698646580473E4121344") is True
 
+    def test_accepts_full_lowercase_sha256_sha(self) -> None:
+        """A SHA-256 repository's commit ids are 64 hex characters."""
+        assert (
+            _is_full_commit_sha(
+                "ca155c02e012aae375d51c32315a5a7962e031f216b92f2e90c544069767ab08"
+            )
+            is True
+        )
+
+    def test_accepts_uppercase_sha256_sha(self) -> None:
+        assert (
+            _is_full_commit_sha(
+                "CA155C02E012AAE375D51C32315A5A7962E031F216B92F2E90C544069767AB08"
+            )
+            is True
+        )
+
     def test_rejects_short_sha(self) -> None:
         assert _is_full_commit_sha("32d4052") is False
 
@@ -462,6 +527,19 @@ class TestIsFullCommitSha:
 
     def test_rejects_41_chars(self) -> None:
         assert _is_full_commit_sha("3" * 41) is False
+
+    def test_rejects_length_between_the_two_object_formats(self) -> None:
+        """Only 40 and 64 are full hashes; nothing in between is a commit id."""
+        assert _is_full_commit_sha("3" * 50) is False
+
+    def test_rejects_63_chars(self) -> None:
+        assert _is_full_commit_sha("3" * 63) is False
+
+    def test_rejects_65_chars(self) -> None:
+        assert _is_full_commit_sha("3" * 65) is False
+
+    def test_rejects_non_hex_chars_at_sha256_length(self) -> None:
+        assert _is_full_commit_sha("g" + "3" * 63) is False
 
     def test_rejects_non_hex_chars(self) -> None:
         assert _is_full_commit_sha("g" + "3" * 39) is False
@@ -557,6 +635,90 @@ class TestGitSourceHandlerShaRefs:
             parsed = _parsed_git_file_uri(repo, ref=bogus_sha)
             with pytest.raises(BundleNotFoundError, match="Failed to clone"):
                 await handler.resolve(parsed, base / "cache")
+
+    @pytest.mark.skipif(
+        not _git_supports_sha256(),
+        reason="local git cannot create --object-format=sha256 repositories",
+    )
+    @pytest.mark.asyncio
+    async def test_resolve_sha256_sha_ref_pins_non_tip_commit(self) -> None:
+        """A 64-hex SHA-256 commit id resolves to exactly that commit.
+
+        Before 64-hex refs were recognised, this ref fell through to
+        ``git clone --branch <sha>`` and failed with "Remote branch <sha> not
+        found in upstream origin" -- the same failure 40-hex refs used to hit,
+        for every repository using git's SHA-256 object format.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, shas = _make_sha256_fixture_repo(base)
+            pinned_sha = shas[0]  # older, non-tip commit
+            assert len(pinned_sha) == 64
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref=pinned_sha)
+            result = await handler.resolve(parsed, base / "cache")
+
+            assert result.active_path.exists()
+            assert (result.active_path / "data.txt").read_text() == "version one\n"
+            head = _git(["rev-parse", "HEAD"], cwd=result.source_root)
+            assert head == pinned_sha
+
+    @pytest.mark.skipif(
+        not _git_supports_sha256(),
+        reason="local git cannot create --object-format=sha256 repositories",
+    )
+    @pytest.mark.asyncio
+    async def test_resolve_sha256_sha_ref_shallow_fetch(self) -> None:
+        """The shallow fast path works for SHA-256 refs too, not just SHA-1."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, shas = _make_sha256_fixture_repo(base)
+            _git(["config", "uploadpack.allowReachableSHA1InWant", "true"], cwd=repo)
+            pinned_sha = shas[0]
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref=pinned_sha)
+            result = await handler.resolve(parsed, base / "cache")
+
+            head = _git(["rev-parse", "HEAD"], cwd=result.source_root)
+            assert head == pinned_sha
+            assert (result.source_root / ".git" / "shallow").exists()
+
+    @pytest.mark.skipif(
+        not _git_supports_sha256(),
+        reason="local git cannot create --object-format=sha256 repositories",
+    )
+    @pytest.mark.asyncio
+    async def test_unknown_sha256_sha_raises_clear_error(self) -> None:
+        """A well-formed 64-hex SHA that isn't in the repo fails clearly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, _shas = _make_sha256_fixture_repo(base)
+            bogus_sha = "deadbeef" * 8  # 64 hex chars, not in the repo
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref=bogus_sha)
+            with pytest.raises(BundleNotFoundError, match="Failed to clone"):
+                await handler.resolve(parsed, base / "cache")
+
+    @pytest.mark.skipif(
+        not _git_supports_sha256(),
+        reason="local git cannot create --object-format=sha256 repositories",
+    )
+    @pytest.mark.asyncio
+    async def test_sha256_branch_ref_still_works(self) -> None:
+        """Branch refs in a SHA-256 repo keep the existing --branch fast path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo, shas = _make_sha256_fixture_repo(base)
+
+            handler = GitSourceHandler()
+            parsed = _parsed_git_file_uri(repo, ref="main")
+            result = await handler.resolve(parsed, base / "cache")
+
+            head = _git(["rev-parse", "HEAD"], cwd=result.source_root)
+            assert head == shas[1]  # branch tip
 
     def test_sha_and_branch_refs_get_distinct_cache_paths(self) -> None:
         """A SHA ref must not collide with a branch ref cache entry."""
