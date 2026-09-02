@@ -577,6 +577,41 @@ class PreparedBundle:
             "session.working_dir", str(effective_working_dir.resolve())
         )
 
+        # Register the mention resolver (and deduplicator) capabilities BEFORE
+        # initialize() so modules mounted during session.initialize() can resolve
+        # @namespace:... sources eagerly at mount time via
+        # get_capability("mention_resolver") instead of getting None.
+        #
+        # ROOT FIX (late skill-source resolution): previously this registration
+        # happened AFTER session.initialize() (guarded by "does the bundle have
+        # instruction/context content"), so any module mounted during initialize()
+        # -- e.g. tool-skills resolving an @namespace:skills source -- saw no
+        # resolver and had to defer resolution to the first provider:request.
+        # Anything that snapshots module state between mount and first prompt
+        # (e.g. a CLI slash-command registry) would then see an incomplete catalog.
+        #
+        # Registration is unconditional (cheap to construct) because bundle
+        # namespace resolution (_build_bundles_for_resolver) depends only on
+        # self.bundle.source_base_paths / self.bundle.name -- both already fully
+        # populated by bundle load/compose time, well before create_session() runs
+        # -- and does NOT depend on whether the bundle has inline instruction or
+        # context content.
+        from amplifier_foundation.mentions import BaseMentionResolver
+        from amplifier_foundation.mentions import ContentDeduplicator
+
+        bundles_for_resolver = self._build_bundles_for_resolver(self.bundle)
+        # Use session_cwd for local @-mentions, fall back to bundle.base_path
+        resolver_base = session_cwd or self.bundle.base_path or Path.cwd()
+        initial_resolver = BaseMentionResolver(
+            bundles=bundles_for_resolver,
+            base_path=resolver_base,
+        )
+        initial_deduplicator = ContentDeduplicator()
+        session.coordinator.register_capability("mention_resolver", initial_resolver)
+        session.coordinator.register_capability(
+            "mention_deduplicator", initial_deduplicator
+        )
+
         # Initialize the session (loads all modules)
         await session.initialize()
 
@@ -630,27 +665,15 @@ class PreparedBundle:
                 lambda: [_MENTIONS_RESOLVED_EVENT],
             )
 
-            from amplifier_foundation.mentions import BaseMentionResolver
-            from amplifier_foundation.mentions import ContentDeduplicator
-
-            # Register resolver and deduplicator as capabilities for tools to use
-            # (e.g., filesystem tool's read_file can resolve @mention paths)
-            # Note: These are created once for capability registration, but the factory
-            # creates fresh instances each call for accurate file re-reading
-            bundles_for_resolver = self._build_bundles_for_resolver(self.bundle)
-            # Use session_cwd for local @-mentions, fall back to bundle.base_path
-            resolver_base = session_cwd or self.bundle.base_path or Path.cwd()
-            initial_resolver = BaseMentionResolver(
-                bundles=bundles_for_resolver,
-                base_path=resolver_base,
-            )
-            initial_deduplicator = ContentDeduplicator()
-            session.coordinator.register_capability(
-                "mention_resolver", initial_resolver
-            )
-            session.coordinator.register_capability(
-                "mention_deduplicator", initial_deduplicator
-            )
+            # NOTE: The "mention_resolver" / "mention_deduplicator" capabilities
+            # are already registered above, BEFORE session.initialize() (see the
+            # eager-resolver block earlier in this method). They are reused here
+            # rather than rebuilt -- a single source of truth for the capability,
+            # no duplicate BaseMentionResolver/ContentDeduplicator construction,
+            # and no extra register_capability() replace() churn. The system
+            # prompt factory below builds its own fresh resolver/deduplicator
+            # instances per-call regardless (files may change mid-session), so
+            # nothing here depends on the registered instances directly.
 
             # Create and register the system prompt factory
             factory = self._create_system_prompt_factory(
@@ -834,6 +857,35 @@ class PreparedBundle:
             effective_child_cwd = self.bundle.base_path or Path.cwd()
         child_session.coordinator.register_capability(
             "session.working_dir", str(effective_child_cwd.resolve())
+        )
+
+        # Register the mention resolver (and deduplicator) capabilities BEFORE
+        # initialize() -- same root fix as create_session(): modules mounted
+        # during child_session.initialize() (e.g. tool-skills resolving an
+        # @namespace:skills source) need a real resolver at mount time, not None.
+        #
+        # Evidence this was previously missing entirely (worse than merely late):
+        # unlike create_session(), spawn() never registered "mention_resolver" /
+        # "mention_deduplicator" on the child coordinator at any point -- before
+        # or after initialize(). Child sessions do not inherit capabilities from
+        # the parent coordinator automatically (only session.working_dir is
+        # explicitly copied above), so this was a real gap for spawned children,
+        # not just a timing issue.
+        from amplifier_foundation.mentions import BaseMentionResolver
+        from amplifier_foundation.mentions import ContentDeduplicator
+
+        child_bundles_for_resolver = self._build_bundles_for_resolver(
+            effective_bundle
+        )
+        child_session.coordinator.register_capability(
+            "mention_resolver",
+            BaseMentionResolver(
+                bundles=child_bundles_for_resolver,
+                base_path=effective_child_cwd,
+            ),
+        )
+        child_session.coordinator.register_capability(
+            "mention_deduplicator", ContentDeduplicator()
         )
 
         await child_session.initialize()
