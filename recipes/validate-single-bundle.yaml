@@ -9,6 +9,12 @@
 # CHANGELOG
 # =============================================================================
 #
+# v2.3.1:
+#   - Honor the injected AMPLIFIER_PYTHON interpreter in all 4 python heredocs
+#     (was bare `python3`, which lacks amplifier_foundation and made the
+#     body-instruction check skip with "amplifier_foundation not importable").
+#     Same fix validate-agents.yaml received in v1.3.1.
+#
 # v2.3.0:
 #   - Portability: declare a schema_version 2 dependency manifest (contract
 #     recipe-dependency-manifest.v1). The `agent: "foundation:zen-architect"`
@@ -85,7 +91,7 @@ description: |
   
   For example, if a behavior is not in this bundle's includes chain,
   its context files won't be counted.
-version: "2.3.0"
+version: "2.3.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "single", "dependency-tracing", "yaml-lint"]
 
@@ -114,7 +120,7 @@ steps:
   - id: "yaml-structure-lint"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
       from pathlib import Path
@@ -284,7 +290,7 @@ steps:
   - id: "trace-dependencies"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       import yaml
@@ -517,7 +523,7 @@ steps:
   - id: "body-instruction-check"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
       from pathlib import Path
@@ -582,7 +588,7 @@ steps:
   - id: "context-analysis"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       from pathlib import Path

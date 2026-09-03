@@ -6,6 +6,10 @@
 # CHANGELOG
 # =============================================================================
 #
+# v2.1.1:
+#   - Honor the injected AMPLIFIER_PYTHON interpreter in both python heredocs
+#     (was bare `python3`). Companion to validate-single-bundle v2.3.1.
+#
 # v2.1.0:
 #   - Portability: declare a schema_version 2 dependency manifest (contract
 #     recipe-dependency-manifest.v1). The `agent: "foundation:zen-architect"`
@@ -69,7 +73,7 @@ description: |
   For example, if a behavior is only included by `bundles/amplifier-dev.yaml`
   and NOT by the root `bundle.md`, its context files will only be counted
   when validating `amplifier-dev`.
-version: "2.1.0"
+version: "2.1.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "context-health", "dependency-tracing"]
 
@@ -84,7 +88,7 @@ steps:
   - id: "environment-check"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
 
@@ -139,7 +143,7 @@ steps:
   - id: "discover-bundles"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       from pathlib import Path
 
