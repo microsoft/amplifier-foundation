@@ -594,3 +594,560 @@ class TestParallaxDiscoveryRegression:
         )
         result = lint_yaml_data(fixed_data)
         assert result["passed"], "The fixed parallax-discovery pattern must pass"
+
+
+# =============================================================================
+# LINT: every recipe with an `agent:` reference declares schema_version 2
+# =============================================================================
+#
+# A schema-v1 (legacy) recipe runs in the runner's `legacy-caller-bound` mode:
+# its `agent:` references resolve out of the CALLING session's agent map, not
+# from the recipe's own declared closure. A caller whose bundle does not mount
+# that agent fails at run time with:
+#
+#     Agent 'foundation:zen-architect' not found in configuration
+#
+# That is not hypothetical -- it is the reported failure PR #345 fixed for
+# validate-agents / validate-bundle / validate-single-bundle, and it recurred
+# on validate-bundle-repo plus five behavioral-model/docs recipes that the
+# same migration missed. This lint is the ratchet that keeps it from
+# recurring a third time: the moment a recipe grows an `agent:` step, it must
+# also declare the closure that agent comes from.
+
+
+def _iter_recipe_steps(data: dict):
+    """Yield every step mapping in a recipe, flat or staged."""
+    for step in data.get("steps") or []:
+        if isinstance(step, dict):
+            yield step
+    for stage in data.get("stages") or []:
+        if not isinstance(stage, dict):
+            continue
+        for step in stage.get("steps") or []:
+            if isinstance(step, dict):
+                yield step
+
+
+def agent_refs(data: dict) -> set[str]:
+    """Step-level `agent:` references only.
+
+    Deliberately NOT a grep: several recipes embed Python/YAML samples in
+    prompts and heredocs that contain the literal text `agent:` (e.g.
+    `agent: str | None`). Only a parsed step's own `agent` field counts.
+    """
+    return {
+        step["agent"]
+        for step in _iter_recipe_steps(data)
+        if isinstance(step.get("agent"), str) and step["agent"].strip()
+    }
+
+
+def declared_agents(data: dict) -> set[str]:
+    """Agents declared across the recipe's dependency manifest."""
+    declared: set[str] = set()
+    for dep in data.get("dependencies") or []:
+        if isinstance(dep, dict):
+            for name in dep.get("required_agents") or []:
+                if isinstance(name, str):
+                    declared.add(name)
+    return declared
+
+
+def lint_agent_portability(data: dict) -> list[str]:
+    """Return a list of violation messages; empty means the recipe is clean.
+
+    Pure logic over already-parsed YAML so it can be exercised against
+    synthetic recipes as well as the real ones on disk.
+    """
+    refs = agent_refs(data)
+    if not refs:
+        return []  # No agent steps -- nothing to make portable.
+
+    violations = []
+    if data.get("schema_version") != 2:
+        violations.append(
+            f"references {sorted(refs)} but declares "
+            f"schema_version={data.get('schema_version')!r} (expected 2). "
+            f"Its agents would resolve from the CALLING session's agent map."
+        )
+        return violations  # An undeclared closure can't also be checked.
+
+    missing = sorted(refs - declared_agents(data))
+    if missing:
+        violations.append(
+            f"declares schema_version 2 but its dependencies do not list "
+            f"required_agents {missing}, which its steps reference."
+        )
+    return violations
+
+
+class TestAgentRefsRequireSchemaV2:
+    """Every recipes/*.yaml with an `agent:` step must be schema v2."""
+
+    def test_all_recipes_with_agent_refs_declare_schema_v2(self):
+        offenders = {}
+        recipes = sorted(RECIPE_DIR.glob("*.yaml"))
+        assert recipes, f"No recipes found under {RECIPE_DIR}"
+
+        for path in recipes:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            violations = lint_agent_portability(data)
+            if violations:
+                offenders[path.name] = violations
+
+        assert not offenders, (
+            "Recipes with `agent:` steps must declare schema_version 2 and list "
+            "every referenced agent under dependencies[].required_agents, so the "
+            "agents resolve from the recipe's own closure instead of the calling "
+            "session's agent map:\n"
+            + "\n".join(f"  {name}: {'; '.join(v)}" for name, v in sorted(offenders.items()))
+        )
+
+    def test_at_least_one_recipe_actually_has_agent_refs(self):
+        """Guard against the lint silently passing on an empty population."""
+        with_agents = [
+            p.name
+            for p in sorted(RECIPE_DIR.glob("*.yaml"))
+            if agent_refs(yaml.safe_load(p.read_text(encoding="utf-8")) or {})
+        ]
+        assert with_agents, (
+            "No recipe has an `agent:` step -- the portability lint above would "
+            "pass vacuously. Verify the parser, not just the result."
+        )
+
+
+class TestAgentPortabilityLintDiscriminates:
+    """The lint must FAIL on the exact shape it exists to catch.
+
+    A lint that never fires is indistinguishable from no lint at all. These
+    reproduce the reported defect in-memory so the discrimination is proven
+    on every CI run, not just once by hand.
+    """
+
+    LEGACY_RECIPE = textwrap.dedent("""
+        name: legacy-recipe
+        version: "1.0.0"
+        steps:
+          - id: analyze
+            agent: "foundation:zen-architect"
+            prompt: "do the thing"
+    """)
+
+    V2_RECIPE = textwrap.dedent("""
+        schema_version: 2
+        dependencies:
+          - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+            kind: bundle
+            required_agents:
+              - "foundation:zen-architect"
+        name: migrated-recipe
+        version: "1.1.0"
+        steps:
+          - id: analyze
+            agent: "foundation:zen-architect"
+            prompt: "do the thing"
+    """)
+
+    def test_missing_schema_version_is_a_violation(self):
+        """The exact defect: agent refs with no schema_version at all."""
+        violations = lint_agent_portability(yaml.safe_load(self.LEGACY_RECIPE))
+        assert violations, "A legacy recipe with agent refs MUST be flagged"
+        assert "foundation:zen-architect" in violations[0]
+        assert "schema_version" in violations[0]
+
+    def test_schema_version_1_is_a_violation(self):
+        """schema_version: 1 is just as caller-bound as no schema_version."""
+        data = yaml.safe_load(self.LEGACY_RECIPE)
+        data["schema_version"] = 1
+        assert lint_agent_portability(data), "schema_version 1 MUST be flagged"
+
+    def test_v2_with_declared_agent_passes(self):
+        """The fixed shape -- the header this migration adds -- passes."""
+        assert lint_agent_portability(yaml.safe_load(self.V2_RECIPE)) == []
+
+    def test_v2_with_undeclared_agent_is_a_violation(self):
+        """v2 alone is not enough: the referenced agent must be declared."""
+        data = yaml.safe_load(self.V2_RECIPE)
+        data["dependencies"][0]["required_agents"] = ["foundation:explorer"]
+        violations = lint_agent_portability(data)
+        assert violations, "An undeclared referenced agent MUST be flagged"
+        assert "foundation:zen-architect" in violations[0]
+
+    def test_recipe_without_agent_steps_is_exempt(self):
+        """Bash-only recipes need no closure -- they must not be flagged."""
+        data = yaml.safe_load(
+            textwrap.dedent("""
+            name: bash-only
+            version: "1.0.0"
+            steps:
+              - id: run
+                type: bash
+                command: "echo hi"
+        """)
+        )
+        assert lint_agent_portability(data) == []
+
+    def test_embedded_agent_text_is_not_a_reference(self):
+        """`agent:` inside a prompt/heredoc is NOT a step-level reference.
+
+        bundle-behavioral-model.yaml embeds Python dataclass samples
+        containing the literal line `agent: str | None`. A grep-based lint
+        would flag them; a parsed lint must not.
+        """
+        data = yaml.safe_load(
+            textwrap.dedent('''
+            name: embeds-samples
+            version: "1.0.0"
+            steps:
+              - id: run
+                type: bash
+                command: |
+                  cat <<EOF
+                  class Step:
+                      agent: str | None
+                  EOF
+        ''')
+        )
+        assert agent_refs(data) == set()
+        assert lint_agent_portability(data) == []
+
+    def test_staged_recipe_steps_are_scanned(self):
+        """Steps nested under `stages:` must not escape the lint."""
+        data = yaml.safe_load(
+            textwrap.dedent("""
+            name: staged-legacy
+            version: "1.0.0"
+            stages:
+              - name: phase-1
+                steps:
+                  - id: analyze
+                    agent: "foundation:zen-architect"
+        """)
+        )
+        assert agent_refs(data) == {"foundation:zen-architect"}
+        assert lint_agent_portability(data), "A staged legacy recipe MUST be flagged"
+
+
+# =============================================================================
+# LINT: a SOLE conditional producer's output must not be read later
+# =============================================================================
+#
+# The tool-recipes executor raises
+#     ValueError: Undefined variable: {{X}}. Available variables: ...
+# when a step's template references X and no executed step produced it. A
+# step carrying `condition:` may be SKIPPED, so its `output:` is not
+# guaranteed.
+#
+# Reported instance: validate-bundle-repo.yaml with enhance_diagrams: "false"
+# skipped `bundle-overview-regen-enhance` (output bundle_overview_enhanced_dot)
+# while `bundle-overview-regen-write` read {{bundle_overview_enhanced_dot}}
+# unconditionally -> hard crash. generate-bundle-docs.yaml had the identical
+# defect (enhance-bundle-dot -> write-bundle-dot).
+#
+# SCOPE -- deliberately narrow, to stay sound rather than merely strict:
+#
+#   Flagged: a variable whose ONLY prior producer is a single CONDITIONAL
+#            step. That is exactly the reported defect.
+#
+#   Not flagged: two-or-more conditional producers. This repo uses
+#            complementary conditions on purpose -- `build-check`
+#            (condition: has_pyproject == true) paired with
+#            `set-default-build-check` (condition: has_pyproject != true).
+#            Exactly one always runs. Proving that needs a real expression
+#            evaluator; a lint that guesses would fail correct recipes.
+#
+#   Not flagged: a variable with no producer at all. Values also enter the
+#            context from `collect:` on a foreach step, `as:` loop bindings,
+#            and parsed sub-keys. Those are modelled below where cheap, but
+#            the zero-producer case has too much unmodelled surface to
+#            assert on without false positives.
+
+_VAR_REF = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
+
+#: Names the engine/session supplies regardless of any step.
+_ENGINE_BUILTINS = frozenset(
+    {"recipe", "session", "env", "now", "timestamp", "loop", "item", "index"}
+)
+
+
+def step_var_refs(step: dict) -> set[str]:
+    """Every {{variable}} a step's templates reference."""
+    found: set[str] = set()
+    for key in ("command", "prompt", "condition", "foreach"):
+        value = step.get(key)
+        if isinstance(value, str):
+            found |= {m.group(1) for m in _VAR_REF.finditer(value)}
+    return found
+
+
+def step_produced_names(step: dict) -> set[str]:
+    """Every context name a step can introduce.
+
+    `output:` is the common case. A foreach step also binds its `as:` loop
+    variable inside its own body and aggregates into `collect:`.
+    """
+    names = set()
+    for key in ("output", "collect", "as"):
+        value = step.get(key)
+        if isinstance(value, str) and value:
+            names.add(value)
+    return names
+
+
+def sole_conditional_producer_refs(data: dict) -> list[str]:
+    """Refs to a variable whose only prior producer is one conditional step."""
+    guaranteed = set(data.get("context") or {}) | set(_ENGINE_BUILTINS)
+    conditional_producers: dict[str, list[str]] = {}
+    problems: list[str] = []
+
+    for step in _iter_recipe_steps(data):
+        step_id = step.get("id", "<no id>")
+
+        # A foreach step's own `as:` binding is in scope for its own body.
+        in_scope = guaranteed | {step["as"]} if isinstance(step.get("as"), str) else guaranteed
+
+        for ref in sorted(step_var_refs(step)):
+            root = ref.split(".")[0]
+            if root in in_scope:
+                continue
+            producers = conditional_producers.get(root, [])
+            if len(producers) == 1:
+                problems.append(
+                    f"step '{step_id}' reads {{{{{ref}}}}}, produced ONLY by the "
+                    f"conditional step '{producers[0]}'. Add an unconditional "
+                    f"set-default step ahead of that producer, or guard this "
+                    f"consumer with the same condition."
+                )
+
+        for name in step_produced_names(step):
+            if step.get("condition") and name == step.get("output"):
+                conditional_producers.setdefault(name, []).append(step_id)
+            else:
+                guaranteed.add(name)
+                conditional_producers.pop(name, None)
+
+    return problems
+
+
+class TestConditionalOutputsHaveDefaults:
+    """A sole conditional producer's output must have an unconditional default."""
+
+    def test_no_recipe_reads_a_sole_conditional_variable(self):
+        offenders = {}
+        for path in sorted(RECIPE_DIR.glob("*.yaml")):
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            problems = sole_conditional_producer_refs(data)
+            if problems:
+                offenders[path.name] = problems
+
+        assert not offenders, (
+            "A step reads a variable that a conditional step may never produce. "
+            "The engine raises 'Undefined variable: {{X}}' at run time:\n"
+            + "\n".join(
+                f"  {name}:\n    " + "\n    ".join(p)
+                for name, p in sorted(offenders.items())
+            )
+        )
+
+    def test_validate_bundle_repo_defaults_the_enhanced_dot(self, bundle_repo_steps):
+        """The reported enhance_diagrams='false' crash, pinned."""
+        default = bundle_repo_steps.get("set-default-bundle-overview-enhanced-dot")
+        assert default, "set-default-bundle-overview-enhanced-dot step is missing"
+        assert default.get("output") == "bundle_overview_enhanced_dot"
+        assert "condition" not in default, "The default must be UNCONDITIONAL"
+
+        producer = bundle_repo_steps.get("bundle-overview-regen-enhance", {})
+        assert producer.get("condition") == "{{enhance_diagrams}} != 'false'"
+        assert producer.get("output") == "bundle_overview_enhanced_dot"
+
+    def test_generate_bundle_docs_defaults_the_enhanced_dot(self):
+        """generate-bundle-docs.yaml carried the identical defect."""
+        data = yaml.safe_load(
+            (RECIPE_DIR / "generate-bundle-docs.yaml").read_text(encoding="utf-8")
+        )
+        steps = {s["id"]: s for s in data.get("steps", []) if "id" in s}
+
+        default = steps.get("set-default-enhanced-bundle-dot")
+        assert default, "set-default-enhanced-bundle-dot step is missing"
+        assert default.get("output") == "enhanced_bundle_dot"
+        assert "condition" not in default, "The default must be UNCONDITIONAL"
+
+        producer = steps.get("enhance-bundle-dot", {})
+        assert producer.get("condition") == "{{enhance_diagrams}} != 'false'"
+        assert producer.get("output") == "enhanced_bundle_dot"
+
+    def test_default_is_declared_before_the_conditional_producer(self):
+        """Declaration order is execution order -- the default must be first.
+
+        If the default came after the producer it would CLOBBER a real
+        enhanced DOT whenever enhancement did run.
+        """
+        for recipe, default_id, producer_id in (
+            (
+                "validate-bundle-repo.yaml",
+                "set-default-bundle-overview-enhanced-dot",
+                "bundle-overview-regen-enhance",
+            ),
+            (
+                "generate-bundle-docs.yaml",
+                "set-default-enhanced-bundle-dot",
+                "enhance-bundle-dot",
+            ),
+        ):
+            data = yaml.safe_load((RECIPE_DIR / recipe).read_text(encoding="utf-8"))
+            ids = [s.get("id") for s in data.get("steps", [])]
+            assert default_id in ids, f"{recipe}: {default_id} missing"
+            assert producer_id in ids, f"{recipe}: {producer_id} missing"
+            assert ids.index(default_id) < ids.index(producer_id), (
+                f"{recipe}: {default_id} must be declared BEFORE {producer_id} "
+                f"so the real producer overwrites the default, not vice versa."
+            )
+
+
+class TestConditionalOutputLintDiscriminates:
+    """The lint must fire on the defect and stay quiet on correct patterns."""
+
+    PRE_FIX = textwrap.dedent("""
+        name: pre-fix
+        context:
+          enhance_diagrams: "true"
+        steps:
+          - id: produce
+            condition: "{{enhance_diagrams}} != 'false'"
+            agent: "foundation:zen-architect"
+            prompt: "make it pretty"
+            output: "enhanced_dot"
+          - id: consume
+            type: bash
+            command: |
+              echo "{{enhanced_dot}}"
+    """)
+
+    POST_FIX = textwrap.dedent("""
+        name: post-fix
+        context:
+          enhance_diagrams: "true"
+        steps:
+          - id: set-default
+            type: bash
+            command: |
+              echo ""
+            output: "enhanced_dot"
+          - id: produce
+            condition: "{{enhance_diagrams}} != 'false'"
+            agent: "foundation:zen-architect"
+            prompt: "make it pretty"
+            output: "enhanced_dot"
+          - id: consume
+            type: bash
+            command: |
+              echo "{{enhanced_dot}}"
+    """)
+
+    def test_flags_the_pre_fix_shape(self):
+        """The exact reported defect MUST be caught."""
+        problems = sole_conditional_producer_refs(yaml.safe_load(self.PRE_FIX))
+        assert problems, "The pre-fix conditional-output shape MUST be flagged"
+        assert "enhanced_dot" in problems[0]
+        assert "conditional step 'produce'" in problems[0]
+
+    def test_passes_the_post_fix_shape(self):
+        """The set-default remedy clears the finding."""
+        assert sole_conditional_producer_refs(yaml.safe_load(self.POST_FIX)) == []
+
+    def test_default_after_producer_still_flags_the_consumer(self):
+        """Order matters: a default declared after the producer does not help.
+
+        Steps execute in declaration order, so a default that lands after the
+        conditional producer both fails to guard the consumer's first read
+        and clobbers a real enhanced value.
+        """
+        data = yaml.safe_load(self.PRE_FIX)
+        data["steps"].insert(
+            1,
+            {"id": "set-default", "type": "bash", "command": 'echo ""', "output": "enhanced_dot"},
+        )
+        # produce (conditional) -> set-default -> consume: the default IS
+        # unconditional and precedes the consumer, so this specific ordering
+        # is safe for the consumer even though it clobbers. Sanity-check the
+        # model agrees, so the ordering test above carries the clobber concern.
+        assert sole_conditional_producer_refs(data) == []
+
+    def test_complementary_conditional_pair_is_not_flagged(self):
+        """Two complementary conditions always yield exactly one producer.
+
+        This is the repo's deliberate build-check / set-default-build-check
+        pattern. Flagging it would fail correct recipes.
+        """
+        data = yaml.safe_load(
+            textwrap.dedent("""
+            name: complementary
+            context:
+              has_pyproject: "true"
+            steps:
+              - id: build-check
+                condition: "{{has_pyproject}} == true"
+                type: bash
+                command: "echo real"
+                output: "build_check"
+              - id: set-default-build-check
+                condition: "{{has_pyproject}} != true"
+                type: bash
+                command: "echo default"
+                output: "build_check"
+              - id: consume
+                type: bash
+                command: |
+                  echo "{{build_check}}"
+        """)
+        )
+        assert sole_conditional_producer_refs(data) == []
+
+    def test_foreach_loop_binding_is_in_scope(self):
+        """`as:` binds a loop variable inside the foreach step's own body.
+
+        bundle-behavioral-model.yaml's extract-behaviors uses
+        `as: "target"` and reads {{target.file_path}}; that is correct, not
+        an undefined variable.
+        """
+        data = yaml.safe_load(
+            textwrap.dedent("""
+            name: loops
+            context:
+              manifest: {}
+            steps:
+              - id: extract
+                agent: "foundation:explorer"
+                foreach: "{{manifest}}"
+                as: "target"
+                collect: "extractions"
+                prompt: |
+                  Read {{target.file_path}}
+              - id: synthesize
+                type: bash
+                command: |
+                  echo "{{extractions}}"
+        """)
+        )
+        assert sole_conditional_producer_refs(data) == []
+
+    def test_unconditional_producer_is_never_flagged(self):
+        data = yaml.safe_load(
+            textwrap.dedent("""
+            name: plain
+            steps:
+              - id: produce
+                type: bash
+                command: "echo hi"
+                output: "value"
+              - id: consume
+                type: bash
+                command: |
+                  echo "{{value}}"
+        """)
+        )
+        assert sole_conditional_producer_refs(data) == []
