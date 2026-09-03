@@ -1,3 +1,47 @@
+# generate-bundle-docs.yaml
+# Bundle Documentation Generator Recipe v3.1.0
+# Generates bundle.dot + bundle.png for a whole bundle repository.
+#
+# CHANGELOG:
+# v3.1.0 - Portability: declare a schema_version 2 dependency manifest
+#          (contract recipe-dependency-manifest.v1). The
+#          `agent: "foundation:zen-architect"` step below previously
+#          resolved out of the CALLING session's agent map; a caller
+#          without that agent failed at run time with
+#          "Agent 'foundation:zen-architect' not found in configuration".
+#          It now resolves from this recipe's own declared closure.
+#        - Self-referential on purpose: foundation's own recipe declares
+#          foundation as a dependency. Core 11 forbids inferring a source
+#          from the `foundation:` namespace prefix -- an undeclared
+#          dependency is never guessed, so it must be written down.
+#        - No behavior change under the legacy engine, which ignores both
+#          new top-level keys. Recipe logic, steps and prompts untouched.
+#        - FIX (same defect class as validate-bundle-repo v3.12.0): the
+#          producer `enhance-bundle-dot` is conditional on
+#          `{{enhance_diagrams}} != 'false'` but the consumer
+#          `write-bundle-dot` reads {{enhanced_bundle_dot}}
+#          unconditionally. New `set-default-enhanced-bundle-dot` step
+#          emits an empty default ahead of the conditional producer, so
+#          `enhance_diagrams: "false"` falls back to the structural DOT
+#          instead of raising `Undefined variable`.
+# v3.0.0 - Single bundle.dot + bundle.png per repository via bundle_repo_dot().
+
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+# ---------------------------------------------------------------------------
+
 name: generate-bundle-docs
 description: |
   Generates bundle.dot + bundle.png for the whole repository via bundle_repo_dot().
@@ -12,7 +56,7 @@ description: |
 
   Both embed source_hash for freshness tracking.
   LLM label enhancement is on by default (set enhance_diagrams: "false" to skip).
-version: "3.0.0"
+version: "3.1.0"
 author: "Amplifier Foundation"
 tags: ["bundles", "documentation", "visualization", "dot"]
 
@@ -85,6 +129,21 @@ steps:
   # STEP 2: LLM-enhance bundle DOT labels (skip with enhance_diagrams: "false")
   # Only runs when a bundle DOT needs to be written.
   # ============================================================================
+  # Default for the CONDITIONAL producer below. `enhance-bundle-dot` only runs
+  # when enhance_diagrams != 'false', but `write-bundle-dot` reads
+  # {{enhanced_bundle_dot}} unconditionally. Steps execute in declaration order,
+  # so this default lands first and the conditional producer overwrites it when
+  # it runs. The consumer treats an empty value as "no enhanced DOT" and falls
+  # back to the structural DOT -- the intended behaviour when enhancement is off.
+  - id: "set-default-enhanced-bundle-dot"
+    type: "bash"
+    command: |
+      echo ""
+    output: "enhanced_bundle_dot"
+    timeout: 10
+    on_error: "continue"
+    depends_on: ["generate-bundle-dot"]
+
   - id: "enhance-bundle-dot"
     agent: "foundation:zen-architect"
     mode: "ARCHITECT"
@@ -132,7 +191,7 @@ steps:
   # ============================================================================
   - id: "write-bundle-dot"
     type: "bash"
-    depends_on: ["enhance-bundle-dot"]
+    depends_on: ["set-default-enhanced-bundle-dot", "enhance-bundle-dot"]
     on_error: "continue"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'PYEOF'
