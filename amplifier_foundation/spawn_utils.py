@@ -617,6 +617,55 @@ def _find_provider_instance(
     return providers[candidates[0][1]]
 
 
+# ---------------------------------------------------------------------------
+# "Which instance does a BARE module type mean?" -- one answer, three callers
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS (model_performance-67u)
+#
+# A routing matrix addresses providers by bare module type (`provider:
+# anthropic`), but a mount plan may carry SEVERAL instances of that module,
+# each with its own `id:` and `priority:` -- which is precisely the shape the
+# routing-matrix bundle asks for (see _find_provider_instance's docstring:
+# distinct `id:`s exist "for routing-matrix disambiguation").
+#
+# Three helpers in this file used to answer "which instance is `anthropic`?"
+# three DIFFERENT ways:
+#
+#   _find_provider_instance  -> highest priority (lowest number)
+#   _find_provider_index     -> first declared
+#   _build_provider_lookup   -> LAST declared (plain dict, last write wins)
+#
+# apply_provider_preferences_with_resolution calls TWO of them in one pass:
+# it resolves the candidate's model glob against the instance
+# _find_provider_instance picks, then promotes the index
+# _build_provider_lookup returns. On a 10-mount plan with 2 module types
+# (the eval harness roster: sol/terra/openai/luna/luna-max +
+# opus-4.8/opus/sonnet/haiku/fable) those are different mounts, so the model
+# resolved from instance A's model list was written onto instance B's config
+# and B was promoted to priority 0 -- right model, wrong instance, and with
+# it B's base_url / long-context / cache-retention settings. Silently.
+#
+# The rule below is now the single answer, and it is the one the caller
+# already expressed: HIGHEST PRIORITY WINS, ties broken by declaration order.
+# An explicit instance `id:` is a more specific address than a bare module
+# type and always beats it.
+
+
+def _provider_priority(provider: dict[str, Any]) -> int:
+    """Priority of a mount-plan provider entry; lower ranks higher.
+
+    Missing/unparseable priority sorts as 0 (highest), matching
+    :func:`_find_provider_instance`, so plans that never set ``priority``
+    keep resolving by declaration order.
+    """
+    raw = (provider.get("config") or {}).get("priority", 0)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _find_provider_index(
     providers: list[dict[str, Any]],
     provider_id: str,
@@ -626,6 +675,11 @@ def _find_provider_index(
     Supports flexible matching: "anthropic", "provider-anthropic",
     or full module ID.
 
+    When several instances of the same module type are mounted, the
+    highest-priority one wins (ties: declaration order) -- see the
+    module comment above :func:`_provider_priority`. An exact instance
+    ``id`` match is more specific and beats any module-type match.
+
     Args:
         providers: List of provider configs from mount plan.
         provider_id: Provider to find.
@@ -634,16 +688,17 @@ def _find_provider_index(
         Index of the provider, or None if not found.
     """
     for i, p in enumerate(providers):
-        module_id = p.get("module", "")
-        instance_id = p.get("id", "")
-        if provider_id in (
-            module_id,
-            module_id.replace("provider-", ""),
-            f"provider-{provider_id}",
-            instance_id,
-        ):
+        if p.get("id", "") == provider_id:
             return i
-    return None
+
+    best: tuple[int, int] | None = None
+    for i, p in enumerate(providers):
+        module_id = p.get("module", "")
+        if provider_id in (module_id, module_id.replace("provider-", "")):
+            priority = _provider_priority(p)
+            if best is None or priority < best[0]:
+                best = (priority, i)
+    return None if best is None else best[1]
 
 
 def _build_provider_lookup(
@@ -651,23 +706,39 @@ def _build_provider_lookup(
 ) -> dict[str, int]:
     """Build a lookup dict mapping provider names to indices.
 
+    Module-type keys ("anthropic", "provider-anthropic", the full module
+    id) resolve to the HIGHEST-PRIORITY instance of that module, not the
+    last-declared one -- see the module comment above
+    :func:`_provider_priority` for the defect that motivated this.
+    Instance ``id`` keys are the most specific address and always win,
+    even when an id collides with a module-type name.
+
     Args:
         providers: List of provider configs from mount plan.
 
     Returns:
         Dict mapping various name formats to provider index.
     """
-    lookup: dict[str, int] = {}
+    # Pass 1: module-type keys, resolved by priority rather than by
+    # whichever entry happened to be written to the dict last.
+    best: dict[str, tuple[int, int]] = {}
     for i, p in enumerate(providers):
         module_id = p.get("module", "")
-        lookup[module_id] = i
-        # Also index by short name
         short_name = module_id.replace("provider-", "")
+        keys = [module_id, f"provider-{short_name}"]
         if short_name != module_id:
-            lookup[short_name] = i
-        # And with provider- prefix
-        lookup[f"provider-{short_name}"] = i
-        # Add id-based lookup if present
+            keys.append(short_name)
+        priority = _provider_priority(p)
+        for key in keys:
+            current = best.get(key)
+            if current is None or priority < current[0]:
+                best[key] = (priority, i)
+
+    lookup: dict[str, int] = {key: idx for key, (_, idx) in best.items()}
+
+    # Pass 2: an explicit instance id is the most specific address there
+    # is, so it overwrites any module-type key it collides with.
+    for i, p in enumerate(providers):
         instance_id = p.get("id")
         if instance_id:
             lookup[instance_id] = i
