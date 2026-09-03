@@ -185,6 +185,73 @@ def _return_contract_event_fields(contract: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _matrix_provenance(resolver: Any) -> dict[str, Any] | None:
+    """Read matrix identity off a ``model_role_resolver`` capability.
+
+    WHY THIS EXISTS. ``delegate:agent_spawned`` records the
+    ``provider_preferences`` a delegation resolved to, but not WHICH
+    routing-matrix file produced them. A user file in ``~/.amplifier/routing/``
+    silently outranks the bundle's own same-named matrix, so a surprising
+    resolution in the event stream is indistinguishable from a shadowed
+    matrix, a shipped-matrix change, or no matrix at all. Two prior
+    investigations read the shipped file, reasoned about a matrix that was
+    not in effect, and reached confidently wrong mechanisms.
+
+    CONSUMED, NOT RE-DERIVED. ``matrix_path`` / ``matrix_source`` /
+    ``shadowed_paths`` are published by the routing bundle on the capability
+    object this tool already holds (see hooks-routing's ``resolver_class``
+    docstring, which names "a spawn-time telemetry payload" as the intended
+    consumer). Nothing here re-implements matrix precedence; a second
+    implementation of that precedence is exactly the drift this reads
+    published state to avoid.
+
+    OPTIONAL BY CONTRACT. Every attribute is optional: the capability is
+    duck-typed and an alternate strategy (cost-aware, latency-aware) may
+    register under the same key without any notion of a "matrix file", as
+    may an older routing bundle predating these attributes. Absent is NOT
+    "no shadowing" -- it is "this strategy does not report a source", so
+    this returns ``None`` rather than a dict of nulls, and the caller omits
+    the key entirely. Values are type-guarded rather than trusted.
+
+    Returns:
+        A dict with ``matrix_name`` / ``matrix_path`` / ``matrix_source`` /
+        ``shadowed_paths``, or ``None`` when the resolver reports no source
+        at all (absent attributes, all-``None`` values, or a resolver that
+        is itself ``None``).
+    """
+    if resolver is None:
+        return None
+
+    def _str_or_none(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    name = _str_or_none(getattr(resolver, "name", None))
+    path = _str_or_none(getattr(resolver, "matrix_path", None))
+    source = _str_or_none(getattr(resolver, "matrix_source", None))
+
+    raw_shadowed = getattr(resolver, "shadowed_paths", None)
+    shadowed: list[str] = []
+    # str is itself a sequence -- iterating one yields characters, which
+    # would silently produce a list of single letters instead of failing.
+    if isinstance(raw_shadowed, (list, tuple)):
+        shadowed = [p for p in (_str_or_none(p) for p in raw_shadowed) if p]
+
+    # A resolver that reports no file identity at all contributes nothing a
+    # forensic reader can act on. Emitting {"matrix_path": None, ...} would
+    # look like a positive statement ("we checked, there is no shadowing");
+    # returning None keeps the key off the payload entirely, which reads
+    # correctly as "unknown".
+    if path is None and source is None and not shadowed:
+        return None
+
+    return {
+        "matrix_name": name,
+        "matrix_path": path,
+        "matrix_source": source,
+        "shadowed_paths": shadowed,
+    }
+
+
 # Matches a fenced ```json ... ``` block, tolerant of ```JSON, surrounding
 # indentation, and trailing whitespace on the fence lines. The closing fence
 # must be alone on its own line so short "```" substrings inside the JSON
@@ -1335,12 +1402,23 @@ Agent usage notes:
         # under the same key. We duck-type against the contract:
         #     async def resolve(model_role) -> list[ProviderPreference]
         raw_model_role = input.get("model_role", "").strip()
+        # Matrix provenance for the spawn telemetry record. Captured HERE,
+        # at the one site that actually consults the resolver, rather than
+        # re-fetched at the emit site: this records the identity of the
+        # strategy that produced THIS delegation's preferences, and cannot
+        # drift from it if the capability is swapped mid-session. Stays
+        # None on every path where the matrix did not produce the
+        # preferences (explicit provider_preferences pin, agent-level
+        # defaults, no model_role at all) -- claiming a matrix produced
+        # preferences it never saw would be worse than saying nothing.
+        routing_matrix: dict[str, Any] | None = None
         if raw_model_role and provider_preferences is None:
             resolver = (
                 self.coordinator.get_capability("model_role_resolver")
                 if hasattr(self.coordinator, "get_capability")
                 else None
             )
+            routing_matrix = _matrix_provenance(resolver)
             if resolver is None:
                 logger.warning(
                     "model_role '%s' specified but no model_role_resolver "
@@ -1384,6 +1462,16 @@ Agent usage notes:
                                 "agent": agent_name,
                                 "resolver": resolver_name,
                                 "fallback_behavior": "session_default",
+                                # Same additive/omitted-when-unknown contract
+                                # as delegate:agent_spawned below. "Which
+                                # matrix file failed to serve this role" is
+                                # the first question asked of this event, and
+                                # a shadowing user file is a leading cause.
+                                **(
+                                    {"routing_matrix": routing_matrix}
+                                    if routing_matrix
+                                    else {}
+                                ),
                             },
                         )
 
@@ -1520,6 +1608,7 @@ Agent usage notes:
             raw_model_role=raw_model_role,
             agents=agents,
             call_budget_override=call_budget_override,
+            routing_matrix=routing_matrix,
         )
 
     def _resolve_call_budget(
@@ -1574,6 +1663,7 @@ Agent usage notes:
         raw_model_role: str = "",
         agents: dict | None = None,
         call_budget_override: int | None = None,
+        routing_matrix: dict[str, Any] | None = None,
     ) -> ToolResult:
         """Spawn a new agent sub-session.
 
@@ -1595,6 +1685,12 @@ Agent usage notes:
             parallel_group_id: Parallel group ID (enriches event payloads)
             raw_model_role: Raw model role string for routing tracking
             agents: Agent config dict (defaults to coordinator.config["agents"])
+            routing_matrix: Matrix provenance captured by execute() from the
+                ``model_role_resolver`` capability that produced
+                ``provider_preferences`` (see :func:`_matrix_provenance`).
+                ``None`` -- the default, and what every caller that does not
+                supply it gets -- omits the field from the emitted event
+                entirely, leaving the payload byte-identical to before.
 
         Returns:
             ToolResult with spawn outcome
@@ -1642,7 +1738,23 @@ Agent usage notes:
             # Get parent session
             parent_session = self.coordinator.session
 
-            # Emit delegate:agent_spawned event
+            # Emit delegate:agent_spawned event.
+            #
+            # `routing_matrix` is ADDITIVE and OMITTED when unknown -- see
+            # _matrix_provenance. Two backward-compatibility properties
+            # follow from that, both deliberate:
+            #
+            #   1. Consumers that ignore the field are unaffected: this is a
+            #      dict payload, and an extra key changes nothing for a
+            #      reader that does not look for it. No existing key's name,
+            #      type, or value changes.
+            #   2. Analyzers reading OLD captures still work: they must read
+            #      it with .get("routing_matrix"), and absent means UNKNOWN
+            #      (this capture predates the field, or no matrix strategy
+            #      reported a source) -- NOT "no shadowing". Every capture on
+            #      disk today is in that state, so an analyzer that treats
+            #      absence as a negative assertion would silently mis-clear
+            #      exactly the shadowed sessions this field exists to catch.
             if hooks:
                 await hooks.emit(
                     "delegate:agent_spawned",
@@ -1659,6 +1771,9 @@ Agent usage notes:
                             [p.to_dict() for p in provider_preferences]
                             if provider_preferences
                             else None
+                        ),
+                        **(
+                            {"routing_matrix": routing_matrix} if routing_matrix else {}
                         ),
                     },
                 )

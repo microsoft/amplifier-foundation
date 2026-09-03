@@ -265,6 +265,49 @@ so the gap is loud, never silent.
   warn-only -> S2 generous enforcement -> S3 target enforcement) before
   setting a production default.
 
+## Matrix provenance on spawn telemetry
+
+`delegate:agent_spawned` records the `provider_preferences` a delegation
+resolved to. It now also records **which routing matrix file produced them**,
+under an optional `routing_matrix` key:
+
+```json
+"routing_matrix": {
+  "matrix_name": "anthropic",
+  "matrix_path": "/home/u/.amplifier/routing/anthropic.yaml",
+  "matrix_source": "user",
+  "shadowed_paths": ["/opt/bundles/routing-matrix/routing/anthropic.yaml"]
+}
+```
+
+A user file in `~/.amplifier/routing/` silently outranks the bundle's own
+same-named matrix, so without this a surprising resolution in the event stream
+is indistinguishable from a shadowed matrix, a shipped-matrix change, or no
+routing at all. The values are **read from** the `model_role_resolver`
+capability's published `matrix_path` / `matrix_source` / `shadowed_paths`
+attributes (hooks-routing publishes them); nothing here re-derives matrix
+precedence.
+
+The same key is added to `delegate:model_role_unresolved`, where "which matrix
+file failed to serve this role" is the first question asked.
+
+### Reading it correctly
+
+| Situation | `routing_matrix` |
+|---|---|
+| Resolver produced the preferences and reports a source | present |
+| No `model_role` (no routing requested) | **absent** |
+| Explicit `provider_preferences` pin, or agent-level default | **absent** — the matrix never saw them |
+| No routing bundle installed | **absent** |
+| Resolver is a non-matrix strategy, or an older routing bundle | **absent** |
+
+**Absent means UNKNOWN, never "no shadowing."** Read it with
+`payload.get("routing_matrix")`. Every capture recorded before this field
+existed lacks the key, so an analyzer that treats absence as a negative
+assertion would silently clear exactly the shadowed sessions the field exists
+to catch. The field is purely additive: no existing key's name, type, or value
+changed, and consumers that ignore it are unaffected.
+
 ## Note
 
 This module is recommended over `tool-task` for new development due to its enhanced context control and bug fixes.
