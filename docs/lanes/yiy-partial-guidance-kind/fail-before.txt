@@ -1,0 +1,62 @@
+=== FAIL-BEFORE: parent commit 5d8db2fa4715e4dfe7d3b6604d725de4c291ec9d (5d8db2f), module UNCHANGED ===
+$ uv run pytest tests/test_partial_guidance_kind_yiy.py -q
+    
+        guidance = result.output["guidance"]
+        assert result.output["partial_source"] == REASONING_SOURCE
+>       assert PROSE_CLAUSE not in guidance
+E       AssertionError: assert 'unfinished ...t mid-flight' not in 'INCOMPLETE:... resumption.'
+E         
+E         'unfinished work sa...he agent mid-flight' is contained here:
+E         ?           ^^^^^^^^^^
+E           ponse' is unfinished work salvaged from the agent mid-flight -- it has NOT been checked, concluded, or self-reviewed by that agent. Do not report it as a completed result and do not treat its conclusions as final. Re-delegate a narrower task or complete the work yourself; see metadata.recovery_message before considering this session for resumption.
+E         ?           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_partial_guidance_kind_yiy.py:194: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'test-agent' timed out after 0.01s (delegate tool session-level timeout; elapsed 0.01s). Partial output was preserved and is returned under 'partial_response' -- it is UNFINISHED, not a result. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+__________ test_reasoning_guidance_says_what_the_payload_actually_is ___________
+
+    @pytest.mark.asyncio
+    async def test_reasoning_guidance_says_what_the_payload_actually_is():
+        """It is evidence of what the agent was doing -- not a draft answer."""
+        tool = _make_tool(
+            timeout=0.01,
+            partial_fn=_partial("thinking, then a tool call", REASONING_SOURCE),
+        )
+        guidance = (await _spawn(tool)).output["guidance"]
+    
+        lowered = guidance.lower()
+>       assert "reasoning" in lowered
+E       assert 'reasoning' in "incomplete: this delegate did not finish. the text in 'partial_response' is unfinished work salvaged from the agent m...ower task or complete the work yourself; see metadata.recovery_message before considering this session for resumption."
+
+tests/test_partial_guidance_kind_yiy.py:209: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'test-agent' timed out after 0.01s (delegate tool session-level timeout; elapsed 0.01s). Partial output was preserved and is returned under 'partial_response' -- it is UNFINISHED, not a result. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+____________ test_reasoning_kind_is_honoured_on_the_resume_path_too ____________
+
+    @pytest.mark.asyncio
+    async def test_reasoning_kind_is_honoured_on_the_resume_path_too():
+        """The resume path is a second timeout call site; it must not diverge."""
+        tool = _make_tool(
+            timeout=0.01,
+            partial_fn=_partial("resumed reasoning trace", REASONING_SOURCE),
+        )
+        result = await _resume(tool)
+    
+        assert result.output["partial_source"] == REASONING_SOURCE
+>       assert PROSE_CLAUSE not in result.output["guidance"]
+E       AssertionError: assert 'unfinished ...t mid-flight' not in 'INCOMPLETE:... resumption.'
+E         
+E         'unfinished work sa...he agent mid-flight' is contained here:
+E         ?           ^^^^^^^^^^
+E           ponse' is unfinished work salvaged from the agent mid-flight -- it has NOT been checked, concluded, or self-reviewed by that agent. Do not report it as a completed result and do not treat its conclusions as final. Re-delegate a narrower task or complete the work yourself; see metadata.recovery_message before considering this session for resumption.
+E         ?           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_partial_guidance_kind_yiy.py:227: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_module_tool_delegate:__init__.py:2682 Resumed agent 'test-agent' timed out after 0.01s (delegate tool session-level timeout; elapsed 0.01s). Partial output was preserved and is returned under 'partial_response' -- it is UNFINISHED, not a result. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+=========================== short test summary info ============================
+FAILED tests/test_partial_guidance_kind_yiy.py::test_reasoning_partial_is_not_framed_as_unfinished_prose
+FAILED tests/test_partial_guidance_kind_yiy.py::test_reasoning_guidance_says_what_the_payload_actually_is
+FAILED tests/test_partial_guidance_kind_yiy.py::test_reasoning_kind_is_honoured_on_the_resume_path_too
+3 failed, 16 passed in 0.31s

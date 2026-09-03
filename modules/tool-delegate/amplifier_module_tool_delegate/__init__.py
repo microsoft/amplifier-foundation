@@ -124,6 +124,67 @@ _NO_PARTIAL_GUIDANCE = (
     "considering this session for resumption."
 )
 
+# Guidance for a partial recovered from the REASONING channel: the producer
+# found no assistant text at all and fell back to the agent's own thinking
+# blocks and tool-call trace.
+#
+# _PARTIAL_GUIDANCE above is wrong for this payload, and wrong in a way that
+# does harm. "Unfinished work ... not checked, concluded, or self-reviewed"
+# describes prose the agent was writing FOR a reader and did not get to
+# finish. Private reasoning was never addressed to a reader at all; framing
+# it as unreviewed draft output invites the caller to read it as a draft
+# answer, which is the one thing it is not.
+#
+# The payload itself is already self-labelled at head and tail by the
+# producer. What this constant fixes is the frame this repo puts around it.
+_REASONING_PARTIAL_GUIDANCE = (
+    "INCOMPLETE: this delegate did not finish, and it produced no answer text "
+    "at all before the deadline. What is in 'partial_response' is the agent's "
+    "own private reasoning and the trace of the tool calls it made -- evidence "
+    "of what it was doing and what it had looked at. It was never addressed to "
+    "a reader and is never a draft answer, so do not quote it, summarize it as "
+    "a result, or treat any statement in it as a conclusion. Use it only to "
+    "decide what to do next: re-delegate a narrower task informed by what it "
+    "had already covered, or complete the work yourself; see "
+    "metadata.recovery_message before considering this session for resumption."
+)
+
+#: ``partial.source`` values that denote the reasoning channel rather than
+#: recovered assistant prose. Produced by app-cli ``8c83a9b``
+#: (``amplifier_app_cli/session_spawner.py::get_partial_output``), which
+#: returns ``"spawn-accumulator"`` whenever assistant text exists and
+#: ``"spawn-accumulator:reasoning"`` only when it does not.
+#:
+#: EXACT MATCH, deliberately. The producer is a separate repo on its own
+#: release cadence, so a value this code has never seen must degrade to the
+#: incumbent behaviour rather than inherit a frame that may be wrong for it.
+#: A prefix or suffix test would hand the reasoning frame to any future
+#: producer that merely happens to spell its source similarly.
+_REASONING_PARTIAL_SOURCES = frozenset({"spawn-accumulator:reasoning"})
+
+
+def _guidance_for(text: str, source: Any) -> str:
+    """Pick the timeout guidance by the KIND of partial, not by ``bool(text)``.
+
+    Three cases, in order:
+
+    * nothing recovered -> ``_NO_PARTIAL_GUIDANCE`` (unchanged)
+    * recovered from the reasoning channel -> ``_REASONING_PARTIAL_GUIDANCE``
+    * anything else, including an unknown or non-string ``source`` ->
+      ``_PARTIAL_GUIDANCE``, byte-identical to what shipped before this
+      branch existed. app-cli's round-trip test
+      ``test_guidance_string_is_unchanged_for_the_text_case`` asserts the
+      same bytes from the producer side.
+
+    ``source`` is typed ``Any`` on purpose: it arrives from another repo and
+    is compared, never parsed, so a non-string can never raise here.
+    """
+    if not text:
+        return _NO_PARTIAL_GUIDANCE
+    if isinstance(source, str) and source in _REASONING_PARTIAL_SOURCES:
+        return _REASONING_PARTIAL_GUIDANCE
+    return _PARTIAL_GUIDANCE
+
 
 def _partial_output_fields(partial: dict[str, Any]) -> dict[str, Any]:
     """The additive timeout-result keys describing recovered partial work.
@@ -134,15 +195,16 @@ def _partial_output_fields(partial: dict[str, Any]) -> dict[str, Any]:
     ``partial_available`` states plainly whether any exists.
     """
     text = partial.get("text") or ""
+    source = partial.get("source", "none")
     return {
         "completed": False,
         "partial_available": bool(text),
         "partial_response": text or None,
         "partial_segments": partial.get("segments", 0),
-        "partial_source": partial.get("source", "none"),
+        "partial_source": source,
         "partial_truncated": bool(partial.get("truncated")),
         "partial_chars_total": partial.get("chars_total", len(text)),
-        "guidance": _PARTIAL_GUIDANCE if text else _NO_PARTIAL_GUIDANCE,
+        "guidance": _guidance_for(text, source),
     }
 
 
