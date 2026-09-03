@@ -1,0 +1,13 @@
+--- FAIL-BEFORE (parent 0d7b3f6, fix stashed) ---
+
+modules/tool-delegate/tests/test_delegate_resume_routing.py:428: KeyError
+=========================== short test summary info ============================
+FAILED modules/tool-delegate/tests/test_delegate_resume_routing.py::TestResumeThreadsExplicitRouting::test_resume_sends_model_role_to_resume_capability
+FAILED modules/tool-delegate/tests/test_delegate_resume_routing.py::TestResumeThreadsExplicitRouting::test_resume_sends_resolved_preferences_to_resume_capability
+FAILED modules/tool-delegate/tests/test_delegate_resume_routing.py::TestResumeThreadsExplicitRouting::test_resume_sends_explicit_provider_preferences
+FAILED modules/tool-delegate/tests/test_delegate_resume_routing.py::TestResumeInheritsSpawnRouting::test_resume_reuses_spawn_time_routing_when_caller_omits_it
+FAILED modules/tool-delegate/tests/test_delegate_resume_routing.py::TestResumeInheritsSpawnRouting::test_explicit_resume_role_overrides_the_spawn_time_role
+FAILED modules/tool-delegate/tests/test_delegate_resume_routing.py::TestResumedRequestConfig::test_resumed_leg_resolves_to_the_same_provider_and_model_as_spawn
+FAILED modules/tool-delegate/tests/test_delegate_resume_routing.py::TestResumeCapabilityCompatibility::test_legacy_capability_drop_is_logged_not_silent
+FAILED modules/tool-delegate/tests/test_delegate_resume_routing.py::TestResumedEventRouting::test_agent_resumed_event_carries_role_and_preferences
+8 failed, 2 passed in 0.08s

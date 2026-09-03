@@ -50,6 +50,7 @@ Tool Parameters:
 __amplifier_module_type__ = "tool"
 
 import asyncio
+import inspect
 import json
 import logging
 import math
@@ -183,6 +184,45 @@ def _return_contract_event_fields(contract: dict[str, Any]) -> dict[str, Any]:
         "not_covered_count": len(contract.get("not_covered") or []),
         "artifacts_count": len(contract.get("artifacts") or []),
     }
+
+
+#: Routing kwargs the resume path threads to the app layer's
+#: ``session.resume`` capability. Both are OPTIONAL on that capability --
+#: see :func:`_supported_resume_routing_kwargs`.
+_RESUME_ROUTING_KWARGS = ("provider_preferences", "model_role")
+
+
+def _supported_resume_routing_kwargs(resume_fn: Any) -> set[str]:
+    """Which of ``_RESUME_ROUTING_KWARGS`` ``resume_fn`` can actually accept.
+
+    ``session.resume`` is an app-layer capability, so its signature is not
+    ours to guarantee. The original contract was
+    ``(sub_session_id, instruction)``; routing kwargs were added later
+    (amplifier-app-cli #292). Sending a kwarg an older app layer does not
+    declare would raise ``TypeError`` and break resume outright, so this
+    reports exactly what the callee declares and the caller sends only that
+    -- and logs a warning naming anything it had to hold back, because a
+    silent drop is the very defect this threading exists to fix.
+
+    A callable that cannot be introspected (some C-implemented or exotically
+    wrapped callables) is treated as accepting NOTHING: preserving today's
+    working call shape beats crashing a resume on a guess. That case is
+    warned about at the call site too, so it is never silent either.
+    """
+    try:
+        params = inspect.signature(resume_fn).parameters
+    except (TypeError, ValueError):
+        logger.warning(
+            "Could not introspect the session.resume capability's signature; "
+            "resuming without threading routing kwargs (%s)",
+            ", ".join(_RESUME_ROUTING_KWARGS),
+        )
+        return set()
+
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return set(_RESUME_ROUTING_KWARGS)
+
+    return {name for name in _RESUME_ROUTING_KWARGS if name in params}
 
 
 def _matrix_provenance(resolver: Any) -> dict[str, Any] | None:
@@ -485,6 +525,25 @@ class DelegateTool:
         # "{parent_span}-{child_span}_{sanitized_agent_name}" shape for every
         # sub-session id this tool creates.
         self._session_agents: dict[str, str] = {}
+
+        # Maps sub_session_id -> the routing this tool resolved at spawn time:
+        # {"model_role": str | None, "provider_preferences": list | None}.
+        #
+        # Why this exists: a caller pins routing ONCE, on the spawn call
+        # (delegate(agent=..., model_role="reasoning")), and then resumes
+        # with (session_id, instruction) -- the shape every existing caller
+        # uses. Without this record the resume leg has nothing to thread and
+        # the child silently falls back to settings priority, which is the
+        # measured "resume wipes the role" defect. An explicit model_role /
+        # provider_preferences on the resume call still wins over it.
+        #
+        # Same scope and same cold-cache caveat as _session_agents above:
+        # per-DelegateTool-instance, so it does not survive a process
+        # restart or a resume issued from a different parent session. That
+        # case is not a silent drop either -- the app layer recovers the
+        # preferences from the persisted session (agent overlay, then mount
+        # plan); see amplifier-app-cli's resume_sub_session.
+        self._session_routing: dict[str, dict[str, Any]] = {}
 
     def _build_feature_registry(self) -> list[dict[str, Any]]:
         """Build registry of features with their descriptions.
@@ -1530,12 +1589,21 @@ Agent usage notes:
                     success=False,
                     error={"message": "Session resumption is disabled"},
                 )
+            # provider_preferences / raw_model_role are threaded here for the
+            # same reason the spawn branch below threads them: a caller that
+            # pins a model for a delegation must get that model on EVERY leg
+            # of it, not just the first. Both are already fully resolved
+            # above (the model_role -> preferences resolution runs before
+            # this branch), so the resume path receives exactly what the
+            # spawn path would have.
             return await self._resume_existing_session(
                 session_id,
                 instruction,
                 hooks,
                 tool_call_id=tool_call_id,
                 parallel_group_id=parallel_group_id,
+                provider_preferences=provider_preferences,
+                raw_model_role=raw_model_role,
             )
 
         # SPAWN MODE: Create new agent session (requires agent)
@@ -1708,6 +1776,18 @@ Agent usage notes:
         # here, instead of re-deriving a lossy, sanitized approximation from
         # the session_id suffix. See _resolve_agent_for_session().
         self._session_agents[sub_session_id] = agent_name
+
+        # Record the routing this delegation resolved to, for the same
+        # reason: a later resume of THIS sub-session must be able to route
+        # the way the caller asked here, even when the resume call itself
+        # says nothing about routing. See _session_routing's declaration and
+        # _resolve_routing_for_session().
+        self._session_routing[sub_session_id] = {
+            "model_role": raw_model_role or None,
+            "provider_preferences": (
+                list(provider_preferences) if provider_preferences else None
+            ),
+        }
 
         # Resolve agents from coordinator config if not provided directly
         if agents is None:
@@ -2110,6 +2190,25 @@ Agent usage notes:
 
         return "unknown"
 
+    def _resolve_routing_for_session(
+        self, session_id: str
+    ) -> tuple[str | None, list | None]:
+        """Recover the routing recorded when ``session_id`` was spawned.
+
+        Source priority mirrors :meth:`_resolve_agent_for_session`: this
+        tool's own spawn-time record, else nothing. Unlike agent identity
+        there is no lossy fallback to parse out of the session_id -- routing
+        is not encoded there -- so a cold cache returns ``(None, None)`` and
+        the app layer's own recovery (agent overlay, then persisted mount
+        plan) takes over.
+
+        Returns:
+            ``(model_role, provider_preferences)``, either of which may be
+            ``None``.
+        """
+        recorded = self._session_routing.get(session_id) or {}
+        return recorded.get("model_role"), recorded.get("provider_preferences")
+
     async def _resume_existing_session(
         self,
         session_id: str,
@@ -2118,6 +2217,8 @@ Agent usage notes:
         *,
         tool_call_id: str = "",
         parallel_group_id: str | None = None,
+        provider_preferences: list | None = None,
+        raw_model_role: str = "",
     ) -> ToolResult:
         """Resume existing agent session.
 
@@ -2127,6 +2228,11 @@ Agent usage notes:
             hooks: Hook coordinator for event emission
             tool_call_id: Orchestrator tool call ID (enriches event payloads)
             parallel_group_id: Parallel group ID (enriches event payloads)
+            provider_preferences: Preferences resolved by execute() for THIS
+                resume call, if the caller pinned any. ``None`` falls back to
+                whatever was recorded when the sub-session was spawned.
+            raw_model_role: The raw model role string supplied on THIS resume
+                call, if any. Same fallback as ``provider_preferences``.
 
         Returns:
             ToolResult with success status and output or error
@@ -2149,6 +2255,19 @@ Agent usage notes:
         # first).
         agent_name = self._resolve_agent_for_session(session_id)
 
+        # Resolve the routing this leg should run under. Precedence:
+        #   1. what the caller stated on THIS resume call (already resolved
+        #      by execute(): model_role -> provider_preferences), then
+        #   2. what this tool recorded when it spawned the sub-session.
+        # Only when the caller stated NEITHER do we fall back, so an
+        # explicit resume-time pin is never quietly overruled by history.
+        effective_model_role: str | None = raw_model_role or None
+        effective_preferences: list | None = provider_preferences
+        if effective_model_role is None and effective_preferences is None:
+            effective_model_role, effective_preferences = (
+                self._resolve_routing_for_session(session_id)
+            )
+
         try:
             # Use session_id as-is (no short ID resolution - LLMs can handle full IDs)
             full_session_id = session_id
@@ -2166,6 +2285,19 @@ Agent usage notes:
                         "parent_session_id": parent_session_id,
                         "tool_call_id": tool_call_id,
                         "parallel_group_id": parallel_group_id,
+                        # Same two fields, same shape, as delegate:agent_spawned.
+                        # Additive: a consumer that does not read them is
+                        # unaffected, and absence in an OLD capture means
+                        # UNKNOWN (predates this field), never "no routing".
+                        # Their whole point is that the drop this fix closes
+                        # was invisible in telemetry -- spawned carried a role,
+                        # resumed carried nothing to compare it against.
+                        "model_role": effective_model_role,
+                        "provider_preferences": (
+                            [p.to_dict() for p in effective_preferences]
+                            if effective_preferences
+                            else None
+                        ),
                     },
                 )
 
@@ -2196,10 +2328,45 @@ Agent usage notes:
                         f"{instruction}\n\n{RETURN_CONTRACT_INSTRUCTION}"
                     )
 
+            # Thread the caller's routing across the app-layer seam.
+            #
+            # This is the fix for the measured "resume wipes the model role"
+            # defect: this call used to be (sub_session_id, instruction)
+            # only, so provider_preferences and model_role never reached the
+            # app layer and the resumed leg fell back to settings priority
+            # -- a silent downgrade, invisible until it was caught on the
+            # wire. The kwargs are OPTIONAL on the capability (see
+            # _supported_resume_routing_kwargs), so an app layer that
+            # predates them keeps working unchanged; what it cannot do is
+            # drop them quietly.
+            resume_routing: dict[str, Any] = {}
+            if effective_preferences is not None:
+                resume_routing["provider_preferences"] = effective_preferences
+            if effective_model_role is not None:
+                resume_routing["model_role"] = effective_model_role
+
+            if resume_routing:
+                supported = _supported_resume_routing_kwargs(resume_fn)
+                unsupported = sorted(set(resume_routing) - supported)
+                if unsupported:
+                    logger.warning(
+                        "session.resume capability does not accept %s -- resuming "
+                        "session %s WITHOUT the caller's routing, which may resolve "
+                        "to a different provider/model than the spawn leg. Update "
+                        "the app layer's resume capability to accept %s.",
+                        ", ".join(unsupported),
+                        full_session_id,
+                        ", ".join(_RESUME_ROUTING_KWARGS),
+                    )
+                resume_routing = {
+                    k: v for k, v in resume_routing.items() if k in supported
+                }
+
             # Resume agent session (with optional session-level timeout)
             resume_coro = resume_fn(
                 sub_session_id=full_session_id,
                 instruction=effective_instruction,
+                **resume_routing,
             )
             result = await self._await_child_with_deadline(resume_coro)
 
