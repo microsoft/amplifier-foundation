@@ -157,9 +157,15 @@ class TestSynthesizeReportWiring:
 
 
 class TestVersionAndChangelog:
-    def test_version_is_3_11_0(self, recipe_data):
+    def test_version_is_current(self, recipe_data):
+        """Pinned to the recipe's current release.
+
+        Bumped 3.11.0 -> 3.12.0 by the schema-v2 migration (dependency
+        manifest + enhance_diagrams guard). The v3.11.0 changelog entry
+        below is unaffected -- changelog entries accumulate.
+        """
         data, _ = recipe_data
-        assert data["version"] == "3.11.0"
+        assert data["version"] == "3.12.0"
 
     def test_changelog_has_v3_11_0_entry(self, recipe_data):
         _, content = recipe_data
