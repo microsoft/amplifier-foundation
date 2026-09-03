@@ -1698,6 +1698,76 @@ amplifier-bundle-recipes/
 
 ---
 
+## Prerequisites
+
+Bundles frequently depend on external tools, system packages, or authenticated
+services that aren't guaranteed to exist on the machine a session runs on
+(`docker`, `xdotool`, `powershell.exe`, an API key, a running daemon). The
+bundle format has **no post-install hook** — `amplifier bundle add` takes a
+URI and, optionally, `--name` / `--app`; registering a bundle never runs
+bundle-supplied setup code. Prerequisite checking is therefore the
+responsibility of the skill, agent, or module body that uses the dependency,
+not the bundle manifest.
+
+### The Convention (Observed in Practice)
+
+Bundles that depend on external tooling self-check before using it, and stop
+rather than improvise around a missing dependency:
+
+```markdown
+## Prerequisites Check
+
+Before any operation, verify the environment:
+
+- [tool] is installed and on PATH
+- [service] is running / reachable
+
+**If prerequisites are missing, report clearly and stop. Do not attempt workarounds.**
+```
+
+This exact heading and sentence appear verbatim in `amplifier-bundle-digital-twin-universe`
+and `amplifier-bundle-gitea` (both in `skills/<name>/SKILL.md`). A closely
+related variant — `## Prerequisites Self-Check (REQUIRED)` paired with "If
+any prerequisite is missing, report clearly and stop. Do not attempt
+workarounds." — appears at the agent-prompt level in
+`amplifier-bundle-amplifier-tester` (`agents/setup-digital-twin.md`) and
+`amplifier-bundle-browser-tester` (`agents/browser-operator.md` and its other
+agents). Use whichever wording fits where the check lives; keep the "stop,
+don't work around it" instruction intact.
+
+### Userspace vs. Privileged Installs
+
+Two different situations call for different behavior:
+
+- **Userspace installs** — a package manager install scoped to the user
+  (`pip install`, `npm install -g` into a user prefix, downloading a binary
+  into `~/.local`) can happen automatically as part of getting the capability
+  working. `amplifier-bundle-browser-tester` does this: it installs the
+  `agent-browser` CLI itself via `npm install -g agent-browser` when it's
+  missing.
+- **Privileged or GUI-gated installs** — anything requiring `sudo`, root, a
+  system package manager, or an interactive OS permission grant (macOS
+  Accessibility/Screen Recording, a GUI installer) must stop and guide the
+  user instead of attempting it. This is what the Prerequisites Check
+  convention above exists to enforce.
+
+> **Known divergence:** `amplifier-bundle-browser-tester`'s Linux path also
+> runs `agent-browser install --with-deps`, which installs system packages, as
+> an ungated step alongside its userspace install. Treat this as an outlier
+> rather than a second sanctioned convention — new bundles should stop and
+> report rather than silently escalate to privileged installs.
+
+### Where to Put the Check
+
+There's no bundle-level hook, so put the check wherever the dependency is
+actually used:
+
+- **Skill body** (`skills/<name>/SKILL.md`) — for skills invoked by name; check once at the top before any operation.
+- **Agent body** (`agents/<name>.md`) — for agents that use the dependency on their first action.
+- **Module code** (`mount()` or the tool's execution path) — for a hard runtime dependency the tool cannot function without; fail the specific call with a clear message rather than a generic import error.
+
+---
+
 ## Troubleshooting
 
 ### "Module not found" errors
