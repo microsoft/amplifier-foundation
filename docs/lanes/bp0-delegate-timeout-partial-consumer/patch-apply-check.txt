@@ -1,0 +1,13 @@
+APPLY.md's literal instruction, run against 5ebf1da:
+$ git apply --check PATCH-foundation-tool-delegate.diff
+error: patch failed: modules/tool-delegate/amplifier_module_tool_delegate/__init__.py:20
+error: modules/tool-delegate/amplifier_module_tool_delegate/__init__.py: patch does not apply
+exit=1
+
+$ git apply --3way --check PATCH-foundation-tool-delegate.diff
+error: repository lacks the necessary blob to perform 3-way merge.
+Falling back to direct application...
+error: patch failed: modules/tool-delegate/amplifier_module_tool_delegate/__init__.py:20
+error: modules/tool-delegate/amplifier_module_tool_delegate/__init__.py: patch does not apply
+Falling back to direct application...
+exit=1

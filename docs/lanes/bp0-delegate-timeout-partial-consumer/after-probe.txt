@@ -1,0 +1,102 @@
+PATCHED TREE (working copy on top of 5ebf1da)
+DATE: 2026-09-03T07:33:00Z
+CMD: PYTHONPATH=modules/tool-delegate uv run python docs/lanes/bp0-delegate-timeout-partial-consumer/probe_timeout_contract.py
+
+Agent 'test-agent' timed out after 0.01s (delegate tool session-level timeout; elapsed 0.01s). Partial output was preserved and is returned under 'partial_response' -- it is UNFINISHED, not a result. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+Resumed agent 'test-agent' timed out after 0.01s (delegate tool session-level timeout; elapsed 0.01s). Partial output was preserved and is returned under 'partial_response' -- it is UNFINISHED, not a result. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+Agent 'test-agent' timed out after 0.01s (delegate tool session-level timeout; elapsed 0.01s). Partial output was preserved and is returned under 'partial_response' -- it is UNFINISHED, not a result. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+--- A. spawn timeout: result.success ---
+false
+
+--- A. spawn timeout: result.output ---
+{
+  "agent": "test-agent",
+  "completed": false,
+  "guidance": "INCOMPLETE: this delegate did not finish. The text in 'partial_response' is unfinished work salvaged from the agent mid-flight -- it has NOT been checked, concluded, or self-reviewed by that agent. Do not report it as a completed result and do not treat its conclusions as final. Re-delegate a narrower task or complete the work yourself; see metadata.recovery_message before considering this session for resumption.",
+  "metadata": {
+    "elapsed_s": "<elapsed>",
+    "recovery_message": "Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.",
+    "resumable": false,
+    "resume_status": "pending_child_cleanup",
+    "timeout_seconds": 0.01
+  },
+  "partial_available": true,
+  "partial_chars_total": 22,
+  "partial_response": "straggler got this far",
+  "partial_segments": 7,
+  "partial_source": "capability",
+  "partial_truncated": false,
+  "session_id": "0000000000000000-c7ab32b24e5947fc_test-agent",
+  "status": "timeout"
+}
+
+--- A. spawn timeout: delegate:error payload (elapsed_s dropped) ---
+{
+  "agent": "test-agent",
+  "error": "Agent 'test-agent' timed out after 0.01s (delegate tool session-level timeout; elapsed 0.01s). Partial output was preserved and is returned under 'partial_response' -- it is UNFINISHED, not a result. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.",
+  "error_type": "delegate_timeout",
+  "parallel_group_id": "parallel-timeout",
+  "parent_session_id": "parent-session-123",
+  "partial_available": true,
+  "partial_chars": 22,
+  "resumable": false,
+  "resume_status": "pending_child_cleanup",
+  "status": "timeout",
+  "sub_session_id": "<generated>",
+  "timeout_seconds": 0.01,
+  "tool_call_id": "call-timeout"
+}
+
+A. CONTRACT: status==timeout | 'response' absent==True | 'partial_available' present==True
+
+--- B. resume timeout: result.output ---
+{
+  "agent": "test-agent",
+  "completed": false,
+  "guidance": "INCOMPLETE: this delegate did not finish. The text in 'partial_response' is unfinished work salvaged from the agent mid-flight -- it has NOT been checked, concluded, or self-reviewed by that agent. Do not report it as a completed result and do not treat its conclusions as final. Re-delegate a narrower task or complete the work yourself; see metadata.recovery_message before considering this session for resumption.",
+  "metadata": {
+    "elapsed_s": "<elapsed>",
+    "recovery_message": "Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.",
+    "resumable": false,
+    "resume_status": "pending_child_cleanup",
+    "timeout_seconds": 0.01
+  },
+  "partial_available": true,
+  "partial_chars_total": 22,
+  "partial_response": "straggler got this far",
+  "partial_segments": 7,
+  "partial_source": "capability",
+  "partial_truncated": false,
+  "session_id": "child-session-001_test-agent",
+  "status": "timeout"
+}
+
+B. CONTRACT: status==timeout | 'response' absent==True | 'partial_available' present==True
+
+--- C. G-D1 sibling survival ---
+gather returned; completed siblings surviving = 2 of 2; discarded-completed-sibling count = 0
+
+--- D. normal completion: result.success ---
+true
+
+--- D. normal completion: result.output ---
+{
+  "agent": "test-agent",
+  "contract": {
+    "artifacts": [],
+    "conformant": null,
+    "findings": [],
+    "not_covered": [],
+    "reason": null,
+    "summary": null
+  },
+  "metadata": {},
+  "response": "the whole answer",
+  "session_id": "sub-1",
+  "status": "success",
+  "turn_count": 3
+}
+
+D. normal completion: serialized output
+{"response": "the whole answer", "session_id": "sub-1", "agent": "test-agent", "turn_count": 3, "status": "success", "metadata": {}, "contract": {"conformant": null, "reason": null, "summary": null, "findings": [], "not_covered": [], "artifacts": []}}
+

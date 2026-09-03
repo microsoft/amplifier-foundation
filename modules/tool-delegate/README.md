@@ -89,12 +89,44 @@ Layer 1 does not apply. Configure `settings.timeout` with a positive finite
 number of seconds to change the limit, or set it explicitly to `null` to
 disable the delegate-level timeout.
 
+A timeout **returns; it never raises.** That is load-bearing: delegates in a
+parallel batch are awaited under `asyncio.gather` with no `return_exceptions`,
+so a raising straggler would propagate and discard every *completed* sibling's
+result in the same batch.
+
 A timeout returns `success: false` with structured output containing
-`status: timed_out`, the child `session_id`, the agent identity when available,
-and metadata with `timeout_seconds`, `resumable: false`, and
-`resume_status: pending_child_cleanup`. It emits `delegate:error` with
-`error_type: delegate_timeout`, not `delegate:agent_completed`, because the
-cancelled child may still be cleaning up.
+`status: timeout`, `completed: false`, the child `session_id`, the agent
+identity when available, and metadata with `timeout_seconds`, `elapsed_s`,
+`resumable: false`, and `resume_status: pending_child_cleanup`. It emits
+`delegate:error` with `error_type: delegate_timeout`, not
+`delegate:agent_completed`, because the cancelled child may still be cleaning
+up.
+
+#### Partial results on timeout
+
+The output also carries a `partial_available` boolean and, when true, the
+straggler's recovered text under `partial_response` -- **never** under
+`response`, which is the success-only key. Supporting fields:
+`partial_segments`, `partial_source`, `partial_truncated`,
+`partial_chars_total`, and a `guidance` string stating plainly that the text
+is unfinished work, not a result. `settings.partial_max_chars` (default
+`20000`) caps the preserved text, keeping the most recent tail.
+
+Recovery is best-effort and **optional**. The app layer may register a
+`session.partial` capability:
+
+```
+(sub_session_id: str) -> {"text": str, "segments": int, "source": str} | None
+```
+
+sync or async. When it is absent, returns nothing, returns something
+malformed, or raises, the result degrades to `partial_available: false`. It
+never degrades to success, and recovery never raises out of the timeout path
+-- a raise there would discard the very siblings this path protects.
+
+**`partial_available` is `false` for every timeout until an app layer
+registers that capability.** That is the correct, expected state of this repo
+on its own, not a defect to work around.
 
 Do not immediately resume the returned session ID. The coordinated
 persistence-capable `amplifier-app-cli` spawner may persist the interrupted

@@ -1,0 +1,13 @@
+BYTE-IDENTITY CHECK -- normal (non-timeout) delegate completion
+DATE: 2026-09-03T07:33:09Z
+
+Section D of the probe is a NORMAL completion. Compared verbatim between the
+parent commit 5ebf1da (fail-before-probe.txt) and the patched tree (after-probe.txt).
+It includes the exact serialized string the model receives.
+
+$ diff <(sed -n "/^--- D./,$p" fail-before-probe.txt) <(sed -n "/^--- D./,$p" after-probe.txt)
+(no output -- IDENTICAL)
+
+RESULT: byte-identical. sha256 of each section:
+18dfd629b68861f7c11e2182a6d730f5e26cef39d48b8d4a9396b63b587a0ab1  D-before.txt
+18dfd629b68861f7c11e2182a6d730f5e26cef39d48b8d4a9396b63b587a0ab1  D-after.txt
