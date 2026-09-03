@@ -17,6 +17,7 @@ The module is entirely non-blocking: all LLM calls run as background asyncio tas
 - **Description updates**: Periodically updates the session description as the conversation evolves, only when scope meaningfully expands
 - **Smart context extraction**: Uses a bookend+sampling strategy for long conversations (first 3 turns, sampled middle, last 5 turns)
 - **Graceful deferral**: If the LLM signals insufficient context, retries on subsequent turns up to `max_retries` times
+- **Attributable**: Every `llm:*` event a naming call emits carries `data.purpose = "session-naming"`, so analyzers can exclude it from the session's own work (see [Event Attribution](#event-attribution))
 
 ## Configuration
 
@@ -41,24 +42,80 @@ hooks:
 matrix — the same mechanism used by the `delegate` tool and recipe agent steps.
 Session naming is a simple classification task; it does not need the priority model.
 
+**Naming never calls a provider this session did not select.** Every path below
+ends on either the session's own conversation provider or a *same-vendor* sibling
+of it. There is no arbitrary fallback.
+
 Resolution order:
 
 1. **`model_role`** — Resolved against the `model_role_resolver` capability
    (registered by whichever routing bundle is active — typically the
    matrix-based one shipped in `amplifier-bundle-routing-matrix`). Defaults to
-   `"fast"`.
+   `"fast"`. A resolved candidate is **accepted only if** it is mounted in this
+   session **and** its `get_info().id` matches the vendor of the session's own
+   provider. Anything else is refused with a WARNING (once per session).
 
-2. **Fallback** — `next(iter(providers.values()))` — the first/priority provider.
-   Used when `model_role` is `None`, or when resolution fails.
+2. **The session's own conversation provider** — the `conversation.provider_pin`
+   pin when one is set, otherwise the same priority ordering the streaming
+   orchestrator uses to pick the conversation provider (`provider.priority`,
+   then `provider.config["priority"]`, default 100, ties broken by mount order).
+   No model override is applied on this path.
+
+If the conversation is pinned to a provider that is no longer mounted, naming is
+**skipped** for that turn rather than run on some other provider.
+
+### Why the vendor check exists
+
+Session naming used to resolve `model_role` through the routing matrix (whose
+default matrix is openai) and, when the resolved name matched no mount, fall
+through to `next(iter(providers.values()))` — an order-dependent, silent borrow
+of whichever provider instance happened to be first in the mount dict. In an
+Anthropic-pinned evaluation cell that emitted openai calls into the session's
+event stream (321 foreign responses across 12 capture roots; see
+`model_performance-egh`). Same-vendor siblings (`anthropic-sonnet` →
+`anthropic-haiku`) remain allowed: that is the intended cheap-model routing.
+
+## Event Attribution
+
+A provider emits `llm:request` / `llm:response` through the coordinator it was
+mounted with — the session's own — and the kernel stamps `session_id` and
+`parent_id` defaults onto every event
+(`amplifier_core/session.py`: `set_default_fields(...)`). A background naming
+call therefore lands in the session's `events.jsonl` with `parent_id: null` and,
+before this module stamped them, nothing at all to distinguish it from the root
+agent's own turns.
+
+Every event a naming call emits now carries:
+
+```json
+{"purpose": "session-naming", "origin_module": "hooks-session-naming"}
+```
+
+Excluding session naming from an analysis is then one predicate:
+
+```jq
+select(.data.purpose != "session-naming")
+```
+
+The stamp is applied to a naming-only *view* of the provider (a shallow copy
+carrying a wrapping coordinator), built once per provider per session. The
+shared provider instance is never mutated, so the foreground conversation's own
+events are unaffected. If a provider's events cannot be stamped, the naming call
+is **skipped** with a WARNING rather than emitted unattributably.
+
+Note: the provider call has a 10 s hard timeout. A timed-out call can leave a
+stamped `llm:request` with no matching `llm:response` — the stamp is what makes
+that orphan identifiable rather than mysterious.
 
 ### Optional Dependency: hooks-routing
 
 `hooks-routing` is an **optional runtime dependency**. The module degrades gracefully:
 
-- If `hooks-routing` is not installed, the module silently falls back to the priority
-  provider. No warning is emitted — falling back is the expected behaviour when the
-  routing module is absent.
-- To disable routing explicitly and always use the priority provider, set `model_role: null`.
+- If `hooks-routing` is not installed, the module falls back to the session's own
+  conversation provider (debug-logged). Falling back is the expected behaviour when
+  the routing module is absent.
+- To disable routing explicitly and always use the session's own provider, set
+  `model_role: null`.
 
 ## Async Behavior
 

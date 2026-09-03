@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from amplifier_foundation.spawn_utils import ProviderPreference
@@ -34,16 +35,41 @@ def _make_mock_provider() -> MagicMock:
     return provider
 
 
+def _make_vendor_provider(vendor: str, *, priority: int | None = None) -> MagicMock:
+    """A mock provider that answers the kernel's ``get_info().id`` contract.
+
+    ``vendor`` is the provider id ("anthropic", "openai", ...) — two mount
+    names sharing an id are the same vendor.
+    """
+    provider = _make_mock_provider()
+    provider.get_info.return_value.id = vendor
+    if priority is not None:
+        provider.priority = priority
+    return provider
+
+
+def _make_pin(current: str | None):
+    """Duck-typed ``conversation.provider_pin`` capability mock."""
+    pin = MagicMock()
+    pin.current = MagicMock(return_value=current)
+    return pin
+
+
 def _make_coordinator(
     *,
     providers: dict | None = None,
     model_role_resolver=None,
+    provider_pin: str | None = None,
 ) -> MagicMock:
     """Return a coordinator mock wired for session-naming tests.
 
     ``model_role_resolver`` is the duck-typed capability the consumer code
     looks up via ``coordinator.get_capability("model_role_resolver")``.
     Pass ``None`` (default) to simulate "no routing bundle installed".
+
+    ``provider_pin`` is the mount name the ``conversation.provider_pin``
+    capability reports as pinned. ``None`` (default) means unpinned, which
+    is what a session without an explicit pin looks like.
     """
     coordinator = MagicMock()
     coordinator.session_state = {}
@@ -59,7 +85,12 @@ def _make_coordinator(
     coordinator.get = MagicMock(
         side_effect=lambda key: _providers if key == "providers" else None
     )
-    capabilities: dict = {"model_role_resolver": model_role_resolver}
+    capabilities: dict = {
+        "model_role_resolver": model_role_resolver,
+        "conversation.provider_pin": (
+            _make_pin(provider_pin) if provider_pin is not None else None
+        ),
+    }
     coordinator.get_capability = MagicMock(side_effect=capabilities.get)
     return coordinator
 
@@ -70,11 +101,13 @@ def _make_hook(
     model_role_resolver=None,
     model_role: str | None = None,
     initial_trigger_turn: int = 2,
+    provider_pin: str | None = None,
 ) -> SessionNamingHook:
     """Return a SessionNamingHook with mocked coordinator."""
     coordinator = _make_coordinator(
         providers=providers,
         model_role_resolver=model_role_resolver,
+        provider_pin=provider_pin,
     )
     config = SessionNamingConfig(
         initial_trigger_turn=initial_trigger_turn,
@@ -527,6 +560,424 @@ class TestModelRoleResolution:
 
         warnings = [r for r in caplog.records if r.levelno >= 30]
         assert warnings, "Expected a WARNING log when the resolver raises"
+
+
+# =============================================================================
+# Cross-provider purity: naming never calls a provider this session didn't pick
+# =============================================================================
+
+
+class TestProviderPurity:
+    """A session pinned to provider X must never emit a naming call on Y.
+
+    Measured leak this pins shut (model_performance-egh): the routing matrix
+    defaults to openai, so in an Anthropic-pinned session ``model_role="fast"``
+    resolved to an openai candidate, and the unmatched-candidate path fell
+    through to ``next(iter(providers.values()))`` — an order-dependent,
+    SILENT borrow of whichever provider instance happened to be first in the
+    mount dict. 321 foreign responses across 12 capture roots came from here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pinned_session_never_calls_foreign_vendor(self, caplog) -> None:
+        """Anthropic-pinned session + openai-resolving role → anthropic only.
+
+        The mount dict deliberately lists openai FIRST, so the old
+        ``next(iter(providers))`` fallback would have picked openai even
+        without the resolver ever matching.
+        """
+        openai_provider = _make_vendor_provider("openai")
+        anthropic_provider = _make_vendor_provider("anthropic")
+        providers = {
+            "openai-gpt-5": openai_provider,
+            "anthropic-sonnet": anthropic_provider,
+        }
+
+        resolver = _make_resolver(
+            return_value=[
+                ProviderPreference(provider="openai", model="gpt-5-mini", config={}),
+            ]
+        )
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=resolver,
+            model_role="fast",
+            provider_pin="anthropic-sonnet",
+        )
+
+        with caplog.at_level("WARNING"):
+            result = await hook._call_provider("name this session", "session-pin")
+
+        assert not openai_provider.complete.called, (
+            "A session pinned to anthropic must NEVER emit a naming call on "
+            "openai — this is the cross-provider leak"
+        )
+        assert anthropic_provider.complete.called, (
+            "Naming must run on the session's own pinned provider"
+        )
+        assert result is not None
+
+        request = anthropic_provider.complete.call_args[0][0]
+        assert request.model is None, (
+            "A refused foreign candidate must not leave its model override "
+            "behind on the session's own provider"
+        )
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= 30]
+        assert warnings, "Refusing a foreign provider must be loud, not silent"
+        assert any("openai" in m for m in warnings), (
+            "The warning must name the provider that was refused"
+        )
+        assert any("anthropic-sonnet" in m for m in warnings), (
+            "The warning must name the provider actually used"
+        )
+
+    @pytest.mark.asyncio
+    async def test_same_vendor_sibling_is_allowed_with_model_override(self) -> None:
+        """anthropic-haiku for an anthropic-pinned session is NOT a leak.
+
+        Two mount names sharing a ``get_info().id`` are the same vendor, so
+        routing a cheap chore to a cheaper sibling model stays allowed — the
+        purity rule is about vendors, not about mount names.
+        """
+        sonnet = _make_vendor_provider("anthropic")
+        haiku = _make_vendor_provider("anthropic")
+        providers = {"anthropic-sonnet": sonnet, "anthropic-haiku": haiku}
+
+        resolver = _make_resolver(
+            return_value=[
+                ProviderPreference(
+                    provider="anthropic-haiku", model="claude-haiku-4-5", config={}
+                ),
+            ]
+        )
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=resolver,
+            model_role="fast",
+            provider_pin="anthropic-sonnet",
+        )
+        await hook._call_provider("name this session", "session-sibling")
+
+        assert haiku.complete.called, "Same-vendor sibling must still be usable"
+        assert not sonnet.complete.called
+        assert haiku.complete.call_args[0][0].model == "claude-haiku-4-5"
+
+    @pytest.mark.asyncio
+    async def test_unknown_vendor_candidate_is_refused(self, caplog) -> None:
+        """Fail closed: a candidate whose vendor cannot be established is refused.
+
+        ``get_info()`` is the only contract for vendor identity. If it is
+        missing or unreadable, sameness cannot be PROVEN, and an unprovable
+        sameness is exactly how the leak got in.
+        """
+        session_provider = _make_vendor_provider("anthropic")
+        mystery = _make_mock_provider()
+        mystery.get_info = MagicMock(side_effect=RuntimeError("no info"))
+        providers = {
+            "anthropic-sonnet": session_provider,
+            "mystery-provider": mystery,
+        }
+
+        resolver = _make_resolver(
+            return_value=[
+                ProviderPreference(provider="mystery", model="who-knows", config={}),
+            ]
+        )
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=resolver,
+            model_role="fast",
+            provider_pin="anthropic-sonnet",
+        )
+
+        with caplog.at_level("WARNING"):
+            await hook._call_provider("name this session", "session-unknown")
+
+        assert not mystery.complete.called, (
+            "An unprovable-vendor candidate must be refused, not borrowed"
+        )
+        assert session_provider.complete.called
+        assert [r for r in caplog.records if r.levelno >= 30]
+
+    @pytest.mark.asyncio
+    async def test_resolved_provider_not_mounted_is_refused(self, caplog) -> None:
+        """A candidate naming a provider that is not mounted here is refused."""
+        session_provider = _make_vendor_provider("anthropic")
+        providers = {"anthropic-sonnet": session_provider}
+
+        resolver = _make_resolver(
+            return_value=[
+                ProviderPreference(provider="gemini", model="flash", config={}),
+            ]
+        )
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=resolver,
+            model_role="fast",
+        )
+
+        with caplog.at_level("WARNING"):
+            await hook._call_provider("name this session", "session-unmounted")
+
+        assert session_provider.complete.called
+        assert session_provider.complete.call_args[0][0].model is None
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= 30]
+        assert any("gemini" in m for m in warnings), (
+            "The warning must name the unmounted provider that was refused"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unpinned_session_uses_priority_not_dict_order(self) -> None:
+        """Unpinned selection follows the orchestrator's priority rule.
+
+        The mount dict lists openai first; anthropic carries the better
+        (lower) priority, so the conversation is answered by anthropic — and
+        so must naming be. ``next(iter(providers))`` would have picked openai.
+        """
+        openai_provider = _make_vendor_provider("openai", priority=100)
+        anthropic_provider = _make_vendor_provider("anthropic", priority=10)
+        providers = {
+            "openai-gpt-5": openai_provider,
+            "anthropic-sonnet": anthropic_provider,
+        }
+
+        hook = _make_hook(providers=providers)
+        await hook._call_provider("name this session", "session-priority")
+
+        assert anthropic_provider.complete.called, (
+            "Naming must follow the same priority rule the orchestrator uses "
+            "to pick the conversation provider"
+        )
+        assert not openai_provider.complete.called
+
+    @pytest.mark.asyncio
+    async def test_stale_pin_refuses_instead_of_borrowing(self, caplog) -> None:
+        """A pin whose provider is gone must skip naming, not pick another."""
+        openai_provider = _make_vendor_provider("openai")
+        providers = {"openai-gpt-5": openai_provider}
+
+        hook = _make_hook(providers=providers, provider_pin="anthropic-sonnet")
+
+        with caplog.at_level("WARNING"):
+            result = await hook._call_provider("name this session", "session-stale")
+
+        assert result is None
+        assert not openai_provider.complete.called, (
+            "A stale pin must never fall through to whatever else is mounted"
+        )
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= 30]
+        assert any("anthropic-sonnet" in m for m in warnings)
+
+    @pytest.mark.asyncio
+    async def test_cross_provider_refusal_warns_once_per_session(
+        self, caplog
+    ) -> None:
+        """The refusal warning fires once per session, then drops to DEBUG."""
+        providers = {
+            "openai-gpt-5": _make_vendor_provider("openai"),
+            "anthropic-sonnet": _make_vendor_provider("anthropic"),
+        }
+        resolver = _make_resolver(
+            return_value=[
+                ProviderPreference(provider="openai", model="gpt-5-mini", config={}),
+            ]
+        )
+        hook = _make_hook(
+            providers=providers,
+            model_role_resolver=resolver,
+            model_role="fast",
+            provider_pin="anthropic-sonnet",
+        )
+
+        with caplog.at_level("DEBUG"):
+            await hook._call_provider("name this session", "session-repeat")
+            first = [r for r in caplog.records if r.levelno >= 30]
+            caplog.clear()
+            await hook._call_provider("name this session", "session-repeat")
+            second = [r for r in caplog.records if r.levelno >= 30]
+            second_debug = [r for r in caplog.records if r.levelno == 10]
+
+        assert first, "First refusal in a session must warn"
+        assert not second, "Second refusal in the SAME session must not re-warn"
+        assert second_debug, "Repeat refusals must still be logged at DEBUG"
+
+
+# =============================================================================
+# Attribution: naming's own llm:* events must be distinguishable from root work
+# =============================================================================
+
+
+class _EmittingProvider:
+    """A provider that emits llm:* the way real providers do.
+
+    Real providers emit through ``self.coordinator.hooks.emit`` — an attribute
+    read bound to their own instance — which is why attribution has to happen
+    on a provider view rather than via a forwarding proxy.
+    """
+
+    def __init__(self, vendor: str = "anthropic") -> None:
+        self.coordinator = None
+        self._vendor = vendor
+        self.complete_calls: list = []
+
+    def get_info(self):
+        return SimpleNamespace(id=self._vendor)
+
+    async def complete(self, request, **kwargs):
+        self.complete_calls.append(request)
+        await self.coordinator.hooks.emit(
+            "llm:request", {"provider": self._vendor, "model": "test-model"}
+        )
+        await self.coordinator.hooks.emit(
+            "llm:response",
+            {"provider": self._vendor, "model": "test-model", "status": "ok"},
+        )
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    text='{"action": "set", "name": "N", "description": "D"}'
+                )
+            ]
+        )
+
+
+def _llm_events(coordinator) -> list[tuple[str, dict]]:
+    """(event, data) pairs for llm:* events emitted on a coordinator mock."""
+    return [
+        (call.args[0], call.args[1])
+        for call in coordinator.hooks.emit.call_args_list
+        if call.args and str(call.args[0]).startswith("llm:")
+    ]
+
+
+class TestNamingEventAttribution:
+    """The hook's own LLM calls must never look like the root agent's.
+
+    Providers write llm:request/llm:response into the SESSION's event stream,
+    and the kernel stamps session_id/parent_id defaults onto every event
+    (amplifier_core/session.py: set_default_fields(session_id, parent_id)).
+    Pre-fix, a naming call was therefore recorded with parent_id: null and no
+    marker at all — 321 such responses were counted as root agent work by
+    every scorer in the model_performance program.
+    """
+
+    @pytest.mark.asyncio
+    async def test_naming_llm_events_carry_purpose_marker(self) -> None:
+        """Every llm:* event a naming call emits carries data.purpose."""
+        provider = _EmittingProvider()
+        hook = _make_hook(providers={"anthropic-sonnet": provider})
+        provider.coordinator = hook.coordinator
+
+        result = await hook._call_provider("name this session", "session-attr")
+        assert result is not None
+
+        events = _llm_events(hook.coordinator)
+        assert [name for name, _ in events] == ["llm:request", "llm:response"], (
+            "The naming call must actually have emitted provider events"
+        )
+        for name, data in events:
+            assert data.get("purpose") == "session-naming", (
+                f"{name} emitted by session naming must be excludable by a "
+                f"scorer; got {data!r}"
+            )
+            assert data.get("origin_module") == "hooks-session-naming"
+
+    @pytest.mark.asyncio
+    async def test_original_provider_is_not_mutated(self) -> None:
+        """Foreground calls through the same provider stay unstamped.
+
+        The stamp must live on a naming-only view. If it were applied to the
+        shared provider instance, the root agent's own events would start
+        claiming to be session naming — the same attribution bug, inverted.
+        """
+        provider = _EmittingProvider()
+        hook = _make_hook(providers={"anthropic-sonnet": provider})
+        root_coordinator = hook.coordinator
+        provider.coordinator = root_coordinator
+
+        await hook._call_provider("name this session", "session-attr")
+
+        assert provider.coordinator is root_coordinator, (
+            "The shared provider instance must be left exactly as it was"
+        )
+
+        root_coordinator.hooks.emit.reset_mock()
+        await provider.complete(object())
+        for _, data in _llm_events(root_coordinator):
+            assert "purpose" not in data, (
+                "A non-naming call through the same provider must not be "
+                "stamped as session naming"
+            )
+
+    @pytest.mark.asyncio
+    async def test_stamped_view_is_built_once_per_provider(self) -> None:
+        """Providers create SDK clients lazily; don't build a view per turn."""
+        provider = _EmittingProvider()
+        hook = _make_hook(providers={"anthropic-sonnet": provider})
+        provider.coordinator = hook.coordinator
+
+        await hook._call_provider("name this session", "session-attr")
+        await hook._call_provider("name this session", "session-attr")
+
+        assert len(hook._stamped_providers) == 1
+        assert hook._stamped_provider(provider) is hook._stamped_provider(provider)
+
+    @pytest.mark.asyncio
+    async def test_unstampable_provider_skips_rather_than_leaks(
+        self, caplog
+    ) -> None:
+        """If events cannot be stamped, skip the call — loudly.
+
+        An unattributable naming call is worse than a missing session name:
+        it silently contaminates whatever reads the event stream.
+        """
+
+        class _FrozenProvider:
+            """Read-only ``coordinator`` — the copy cannot be re-pointed."""
+
+            def __init__(self) -> None:
+                self._coordinator = None
+                self.complete_calls: list = []
+
+            @property
+            def coordinator(self):
+                return self._coordinator
+
+            def get_info(self):
+                return SimpleNamespace(id="anthropic")
+
+            async def complete(self, request, **kwargs):  # pragma: no cover
+                self.complete_calls.append(request)
+                raise AssertionError("must not be called")
+
+        provider = _FrozenProvider()
+        hook = _make_hook(providers={"anthropic-sonnet": provider})
+        provider._coordinator = hook.coordinator
+
+        with caplog.at_level("WARNING"):
+            result = await hook._call_provider("name this session", "session-frozen")
+
+        assert result is None
+        assert not provider.complete_calls, (
+            "Must not issue the call at all when its events cannot be stamped"
+        )
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= 30]
+        assert any("session-naming" in m for m in warnings), (
+            "Skipping for lack of attribution must be loud, not silent"
+        )
+
+    @pytest.mark.asyncio
+    async def test_provider_without_coordinator_still_names(self) -> None:
+        """A provider that emits nothing has nothing to leak — don't skip it."""
+        provider = _make_mock_provider()
+        provider.coordinator = None
+        hook = _make_hook(providers={"provider-1": provider})
+
+        result = await hook._call_provider("name this session", "session-none")
+
+        assert result is not None
+        assert provider.complete.called
 
 
 # =============================================================================
