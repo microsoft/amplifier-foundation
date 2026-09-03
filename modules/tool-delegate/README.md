@@ -30,6 +30,31 @@ Resume sessions using the full `session_id` returned by previous delegate calls:
 session_id: "abc123-def456-..._foundation:explorer"
 ```
 
+#### Routing survives the resume
+
+A delegation pinned to a model stays pinned on every leg. The resume path
+sends the app layer's `session.resume` capability two optional kwargs
+alongside `sub_session_id` / `instruction`:
+
+| kwarg | value |
+|---|---|
+| `provider_preferences` | the preferences this call resolved to |
+| `model_role` | the raw role string the caller asked for |
+
+Precedence: what the caller states on the resume call wins; otherwise the
+routing recorded when this tool spawned that sub-session is reused. So
+`delegate(agent=X, model_role="reasoning")` followed by
+`delegate(session_id=..., instruction=...)` resumes under `reasoning`,
+instead of silently falling back to settings priority (the measured
+"resume wipes the role" defect).
+
+Both kwargs are **optional on the capability**. An app layer whose resume
+capability still takes only `(sub_session_id, instruction)` keeps working
+unchanged — the kwargs are withheld and a warning naming them is logged, so
+the downgrade is never silent. `delegate:agent_resumed` also carries
+`model_role` / `provider_preferences` now, matching `delegate:agent_spawned`
+so the two legs can be compared in telemetry.
+
 ### Layered bounding: call budget (Layer 1) + wall-clock backstop (Layer 3)
 
 Delegated sessions are bounded two ways, and they are meant to be read as a
