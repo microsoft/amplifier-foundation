@@ -29,6 +29,29 @@ Config Options:
   needs attention, not that this default is too generous. Timeouts return the
   child session ID, but callers must wait for app-layer cancellation cleanup and
   persistence before attempting to resume it.
+- settings.partial_max_chars: Cap on preserved partial text on timeout
+  (default: 20000). See the timeout/partial-result contract below.
+
+Timeout / partial-result contract:
+    A delegate that exceeds ``settings.timeout`` returns an INCOMPLETE result,
+    never a successful one, and never raises -- so completed siblings in the
+    same parallel batch (``asyncio.gather``, no ``return_exceptions``) keep
+    their own results. Both channels say the leg is incomplete, and they agree:
+
+      * ``ToolResult.success`` is ``False``
+      * the model-visible ``output`` carries ``status: "timeout"``,
+        ``completed: false``, a ``partial_available`` boolean, and any
+        recovered text under ``partial_response`` -- NEVER under ``response``,
+        which is the success-only key.
+
+    Recovering the straggler's own partial text is best-effort and optional.
+    The app layer may register a ``session.partial`` capability::
+
+        (sub_session_id: str) -> {"text": str, "segments": int, "source": str} | None
+
+    (sync or async). When it is absent, returns nothing, or raises, the result
+    degrades to ``partial_available: false``. It never degrades to success, and
+    partial recovery never raises out of the timeout path.
 - settings.strict_model_role: When True, a model_role that resolves to no
   candidates raises ModelRoleUnresolvedError instead of silently falling
   back to the session default model (default: False). Regardless of this
@@ -55,6 +78,7 @@ import json
 import logging
 import math
 import re
+import time
 from collections.abc import Coroutine
 from typing import Any
 
@@ -64,6 +88,76 @@ from amplifier_foundation import ProviderPreference
 from amplifier_foundation.tracing import generate_sub_session_id
 
 logger = logging.getLogger(__name__)
+
+# Default cap on preserved partial text (characters). A straggler can have
+# produced megabytes; the point is to hand the caller the recoverable tail,
+# not to blow up its context window.
+DEFAULT_PARTIAL_MAX_CHARS = 20000
+
+#: The single model-visible ``status`` value for a delegate that exceeded
+#: ``settings.timeout``, on BOTH the spawn and resume paths, and on the
+#: ``delegate:error`` event that accompanies them. One constant, one string,
+#: one place to change it.
+TIMEOUT_STATUS = "timeout"
+
+# Guidance embedded in every timeout result that actually carries partial
+# text. The caller is an LLM; "this is not a completed result" has to survive
+# being read as prose as well as being read as a field.
+#
+# Deliberately says NOTHING about resuming. The incumbent timeout contract
+# (see metadata.recovery_message) states the child is NOT resumable until
+# app-layer cancellation cleanup completes, so guidance that recommended
+# resuming would directly contradict it.
+_PARTIAL_GUIDANCE = (
+    "INCOMPLETE: this delegate did not finish. The text in 'partial_response' "
+    "is unfinished work salvaged from the agent mid-flight -- it has NOT been "
+    "checked, concluded, or self-reviewed by that agent. Do not report it as a "
+    "completed result and do not treat its conclusions as final. Re-delegate a "
+    "narrower task or complete the work yourself; see metadata.recovery_message "
+    "before considering this session for resumption."
+)
+
+_NO_PARTIAL_GUIDANCE = (
+    "INCOMPLETE: this delegate did not finish and no partial output could be "
+    "recovered. Nothing here is a result. Re-delegate a narrower task or "
+    "complete the work yourself; see metadata.recovery_message before "
+    "considering this session for resumption."
+)
+
+
+def _partial_output_fields(partial: dict[str, Any]) -> dict[str, Any]:
+    """The additive timeout-result keys describing recovered partial work.
+
+    INVARIANT (tested): none of these is ``response``. Preserved text lives
+    under ``partial_response`` so that no consumer keyed on the success
+    channel can read an unfinished delegate as a finished one, and
+    ``partial_available`` states plainly whether any exists.
+    """
+    text = partial.get("text") or ""
+    return {
+        "completed": False,
+        "partial_available": bool(text),
+        "partial_response": text or None,
+        "partial_segments": partial.get("segments", 0),
+        "partial_source": partial.get("source", "none"),
+        "partial_truncated": bool(partial.get("truncated")),
+        "partial_chars_total": partial.get("chars_total", len(text)),
+        "guidance": _PARTIAL_GUIDANCE if text else _NO_PARTIAL_GUIDANCE,
+    }
+
+
+def _partial_event_fields(partial: dict[str, Any], elapsed_s: float) -> dict[str, Any]:
+    """The additive ``delegate:error`` fields for a timeout leg.
+
+    ``elapsed_s`` is emitted rather than inferred so a measurement harness can
+    read real leg durations off the event stream.
+    """
+    text = partial.get("text") or ""
+    return {
+        "elapsed_s": elapsed_s,
+        "partial_available": bool(text),
+        "partial_chars": partial.get("chars_total", len(text)),
+    }
 
 
 class ModelRoleUnresolvedError(RuntimeError):
@@ -480,6 +574,12 @@ class DelegateTool:
         self.exclude_tools: list[str] = settings.get("exclude_tools", ["tool-delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
         self.timeout = _validate_timeout(settings.get("timeout", 14400))
+        # Cap on partial text preserved when the timeout above fires. Only
+        # ever consulted on the timeout path; a normal completion never
+        # reads it.
+        self.partial_max_chars: int = settings.get(
+            "partial_max_chars", DEFAULT_PARTIAL_MAX_CHARS
+        )
         self._detached_child_tasks: set[asyncio.Task[Any]] = set()
         # When True, model_role resolving to no candidates raises
         # ModelRoleUnresolvedError instead of silently falling back to the
@@ -659,6 +759,68 @@ class DelegateTool:
             )
         finally:
             self._detached_child_tasks.discard(child_task)
+
+    async def _collect_partial(self, sub_session_id: str) -> dict[str, Any]:
+        """Best-effort recovery of a timed-out delegate's preserved partial text.
+
+        Optional app-layer contract: a ``session.partial`` capability mapping a
+        sub_session_id to ``{"text", "segments", "source"}``, where ``segments``
+        is the count of preserved assistant text segments. Absent, empty,
+        malformed, or raising -> ``source: "none"`` and no text.
+
+        This function NEVER raises. A failure to recover partial text must not
+        convert a handled timeout into an unhandled error -- that would discard
+        the completed siblings this whole path exists to protect.
+        """
+        empty: dict[str, Any] = {"text": "", "segments": 0, "source": "none"}
+        try:
+            getter = (
+                self.coordinator.get_capability("session.partial")
+                if hasattr(self.coordinator, "get_capability")
+                else None
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("session.partial capability lookup failed: %s", e)
+            return empty
+        if getter is None:
+            return empty
+
+        try:
+            recovered = getter(sub_session_id)
+            if inspect.isawaitable(recovered):
+                recovered = await recovered
+        except Exception as e:
+            logger.warning(
+                "session.partial capability raised for %s: %s", sub_session_id, e
+            )
+            return empty
+
+        if not isinstance(recovered, dict):
+            return empty
+        text = recovered.get("text") or ""
+        if not isinstance(text, str):
+            text = str(text)
+        chars_total = len(text)
+        truncated = False
+        if self.partial_max_chars and chars_total > self.partial_max_chars:
+            # Keep the TAIL: the most recent work is the most informative and
+            # the closest to what the agent was about to conclude.
+            text = (
+                f"[... {chars_total - self.partial_max_chars} characters of "
+                "earlier partial output truncated ...]\n"
+                + text[-self.partial_max_chars :]
+            )
+            truncated = True
+        segments = recovered.get("segments", 0)
+        if not isinstance(segments, int):
+            segments = 0
+        return {
+            "text": text,
+            "segments": segments,
+            "source": recovered.get("source") or ("capability" if text else "none"),
+            "truncated": truncated,
+            "chars_total": chars_total,
+        }
 
     def _compose_feature_descriptions(self) -> str:
         """Compose feature descriptions based on enabled state.
@@ -1765,6 +1927,11 @@ Agent usage notes:
         """
         parent_session_id = self.coordinator.session_id
 
+        # Start of this delegation leg's wall clock. Only ever read on the
+        # timeout path, where the elapsed value is emitted rather than
+        # inferred so a harness can read real leg durations off the events.
+        leg_started_at = time.monotonic()
+
         # Generate hierarchical sub-session ID (sanitized for filesystem safety)
         sub_session_id = generate_sub_session_id(
             agent_name=agent_name,
@@ -2090,13 +2257,27 @@ Agent usage notes:
             raise
 
         except _DelegateTimeoutExpired:
+            elapsed_s = round(time.monotonic() - leg_started_at, 3)
+            # Recover whatever the straggler produced before the deadline.
+            # Never raises; degrades to no-partial rather than to an error --
+            # raising here would propagate out of asyncio.gather and discard
+            # every completed sibling in this parallel batch.
+            partial = await self._collect_partial(sub_session_id)
+
             recovery_msg = (
                 "Child cancellation cleanup is still in progress; do not resume "
                 "this session until cleanup and persistence complete."
             )
             timeout_msg = (
                 f"Agent '{agent_name}' timed out after {self.timeout}s "
-                f"(delegate tool session-level timeout). {recovery_msg}"
+                f"(delegate tool session-level timeout; elapsed {elapsed_s}s). "
+                + (
+                    "Partial output was preserved and is returned under "
+                    "'partial_response' -- it is UNFINISHED, not a result. "
+                    if partial.get("text")
+                    else "No partial output could be recovered. "
+                )
+                + recovery_msg
             )
             logger.warning(timeout_msg)
             if hooks:
@@ -2108,12 +2289,13 @@ Agent usage notes:
                         "parent_session_id": parent_session_id,
                         "error": timeout_msg,
                         "error_type": "delegate_timeout",
-                        "status": "timed_out",
+                        "status": TIMEOUT_STATUS,
                         "timeout_seconds": self.timeout,
                         "resumable": False,
                         "resume_status": "pending_child_cleanup",
                         "tool_call_id": tool_call_id,
                         "parallel_group_id": parallel_group_id,
+                        **_partial_event_fields(partial, elapsed_s),
                     },
                 )
             return ToolResult(
@@ -2121,9 +2303,11 @@ Agent usage notes:
                 output={
                     "session_id": sub_session_id,
                     "agent": agent_name,
-                    "status": "timed_out",
+                    "status": TIMEOUT_STATUS,
+                    **_partial_output_fields(partial),
                     "metadata": {
                         "timeout_seconds": self.timeout,
+                        "elapsed_s": elapsed_s,
                         "resumable": False,
                         "resume_status": "pending_child_cleanup",
                         "recovery_message": recovery_msg,
@@ -2238,6 +2422,11 @@ Agent usage notes:
             ToolResult with success status and output or error
         """
         parent_session_id = self.coordinator.session_id
+
+        # Start of this resume leg's wall clock -- see the identical comment
+        # in _spawn_new_session. Only read on the timeout path.
+        leg_started_at = time.monotonic()
+
         resume_agent = None
         if "_" in session_id:
             resume_agent = session_id.rsplit("_", 1)[-1] or None
@@ -2470,13 +2659,25 @@ Agent usage notes:
             # else on this path (cache first, session_id suffix fallback).
             resume_agent = self._resolve_agent_for_session(session_id)
             agent_label = resume_agent or "unknown"
+            elapsed_s = round(time.monotonic() - leg_started_at, 3)
+            # Same best-effort, never-raising recovery as the spawn path --
+            # the two timeout call sites must not diverge in contract.
+            partial = await self._collect_partial(session_id)
+
             recovery_msg = (
                 "Child cancellation cleanup is still in progress; do not resume "
                 "this session until cleanup and persistence complete."
             )
             timeout_msg = (
                 f"Resumed agent '{agent_label}' timed out after {self.timeout}s "
-                f"(delegate tool session-level timeout). {recovery_msg}"
+                f"(delegate tool session-level timeout; elapsed {elapsed_s}s). "
+                + (
+                    "Partial output was preserved and is returned under "
+                    "'partial_response' -- it is UNFINISHED, not a result. "
+                    if partial.get("text")
+                    else "No partial output could be recovered. "
+                )
+                + recovery_msg
             )
             logger.warning(timeout_msg)
             if hooks:
@@ -2485,21 +2686,24 @@ Agent usage notes:
                     "parent_session_id": parent_session_id,
                     "error": timeout_msg,
                     "error_type": "delegate_timeout",
-                    "status": "timed_out",
+                    "status": TIMEOUT_STATUS,
                     "timeout_seconds": self.timeout,
                     "resumable": False,
                     "resume_status": "pending_child_cleanup",
                     "tool_call_id": tool_call_id,
                     "parallel_group_id": parallel_group_id,
+                    **_partial_event_fields(partial, elapsed_s),
                 }
                 if resume_agent is not None:
                     error_payload["agent"] = resume_agent
                 await hooks.emit("delegate:error", error_payload)
             timeout_output = {
                 "session_id": session_id,
-                "status": "timed_out",
+                "status": TIMEOUT_STATUS,
+                **_partial_output_fields(partial),
                 "metadata": {
                     "timeout_seconds": self.timeout,
+                    "elapsed_s": elapsed_s,
                     "resumable": False,
                     "resume_status": "pending_child_cleanup",
                     "recovery_message": recovery_msg,

@@ -8,9 +8,30 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from amplifier_module_tool_delegate import DelegateTool
+from amplifier_module_tool_delegate import _NO_PARTIAL_GUIDANCE, DelegateTool
 
 _ABSENT = object()
+
+#: The additive partial-result keys a timeout result carries when NOTHING was
+#: recovered -- i.e. with no ``session.partial`` capability registered, which
+#: is every case until the app-layer producer half lands. Kept here so the
+#: two exact-shape assertions below stay exact rather than degrading into
+#: "contains these keys".
+_NO_PARTIAL_FIELDS = {
+    "completed": False,
+    "partial_available": False,
+    "partial_response": None,
+    "partial_segments": 0,
+    "partial_source": "none",
+    "partial_truncated": False,
+    "partial_chars_total": 0,
+    "guidance": _NO_PARTIAL_GUIDANCE,
+}
+
+
+def _pop_elapsed(output: dict) -> float:
+    """Remove and return metadata.elapsed_s, which varies run to run."""
+    return output["metadata"].pop("elapsed_s")
 
 
 def _make_tool(
@@ -138,10 +159,13 @@ async def test_spawn_timeout_reports_pending_cleanup_error_without_completed_eve
 
     child_session_id = spawn_fn.call_args.kwargs["sub_session_id"]
     assert result.success is False
+    elapsed_s = _pop_elapsed(result.output)
+    assert elapsed_s >= 0.01
     assert result.output == {
         "session_id": child_session_id,
         "agent": "test-agent",
-        "status": "timed_out",
+        "status": "timeout",
+        **_NO_PARTIAL_FIELDS,
         "metadata": {
             "timeout_seconds": 0.01,
             "resumable": False,
@@ -161,7 +185,7 @@ async def test_spawn_timeout_reports_pending_cleanup_error_without_completed_eve
     assert error["agent"] == "test-agent"
     assert error["sub_session_id"] == child_session_id
     assert error["error_type"] == "delegate_timeout"
-    assert error["status"] == "timed_out"
+    assert error["status"] == "timeout"
     assert error["timeout_seconds"] == 0.01
     assert error["resumable"] is False
     assert error["resume_status"] == "pending_child_cleanup"
@@ -185,10 +209,13 @@ async def test_resume_timeout_reports_pending_cleanup_error_without_completed_ev
     )
 
     assert result.success is False
+    elapsed_s = _pop_elapsed(result.output)
+    assert elapsed_s >= 0.01
     assert result.output == {
         "session_id": session_id,
         "agent": "test-agent",
-        "status": "timed_out",
+        "status": "timeout",
+        **_NO_PARTIAL_FIELDS,
         "metadata": {
             "timeout_seconds": 0.01,
             "resumable": False,
@@ -208,7 +235,7 @@ async def test_resume_timeout_reports_pending_cleanup_error_without_completed_ev
     assert error["agent"] == "test-agent"
     assert error["session_id"] == session_id
     assert error["error_type"] == "delegate_timeout"
-    assert error["status"] == "timed_out"
+    assert error["status"] == "timeout"
     assert error["timeout_seconds"] == 0.01
     assert error["resumable"] is False
     assert error["resume_status"] == "pending_child_cleanup"
@@ -236,7 +263,7 @@ async def test_spawn_deadline_releases_parent_when_child_suppresses_cancellation
     elapsed = asyncio.get_running_loop().time() - started_at
 
     assert result.output is not None
-    assert result.output["status"] == "timed_out"
+    assert result.output["status"] == "timeout"
     assert 0.01 <= elapsed < 0.12
     await asyncio.wait_for(child_finished.wait(), timeout=0.5)
 
@@ -267,7 +294,7 @@ async def test_detached_child_registry_survives_gc_and_cleans_up():
         await asyncio.wait_for(cancellation_suppressed.wait(), timeout=0.5)
 
         assert result.output is not None
-        assert result.output["status"] == "timed_out"
+        assert result.output["status"] == "timeout"
         assert len(tool._detached_child_tasks) == 1
 
         gc.collect()
@@ -309,7 +336,7 @@ async def test_timeout_consumes_late_child_exception(caplog):
     result = await _spawn(tool, hooks)
 
     assert result.output is not None
-    assert result.output["status"] == "timed_out"
+    assert result.output["status"] == "timeout"
     await asyncio.wait_for(child_finished.wait(), timeout=0.5)
     await asyncio.sleep(0)
     assert "Task exception was never retrieved" not in caplog.text
@@ -338,7 +365,7 @@ async def test_resume_deadline_releases_parent_during_slow_cancellation_cleanup(
     elapsed = asyncio.get_running_loop().time() - started_at
 
     assert result.output is not None
-    assert result.output["status"] == "timed_out"
+    assert result.output["status"] == "timeout"
     assert 0.01 <= elapsed < 0.12
     await asyncio.wait_for(cleanup_started.wait(), timeout=0.5)
     await asyncio.wait_for(cleanup_finished.wait(), timeout=0.5)
@@ -394,7 +421,7 @@ async def test_spawn_capability_timeout_error_uses_ordinary_error_handling(timeo
     assert "delegate:error" in event_names
     assert "delegate:agent_completed" not in event_names
     assert "delegate:agent_cancelled" not in event_names
-    assert all(payload.get("status") != "timed_out" for _name, payload in emissions)
+    assert all(payload.get("status") != "timeout" for _name, payload in emissions)
     error_payload = next(
         payload for name, payload in emissions if name == "delegate:error"
     )
@@ -428,7 +455,7 @@ async def test_resume_capability_timeout_error_uses_ordinary_error_handling(time
     assert "delegate:error" in event_names
     assert "delegate:agent_completed" not in event_names
     assert "delegate:agent_cancelled" not in event_names
-    assert all(payload.get("status") != "timed_out" for _name, payload in emissions)
+    assert all(payload.get("status") != "timeout" for _name, payload in emissions)
     error_payload = next(
         payload for name, payload in emissions if name == "delegate:error"
     )
