@@ -3,26 +3,29 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from dataclasses import field
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import Any
-from typing import Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle._prepared import PreparedBundle
 
 from amplifier_foundation.bundle._provenance import (
     _prov_add as _prov_add,  # re-exported for backwards compatibility
+)
+from amplifier_foundation.bundle._provenance import (
     build_initial_provenance,
     capture_existing_ids,
-    tag_container_provenance as tag_container_provenance,  # re-exported for registry
     track_provenance,
 )
-from amplifier_foundation.configurator._types import Origin as Origin  # noqa: F401 re-export
-from amplifier_foundation.dicts.merge import deep_merge
-from amplifier_foundation.dicts.merge import merge_module_lists
+from amplifier_foundation.bundle._provenance import (
+    tag_container_provenance as tag_container_provenance,  # re-exported for registry
+)
+from amplifier_foundation.configurator._types import (
+    Origin as Origin,
+)
+from amplifier_foundation.dicts.merge import deep_merge, merge_module_lists
 from amplifier_foundation.exceptions import BundleValidationError
 from amplifier_foundation.paths.construction import construct_context_path
 
@@ -354,7 +357,10 @@ class Bundle:
             BundleModuleResolver,
             PreparedBundle,
         )
-        from amplifier_foundation.modules.activator import ModuleActivator
+        from amplifier_foundation.modules.activator import (
+            BundlePackageInstallError,
+            ModuleActivator,
+        )
 
         # Get mount plan
         mount_plan = self.to_mount_plan()
@@ -364,24 +370,6 @@ class Bundle:
         activator = ModuleActivator(
             install_deps=install_deps, base_path=self.base_path, strict=strict
         )
-
-        # CRITICAL: Install bundle packages BEFORE activating modules
-        # Modules may import from their parent bundle's package (e.g., a tool
-        # module importing helpers from `amplifier_bundle_<name>`). These packages
-        # must be installed before modules can be activated.
-        if install_deps:
-            # Install this bundle's package (if it has pyproject.toml)
-            if self.base_path:
-                await activator.activate_bundle_package(
-                    self.base_path, progress_callback=progress_callback
-                )
-
-            # Install packages from all included bundles (from source_base_paths)
-            for namespace, bundle_path in self.source_base_paths.items():
-                if bundle_path and bundle_path != self.base_path:
-                    await activator.activate_bundle_package(
-                        bundle_path, progress_callback=progress_callback
-                    )
 
         # Collect all modules that need activation
         modules_to_activate = []
@@ -445,6 +433,48 @@ class Bundle:
         # sources defers to v1.1 when contributes.tools joins.
         # Warnings are logged but do not fail prepare().
         mode_warnings = self.validate_modes()
+
+        # CRITICAL: Install bundle packages BEFORE activating modules.
+        # Modules may import from their parent bundle's package (e.g., a tool
+        # module importing helpers from `amplifier_bundle_<name>`), so the package
+        # must be present before activate_all(). The decision is made from the
+        # modules just collected: a root is installed only when one of ITS declared
+        # modules resolves inside it. A root pyproject alone is not a reason -- for
+        # an application repo shipping a skills-only behavior it would install the
+        # application into this environment, and fail every session when it can't.
+        if install_deps:
+            declared_sources = [
+                m["source"]
+                for m in modules_to_activate
+                if isinstance(m.get("source"), str)
+            ]
+            # This bundle's own package: a failure here is a failure of the bundle
+            # being prepared, so it propagates (attributed to this root).
+            if self.base_path:
+                await activator.activate_bundle_package(
+                    self.base_path,
+                    progress_callback=progress_callback,
+                    module_sources=declared_sources,
+                )
+            # Included bundles' packages. Honor `strict` exactly as module
+            # activation does: strict raises; otherwise the include's package is
+            # skipped with a warning naming it, and any module that truly needed it
+            # fails on its own, by name, in activate_all().
+            for _namespace, bundle_path in self.source_base_paths.items():
+                if not bundle_path or bundle_path == self.base_path:
+                    continue
+                try:
+                    await activator.activate_bundle_package(
+                        bundle_path,
+                        progress_callback=progress_callback,
+                        module_sources=declared_sources,
+                    )
+                except BundlePackageInstallError as exc:
+                    if strict:
+                        raise
+                    logger.warning(
+                        f"Included bundle '{_namespace}' package skipped: {exc}"
+                    )
 
         # Activate all modules and get their paths
         module_paths = await activator.activate_all(
