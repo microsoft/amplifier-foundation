@@ -745,6 +745,37 @@ def _build_provider_lookup(
     return lookup
 
 
+def _select_provider_preference(
+    providers: list[dict[str, Any]],
+    preferences: list[ProviderPreference],
+) -> tuple[ProviderPreference, int] | None:
+    """Select the first available provider preference.
+
+    Exact-name lookup retains its existing aliases and precedence. If an exact
+    lookup misses, the preference is matched as a case-sensitive glob against
+    each provider's module, short module name, and optional instance id in mount
+    order.
+    """
+    lookup = _build_provider_lookup(providers)
+
+    for pref in preferences:
+        target_idx = lookup.get(pref.provider)
+        if target_idx is not None:
+            return pref, target_idx
+
+        for i, provider in enumerate(providers):
+            module_id = provider.get("module", "")
+            names = [module_id, module_id.replace("provider-", "")]
+            instance_id = provider.get("id")
+            if instance_id:
+                names.append(instance_id)
+
+            if any(fnmatch.fnmatchcase(name, pref.provider) for name in names):
+                return pref, i
+
+    return None
+
+
 def apply_provider_preferences(
     mount_plan: dict[str, Any],
     preferences: list[ProviderPreference],
@@ -778,16 +809,12 @@ def apply_provider_preferences(
         logger.warning("Provider preferences specified but no providers in mount plan")
         return mount_plan
 
-    # Build lookup for efficient matching
-    lookup = _build_provider_lookup(providers)
-
-    # Find first matching preference
-    for pref in preferences:
-        if pref.provider in lookup:
-            target_idx = lookup[pref.provider]
-            return _apply_single_override(
-                mount_plan, providers, target_idx, pref.model, pref.config
-            )
+    selection = _select_provider_preference(providers, preferences)
+    if selection:
+        pref, target_idx = selection
+        return _apply_single_override(
+            mount_plan, providers, target_idx, pref.model, pref.config
+        )
 
     # No preferences matched
     logger.warning(
@@ -926,47 +953,64 @@ async def apply_provider_preferences_with_resolution(
         logger.warning("Provider preferences specified but no providers in mount plan")
         return mount_plan
 
-    # Build lookup for efficient matching
+    selection = _select_provider_preference(providers, preferences)
+    if selection:
+        pref, target_idx = selection
+
+    # Iterate preferences in order: for each preference, try exact-name lookup
+    # first, then fall back to a mount-order, case-sensitive glob match over
+    # canonical module, short name, and instance id. If the model is a glob
+    # pattern, resolve it against the selected mount's canonical module and
+    # advance to the next preference if resolution fails (do NOT apply raw,
+    # unresolved glob strings into the mount plan).
     lookup = _build_provider_lookup(providers)
 
-    # Find first matching preference whose model actually resolves, and
-    # apply it. A preference whose provider is present but whose glob
-    # pattern fails to resolve (no matching models) is NOT applied with
-    # the raw, unresolved pattern -- that would send a literal glob string
-    # to the provider's API. Instead we advance to the next preference in
-    # the ordered list, mirroring resolve_model_role()'s `continue`
-    # behavior in the sibling routing-matrix resolver.
     for pref in preferences:
-        if pref.provider in lookup:
-            target_idx = lookup[pref.provider]
+        # Exact-name match (fast path)
+        target_idx = lookup.get(pref.provider)
+        if target_idx is None:
+            # Mount-order glob match over module, short name, and id
+            for i, provider in enumerate(providers):
+                module_id = provider.get("module", "")
+                names = [module_id, module_id.replace("provider-", "")]
+                instance_id = provider.get("id")
+                if instance_id:
+                    names.append(instance_id)
+                if any(fnmatch.fnmatchcase(name, pref.provider) for name in names):
+                    target_idx = i
+                    break
 
-            # Resolve model pattern if it's a glob
-            resolved_model = pref.model
-            if is_glob_pattern(pref.model):
-                result = await resolve_model_pattern(
-                    pref.model, pref.provider, coordinator
+        if target_idx is None:
+            # Preference's provider not present in this mount plan, try next
+            continue
+
+        # Resolve model pattern if it's a glob, using the selected mount's
+        # canonical module id (e.g., 'provider-openai'), not the flexible alias
+        # the preference might have used to select the provider.
+        resolved_model = pref.model
+        if is_glob_pattern(pref.model):
+            canonical_module = providers[target_idx].get("module", "")
+            result = await resolve_model_pattern(pref.model, canonical_module, coordinator)
+            if result.resolved_model is None:
+                logger.warning(
+                    "Preference for provider '%s' failed to resolve model pattern '%s' - trying next preference",
+                    pref.provider,
+                    pref.model,
                 )
-                if result.resolved_model is None:
-                    logger.warning(
-                        "Preference for provider '%s' failed to resolve model "
-                        "pattern '%s' - trying next preference",
-                        pref.provider,
-                        pref.model,
-                    )
-                    continue
-                resolved_model = result.resolved_model
+                continue
+            resolved_model = result.resolved_model
 
-            return _apply_single_override(
-                mount_plan, providers, target_idx, resolved_model, pref.config
-            )
+        return _apply_single_override(
+            mount_plan, providers, target_idx, resolved_model, pref.config
+        )
 
     # No preferences matched -- either no preference's provider was present
-    # in the mount plan, or every candidate's model pattern failed to
-    # resolve. Either way, leave the mount plan unmodified rather than
-    # writing an unresolved pattern string into it.
+    # in the mount plan, or every candidate's model pattern failed to resolve.
+    # Leave the mount plan unmodified rather than writing an unresolved pattern.
     logger.warning(
         "No preferred providers found in mount plan. Preferences: %s, Available: %s",
         [p.provider for p in preferences],
         list({p.get("module", "?") for p in providers}),
     )
     return mount_plan
+

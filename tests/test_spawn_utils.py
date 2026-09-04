@@ -199,6 +199,133 @@ class TestApplyProviderPreferences:
         assert result["providers"][0]["config"]["priority"] == 0
         assert result["providers"][0]["config"]["default_model"] == "claude-haiku-3"
 
+    @pytest.mark.parametrize(
+        ("provider_pattern", "expected_index"),
+        [
+            ("*", 0),
+            ("provider-anth*", 0),
+            ("anthrop?c", 0),
+            ("team-[ab]", 0),
+        ],
+    )
+    def test_provider_glob_matches_module_short_name_or_id(
+        self,
+        provider_pattern: str,
+        expected_index: int,
+    ) -> None:
+        """Provider globs match all contracted provider names."""
+        mount_plan = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "id": "team-a",
+                    "config": {"priority": 10},
+                },
+                {
+                    "module": "provider-openai",
+                    "id": "team-b",
+                    "config": {"priority": 20},
+                },
+            ]
+        }
+
+        result = apply_provider_preferences(
+            mount_plan,
+            [ProviderPreference(provider=provider_pattern, model="selected-model")],
+        )
+
+        assert result["providers"][expected_index]["config"]["priority"] == 0
+        assert (
+            result["providers"][expected_index]["config"]["default_model"]
+            == "selected-model"
+        )
+
+    def test_provider_glob_uses_first_provider_in_mount_order(self) -> None:
+        """A glob matching multiple providers deterministically selects the first."""
+        mount_plan = {
+            "providers": [
+                {"module": "provider-openai-first", "config": {"priority": 10}},
+                {"module": "provider-openai-second", "config": {"priority": 20}},
+            ]
+        }
+
+        result = apply_provider_preferences(
+            mount_plan,
+            [ProviderPreference(provider="openai-*", model="gpt-selected")],
+        )
+
+        assert result["providers"][0]["config"]["priority"] == 0
+        assert result["providers"][0]["config"]["default_model"] == "gpt-selected"
+        assert result["providers"][1]["config"] == {"priority": 20}
+
+    def test_exact_lookup_precedence_is_preserved(self) -> None:
+        """Exact duplicate aliases retain the existing last-entry lookup behavior."""
+        mount_plan = {
+            "providers": [
+                {"module": "provider-openai", "config": {"priority": 10}},
+                {"module": "provider-openai", "config": {"priority": 20}},
+            ]
+        }
+
+        result = apply_provider_preferences(
+            mount_plan,
+            [ProviderPreference(provider="openai", model="gpt-selected")],
+        )
+
+        assert result["providers"][0]["config"] == {"priority": 10}
+        assert result["providers"][1]["config"]["priority"] == 0
+        assert result["providers"][1]["config"]["default_model"] == "gpt-selected"
+
+    def test_provider_glob_applies_model_and_config_without_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A glob match applies the full override and suppresses no-match warnings."""
+        mount_plan = {
+            "providers": [
+                {
+                    "module": "provider-openai",
+                    "config": {"priority": 10, "reasoning_effort": "low"},
+                }
+            ]
+        }
+
+        result = apply_provider_preferences(
+            mount_plan,
+            [
+                ProviderPreference(
+                    provider="open*",
+                    model="gpt-5",
+                    config={"reasoning_effort": "high", "temperature": 0.2},
+                )
+            ],
+        )
+
+        config = result["providers"][0]["config"]
+        assert config["priority"] == 0
+        assert config["default_model"] == "gpt-5"
+        assert config["reasoning_effort"] == "high"
+        assert config["temperature"] == 0.2
+        assert "No preferred providers found" not in caplog.text
+
+    def test_provider_glob_is_case_sensitive_and_non_match_is_unchanged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Provider glob matching is case-sensitive and preserves non-match behavior."""
+        mount_plan = {
+            "providers": [
+                {"module": "provider-openai", "config": {"priority": 10}},
+            ]
+        }
+
+        result = apply_provider_preferences(
+            mount_plan,
+            [ProviderPreference(provider="Open*", model="gpt-5")],
+        )
+
+        assert result is mount_plan
+        assert result["providers"][0]["config"] == {"priority": 10}
+        assert "No preferred providers found" in caplog.text
+
 
 class TestResolveModelPattern:
     """Tests for resolve_model_pattern function."""
@@ -705,6 +832,40 @@ class TestApplyProviderPreferencesWithResolution:
         # No unresolved glob pattern string should appear anywhere in the result.
         for p in result["providers"]:
             assert "default_model" not in p["config"]
+
+    @pytest.mark.asyncio
+    async def test_provider_glob_resolves_model_with_canonical_module(self) -> None:
+        """Model resolution uses the selected mount's canonical provider module."""
+        mount_plan = {
+            "providers": [
+                {
+                    "module": "provider-openai",
+                    "id": "production-openai",
+                    "config": {"priority": 10},
+                },
+            ]
+        }
+        mock_provider = AsyncMock()
+        mock_provider.list_models = AsyncMock(return_value=["gpt-5-2025", "gpt-5-2026"])
+        mock_coordinator = MagicMock()
+        mock_coordinator.get.return_value = {"provider-openai": mock_provider}
+
+        result = await apply_provider_preferences_with_resolution(
+            mount_plan,
+            [
+                ProviderPreference(
+                    provider="production-*",
+                    model="gpt-5-*",
+                    config={"reasoning_effort": "high"},
+                )
+            ],
+            mock_coordinator,
+        )
+
+        mock_provider.list_models.assert_awaited_once()
+        config = result["providers"][0]["config"]
+        assert config["default_model"] == "gpt-5-2026"
+        assert config["reasoning_effort"] == "high"
 
 
 class TestProviderPreferenceConfig:
