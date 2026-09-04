@@ -618,10 +618,10 @@ def _find_provider_instance(
 
 
 # ---------------------------------------------------------------------------
-# "Which instance does a BARE module type mean?" -- one answer, three callers
+# "Which instance does a preference mean?" -- one answer, every caller
 # ---------------------------------------------------------------------------
 #
-# WHY THIS EXISTS (model_performance-67u)
+# WHY THIS EXISTS (model_performance-67u, then recipes-0ac)
 #
 # A routing matrix addresses providers by bare module type (`provider:
 # anthropic`), but a mount plan may carry SEVERAL instances of that module,
@@ -629,8 +629,8 @@ def _find_provider_instance(
 # routing-matrix bundle asks for (see _find_provider_instance's docstring:
 # distinct `id:`s exist "for routing-matrix disambiguation").
 #
-# Three helpers in this file used to answer "which instance is `anthropic`?"
-# three DIFFERENT ways:
+# ROUND 1 (model_performance-67u): three helpers in this file answered
+# "which instance is `anthropic`?" three DIFFERENT ways:
 #
 #   _find_provider_instance  -> highest priority (lowest number)
 #   _find_provider_index     -> first declared
@@ -646,10 +646,38 @@ def _find_provider_instance(
 # and B was promoted to priority 0 -- right model, wrong instance, and with
 # it B's base_url / long-context / cache-retention settings. Silently.
 #
-# The rule below is now the single answer, and it is the one the caller
-# already expressed: HIGHEST PRIORITY WINS, ties broken by declaration order.
-# An explicit instance `id:` is a more specific address than a bare module
-# type and always beats it.
+# ROUND 2 (recipes-0ac), fixed here: even with ONE agreed rule, the rule was
+# MODEL-BLIND. A preference is a (provider, model) PAIR, but only the
+# `provider` half ever reached the resolution -- so on a measured 14-provider
+# host (module `provider-anthropic` mounted as opus/priority 1, sonnet/5,
+# fable/6) a preference {provider: anthropic, model: claude-sonnet-4-5}
+# promoted `opus` (the highest-priority anthropic mount) and stamped
+# `claude-sonnet-4-5` onto opus's config. Same substitution class as round 1
+# -- right model name, wrong instance, and with it that instance's base_url /
+# context-window / cache-retention settings -- reached by a different route.
+#
+# THE RULE, in one place (:func:`_resolve_provider_index`):
+#
+#   1. An explicit instance `id:` is the most specific address there is and
+#      always wins outright -- unchanged behaviour.
+#   2. Otherwise the name is a MODULE (module id or short name). Among that
+#      module's mounted instances, prefer the ones whose locally-known models
+#      satisfy the preference's model hint. This is the half that was
+#      missing: it is what makes `{anthropic, claude-sonnet-4-5}` mean
+#      `fable` rather than "whichever anthropic mount ranks first".
+#   3. Among whatever survives step 2, HIGHEST PRIORITY WINS, ties broken by
+#      declaration order -- never "last declared".
+#
+# Step 2 only ever NARROWS an already-correct candidate set: if no instance
+# advertises a matching model (the common case -- most mount configs carry no
+# model metadata at all), every candidate survives and step 3 decides exactly
+# as it did before. Single-instance plans are therefore untouched by
+# construction, whatever the model hint says.
+#
+# Step 2 is deliberately SYNCHRONOUS and local: it reads only what the mount
+# plan already states. It never queries a provider's live catalog -- that is
+# resolve_model_pattern()'s job, it is async, and _build_provider_lookup /
+# _find_provider_index are sync helpers with sync callers.
 
 
 def _provider_priority(provider: dict[str, Any]) -> int:
@@ -666,39 +694,129 @@ def _provider_priority(provider: dict[str, Any]) -> int:
         return 0
 
 
+def _declared_models(provider: dict[str, Any]) -> list[str]:
+    """Model names a mount-plan entry states it serves, WITHOUT any I/O.
+
+    Reads only the mount plan itself: the instance's ``default_model`` plus,
+    when a plan happens to declare one, a ``models`` list. Returns ``[]`` when
+    the entry says nothing about models -- which is the common case, and which
+    callers must treat as "no information", never as "matches nothing".
+    """
+    config = provider.get("config") or {}
+    models: list[str] = []
+
+    declared = config.get("models")
+    if isinstance(declared, (list, tuple)):
+        models.extend(m for m in declared if isinstance(m, str) and m)
+
+    default_model = config.get("default_model")
+    if isinstance(default_model, str) and default_model:
+        models.append(default_model)
+
+    return models
+
+
+def _model_hint_matches(model_name: str, model_hint: str) -> bool:
+    """Does a concrete model name satisfy a preference's model hint?
+
+    Uses the same case-insensitive glob convention
+    :func:`resolve_model_pattern` already applies to a provider's live model
+    list, so a hint that would resolve against the live catalog is the same
+    hint that selects the instance here. Exact (non-glob) hints work too --
+    fnmatch treats a pattern with no wildcard as an equality test.
+    """
+    return fnmatch.fnmatch(model_name.lower(), model_hint.lower())
+
+
+def _resolve_provider_index(
+    providers: list[dict[str, Any]],
+    provider_id: str,
+    model_hint: str | None = None,
+) -> int | None:
+    """THE answer to "which mounted instance does this preference name?".
+
+    Every name-to-instance resolution in this module funnels through here so
+    the helpers cannot drift apart again (see the module comment above).
+
+    Args:
+        providers: List of provider configs from mount plan.
+        provider_id: Provider to find -- an instance ``id``, a module id, or
+            a module short name ("anthropic" for "provider-anthropic").
+        model_hint: Optional model name or glob from the same preference.
+            Used ONLY to choose between several instances of one module, and
+            only when at least one of them declares a matching model. Never
+            causes a miss: a hint nothing matches is simply not consulted.
+
+    Returns:
+        Index of the resolved provider, or None if no entry matches the name.
+    """
+    # 1. An explicit instance id is the most specific address there is.
+    for i, p in enumerate(providers):
+        if p.get("id", "") == provider_id:
+            return i
+
+    # 2. Otherwise the name addresses a MODULE -- gather every instance of it.
+    candidates = [
+        i
+        for i, p in enumerate(providers)
+        if provider_id
+        in (p.get("module", ""), p.get("module", "").replace("provider-", ""))
+    ]
+    if not candidates:
+        return None
+
+    # 3. Narrow by the model half of the preference, when it discriminates.
+    #    An empty result means the plan simply carries no model metadata to
+    #    judge by, so every candidate stays in the running.
+    if model_hint:
+        matching = [
+            i
+            for i in candidates
+            if any(
+                _model_hint_matches(model, model_hint)
+                for model in _declared_models(providers[i])
+            )
+        ]
+        if matching:
+            if len(matching) < len(candidates):
+                logger.debug(
+                    "Provider %r narrowed to %d/%d instance(s) by model hint %r",
+                    provider_id,
+                    len(matching),
+                    len(candidates),
+                    model_hint,
+                )
+            candidates = matching
+
+    # 4. Highest priority wins; ties broken by declaration order.
+    return min(candidates, key=lambda i: (_provider_priority(providers[i]), i))
+
+
 def _find_provider_index(
     providers: list[dict[str, Any]],
     provider_id: str,
+    model_hint: str | None = None,
 ) -> int | None:
     """Find the index of a provider in the providers list.
 
     Supports flexible matching: "anthropic", "provider-anthropic",
     or full module ID.
 
-    When several instances of the same module type are mounted, the
-    highest-priority one wins (ties: declaration order) -- see the
-    module comment above :func:`_provider_priority`. An exact instance
-    ``id`` match is more specific and beats any module-type match.
+    Thin wrapper over :func:`_resolve_provider_index` -- kept as the named
+    entry point its existing callers and tests use. ``model_hint`` is
+    optional; omitting it asks the module-type question on its own, exactly
+    as this helper always did.
 
     Args:
         providers: List of provider configs from mount plan.
         provider_id: Provider to find.
+        model_hint: Optional model name/glob to disambiguate between several
+            instances of the same module.
 
     Returns:
         Index of the provider, or None if not found.
     """
-    for i, p in enumerate(providers):
-        if p.get("id", "") == provider_id:
-            return i
-
-    best: tuple[int, int] | None = None
-    for i, p in enumerate(providers):
-        module_id = p.get("module", "")
-        if provider_id in (module_id, module_id.replace("provider-", "")):
-            priority = _provider_priority(p)
-            if best is None or priority < best[0]:
-                best = (priority, i)
-    return None if best is None else best[1]
+    return _resolve_provider_index(providers, provider_id, model_hint)
 
 
 def _build_provider_lookup(
@@ -706,12 +824,20 @@ def _build_provider_lookup(
 ) -> dict[str, int]:
     """Build a lookup dict mapping provider names to indices.
 
-    Module-type keys ("anthropic", "provider-anthropic", the full module
-    id) resolve to the HIGHEST-PRIORITY instance of that module, not the
-    last-declared one -- see the module comment above
-    :func:`_provider_priority` for the defect that motivated this.
-    Instance ``id`` keys are the most specific address and always win,
-    even when an id collides with a module-type name.
+    Every value is produced by :func:`_resolve_provider_index`, so this
+    lookup and :func:`_find_provider_index` cannot disagree -- they are the
+    same function, and agreement is structural rather than two
+    implementations that happen to coincide.
+
+    Module-type keys ("anthropic", "provider-anthropic", the full module id)
+    resolve to the HIGHEST-PRIORITY instance of that module, not the
+    last-declared one. Instance ``id`` keys are the most specific address and
+    always win, even when an id collides with a module-type name.
+
+    This lookup is model-BLIND by construction: a dict keyed by provider name
+    alone cannot express "which instance for THIS model". Callers holding a
+    (provider, model) preference should call :func:`_resolve_provider_index`
+    with the model hint instead -- see the module comment above.
 
     Args:
         providers: List of provider configs from mount plan.
@@ -719,29 +845,28 @@ def _build_provider_lookup(
     Returns:
         Dict mapping various name formats to provider index.
     """
-    # Pass 1: module-type keys, resolved by priority rather than by
-    # whichever entry happened to be written to the dict last.
-    best: dict[str, tuple[int, int]] = {}
-    for i, p in enumerate(providers):
+    lookup: dict[str, int] = {}
+
+    for p in providers:
         module_id = p.get("module", "")
         short_name = module_id.replace("provider-", "")
-        keys = [module_id, f"provider-{short_name}"]
-        if short_name != module_id:
-            keys.append(short_name)
-        priority = _provider_priority(p)
-        for key in keys:
-            current = best.get(key)
-            if current is None or priority < current[0]:
-                best[key] = (priority, i)
+        for key in (module_id, f"provider-{short_name}", short_name):
+            if not key or key in lookup:
+                continue
+            resolved = _resolve_provider_index(providers, key)
+            if resolved is not None:
+                lookup[key] = resolved
 
-    lookup: dict[str, int] = {key: idx for key, (_, idx) in best.items()}
-
-    # Pass 2: an explicit instance id is the most specific address there
-    # is, so it overwrites any module-type key it collides with.
+    # An explicit instance id is the most specific address there is, so it
+    # overwrites any module-type key it collides with. (_resolve_provider_index
+    # already applies this precedence; re-asserting it here keeps every
+    # instance addressable by its own id even if its id never appears as a
+    # module-type key above.)
     for i, p in enumerate(providers):
         instance_id = p.get("id")
         if instance_id:
             lookup[instance_id] = i
+
     return lookup
 
 
@@ -778,13 +903,12 @@ def apply_provider_preferences(
         logger.warning("Provider preferences specified but no providers in mount plan")
         return mount_plan
 
-    # Build lookup for efficient matching
-    lookup = _build_provider_lookup(providers)
-
-    # Find first matching preference
+    # Find first matching preference. The preference is resolved as a PAIR:
+    # its model participates in choosing WHICH instance of a module-named
+    # provider is meant, not just what gets stamped onto the winner.
     for pref in preferences:
-        if pref.provider in lookup:
-            target_idx = lookup[pref.provider]
+        target_idx = _resolve_provider_index(providers, pref.provider, pref.model)
+        if target_idx is not None:
             return _apply_single_override(
                 mount_plan, providers, target_idx, pref.model, pref.config
             )
@@ -926,9 +1050,6 @@ async def apply_provider_preferences_with_resolution(
         logger.warning("Provider preferences specified but no providers in mount plan")
         return mount_plan
 
-    # Build lookup for efficient matching
-    lookup = _build_provider_lookup(providers)
-
     # Find first matching preference whose model actually resolves, and
     # apply it. A preference whose provider is present but whose glob
     # pattern fails to resolve (no matching models) is NOT applied with
@@ -937,9 +1058,12 @@ async def apply_provider_preferences_with_resolution(
     # the ordered list, mirroring resolve_model_role()'s `continue`
     # behavior in the sibling routing-matrix resolver.
     for pref in preferences:
-        if pref.provider in lookup:
-            target_idx = lookup[pref.provider]
-
+        # Resolved as a PAIR: pref.model participates in choosing which
+        # instance of a module-named provider is meant (see the module
+        # comment above _provider_priority), so the model glob below is
+        # resolved against the very instance that will be promoted.
+        target_idx = _resolve_provider_index(providers, pref.provider, pref.model)
+        if target_idx is not None:
             # Resolve model pattern if it's a glob
             resolved_model = pref.model
             if is_glob_pattern(pref.model):
