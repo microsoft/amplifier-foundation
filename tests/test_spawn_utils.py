@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from unittest.mock import AsyncMock
 import asyncio
 from unittest.mock import MagicMock
@@ -1508,3 +1509,284 @@ class TestOverrideOutranksTiedPriorityZeroPrimary:
             "No tie-break demotion should occur when the override target "
             "is already the sole priority=0 instance"
         )
+
+
+# =============================================================================
+# recipes-0ac -- a preference is a (provider, model) PAIR
+# =============================================================================
+#
+# Measured 2026-09-02 on a 14-provider host. Module `provider-anthropic` is
+# mounted three times with distinct ids and priorities; the routing matrix
+# addresses it by MODULE name ("anthropic") and discriminates with the model
+# glob. Before the fix the model half never reached instance resolution, so
+# every {anthropic, *} preference landed on whichever anthropic mount ranked
+# first and stamped the requested model onto THAT instance's config -- right
+# model name, wrong instance, and with it the wrong base_url / context window
+# / cache-retention settings. Downstream this put a reasoning-role agent on a
+# 65K-context mount and produced 400s.
+
+
+MEASURED_HOST: list[dict[str, Any]] = [
+    {
+        "id": "opus",
+        "module": "provider-anthropic",
+        "config": {"priority": 1, "default_model": "claude-opus-5"},
+    },
+    {
+        "id": "sonnet",
+        "module": "provider-anthropic",
+        "config": {"priority": 5, "default_model": "claude-sonnet-5"},
+    },
+    {
+        "id": "fable",
+        "module": "provider-anthropic",
+        "config": {"priority": 6, "default_model": "claude-sonnet-4-5"},
+    },
+    {
+        "id": "gemini",
+        "module": "provider-gemini",
+        "config": {"priority": 3, "default_model": "gemini-3-pro"},
+    },
+]
+
+
+def _measured_host() -> dict[str, Any]:
+    """A fresh, deeply-copied copy of the measured mount plan."""
+    return {"providers": [{**p, "config": dict(p["config"])} for p in MEASURED_HOST]}
+
+
+def _promoted(plan: dict[str, Any]) -> dict[str, Any]:
+    """The single instance the override promoted to priority 0."""
+    winners = [p for p in plan["providers"] if p["config"].get("priority") == 0]
+    assert len(winners) == 1, f"expected exactly one promoted mount, got {winners}"
+    return winners[0]
+
+
+def _by_id(plan: dict[str, Any], instance_id: str) -> dict[str, Any]:
+    return next(p for p in plan["providers"] if p["id"] == instance_id)
+
+
+class TestModuleNamedPreferenceResolvesToMatchingInstance:
+    """Module-named preferences pick the instance that serves the model."""
+
+    def test_model_glob_selects_matching_instance_not_first_ranked(self) -> None:
+        """{anthropic, claude-opus-*} means `opus`, and only `opus`."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-opus-*")],
+        )
+
+        assert _promoted(result)["id"] == "opus"
+
+        # The instance that does NOT serve this model keeps its own config --
+        # no stray promotion, no stamped-on model, no borrowed settings.
+        fable = _by_id(result, "fable")
+        assert fable["config"]["priority"] == 6
+        assert fable["config"]["default_model"] == "claude-sonnet-4-5"
+
+    def test_model_selects_lower_priority_instance_that_serves_it(self) -> None:
+        """The fix proper: the model half outranks bare priority order.
+
+        Fails before the fix -- `opus` (priority 1, the highest-ranked
+        anthropic mount) was promoted and `claude-sonnet-4-5` written onto
+        ITS config, even though `fable` is the mount that serves that model.
+        """
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-4-5")],
+        )
+
+        promoted = _promoted(result)
+        assert promoted["id"] == "fable"
+        assert promoted["config"]["default_model"] == "claude-sonnet-4-5"
+
+        opus = _by_id(result, "opus")
+        assert opus["config"]["priority"] == 1
+        assert opus["config"]["default_model"] == "claude-opus-5"
+
+    def test_no_model_falls_back_to_highest_priority_instance(self) -> None:
+        """With nothing to discriminate on, highest priority wins."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="")],
+        )
+        assert _promoted(result)["id"] == "opus"
+
+    def test_unmatched_model_still_falls_back_to_highest_priority(self) -> None:
+        """A model no mount declares must never turn into a MISS.
+
+        Model metadata in a mount plan is optional and often absent; a hint
+        that matches nothing carries no information and must not stop the
+        preference from being applied at all.
+        """
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-unknown-9")],
+        )
+        assert _promoted(result)["id"] == "opus"
+
+    def test_instance_id_preference_is_exact_and_ignores_model(self) -> None:
+        """Naming an instance id addresses that instance, full stop."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="fable", model="claude-sonnet-4-5")],
+        )
+        assert _promoted(result)["id"] == "fable"
+
+        # Even a model only a SIBLING serves does not redirect an explicit id.
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="fable", model="claude-opus-5")],
+        )
+        assert _promoted(result)["id"] == "fable"
+
+    def test_other_module_untouched(self) -> None:
+        """Narrowing within one module never reaches across modules."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-4-5")],
+        )
+        gemini = _by_id(result, "gemini")
+        assert gemini["config"]["priority"] == 3
+        assert gemini["config"]["default_model"] == "gemini-3-pro"
+
+    def test_single_instance_module_is_unchanged_by_any_model(self) -> None:
+        """The common single-mount case resolves regardless of the model."""
+        plan = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-opus-5"},
+                },
+                {"module": "provider-openai", "config": {}},
+            ]
+        }
+        for model in ("claude-opus-5", "claude-sonnet-4-5", "totally-unknown", ""):
+            result = apply_provider_preferences(
+                {
+                    "providers": [
+                        {**p, "config": dict(p["config"])} for p in plan["providers"]
+                    ]
+                },
+                [ProviderPreference(provider="anthropic", model=model)],
+            )
+            promoted = _promoted(result)
+            assert promoted["module"] == "provider-anthropic", f"model={model!r}"
+            assert promoted["config"]["default_model"] == model, f"model={model!r}"
+
+    def test_declared_models_list_participates_when_present(self) -> None:
+        """A mount that declares a `models` list is selectable by any of them."""
+        plan = {
+            "providers": [
+                {
+                    "id": "primary",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 0, "default_model": "claude-opus-5"},
+                },
+                {
+                    "id": "long-context",
+                    "module": "provider-anthropic",
+                    "config": {
+                        "priority": 9,
+                        "default_model": "claude-opus-5",
+                        "models": ["claude-opus-5", "claude-opus-5-1m"],
+                    },
+                },
+            ]
+        }
+        result = apply_provider_preferences(
+            plan, [ProviderPreference(provider="anthropic", model="claude-opus-5-1m")]
+        )
+        assert _promoted(result)["id"] == "long-context"
+
+    def test_model_matching_is_case_insensitive(self) -> None:
+        """Model globs fold case, matching resolve_model_pattern()."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="CLAUDE-SONNET-4-5")],
+        )
+        assert _promoted(result)["id"] == "fable"
+
+
+class TestProviderResolutionHelpersAgree:
+    """`_find_provider_index` and `_build_provider_lookup` are one function."""
+
+    def test_helpers_agree_on_every_addressable_name(self) -> None:
+        lookup = _build_provider_lookup(MEASURED_HOST)
+        names = [
+            "anthropic",
+            "provider-anthropic",
+            "gemini",
+            "provider-gemini",
+            "opus",
+            "sonnet",
+            "fable",
+        ]
+        for name in names:
+            assert _find_provider_index(MEASURED_HOST, name) == lookup[name], name
+
+    def test_module_name_resolves_to_highest_priority_instance(self) -> None:
+        """Never the last-declared one (`fable`, priority 6)."""
+        lookup = _build_provider_lookup(MEASURED_HOST)
+        assert lookup["anthropic"] == 0
+        assert lookup["provider-anthropic"] == 0
+        assert _find_provider_index(MEASURED_HOST, "anthropic") == 0
+
+    def test_find_provider_index_honours_the_model_hint(self) -> None:
+        """The hint is optional; supplying it narrows to the serving mount."""
+        assert _find_provider_index(MEASURED_HOST, "anthropic") == 0
+        assert (
+            _find_provider_index(MEASURED_HOST, "anthropic", "claude-sonnet-4-5") == 2
+        )
+        assert _find_provider_index(MEASURED_HOST, "anthropic", "claude-opus-*") == 0
+
+    def test_unknown_name_is_still_a_miss(self) -> None:
+        assert _find_provider_index(MEASURED_HOST, "cohere") is None
+        assert _find_provider_index(MEASURED_HOST, "cohere", "command-r") is None
+        assert "cohere" not in _build_provider_lookup(MEASURED_HOST)
+
+
+class TestModuleNamedPreferenceWithAsyncResolution:
+    """The async path resolves the glob against the instance it promotes."""
+
+    @pytest.mark.asyncio
+    async def test_async_path_promotes_the_model_matching_instance(self) -> None:
+        provider = MagicMock()
+        provider.list_models = AsyncMock(
+            return_value=["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-5"]
+        )
+        coordinator = MagicMock()
+        coordinator.get = MagicMock(return_value={"anthropic": provider})
+
+        result = await apply_provider_preferences_with_resolution(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-4-*")],
+            coordinator,
+        )
+
+        promoted = _promoted(result)
+        assert promoted["id"] == "fable"
+        assert promoted["config"]["default_model"] == "claude-sonnet-4-5"
+
+    @pytest.mark.asyncio
+    async def test_async_path_preserves_protected_config_keys(self) -> None:
+        """PROTECTED_CONFIG_KEYS survive selection by model, as ever."""
+        plan = _measured_host()
+        _by_id(plan, "fable")["config"]["api_key"] = "fable-secret"
+
+        result = await apply_provider_preferences_with_resolution(
+            plan,
+            [
+                ProviderPreference(
+                    provider="anthropic",
+                    model="claude-sonnet-4-5",
+                    config={"api_key": "injected", "reasoning_effort": "high"},
+                )
+            ],
+            MagicMock(get=MagicMock(return_value={})),
+        )
+
+        promoted = _promoted(result)
+        assert promoted["id"] == "fable"
+        assert promoted["config"]["api_key"] == "fable-secret"
+        assert promoted["config"]["reasoning_effort"] == "high"
