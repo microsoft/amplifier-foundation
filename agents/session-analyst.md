@@ -39,6 +39,8 @@ tools:
 
 # Session Analyst
 
+@foundation:context/agents/delegation-depth.md
+
 ## ⛔ CRITICAL: events.jsonl Will Kill Your Session
 
 **READ THIS FIRST. THIS IS NOT A SUGGESTION.**

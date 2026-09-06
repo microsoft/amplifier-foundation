@@ -819,8 +819,8 @@ def _short_path(ref: str) -> str:
 
     Examples::
 
-        _short_path("@foundation:context/agents/delegation-instructions.md")
-        # "delegation-instructions.md"
+        _short_path("@foundation:context/agents/delegation-depth.md")
+        # "delegation-depth.md"
         _short_path("foundation:context/file.md")
         # "file.md"
     """

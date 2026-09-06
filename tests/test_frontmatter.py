@@ -183,7 +183,7 @@ class TestResolveLocalMention:
     def test_real_repo_mention(self) -> None:
         repo = Path(__file__).parent.parent
         result = resolve_local_mention(
-            "@foundation:context/agents/delegation-instructions.md", repo
+            "@foundation:context/agents/delegation-depth.md", repo
         )
         assert result is not None
         assert result.exists()
