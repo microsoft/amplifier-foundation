@@ -61,16 +61,17 @@ Use `.amplifier/settings.yaml` to point to local checkouts:
 ```yaml
 # .amplifier/settings.yaml
 sources:
-  # Override a module to use local version
-  amplifier-module-xyz:
-    type: local
-    path: /home/user/repos/amplifier-module-xyz
-    
-  # Override core (rarely needed)
-  amplifier-core:
-    type: local
-    path: /home/user/repos/amplifier-core
+  modules:
+    # Override a module to use a local checkout
+    amplifier-module-xyz: /home/user/repos/amplifier-module-xyz
+    # Override core (rarely needed)
+    amplifier-core: /home/user/repos/amplifier-core
 ```
+
+The value is the source URI itself (a local path or a `git+https://...` URL),
+not a `{type, path}` mapping -- and it must sit under `sources.modules:`. A
+block missing that level overrides nothing, silently and with no error. Bundles
+use the sibling key, `sources.bundles:`.
 
 Then run Amplifier normally - it will use your local sources.
 
@@ -79,8 +80,6 @@ Then run Amplifier normally - it will use your local sources.
 ## Level 3: DTU Validation
 
 For changes that span multiple repos or need isolation, use the **amplifier-tester** bundle. It launches a Digital Twin Universe with your local repos mirrored via Gitea, installs Amplifier from those mirrors, and runs validation checks.
-
-Always delegate — the specialist agents are the layer that drives the CLI:
 
 ```
 delegate(agent="amplifier-tester:setup-digital-twin",
@@ -180,9 +179,8 @@ pytest tests/
 # In a test project:
 cat > .amplifier/settings.yaml << EOF
 sources:
-  amplifier-module-new:
-    type: local
-    path: /path/to/amplifier-module-new
+  modules:
+    amplifier-module-new: /path/to/amplifier-module-new
 EOF
 amplifier  # Start interactive session (no subcommand = interactive mode)
 # Verify module loads and works

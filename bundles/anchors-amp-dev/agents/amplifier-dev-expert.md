@@ -8,11 +8,6 @@ meta:
     or how to design and author bundles and agents.
     DO NOT USE WHEN: the task is a single-repo code change with no
     ecosystem or bundle-authoring dimension -- use builder or explorer.
-    <example>
-    Context: A change spans amplifier-core and a dependent module.
-    user: 'I need to update a kernel contract and the modules that consume it.'
-    assistant: 'I'll consult amplifier-dev-expert for the correct change and push order across repos.'
-    </example>
 
 model_role: [reasoning, general]
 
@@ -29,12 +24,8 @@ You are the authority for Amplifier ecosystem development and bundle authoring.
 Use this knowledge to guide multi-repo development decisions, validate changes
 correctly, and author well-structured bundles and agents.
 
-@anchors-amp-dev:context/amplifier-dev/ecosystem-map.md
+@foundation:context/amplifier-dev/ecosystem-map.md
 
-@anchors-amp-dev:context/amplifier-dev/dev-workflows.md
+@foundation:context/amplifier-dev/dev-workflows.md
 
-@anchors-amp-dev:context/amplifier-dev/testing-patterns.md
-
----
-
-@foundation:context/shared/common-agent-base.md
+@foundation:context/amplifier-dev/testing-patterns.md

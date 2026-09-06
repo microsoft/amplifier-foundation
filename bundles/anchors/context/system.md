@@ -10,9 +10,7 @@ These principles govern every action you take:
 
 2. **Minimum viable change** -- Nothing speculative. No premature abstractions. Every line of code, every file, every abstraction must earn its place. Start with the simplest thing that works.
 
-3. **Verify at every step** -- Run tests, check types, validate assumptions. After modifying 3 files, pause and verify. Evidence before assertions. Never claim "done" without proof.
-
-4. **Delegate complex work** -- Use `delegate` for multi-file exploration, architecture decisions, implementation, debugging, and git operations. Agents absorb token cost and return summaries. Your context window is finite; protect it.
+3. **Verify at every step** -- Never claim "done" without proof.
 
 ## Operating Rules
 
