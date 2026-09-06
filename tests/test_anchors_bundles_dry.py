@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -88,8 +89,8 @@ def _frontmatter(path: Path) -> dict:
     return yaml.safe_load(match.group(1)) or {}
 
 
-def _agent_files() -> list[Path]:
-    """Every agent description in the repo, at the validator's own scope.
+def _agent_candidate_files() -> list[Path]:
+    """Every file the validator's SCAN reaches, before classification.
 
     Not "root `agents/` + bundles" -- that narrower scope is what let the
     `experiments/` copies keep their `<example>` blocks through two sweeps.
@@ -110,6 +111,40 @@ def _agent_files() -> list[Path]:
         seen.add(resolved)
         found.append(candidate)
     return sorted(found)
+
+
+def _is_agent_file(path: Path) -> bool:
+    """Is this scanned file an agent DEFINITION, or merely under `agents/`?
+
+    Keys on `meta:` -- the loader's own contract, quoted from
+    `docs/AGENT_AUTHORING.md`: "Agents ARE bundles. They use the same file
+    format and are loaded via load_bundle(). The only difference is the
+    frontmatter key (`meta:` vs `bundle:`)."
+
+    NOT the directory name. `context/agents/*.md` are context documents loaded
+    via `context:` (`behaviors/agents.yaml`, `behaviors/tasks.yaml`); nothing
+    spawns them and they carry no frontmatter because they are not agents. The
+    directory collides on the word "agents", which is how the widened
+    validator came to report four NO_FRONTMATTER errors against files that
+    were never agents.
+
+    Frontmatter that exists but will not parse counts as an agent on purpose --
+    a file plainly trying to be one should reach the validator that reports the
+    YAML error, not be quietly reclassified out of the run.
+    """
+    match = _FRONTMATTER_RE.match(path.read_text(encoding="utf-8"))
+    if not match:
+        return False
+    try:
+        frontmatter = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        return True
+    return isinstance(frontmatter, dict) and "meta" in frontmatter
+
+
+def _agent_files() -> list[Path]:
+    """Every agent DEFINITION in the repo: scanned, then classified."""
+    return [path for path in _agent_candidate_files() if _is_agent_file(path)]
 
 
 def _relative_files(root: Path) -> set[str]:
@@ -262,3 +297,282 @@ class TestAgentDescriptionsCarryNoExampleBlocks:
             "(description-authoring-principles.md V3, #340). Offenders: "
             + "; ".join(offenders)
         )
+
+
+# --- Discovery-scope parity (xe1u) -----------------------------------------
+# The three places in this repo that answer "which files are agent
+# definitions?" must give the SAME answer. When they did not, the cost was a
+# three-sweep recurrence: `validate-agents` walked three hardcoded directories
+# and found 23 agents; `validate-bundle-repo` and `_agent_files` above globbed
+# the repo and found 32 (45 before the `experiments/` deletion). The 11
+# `<example>` violators that lived in the 9-file difference survived #341 and
+# ux32 because the recipe most people run never looked at them -- and reported
+# a clean "23 found, 3 locations" the whole time.
+#
+# 6phe closed the gap in the guard; xe1u closed it in `validate-agents`
+# (v1.6.0). These tests are the tripwire that keeps it closed. A shared
+# discovery *implementation* was considered and declined -- see
+# `docs/lanes/xe1u-validate-agents-discovery/DONE-NOTE.md` -- so proven parity
+# is the mechanism standing in for it.
+#
+# 39z0 (v1.7.0) added the classifier layer and the Windows fix, and split the
+# parity claim in two accordingly: the SCAN must reach the same files, and the
+# CLASSIFIER must then judge the same subset of them agents. Both are asserted
+# separately below, on purpose -- a classifier that quietly narrowed the walk
+# would still satisfy an agent-set comparison if the guard narrowed with it.
+# The Windows defect these guards caught is pinned twice more: once at its
+# cause (no path interpolated into Python source) and once by reproducing an
+# escape-shaped path on every platform.
+VALIDATE_AGENTS_RECIPE = REPO_ROOT / "recipes" / "validate-agents.yaml"
+VALIDATE_BUNDLE_REPO_RECIPE = REPO_ROOT / "recipes" / "validate-bundle-repo.yaml"
+
+# `validate-bundle-repo` excludes the five; the guard and `validate-agents`
+# add `docs` on top, because `docs/` holds frozen lane records that quote
+# violations verbatim as evidence and must never be rewritten. That one
+# documented delta is asserted explicitly below rather than papered over --
+# it excludes zero files today (there is no `docs/**/agents/` directory), so
+# all three walks still return the same set.
+DOCUMENTED_EXCLUSION_DELTA = {"docs"}
+
+
+def _literal_set(text: str, name: str) -> list[set[str]]:
+    """Every `NAME = {...}` set literal in `text`, in source order."""
+    import ast
+
+    return [
+        set(ast.literal_eval(match.group(1)))
+        for match in re.finditer(rf"\b{name}\s*=\s*(\{{[^}}]*\}})", text)
+    ]
+
+
+# The environment variable `validate-agents` v1.7.0 passes the repo path
+# through. It is NOT interpolated into the Python heredoc, and must not be:
+# `Path("{{repo_path}}")` puts a filesystem path inside a Python string
+# literal, where every backslash becomes an escape sequence. On a GitHub
+# Actions Windows runner (`D:\a\<repo>\<repo>`) `\a` became `\x07`, the path
+# did not exist, and discovery printed `agents_found: []` and exited 0 --
+# a PASS over zero files. These guards are what caught it, on Windows
+# 3.11/3.12/3.13, while every POSIX leg stayed green.
+DISCOVERY_REPO_PATH_ENV = "VALIDATE_AGENTS_REPO_PATH"
+
+
+def _discovery_step_body() -> str:
+    """The agent-discovery step's Python heredoc, verbatim and de-indented."""
+    lines = VALIDATE_AGENTS_RECIPE.read_text(encoding="utf-8").splitlines()
+    step = next(i for i, line in enumerate(lines) if line.strip() == '- id: "agent-discovery"')
+    start = next(
+        i for i in range(step, len(lines)) if lines[i].rstrip().endswith("<< 'EOF'")
+    )
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "EOF")
+    return "\n".join(line[6:] for line in lines[start + 1 : end])
+
+
+def _run_recipe_discovery_step(repo_path: Path | None = None) -> dict:
+    """Execute `validate-agents`' agent-discovery step and return its payload.
+
+    Executed, not re-implemented. A test that reimplements the glob would pass
+    while the recipe diverged, which is the failure mode being guarded.
+
+    The repo path is handed over the way the recipe hands it over -- through
+    the environment -- so this harness exercises the real mechanism rather than
+    a friendlier substitute.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as handle:
+        handle.write(_discovery_step_body())
+        script = handle.name
+    env = dict(os.environ)
+    env[DISCOVERY_REPO_PATH_ENV] = str(repo_path if repo_path is not None else REPO_ROOT)
+    completed = subprocess.run(
+        [sys.executable, script], capture_output=True, text=True, check=True, env=env
+    )
+    return json.loads(completed.stdout)
+
+
+class TestDiscoveryScopeParity:
+    """One answer to "which files are agents?", across all three scopes."""
+
+    def test_exclusion_sets_agree_across_both_recipes_and_this_guard(self) -> None:
+        """A fourth exclusion list is how the first divergence started."""
+        agents_sets = _literal_set(
+            VALIDATE_AGENTS_RECIPE.read_text(encoding="utf-8"), "EXCLUDED_PARTS"
+        )
+        assert len(agents_sets) == 1, (
+            "validate-agents.yaml must declare exactly one EXCLUDED_PARTS set, "
+            f"found {len(agents_sets)}"
+        )
+        assert agents_sets[0] == AGENT_SCAN_EXCLUDED_PARTS, (
+            "validate-agents.yaml's EXCLUDED_PARTS must equal this module's "
+            f"AGENT_SCAN_EXCLUDED_PARTS. recipe={sorted(agents_sets[0])} "
+            f"guard={sorted(AGENT_SCAN_EXCLUDED_PARTS)}"
+        )
+
+        repo_sets = _literal_set(
+            VALIDATE_BUNDLE_REPO_RECIPE.read_text(encoding="utf-8"), "EXCLUDED_DIRS"
+        )
+        assert repo_sets, "validate-bundle-repo.yaml declares no EXCLUDED_DIRS set"
+        assert all(found == repo_sets[0] for found in repo_sets), (
+            "validate-bundle-repo.yaml's EXCLUDED_DIRS literals disagree with each "
+            f"other: {[sorted(found) for found in repo_sets]}"
+        )
+        assert AGENT_SCAN_EXCLUDED_PARTS - repo_sets[0] == DOCUMENTED_EXCLUSION_DELTA, (
+            "The only permitted difference between validate-bundle-repo's "
+            "EXCLUDED_DIRS and the wider scope is the documented "
+            f"{sorted(DOCUMENTED_EXCLUSION_DELTA)}. Actual extra: "
+            f"{sorted(AGENT_SCAN_EXCLUDED_PARTS - repo_sets[0])}"
+        )
+        assert not repo_sets[0] - AGENT_SCAN_EXCLUDED_PARTS, (
+            "validate-bundle-repo excludes something the wider scope does not: "
+            f"{sorted(repo_sets[0] - AGENT_SCAN_EXCLUDED_PARTS)}"
+        )
+
+    def test_validate_agents_scans_exactly_the_guards_candidate_files(self) -> None:
+        """Parity of the SCAN, before either side classifies anything.
+
+        Kept separate from the agent-set parity below on purpose: a classifier
+        that quietly narrowed the walk would still satisfy an agent-set
+        comparison if both sides narrowed together. This pins the wider claim
+        v1.6.0 established -- the same FILES are reached -- so adding a
+        classifier on top cannot be used to shrink coverage unnoticed.
+        """
+        payload = _run_recipe_discovery_step()
+        from_recipe = {agent["relative_path"] for agent in payload["agents_found"]} | {
+            entry["relative_path"] for entry in payload["non_agents_found"]
+        }
+        from_guard = {
+            path.relative_to(REPO_ROOT).as_posix() for path in _agent_candidate_files()
+        }
+        assert from_recipe == from_guard, (
+            "validate-agents' scan and this guard's _agent_candidate_files must "
+            "reach the same files. In recipe not guard: "
+            f"{sorted(from_recipe - from_guard)}; in guard not recipe: "
+            f"{sorted(from_guard - from_recipe)}"
+        )
+        assert payload["candidates_scanned"] == len(from_guard), (
+            f"candidates_scanned={payload['candidates_scanned']} disagrees with "
+            f"the {len(from_guard)} files this guard scanned"
+        )
+
+    def test_validate_agents_discovers_exactly_the_guards_agent_files(self) -> None:
+        """Proven parity, by running the recipe's own step -- not asserted."""
+        payload = _run_recipe_discovery_step()
+        from_recipe = {agent["relative_path"] for agent in payload["agents_found"]}
+        from_guard = {path.relative_to(REPO_ROOT).as_posix() for path in _agent_files()}
+        assert from_recipe == from_guard, (
+            "validate-agents' discovery and this guard's _agent_files must find "
+            "the same files. In recipe not guard: "
+            f"{sorted(from_recipe - from_guard)}; in guard not recipe: "
+            f"{sorted(from_guard - from_recipe)}"
+        )
+        assert from_recipe, "discovery found no agents at all -- a PASS over nothing"
+
+    def test_classifier_keys_on_meta_not_on_the_directory_name(self) -> None:
+        """`context/agents/*.md` are context documents, not agents.
+
+        They are loaded as `context:` by `behaviors/agents.yaml` and
+        `behaviors/tasks.yaml`; nothing spawns them, and they carry no
+        frontmatter because they are not agents. Classifying by directory name
+        made them four NO_FRONTMATTER ERRORs and flipped the verdict on a repo
+        with no real agent defects.
+
+        They must be classified out AND named -- an unexplained drop is the
+        same silence that let 11 violators survive two sweeps.
+        """
+        payload = _run_recipe_discovery_step()
+        agents = {agent["relative_path"] for agent in payload["agents_found"]}
+        non_agents = {entry["relative_path"]: entry["reason"] for entry in payload["non_agents_found"]}
+
+        context_docs = {
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "context" / "agents").glob("*.md")
+        }
+        assert context_docs, "expected context/agents/*.md to exist in this repo"
+        assert not (context_docs & agents), (
+            "context/agents/*.md were classified as AGENTS: "
+            f"{sorted(context_docs & agents)}. They declare no `meta:` -- see "
+            "docs/AGENT_AUTHORING.md."
+        )
+        assert context_docs <= set(non_agents), (
+            "context/agents/*.md must be REPORTED as non-agents, not silently "
+            f"dropped. Missing from non_agents_found: {sorted(context_docs - set(non_agents))}"
+        )
+        for path in sorted(context_docs):
+            assert non_agents[path] == "no_frontmatter", (
+                f"{path} was excluded for {non_agents[path]!r}; expected "
+                "'no_frontmatter'"
+            )
+
+    def test_discovery_never_interpolates_the_repo_path_into_python_source(self) -> None:
+        """The Windows defect, pinned at its cause rather than its symptom.
+
+        `Path("{{repo_path}}")` makes every backslash in a filesystem path an
+        escape sequence. `D:\\a\\repo\\repo` -- a GitHub Actions Windows
+        checkout -- became `D:\\x07epo...`, did not exist, and discovery
+        returned an empty set and exited 0.
+        """
+        body = _discovery_step_body()
+        # Comment lines are exempt: the step documents the defect it fixes, and
+        # substitution into a comment cannot mangle a path anyone uses.
+        code = [
+            line
+            for line in body.splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        offenders = [line for line in code if "{{repo_path}}" in line]
+        assert not offenders, (
+            "The agent-discovery heredoc interpolates {{repo_path}} into Python "
+            "source. A path inside a string literal is escape-processed, which "
+            f"silently destroys every Windows path. Offending line(s): {offenders}. "
+            f"Pass it through ${DISCOVERY_REPO_PATH_ENV} instead."
+        )
+        assert DISCOVERY_REPO_PATH_ENV in body, (
+            f"The agent-discovery step must read the repo path from "
+            f"${DISCOVERY_REPO_PATH_ENV}"
+        )
+
+    def test_discovery_survives_a_repo_path_containing_escape_sequences(self) -> None:
+        """The Windows defect, reproduced on every platform.
+
+        A directory literally named `a\\test` gives a repo path whose string
+        form carries `\\a` and `\\t` -- the exact shape of `D:\\a\\...` on a
+        Windows runner. Under the v1.6.0 interpolation this found zero agents
+        and reported success; it must now find the file that is really there.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "a\\test\\nested"
+            (repo / "agents").mkdir(parents=True)
+            (repo / "agents" / "probe.md").write_text(
+                '---\nmeta:\n  name: probe\n  description: "probe agent"\n---\nbody\n',
+                encoding="utf-8",
+            )
+            (repo / "context" / "agents").mkdir(parents=True)
+            (repo / "context" / "agents" / "notes.md").write_text(
+                "# Notes\n\nA context document, not an agent.\n", encoding="utf-8"
+            )
+
+            payload = _run_recipe_discovery_step(repo)
+
+        assert payload["errors"] == [], (
+            f"discovery reported errors on an escape-shaped path: {payload['errors']}"
+        )
+        assert {a["relative_path"] for a in payload["agents_found"]} == {"agents/probe.md"}, (
+            "discovery lost the agent under a path containing backslash escape "
+            f"sequences -- found {payload['agents_found']}"
+        )
+        assert {n["relative_path"] for n in payload["non_agents_found"]} == {
+            "context/agents/notes.md"
+        }
+
+    def test_discovery_fails_loudly_on_a_missing_repo_path(self) -> None:
+        """Never an empty payload with exit 0 -- that is the vacuous PASS."""
+        import subprocess
+
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_recipe_discovery_step(REPO_ROOT / "no-such-directory-exists-here")

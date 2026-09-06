@@ -1,0 +1,49 @@
+=== BASELINE: v1.5.1 (5a9e07b, pre-xe1u) -- the 23/PASS numbers ===
+recipe version        : 1.5.1 (5a9e07b)
+candidates scanned    : <absent in v1.6.0>
+agents discovered     : 23
+locations             : 3 (search_locations, pre-v1.6.0)
+    - /home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/agents
+    - /home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/bundles/anchors/agents
+    - /home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/bundles/anchors-amp-dev/agents
+classified non-agents : <absent in v1.6.0>
+structural errors     : 0
+structural warnings   : 0
+quality breakdown     : {'total': 23, 'good': 23, 'polish': 0, 'needs_work': 0, 'critical': 0}
+quality_level         : good
+requires_llm_analysis : False
+VERDICT               : PASS
+
+=== BEFORE: v1.6.0 (038801f, xe1u head) -- the 32/FAIL numbers ===
+recipe version        : 1.6.0 (038801f)
+candidates scanned    : <absent in v1.6.0>
+agents discovered     : 32
+locations             : 6 {'agents/': 16, 'bundles/anchors-amp-dev/agents/': 1, 'bundles/anchors/agents/': 6, 'context/agents/': 4, 'examples/agents/': 1, 'experiments/build-up/agents/': 4}
+classified non-agents : <absent in v1.6.0>
+structural errors     : 4
+structural warnings   : 1
+    ERROR delegation-instructions: NO_FRONTMATTER -- Agent file missing YAML frontmatter (--- markers)
+    ERROR multi-agent-patterns: NO_FRONTMATTER -- Agent file missing YAML frontmatter (--- markers)
+    ERROR session-repair-knowledge: NO_FRONTMATTER -- Agent file missing YAML frontmatter (--- markers)
+    ERROR session-storage-knowledge: NO_FRONTMATTER -- Agent file missing YAML frontmatter (--- markers)
+quality breakdown     : {'total': 32, 'good': 27, 'polish': 0, 'needs_work': 1, 'critical': 4}
+quality_level         : critical
+requires_llm_analysis : True
+VERDICT               : FAIL
+
+=== AFTER: v1.7.0 (this branch) ===
+recipe version        : 1.7.0 (working tree)
+candidates scanned    : 32
+agents discovered     : 28
+locations             : 5 {'agents/': 16, 'bundles/anchors-amp-dev/agents/': 1, 'bundles/anchors/agents/': 6, 'examples/agents/': 1, 'experiments/build-up/agents/': 4}
+classified non-agents : 4
+    - context/agents/delegation-instructions.md  (no_frontmatter)
+    - context/agents/multi-agent-patterns.md  (no_frontmatter)
+    - context/agents/session-repair-knowledge.md  (no_frontmatter)
+    - context/agents/session-storage-knowledge.md  (no_frontmatter)
+structural errors     : 0
+structural warnings   : 1
+quality breakdown     : {'total': 28, 'good': 27, 'polish': 0, 'needs_work': 1, 'critical': 0}
+quality_level         : needs_work
+requires_llm_analysis : True
+VERDICT               : PASS WITH WARNINGS

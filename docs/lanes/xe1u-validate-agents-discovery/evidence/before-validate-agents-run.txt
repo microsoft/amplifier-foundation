@@ -1,0 +1,28 @@
+BEFORE  --  validate-agents v1.5.1 (unmodified, at lane branch point = origin/main 5a9e07b)
+run_id:        run-c26b396f2f1e
+session_id:    6fd60e5f3961435a-20260906-123542_recipe
+repo_path:     /home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation
+status:        completed
+
+discovery_results.total_count:        23
+discovery_results.search_locations:   3
+  agents/                          16 agents
+  bundles/anchors/agents/           6 agents
+  bundles/anchors-amp-dev/agents/   1 agent
+
+quality_classification.quality_level:        good
+quality_classification.requires_llm_analysis: false
+quality_classification.summary: {good: 23, polish: 0, needs_work: 0, critical: 0, total: 23}
+
+VERDICT (synthesize-report): PASS
+  "Agents Found: 23 total across 3 search locations"
+  "Quality Breakdown: 23 good, 0 polish, 0 needs_work, 0 critical"
+  "Issues: 0 errors, 0 warnings, 2 optional suggestions"
+
+LLM steps EXECUTED (2):  quick-approval, synthesize-report
+LLM steps SKIPPED  (2):  description-quality-check, tool-access-analysis
+                         (skipped by condition: requires_llm_analysis == false)
+
+THE BLIND SPOT THIS RUN DEMONSTRATES: the report says "23 found, 3 locations"
+and carries NO signal that other agent directories exist in the repo. Nine
+further files match the wider validator scope and were never walked.

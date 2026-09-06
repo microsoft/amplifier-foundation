@@ -1,0 +1,11 @@
+FULL SUITE -- lane branch (validate-agents v1.6.0 + parity guards)
+command: python -m pytest -q
+
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_grpc_adapter_main.py::TestVerifyModuleType::test_non_isinstance_object_with_mount_passes
+FAILED tests/test_sources.py::TestFileSourceHandler::test_resolve_existing_file
+2 failed, 2017 passed, 3 skipped, 1 warning in 20.38s
