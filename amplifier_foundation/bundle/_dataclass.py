@@ -49,11 +49,18 @@ class Bundle:
             live.  Use when the bundle YAML is in a sub-directory (e.g. behaviors/) but
             its resources live in a parent directory (e.g. the bundle root).
 
-            Example — YAML at ``experiments/build-up/behaviors/build-up-foundation.yaml``
-            with agents at ``experiments/build-up/agents/``::
+            Example — a bundle whose YAML sits in a ``behaviors/`` sub-directory
+            while its resources live at the bundle root::
 
+                my-bundle/
+                  agents/                # resources live here ...
+                  context/
+                  behaviors/
+                    my-bundle.yaml       # ... but the YAML lives one level down
+
+                # inside behaviors/my-bundle.yaml
                 bundle:
-                  name: build-up
+                  name: my-bundle
                   namespace_root: ..   # agents/ lives one level above this file
 
             When absent (the default), the YAML file's own directory is used.  Only
