@@ -1,0 +1,54 @@
+FAIL-BEFORE -- new parity guards run against validate-agents v1.5.1 (unmodified recipe, guards applied)
+command: python -m pytest tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity -q
+
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_ TestDiscoveryScopeParity.test_exclusion_sets_agree_across_both_recipes_and_this_guard _
+
+self = <tests.test_anchors_bundles_dry.TestDiscoveryScopeParity object at 0xfe7b49302f00>
+
+    def test_exclusion_sets_agree_across_both_recipes_and_this_guard(self) -> None:
+        """A fourth exclusion list is how the first divergence started."""
+        agents_sets = _literal_set(
+            VALIDATE_AGENTS_RECIPE.read_text(encoding="utf-8"), "EXCLUDED_PARTS"
+        )
+>       assert len(agents_sets) == 1, (
+            "validate-agents.yaml must declare exactly one EXCLUDED_PARTS set, "
+            f"found {len(agents_sets)}"
+        )
+E       AssertionError: validate-agents.yaml must declare exactly one EXCLUDED_PARTS set, found 0
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_anchors_bundles_dry.py:344: AssertionError
+_ TestDiscoveryScopeParity.test_validate_agents_discovers_exactly_the_guards_agent_files _
+
+self = <tests.test_anchors_bundles_dry.TestDiscoveryScopeParity object at 0xfe7b49060aa0>
+
+    def test_validate_agents_discovers_exactly_the_guards_agent_files(self) -> None:
+        """Proven parity, by running the recipe's own step -- not asserted."""
+        from_recipe = _run_recipe_discovery_step()
+        from_guard = {path.relative_to(REPO_ROOT).as_posix() for path in _agent_files()}
+>       assert from_recipe == from_guard, (
+            "validate-agents' discovery and this guard's _agent_files must find "
+            "the same files. In recipe not guard: "
+            f"{sorted(from_recipe - from_guard)}; in guard not recipe: "
+            f"{sorted(from_guard - from_recipe)}"
+        )
+E       AssertionError: validate-agents' discovery and this guard's _agent_files must find the same files. In recipe not guard: []; in guard not recipe: ['context/agents/delegation-instructions.md', 'context/agents/multi-agent-patterns.md', 'context/agents/session-repair-knowledge.md', 'context/agents/session-storage-knowledge.md', 'examples/agents/file-responder.md', 'experiments/build-up/agents/coder.md', 'experiments/build-up/agents/explorer.md', 'experiments/build-up/agents/planner.md', 'experiments/build-up/agents/tester.md']
+E       assert {'agents/bug-...pert.md', ...} == {'agents/bug-...pert.md', ...}
+E         
+E         Extra items in the right set:
+E         'context/agents/multi-agent-patterns.md'
+E         'experiments/build-up/agents/coder.md'
+E         'experiments/build-up/agents/explorer.md'
+E         'context/agents/session-repair-knowledge.md'
+E         'experiments/build-up/agents/planner.md'...
+E         
+E         ...Full output truncated (5 lines hidden), use '-vv' to show
+
+tests/test_anchors_bundles_dry.py:377: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_exclusion_sets_agree_across_both_recipes_and_this_guard
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_agents_discovers_exactly_the_guards_agent_files
+2 failed in 0.09s

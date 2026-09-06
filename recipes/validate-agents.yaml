@@ -3,6 +3,38 @@
 # Validates agent definitions in a bundle repository for quality, tool access, and structural requirements
 #
 # CHANGELOG:
+# v1.6.0 - Agent discovery is now REPO-WIDE, matching the other two scopes
+#          in this repo instead of diverging from them. Phase 1 walked a
+#          hand-maintained list of three places (`agents/`,
+#          `behaviors/*/agents/`, `bundles/*/agents/`); it now globs
+#          `rglob("*/agents/*.md") + glob("agents/*.md")` and drops any path
+#          containing an excluded part -- the identical pair
+#          `validate-bundle-repo.yaml`'s `agent-description-validation` step
+#          uses, and the identical exclusion set
+#          `tests/test_anchors_bundles_dry.py`'s AGENT_SCAN_EXCLUDED_PARTS
+#          uses (its five plus `docs`).
+#        - WHY: the narrow walk was the ROOT CAUSE of a recurrence chain. On
+#          amplifier-foundation it discovered 23 agents while the other two
+#          scopes saw 32, so 11 `<example>` violators under
+#          `experiments/**/agents/` survived #341 (which swept root
+#          `agents/`) and ux32 (which swept `bundles/**`) -- and this recipe
+#          reported "23 found, 3 locations" the whole time, with no signal
+#          that other agent directories existed at all. A clean verdict that
+#          is silent about its own blind spot is worse than a noisy one.
+#        - Discovery output gained `location_counts` (per-directory counts),
+#          `scan_patterns` and `excluded_parts`; `location` is now DERIVED
+#          from each file's own parent directory rather than hardcoded, so a
+#          new `agents/` directory names itself in the report the first time
+#          it appears. `search_locations`, `agents_found` (with `path`,
+#          `relative_path`, `name`, `location`), `total_count` and `errors`
+#          keep their shape -- downstream steps are unchanged.
+#        - The report now MUST print the coverage line (total + every
+#          location with its count + the exclusion set) in both the executive
+#          summary and the metadata, so an under-count is visible in the
+#          output rather than silent.
+#        - Discovery only. No check, threshold, severity or verdict rule
+#          changed. On a repo whose agents all live in the three old
+#          locations, output is identical.
 # v1.5.1 - Prompt text caught up with the v1.4.0 example policy. The
 #          quick-approval and synthesize-report prompts still invited the
 #          model to offer "add <example> blocks" as optional polish, so a
@@ -142,6 +174,12 @@ description: |
   
   Produces a validation report with findings categorized by severity and actionable remediation.
   
+  **Discovery scope (v1.6.0):** every `agents/*.md` anywhere in the repo, excluding
+  `test-fixtures/`, `tests/`, `node_modules/`, `.git/`, `.venv/` and `docs/` -- the
+  same scope `validate-bundle-repo.yaml` and the repo-wide guard test use. The report
+  names every location it walked and the total it found, so under-coverage shows up in
+  the output instead of hiding behind a clean verdict.
+
   **v1.2.0 Improvements:**
   - Deterministic quality classification before LLM analysis
   - Explicit PASS thresholds - no more "always finding something"
@@ -150,7 +188,7 @@ description: |
   
   This recipe helps maintain agent quality across the Amplifier ecosystem by codifying
   the audit criteria discovered in manual reviews.
-version: "1.5.1"
+version: "1.6.0"
 author: "Amplifier Foundation Team"
 tags: ["agents", "validation", "quality", "audit", "tools", "descriptions"]
 
@@ -221,19 +259,60 @@ steps:
       import json
       from pathlib import Path
 
+      # --- Agent-discovery scope (v1.6.0) ------------------------------------
+      # This set is COPIED, not approximated, from the two places that already
+      # agree on it. Do not fork a third list here.
+      #
+      #   1. `recipes/validate-bundle-repo.yaml`, step `agent-description-
+      #      validation`: `EXCLUDED_DIRS = {"test-fixtures", "tests",
+      #      "node_modules", ".git", ".venv"}` over
+      #      `rglob("*/agents/*.md") + glob("agents/*.md")`.
+      #   2. `tests/test_anchors_bundles_dry.py`, `AGENT_SCAN_EXCLUDED_PARTS`
+      #      (added by lane 6phe): the same five plus `docs`, because `docs/`
+      #      holds frozen lane records that quote violations verbatim as
+      #      evidence and must never be rewritten.
+      #
+      # Before v1.6.0 this step walked only `agents/`, `behaviors/*/agents/`
+      # and `bundles/*/agents/` -- 23 files here, while the other two scopes
+      # saw 32. That asymmetry is the ROOT CAUSE of a recurrence chain: 11
+      # `<example>` violators under `experiments/**/agents/` survived both
+      # #341 (which swept root `agents/`) and ux32 (which swept `bundles/**`),
+      # because the recipe most people run never looked there, and reported a
+      # clean "23 found, 3 locations" while doing it.
+      EXCLUDED_PARTS = {
+          "test-fixtures",
+          "tests",
+          "node_modules",
+          ".git",
+          ".venv",
+          "docs",
+      }
+
+      # The glob pair, reported in the output so a reader can reproduce the scan.
+      SCAN_PATTERNS = ["<repo>/**/agents/*.md", "<repo>/agents/*.md"]
+
       def discover_agents(repo_path: str) -> dict:
-          """Discover all agent definition files in a repository."""
+          """Discover every agent definition file in a repository.
+
+          Repo-wide by design: any `agents/` directory at any depth, minus
+          EXCLUDED_PARTS. A location that is missing from this walk is a
+          location the validator cannot report on, so the walk must not be a
+          hand-maintained list of the places agents happened to live.
+          """
           results = {
               "phase": "discovery",
               "repo_path": repo_path,
               "agents_found": [],
               "total_count": 0,
               "search_locations": [],
+              "location_counts": {},
+              "scan_patterns": SCAN_PATTERNS,
+              "excluded_parts": sorted(EXCLUDED_PARTS),
               "errors": []
           }
 
           path = Path(repo_path).expanduser().resolve()
-          
+
           if not path.exists():
               results["errors"].append({
                   "type": "path_error",
@@ -242,57 +321,44 @@ steps:
               print(json.dumps(results))
               return results
 
-          # Direct agents/ directory
-          agents_dir = path / "agents"
-          if agents_dir.exists() and agents_dir.is_dir():
-              results["search_locations"].append(str(agents_dir))
-              for agent_file in agents_dir.glob("*.md"):
-                  results["agents_found"].append({
-                      "path": str(agent_file),
-                      "relative_path": str(agent_file.relative_to(path)),
-                      "name": agent_file.stem,
-                      "location": "agents/"
-                  })
+          # rglob("*/agents/*.md") reaches every nested agents/ directory;
+          # glob("agents/*.md") adds the repo-root one, which the rglob
+          # pattern's leading `*/` cannot match.
+          candidates = list(path.rglob("*/agents/*.md")) + list((path / "agents").glob("*.md"))
 
-          # Check behaviors/*/agents/ pattern
-          behaviors_dir = path / "behaviors"
-          if behaviors_dir.exists():
-              for behavior in behaviors_dir.iterdir():
-                  if behavior.is_dir():
-                      behavior_agents = behavior / "agents"
-                      if behavior_agents.exists() and behavior_agents.is_dir():
-                          results["search_locations"].append(str(behavior_agents))
-                          for agent_file in behavior_agents.glob("*.md"):
-                              results["agents_found"].append({
-                                  "path": str(agent_file),
-                                  "relative_path": str(agent_file.relative_to(path)),
-                                  "name": agent_file.stem,
-                                  "location": f"behaviors/{behavior.name}/agents/"
-                              })
+          seen = set()
+          for agent_file in sorted(candidates):
+              relative = agent_file.relative_to(path)
+              if EXCLUDED_PARTS & set(relative.parts):
+                  continue
+              resolved = agent_file.resolve()
+              if resolved in seen:
+                  continue
+              seen.add(resolved)
 
-          # Also check for standalone agent files in bundles/
-          bundles_dir = path / "bundles"
-          if bundles_dir.exists():
-              for bundle in bundles_dir.iterdir():
-                  if bundle.is_dir():
-                      bundle_agents = bundle / "agents"
-                      if bundle_agents.exists() and bundle_agents.is_dir():
-                          results["search_locations"].append(str(bundle_agents))
-                          for agent_file in bundle_agents.glob("*.md"):
-                              results["agents_found"].append({
-                                  "path": str(agent_file),
-                                  "relative_path": str(agent_file.relative_to(path)),
-                                  "name": agent_file.stem,
-                                  "location": f"bundles/{bundle.name}/agents/"
-                              })
+              # "location" is the containing directory, repo-relative, with a
+              # trailing slash -- e.g. "agents/", "bundles/anchors/agents/".
+              # Derived from the path rather than hardcoded, so a new agents/
+              # directory names itself in the report the first time it appears.
+              location = relative.parent.as_posix() + "/"
+              results["agents_found"].append({
+                  "path": str(agent_file),
+                  "relative_path": relative.as_posix(),
+                  "name": agent_file.stem,
+                  "location": location
+              })
+              results["location_counts"][location] = results["location_counts"].get(location, 0) + 1
 
+          results["search_locations"] = [str(path / loc) for loc in sorted(results["location_counts"])]
+          results["location_counts"] = dict(sorted(results["location_counts"].items()))
           results["total_count"] = len(results["agents_found"])
-          
+
           if results["total_count"] == 0:
               results["errors"].append({
                   "type": "no_agents",
                   "message": "No agent files found in repository",
-                  "searched": results["search_locations"] or ["agents/", "behaviors/*/agents/", "bundles/*/agents/"]
+                  "searched": SCAN_PATTERNS,
+                  "excluded_parts": sorted(EXCLUDED_PARTS)
               })
 
           print(json.dumps(results))
@@ -957,11 +1023,22 @@ steps:
     agent: "foundation:zen-architect"
     mode: "REVIEW"
     condition: "{{quality_classification.requires_llm_analysis}} == false"
-    depends_on: ["set-default-approval-summary"]
+    depends_on: ["set-default-approval-summary", "agent-discovery"]
     prompt: |
       All agents in this repository meet quality thresholds. Provide a brief approval summary.
 
       **Repository Path:** {{repo_path}}
+
+      **Discovery Coverage (v1.6.0 -- restate this, do not omit it):**
+      - Agents discovered: {{discovery_results.total_count}}
+      - Per-location counts: {{discovery_results.location_counts}}
+      - Scan patterns: {{discovery_results.scan_patterns}}
+      - Excluded parts: {{discovery_results.excluded_parts}}
+
+      A PASS is only meaningful alongside the scope it was reached over. An
+      approval that says "all agents pass" without saying WHICH agents were
+      looked at is exactly the shape that let 11 violators survive two
+      repo-wide sweeps.
 
       **Quality Classification Results:**
       ```json
@@ -995,6 +1072,9 @@ steps:
       ## ✅ PASS - All Agents Meet Quality Standards
       
       **Summary:** [1-2 sentences]
+
+      **Coverage:** [total] agents across [N] locations ([list them with
+      counts]); excluded [excluded_parts]
       
       **What's Done Well:**
       - [list 2-3 positive patterns]
@@ -1260,9 +1340,35 @@ steps:
       
       - **Overall Verdict**: [Select from above based on quality_level]
       - **Repository**: [path]
-      - **Agents Found**: X total
+      - **Agents Found**: X total across N locations
       - **Quality Breakdown**: X good, Y polish, Z needs_work, W critical
       - **Issues**: X errors, Y warnings, Z suggestions
+
+      ### Coverage (REQUIRED -- never omit, never summarise away)
+
+      Immediately after the bullets above, print the coverage block, taken
+      verbatim from `discovery_results`:
+
+      ```
+      Scanned: <scan_patterns>, excluding <excluded_parts>
+      Discovered: <total_count> agent files across <len(location_counts)> locations
+      ```
+
+      then a row per entry of `location_counts`, in the order given:
+
+      | Location | Agents |
+      |----------|--------|
+      | agents/  | 16     |
+
+      **Why this is mandatory:** a validator that under-counts silently is
+      worse than one that fails loudly. Before v1.6.0 this recipe walked
+      three hardcoded directories, reported "23 found, 3 locations" on a repo
+      that had 32 agent files in 6 locations, and gave a reader no way to
+      notice -- which is how 11 violators under `experiments/**/agents/`
+      survived two repo-wide sweeps. Printing the patterns, the exclusions,
+      the per-location counts and the total makes the scope auditable from
+      the report alone. Do NOT collapse this to a single number, and do NOT
+      drop locations that contributed zero findings.
 
       ## Quality Classification Summary
 
@@ -1345,7 +1451,14 @@ steps:
 
       ## Metadata
       - **Validated**: [timestamp]
-      - **Recipe**: validate-agents v1.5.1
+      - **Recipe**: validate-agents v1.6.0
+      - **Discovery scope**: repo-wide `agents/*.md`. State the
+        `scan_patterns` and the `excluded_parts` from `discovery_results`
+        verbatim.
+      - **Agents discovered**: `total_count` total across the locations in
+        `location_counts` -- list every location with its count again here,
+        so the metadata alone answers "what did this run actually look at?"
+        without the reader scrolling back.
       - **Quality Thresholds**: see
         `foundation:context/shared/description-authoring-principles.md`
         (canonical -- not restated here). Gates: no structural errors

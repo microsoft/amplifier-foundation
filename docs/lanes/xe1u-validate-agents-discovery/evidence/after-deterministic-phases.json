@@ -1,0 +1,88 @@
+{
+  "discovery": {
+    "phase": "discovery",
+    "repo_path": "/home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation",
+    "total_count": 32,
+    "search_locations": [
+      "/home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation/agents",
+      "/home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation/bundles/anchors-amp-dev/agents",
+      "/home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation/bundles/anchors/agents",
+      "/home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation/context/agents",
+      "/home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation/examples/agents",
+      "/home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation/experiments/build-up/agents"
+    ],
+    "location_counts": {
+      "agents/": 16,
+      "bundles/anchors-amp-dev/agents/": 1,
+      "bundles/anchors/agents/": 6,
+      "context/agents/": 4,
+      "examples/agents/": 1,
+      "experiments/build-up/agents/": 4
+    },
+    "scan_patterns": [
+      "<repo>/**/agents/*.md",
+      "<repo>/agents/*.md"
+    ],
+    "excluded_parts": [
+      ".git",
+      ".venv",
+      "docs",
+      "node_modules",
+      "test-fixtures",
+      "tests"
+    ],
+    "errors": []
+  },
+  "structural_summary": {
+    "total": 32,
+    "passed": 28,
+    "errors": 4,
+    "warnings": 1
+  },
+  "structural_findings": [
+    {
+      "path": "context/agents/delegation-instructions.md",
+      "errors": [
+        "NO_FRONTMATTER"
+      ],
+      "warnings": []
+    },
+    {
+      "path": "context/agents/multi-agent-patterns.md",
+      "errors": [
+        "NO_FRONTMATTER"
+      ],
+      "warnings": []
+    },
+    {
+      "path": "context/agents/session-repair-knowledge.md",
+      "errors": [
+        "NO_FRONTMATTER"
+      ],
+      "warnings": []
+    },
+    {
+      "path": "context/agents/session-storage-knowledge.md",
+      "errors": [
+        "NO_FRONTMATTER"
+      ],
+      "warnings": []
+    },
+    {
+      "path": "examples/agents/file-responder.md",
+      "errors": [],
+      "warnings": [
+        "NO_TOOLS_SECTION"
+      ]
+    }
+  ],
+  "quality_level": "critical",
+  "requires_llm_analysis": true,
+  "class_summary": {
+    "total": 32,
+    "good": 27,
+    "polish": 0,
+    "needs_work": 1,
+    "critical": 4
+  }
+}

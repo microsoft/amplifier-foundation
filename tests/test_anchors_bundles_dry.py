@@ -262,3 +262,121 @@ class TestAgentDescriptionsCarryNoExampleBlocks:
             "(description-authoring-principles.md V3, #340). Offenders: "
             + "; ".join(offenders)
         )
+
+
+# --- Discovery-scope parity (xe1u) -----------------------------------------
+# The three places in this repo that answer "which files are agent
+# definitions?" must give the SAME answer. When they did not, the cost was a
+# three-sweep recurrence: `validate-agents` walked three hardcoded directories
+# and found 23 agents; `validate-bundle-repo` and `_agent_files` above globbed
+# the repo and found 32 (45 before the `experiments/` deletion). The 11
+# `<example>` violators that lived in the 9-file difference survived #341 and
+# ux32 because the recipe most people run never looked at them -- and reported
+# a clean "23 found, 3 locations" the whole time.
+#
+# 6phe closed the gap in the guard; xe1u closed it in `validate-agents`
+# (v1.6.0). These tests are the tripwire that keeps it closed. A shared
+# discovery *implementation* was considered and declined -- see
+# `docs/lanes/xe1u-validate-agents-discovery/DONE-NOTE.md` -- so proven parity
+# is the mechanism standing in for it.
+VALIDATE_AGENTS_RECIPE = REPO_ROOT / "recipes" / "validate-agents.yaml"
+VALIDATE_BUNDLE_REPO_RECIPE = REPO_ROOT / "recipes" / "validate-bundle-repo.yaml"
+
+# `validate-bundle-repo` excludes the five; the guard and `validate-agents`
+# add `docs` on top, because `docs/` holds frozen lane records that quote
+# violations verbatim as evidence and must never be rewritten. That one
+# documented delta is asserted explicitly below rather than papered over --
+# it excludes zero files today (there is no `docs/**/agents/` directory), so
+# all three walks still return the same set.
+DOCUMENTED_EXCLUSION_DELTA = {"docs"}
+
+
+def _literal_set(text: str, name: str) -> list[set[str]]:
+    """Every `NAME = {...}` set literal in `text`, in source order."""
+    import ast
+
+    return [
+        set(ast.literal_eval(match.group(1)))
+        for match in re.finditer(rf"\b{name}\s*=\s*(\{{[^}}]*\}})", text)
+    ]
+
+
+def _run_recipe_discovery_step() -> set[str]:
+    """Execute `validate-agents`' agent-discovery step and return its findings.
+
+    Executed, not re-implemented. A test that reimplements the glob would pass
+    while the recipe diverged, which is the failure mode being guarded.
+    """
+    import json
+    import subprocess
+    import sys
+    import tempfile
+
+    lines = VALIDATE_AGENTS_RECIPE.read_text(encoding="utf-8").splitlines()
+    step = next(i for i, line in enumerate(lines) if line.strip() == '- id: "agent-discovery"')
+    start = next(
+        i
+        for i in range(step, len(lines))
+        if lines[i].strip() == "\"${AMPLIFIER_PYTHON:-python3}\" << 'EOF'"
+    )
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "EOF")
+    body = "\n".join(line[6:] for line in lines[start + 1 : end])
+    body = body.replace("{{repo_path}}", str(REPO_ROOT))
+
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+        handle.write(body)
+        script = handle.name
+    completed = subprocess.run(
+        [sys.executable, script], capture_output=True, text=True, check=True
+    )
+    payload = json.loads(completed.stdout)
+    return {agent["relative_path"] for agent in payload["agents_found"]}
+
+
+class TestDiscoveryScopeParity:
+    """One answer to "which files are agents?", across all three scopes."""
+
+    def test_exclusion_sets_agree_across_both_recipes_and_this_guard(self) -> None:
+        """A fourth exclusion list is how the first divergence started."""
+        agents_sets = _literal_set(
+            VALIDATE_AGENTS_RECIPE.read_text(encoding="utf-8"), "EXCLUDED_PARTS"
+        )
+        assert len(agents_sets) == 1, (
+            "validate-agents.yaml must declare exactly one EXCLUDED_PARTS set, "
+            f"found {len(agents_sets)}"
+        )
+        assert agents_sets[0] == AGENT_SCAN_EXCLUDED_PARTS, (
+            "validate-agents.yaml's EXCLUDED_PARTS must equal this module's "
+            f"AGENT_SCAN_EXCLUDED_PARTS. recipe={sorted(agents_sets[0])} "
+            f"guard={sorted(AGENT_SCAN_EXCLUDED_PARTS)}"
+        )
+
+        repo_sets = _literal_set(
+            VALIDATE_BUNDLE_REPO_RECIPE.read_text(encoding="utf-8"), "EXCLUDED_DIRS"
+        )
+        assert repo_sets, "validate-bundle-repo.yaml declares no EXCLUDED_DIRS set"
+        assert all(found == repo_sets[0] for found in repo_sets), (
+            "validate-bundle-repo.yaml's EXCLUDED_DIRS literals disagree with each "
+            f"other: {[sorted(found) for found in repo_sets]}"
+        )
+        assert AGENT_SCAN_EXCLUDED_PARTS - repo_sets[0] == DOCUMENTED_EXCLUSION_DELTA, (
+            "The only permitted difference between validate-bundle-repo's "
+            "EXCLUDED_DIRS and the wider scope is the documented "
+            f"{sorted(DOCUMENTED_EXCLUSION_DELTA)}. Actual extra: "
+            f"{sorted(AGENT_SCAN_EXCLUDED_PARTS - repo_sets[0])}"
+        )
+        assert not repo_sets[0] - AGENT_SCAN_EXCLUDED_PARTS, (
+            "validate-bundle-repo excludes something the wider scope does not: "
+            f"{sorted(repo_sets[0] - AGENT_SCAN_EXCLUDED_PARTS)}"
+        )
+
+    def test_validate_agents_discovers_exactly_the_guards_agent_files(self) -> None:
+        """Proven parity, by running the recipe's own step -- not asserted."""
+        from_recipe = _run_recipe_discovery_step()
+        from_guard = {path.relative_to(REPO_ROOT).as_posix() for path in _agent_files()}
+        assert from_recipe == from_guard, (
+            "validate-agents' discovery and this guard's _agent_files must find "
+            "the same files. In recipe not guard: "
+            f"{sorted(from_recipe - from_guard)}; in guard not recipe: "
+            f"{sorted(from_guard - from_recipe)}"
+        )
