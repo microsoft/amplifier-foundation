@@ -3,6 +3,18 @@
 # Validates agent definitions in a bundle repository for quality, tool access, and structural requirements
 #
 # CHANGELOG:
+# v1.5.1 - Prompt text caught up with the v1.4.0 example policy. The
+#          quick-approval and synthesize-report prompts still invited the
+#          model to offer "add <example> blocks" as optional polish, so a
+#          clean repo could be told to introduce the exact structural ERROR
+#          this recipe fails agents for. Both now forbid recommending
+#          <example>/<commentary> at any severity, and say why: an agent
+#          with none is in the REQUIRED shape, not missing a feature.
+#        - The report's quality table listed an "Examples" column rendered
+#          as OK/warn, which reads as "examples missing = warning" -- the
+#          pre-v1.4.0 polarity. Renamed to "No Examples" with OK/error and
+#          an explicit note on which way round it goes.
+#        - Prompt text only; no step, condition or logic change.
 # v1.5.0 - Portability: declare a schema_version 2 dependency manifest
 #          (contract recipe-dependency-manifest.v1). The four
 #          `agent: "foundation:zen-architect"` steps below previously
@@ -138,7 +150,7 @@ description: |
   
   This recipe helps maintain agent quality across the Amplifier ecosystem by codifying
   the audit criteria discovered in manual reviews.
-version: "1.5.0"
+version: "1.5.1"
 author: "Amplifier Foundation Team"
 tags: ["agents", "validation", "quality", "audit", "tools", "descriptions"]
 
@@ -967,6 +979,16 @@ steps:
       2. What's done well (patterns worth preserving)
       3. Any optional polish suggestions (NOT requirements - agents are already good)
 
+      **NEVER suggest adding `<example>` or `<commentary>` blocks.** Since
+      v1.4.0 they are rejected ENTIRELY, not merely capped
+      (description-authoring-principles.md V3/V6, enforced as a structural
+      ERROR by this same recipe). An agent whose description carries none is
+      in the REQUIRED shape -- it is not missing anything, and recommending
+      them here would tell an author to introduce the very error this recipe
+      would then fail them for. Absence of examples is never a polish item.
+      Where a trigger genuinely needs sharpening, state it as a decision rule
+      in the WHEN clause instead.
+
       Keep the response brief - this is the fast-track approval path.
       
       Format:
@@ -979,6 +1001,7 @@ steps:
       
       **Optional Polish (not required):**
       - [0-2 minor suggestions, or "None - agents are exemplary"]
+      - NEVER "add `<example>` blocks" or "add `<commentary>`" -- see above
     output: "approval_summary"
     timeout: 120
     on_error: "continue"
@@ -1243,9 +1266,16 @@ steps:
 
       ## Quality Classification Summary
 
-      | Agent | Quality | Triggers | Examples | Tools | Model Role | Description |
-      |-------|---------|----------|----------|-------|------------|-------------|
-      | name  | good/polish/needs_work/critical | ✅/⚠️ | ✅/⚠️ | ✅/⚠️ | ✅/⚠️/❌ | length |
+      | Agent | Quality | Triggers | No Examples | Tools | Model Role | Description |
+      |-------|---------|----------|-------------|-------|------------|-------------|
+      | name  | good/polish/needs_work/critical | ✅/⚠️ | ✅/❌ | ✅/⚠️ | ✅/⚠️/❌ | length |
+
+      In the "No Examples" column, ✅ means the description carries NO
+      `<example>`/`<commentary>` block (the required shape, from
+      has_examples == false) and ❌ means it carries one (a structural
+      ERROR). Do not invert this: a column that shows ⚠️ for an agent
+      WITHOUT examples reads as "examples missing", which is the pre-v1.4.0
+      policy.
 
       ## Model Role Coverage
 
@@ -1294,6 +1324,13 @@ steps:
 
       ### Suggestions (Consider) - LOW Priority
       Quality improvements for better LLM matching and discoverability.
+
+      **NEVER suggest adding `<example>` or `<commentary>` blocks**, at any
+      severity. Since v1.4.0 they are rejected entirely
+      (description-authoring-principles.md V3/V6) and are reported above as
+      structural ERRORS -- so recommending them here would contradict this
+      report's own Errors section. An agent with no examples is in the
+      required shape, not missing a feature.
       
       For each suggestion:
       ```
@@ -1308,7 +1345,7 @@ steps:
 
       ## Metadata
       - **Validated**: [timestamp]
-      - **Recipe**: validate-agents v1.5.0
+      - **Recipe**: validate-agents v1.5.1
       - **Quality Thresholds**: see
         `foundation:context/shared/description-authoring-principles.md`
         (canonical -- not restated here). Gates: no structural errors
