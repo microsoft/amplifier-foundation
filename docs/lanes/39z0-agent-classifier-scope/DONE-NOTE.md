@@ -160,6 +160,28 @@ narrowed with it.** Pinning the candidate set separately makes that unreachable.
 
 ---
 
+## CI — all six legs green, including the three Windows ones
+
+PR #365, run `34057350037` (`evidence/ci-checks.txt`):
+
+```
+Tests (ubuntu-latest,  Python 3.11)   pass
+Tests (ubuntu-latest,  Python 3.12)   pass
+Tests (ubuntu-latest,  Python 3.13)   pass
+Tests (windows-latest, Python 3.11)   pass     <-- red on xe1u's #364
+Tests (windows-latest, Python 3.12)   pass     <-- red on xe1u's #364
+Tests (windows-latest, Python 3.13)   pass     <-- red on xe1u's #364
+license/cla                           pass
+```
+
+**This is the Windows deliverable proved end to end**, on the real platform, by the same
+`TestDiscoveryScopeParity` that failed there with `assert set() == {...}` on #364.
+
+It also settles the local test failure below: **the ubuntu legs are fully green**, so
+`test_sources.py::TestFileSourceHandler::test_resolve_existing_file` fails only in this
+worktree's environment (a `/tmp` symlink that `resolve()` collapses), not in CI and not
+because of this branch.
+
 ## Suite
 
 `uv sync --extra grpc-adapter && uv run pytest tests/ -q` → **1 failed, 1834 passed, 3 skipped**
@@ -222,11 +244,11 @@ run is now the cheaper 3-step shape rather than v1.6.0's failing shape.
 |---|---|---|
 | 1 | Classifier keys on `meta:`, not directory name; `context/agents/*.md` correctly not-an-agent; **true agent count stated (28, measured)** | **DONE** |
 | 2 | Verdict returns to PASS with no threshold/severity/skip/exclusion change | **DONE with the finding reported** — FAIL eliminated (4 ERRORs → 0); lands on `⚠️ PASS WITH WARNINGS`, not bare PASS. Failing agent named: `examples/agents/file-responder.md` (`NO_TOOLS_SECTION`). **Left unfixed.** Nothing weakened. |
-| 3 | Windows parity — same file set as POSIX and as the guard, never empty, never a vacuous PASS | **DONE** — cause fixed (no path in Python source), reproduced and regression-tested on every platform, plus a loud exit on a bad path. CI verdict on the three Windows legs is the PR's to report. |
+| 3 | Windows parity — same file set as POSIX and as the guard, never empty, never a vacuous PASS; **CI green on all three Windows Python versions** | **DONE** — cause fixed (no path in Python source), reproduced and regression-tested on every platform, plus a loud exit on a bad path. **CI run `34057350037`: windows-latest 3.11 / 3.12 / 3.13 all pass**, where #364 was red. |
 | 4 | Both recipes re-run, before/after counts and verdicts quoted with run ids | **PARTIAL — see Spend.** Counts and verdicts: **DONE**, reproduced against both prior run ids exactly. A **new** paid `run-id`: **NOT-POSSIBLE at the $0.00 cap.** |
 | 5 | The parity guard survives | **DONE** — not deleted, not relaxed; 2 tests → 6, strictly stronger |
 | 6 | Any genuinely new finding REPORTED, not fixed and not suppressed | **DONE** — `examples/agents/file-responder.md` `NO_TOOLS_SECTION`, reported above, left unfixed |
-| 7 | Suite green, DRAFT PR, do not merge | **DONE** — 1 known pre-existing failure only; draft PR opened; not merged |
+| 7 | Suite green, DRAFT PR, do not merge | **DONE** — CI fully green (6/6 legs); the one local failure is environment-specific, not in CI. Draft PR #365; **not merged** |
 | 8 | DONE-NOTE at the lane artifact root, never the repo root | **DONE** — this file |
 
 ## Deviations and choices recorded
@@ -263,4 +285,5 @@ docs/lanes/39z0-agent-classifier-scope/
     evidence/parity-guards-FAIL-BEFORE.txt
     evidence/parity-guards-PASS-AFTER.txt
     evidence/full-suite.txt
+    evidence/ci-checks.txt
 ```
