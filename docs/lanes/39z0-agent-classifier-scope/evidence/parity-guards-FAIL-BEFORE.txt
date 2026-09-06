@@ -1,0 +1,25 @@
+      'agents/post-task-cleanup.md'...
+      
+      ...Full output truncated (24 lines hidden), use '-vv' to show
+/home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/tests/test_anchors_bundles_dry.py:457: AssertionError: validate-agents' discovery and this guard's _agent_files must find the same files. In recipe not guard: []; in guard not recipe: ['agents/bug-hunter.md', 'agents/bundle-design-expert.md', 'agents/ecosystem-expert.md', 'agents/explorer.md', 'agents/file-ops.md', 'agents/foundation-expert.md', 'agents/git-ops.md', 'agents/integration-specialist.md', 'agents/modular-builder.md', 'agents/post-task-cleanup.md', 'agents/security-guardian.md', 'agents/session-analyst.md', 'agents/shell-exec.md', 'agents/test-coverage.md', 'agents/web-research.md', 'agents/zen-architect.md', 'bundles/anchors-amp-dev/agents/amplifier-dev-expert.md', 'bundles/anchors/agents/architect.md', 'bundles/anchors/agents/builder.md', 'bundles/anchors/agents/debugger.md', 'bundles/anchors/agents/explorer.md', 'bundles/anchors/agents/git-ops.md', 'bundles/anchors/agents/researcher.md', 'examples/agents/file-responder.md', 'experiments/build-up/agents/coder.md', 'experiments/build-up/agents/explorer.md', 'experiments/build-up/agents/planner.md', 'experiments/build-up/agents/tester.md']
+E   KeyError: 'non_agents_found'
+/home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/tests/test_anchors_bundles_dry.py:479: KeyError: 'non_agents_found'
+E   AssertionError: The agent-discovery heredoc interpolates {{repo_path}} into Python source. A path inside a string literal is escape-processed, which silently destroys every Windows path. Offending line(s): ['discover_agents("{{repo_path}}")']. Pass it through $VALIDATE_AGENTS_REPO_PATH instead.
+    assert not ['discover_agents("{{repo_path}}")']
+/home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/tests/test_anchors_bundles_dry.py:518: AssertionError: The agent-discovery heredoc interpolates {{repo_path}} into Python source. A path inside a string literal is escape-processed, which silently destroys every Windows path. Offending line(s): ['discover_agents("{{repo_path}}")']. Pass it through $VALIDATE_AGENTS_REPO_PATH instead.
+E   AssertionError: discovery reported errors on an escape-shaped path: [{'type': 'path_error', 'message': 'Repository path does not exist: {{repo_path}}'}]
+    assert [{'message': ...'path_error'}] == []
+      
+      Left contains one more item: {'message': 'Repository path does not exist: {{repo_path}}', 'type': 'path_error'}
+      Use -v to get more diff
+/home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/tests/test_anchors_bundles_dry.py:553: AssertionError: discovery reported errors on an escape-shaped path: [{'type': 'path_error', 'message': 'Repository path does not exist: {{repo_path}}'}]
+E   Failed: DID NOT RAISE <class 'subprocess.CalledProcessError'>
+/home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/tests/test_anchors_bundles_dry.py:568: Failed: DID NOT RAISE <class 'subprocess.CalledProcessError'>
+=========================== short test summary info ============================
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_agents_scans_exactly_the_guards_candidate_files
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_agents_discovers_exactly_the_guards_agent_files
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_classifier_keys_on_meta_not_on_the_directory_name
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_discovery_never_interpolates_the_repo_path_into_python_source
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_discovery_survives_a_repo_path_containing_escape_sequences
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_discovery_fails_loudly_on_a_missing_repo_path
+6 failed, 1 passed in 0.40s

@@ -1,0 +1,12 @@
+=== BASELINE: v1.5.1 (5a9e07b, pre-xe1u) ===
+recipe version        : 1.5.1 (5a9e07b)
+candidates scanned    : <absent in v1.6.0>
+agents discovered     : 23
+Traceback (most recent call last):
+  File "/home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/docs/lanes/39z0-agent-classifier-scope/replay_deterministic_phases.py", line 128, in <module>
+    main()
+    ~~~~^^
+  File "/home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/docs/lanes/39z0-agent-classifier-scope/replay_deterministic_phases.py", line 113, in main
+    print(f"locations             : {len(discovery['location_counts'])} {discovery['location_counts']}")
+                                         ~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+KeyError: 'location_counts'

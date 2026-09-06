@@ -1,0 +1,17 @@
+<stdin>:1: SyntaxWarning: invalid escape sequence '\<'
+REPO PATH ON DISK : '/tmp/tmp_84u5pif/a\\test\\amplifier-foundation'
+EXISTS            : True
+AGENT FILES ON DISK: ['agents/probe.md', 'context/agents/notes.md']
+
+--- v1.6.0 (038801f) -- path interpolated into Python source ---
+exit code: 0
+agents_found     : []
+non_agents_found : <key absent in v1.6.0>
+errors           : [{'type': 'path_error', 'message': 'Repository path does not exist: /tmp/tmp_84u5pif/a\test\x07mplifier-foundation'}]
+
+--- v1.7.0 (this branch) -- path via VALIDATE_AGENTS_REPO_PATH ---
+exit code: 0
+agents_found     : ['agents/probe.md']
+non_agents_found : ['context/agents/notes.md']
+errors           : []
+

@@ -1,0 +1,12 @@
+........................................................................ [ 97%]
+......................................                                   [100%]
+=================================== FAILURES ===================================
+E   AssertionError: assert PosixPath('/tmp') == PosixPath('/tmp/tmpzcc85lg2')
+     +  where PosixPath('/tmp') = ResolvedSource(active_path=PosixPath('/tmp/tmpzcc85lg2/test.yaml'), source_root=PosixPath('/tmp')).source_root
+     +  and   PosixPath('/tmp/tmpzcc85lg2') = resolve()
+     +    where resolve = PosixPath('/tmp/tmpzcc85lg2').resolve
+     +      where PosixPath('/tmp/tmpzcc85lg2') = PosixPath('/tmp/tmpzcc85lg2/test.yaml').parent
+/home/bkrabach/dev/hw-model-performance/lanes/39z0-agent-classifier-scope/amplifier-foundation/tests/test_sources.py:73: AssertionError: assert PosixPath('/tmp') == PosixPath('/tmp/tmpzcc85lg2')
+=========================== short test summary info ============================
+FAILED tests/test_sources.py::TestFileSourceHandler::test_resolve_existing_file
+1 failed, 1834 passed, 3 skipped in 22.41s

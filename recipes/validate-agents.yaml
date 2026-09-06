@@ -3,6 +3,49 @@
 # Validates agent definitions in a bundle repository for quality, tool access, and structural requirements
 #
 # CHANGELOG:
+# v1.7.0 - Two defects in v1.6.0's widened discovery, both silent.
+#        - (1) CLASSIFICATION BY DIRECTORY NAME. v1.6.0 treated every
+#          `agents/*.md` as an agent, so `context/agents/*.md` -- four
+#          CONTEXT DOCUMENTS loaded as `context:` by `behaviors/agents.yaml`
+#          and `behaviors/tasks.yaml`, which nothing spawns and which carry
+#          no frontmatter because they are not agents -- produced four
+#          NO_FRONTMATTER ERRORs and flipped the verdict PASS -> FAIL on a
+#          repo with ZERO real agent defects. `context/agents/` merely
+#          collides on the word "agents".
+#          Discovery now classifies on `meta:` presence in the frontmatter --
+#          the LOADER's own contract ("Agents ARE bundles ... the only
+#          difference is the frontmatter key (`meta:` vs `bundle:`)",
+#          docs/AGENT_AUTHORING.md). This is a CLASSIFIER, not an exclusion:
+#          `EXCLUDED_PARTS` is untouched, every candidate is still walked,
+#          and every non-agent is reported BY NAME AND REASON in the new
+#          `non_agents_found` -- because an unexplained drop is the same
+#          silence that let 11 violators survive two sweeps.
+#          Frontmatter that exists but will not parse still counts as an
+#          agent, so Phase 2 gets to report the YAML error rather than the
+#          file vanishing from the run.
+#        - (2) THE GLOB FOUND NOTHING ON WINDOWS. Every Python heredoc
+#          interpolated `Path("{{repo_path}}")`, putting a filesystem path
+#          inside a Python string literal, where each backslash becomes an
+#          escape sequence. On a GitHub Actions Windows runner
+#          (`D:\a\<repo>\<repo>`), `\a` became `\x07`, the path did not
+#          exist, discovery printed `agents_found: []` and exited 0, and the
+#          run reached PASS having validated NOTHING -- strictly worse than
+#          the 23-of-32 under-count v1.6.0 replaced. The repo path now
+#          arrives through the environment (`VALIDATE_AGENTS_REPO_PATH`),
+#          which has no escape semantics, in all three affected steps
+#          (environment-check, agent-discovery, structural-validation).
+#          Discovery additionally EXITS NON-ZERO on a missing repo path
+#          instead of printing an empty payload and exiting 0, so no future
+#          path defect can reach a vacuous PASS quietly.
+#          Caught by `TestDiscoveryScopeParity` on Windows 3.11/3.12/3.13 --
+#          the guard v1.6.0 added. It is the only thing that noticed.
+#        - Output gained `candidates_scanned`, `non_agents_found`,
+#          `non_agent_count`, `non_agent_reasons`, `classifier` and
+#          `classifier_mode`. `agents_found`, `total_count`,
+#          `location_counts`, `search_locations`, `scan_patterns`,
+#          `excluded_parts` and `errors` keep their shape -- downstream
+#          steps are unchanged.
+#        - No threshold, severity, skip rule or exclusion set changed.
 # v1.6.0 - Agent discovery is now REPO-WIDE, matching the other two scopes
 #          in this repo instead of diverging from them. Phase 1 walked a
 #          hand-maintained list of three places (`agents/`,
@@ -180,6 +223,12 @@ description: |
   names every location it walked and the total it found, so under-coverage shows up in
   the output instead of hiding behind a clean verdict.
 
+  **Classification (v1.7.0):** a scanned file is an agent when its frontmatter declares
+  a top-level `meta:` key -- the loader's own contract, not the directory name. A file
+  under an `agents/` directory that declares no `meta:` (e.g. `context/agents/*.md`,
+  which are context documents loaded via `context:`) is reported as a NON-AGENT with its
+  reason, never silently dropped and never validated as an agent.
+
   **v1.2.0 Improvements:**
   - Deterministic quality classification before LLM analysis
   - Explicit PASS thresholds - no more "always finding something"
@@ -188,7 +237,7 @@ description: |
   
   This recipe helps maintain agent quality across the Amplifier ecosystem by codifying
   the audit criteria discovered in manual reviews.
-version: "1.6.0"
+version: "1.7.0"
 author: "Amplifier Foundation Team"
 tags: ["agents", "validation", "quality", "audit", "tools", "descriptions"]
 
@@ -204,16 +253,24 @@ steps:
   - id: "environment-check"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_AGENTS_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import sys
       from pathlib import Path
+
+      # v1.7.0: the repo path arrives through the ENVIRONMENT, never
+      # interpolated into Python source. `{{repo_path}}` inside a Python string
+      # literal makes every backslash an escape sequence, which silently
+      # destroys any Windows path. See the agent-discovery step for the
+      # measurement and the cost.
+      REPO_PATH = os.environ["VALIDATE_AGENTS_REPO_PATH"]
 
       results = {
           "phase": "environment",
           "python_version": sys.version,
           "yaml_available": False,
-          "repo_path": "{{repo_path}}",
+          "repo_path": REPO_PATH,
           "repo_exists": False,
           "errors": []
       }
@@ -230,14 +287,14 @@ steps:
           })
 
       # Check repo path exists
-      repo_path = Path("{{repo_path}}").expanduser().resolve()
+      repo_path = Path(REPO_PATH).expanduser().resolve()
       if repo_path.exists() and repo_path.is_dir():
           results["repo_exists"] = True
           results["repo_path_resolved"] = str(repo_path)
       else:
           results["errors"].append({
               "type": "path_error",
-              "message": f"Repository path does not exist or is not a directory: {{repo_path}}"
+              "message": f"Repository path does not exist or is not a directory: {REPO_PATH}"
           })
 
       print(json.dumps(results))
@@ -255,9 +312,42 @@ steps:
   - id: "agent-discovery"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_AGENTS_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
+      import re
+      import sys
       from pathlib import Path
+
+      try:
+          import yaml
+      except ImportError:
+          yaml = None
+
+      # --- How the repo path reaches this step (v1.7.0) ----------------------
+      # Through the ENVIRONMENT. It is never interpolated into Python source.
+      #
+      # `Path("{{repo_path}}")` -- what v1.6.0 and earlier wrote -- puts a
+      # filesystem path inside a Python string literal, so every backslash in
+      # it becomes an escape sequence. Measured on a GitHub Actions Windows
+      # runner, whose checkout lives at `D:\a\<repo>\<repo>`:
+      #
+      #     Path("D:\a\amplifier-foundation\amplifier-foundation")
+      #       -> 'D:\x07mplifier-foundation\x07mplifier-foundation'
+      #       -> .exists() is False
+      #
+      # Discovery then took the "path does not exist" branch, printed a valid
+      # JSON payload with `agents_found: []`, and exited 0. Structural
+      # validation saw 0 agents, 0 errors; quality classification called that
+      # "good"; the run reached the quick-approval path and reported PASS
+      # having validated nothing. A vacuous PASS is strictly worse than the
+      # 23-of-32 under-count v1.6.0 replaced -- the under-count at least
+      # checked 23 files. `TestDiscoveryScopeParity` is what caught this, on
+      # Windows 3.11/3.12/3.13, which is why that guard must not be relaxed.
+      #
+      # An environment variable has no escape semantics, so the path arrives
+      # byte-for-byte on every platform.
+      REPO_PATH = os.environ["VALIDATE_AGENTS_REPO_PATH"]
 
       # --- Agent-discovery scope (v1.6.0) ------------------------------------
       # This set is COPIED, not approximated, from the two places that already
@@ -291,6 +381,69 @@ steps:
       # The glob pair, reported in the output so a reader can reproduce the scan.
       SCAN_PATTERNS = ["<repo>/**/agents/*.md", "<repo>/agents/*.md"]
 
+      # --- What makes a file an agent (v1.7.0) -------------------------------
+      # `meta:` in the frontmatter -- the LOADER's own contract, quoted from
+      # `docs/AGENT_AUTHORING.md`:
+      #
+      #   "Agents ARE bundles. They use the same file format and are loaded via
+      #    load_bundle(). The only difference is the frontmatter key
+      #    (`meta:` vs `bundle:`)."
+      #
+      # NOT the directory name. v1.6.0 classified by directory name, so
+      # `context/agents/*.md` -- four CONTEXT DOCUMENTS loaded as `context:` by
+      # `behaviors/agents.yaml:44-45` and `behaviors/tasks.yaml:18-19`, which
+      # nothing spawns and which carry no frontmatter because they are not
+      # agents -- were validated as agents and produced four NO_FRONTMATTER
+      # ERRORs. That flipped the verdict PASS -> FAIL on a repo with zero real
+      # agent defects. The directory merely collides on the word "agents".
+      #
+      # A validator that cries wolf gets muted, which costs more than the
+      # coverage gap v1.6.0 closed -- so this is a classifier fix, NOT an
+      # exclusion. No path is skipped: `EXCLUDED_PARTS` is untouched, every
+      # candidate is still walked, and every non-agent is REPORTED by name and
+      # reason in `non_agents_found`. Silence is what let 11 violators survive
+      # two sweeps; this must not reintroduce it in a new place.
+      FRONTMATTER_RE = re.compile(r"\A---\s*\r?\n(.*?)\r?\n---\s*\r?\n", re.DOTALL)
+      # Fallback only, for an environment without PyYAML: a top-level `meta:`
+      # key at column 0 of the frontmatter block.
+      META_KEY_RE = re.compile(r"^meta\s*:", re.MULTILINE)
+
+      CLASSIFIER_MODE = "yaml" if yaml is not None else "regex-fallback"
+      CLASSIFIER = "frontmatter declares a top-level `meta:` key (docs/AGENT_AUTHORING.md)"
+
+      def classify(agent_file: Path) -> tuple:
+          """Return (is_agent, reason) for one candidate file.
+
+          Frontmatter that exists but cannot be parsed counts as an AGENT on
+          purpose: the file is plainly trying to be one, and structural
+          validation must get the chance to report the YAML error. Only a file
+          that cleanly declares no `meta:` is classified out.
+          """
+          try:
+              content = agent_file.read_text(encoding="utf-8")
+          except Exception as exc:
+              # Unreadable is not "not an agent" -- keep it, let Phase 2 say so.
+              return True, f"unreadable ({exc.__class__.__name__})"
+
+          match = FRONTMATTER_RE.match(content)
+          if not match:
+              return False, "no_frontmatter"
+
+          block = match.group(1)
+          if yaml is None:
+              return bool(META_KEY_RE.search(block)), (
+                  "meta_present" if META_KEY_RE.search(block) else "frontmatter_without_meta"
+              )
+
+          try:
+              frontmatter = yaml.safe_load(block)
+          except Exception:
+              return True, "unparseable_frontmatter"
+
+          if isinstance(frontmatter, dict) and "meta" in frontmatter:
+              return True, "meta_present"
+          return False, "frontmatter_without_meta"
+
       def discover_agents(repo_path: str) -> dict:
           """Discover every agent definition file in a repository.
 
@@ -298,6 +451,10 @@ steps:
           EXCLUDED_PARTS. A location that is missing from this walk is a
           location the validator cannot report on, so the walk must not be a
           hand-maintained list of the places agents happened to live.
+
+          Candidates are then CLASSIFIED by `meta:` presence, not by where they
+          live. Both numbers are reported: what was scanned, and what was
+          judged an agent.
           """
           results = {
               "phase": "discovery",
@@ -308,6 +465,12 @@ steps:
               "location_counts": {},
               "scan_patterns": SCAN_PATTERNS,
               "excluded_parts": sorted(EXCLUDED_PARTS),
+              "classifier": CLASSIFIER,
+              "classifier_mode": CLASSIFIER_MODE,
+              "candidates_scanned": 0,
+              "non_agents_found": [],
+              "non_agent_count": 0,
+              "non_agent_reasons": {},
               "errors": []
           }
 
@@ -319,7 +482,11 @@ steps:
                   "message": f"Repository path does not exist: {repo_path}"
               })
               print(json.dumps(results))
-              return results
+              # Exit LOUD. Printing an empty-but-valid payload and exiting 0 is
+              # exactly how the Windows escape bug reached a PASS verdict having
+              # validated nothing. A bad repo path is a run-ending condition,
+              # not a finding about the repo.
+              sys.exit(1)
 
           # rglob("*/agents/*.md") reaches every nested agents/ directory;
           # glob("agents/*.md") adds the repo-root one, which the rglob
@@ -335,12 +502,24 @@ steps:
               if resolved in seen:
                   continue
               seen.add(resolved)
+              results["candidates_scanned"] += 1
 
               # "location" is the containing directory, repo-relative, with a
               # trailing slash -- e.g. "agents/", "bundles/anchors/agents/".
               # Derived from the path rather than hardcoded, so a new agents/
               # directory names itself in the report the first time it appears.
               location = relative.parent.as_posix() + "/"
+
+              is_agent, reason = classify(agent_file)
+              if not is_agent:
+                  results["non_agents_found"].append({
+                      "relative_path": relative.as_posix(),
+                      "location": location,
+                      "reason": reason
+                  })
+                  results["non_agent_reasons"][reason] = results["non_agent_reasons"].get(reason, 0) + 1
+                  continue
+
               results["agents_found"].append({
                   "path": str(agent_file),
                   "relative_path": relative.as_posix(),
@@ -352,19 +531,26 @@ steps:
           results["search_locations"] = [str(path / loc) for loc in sorted(results["location_counts"])]
           results["location_counts"] = dict(sorted(results["location_counts"].items()))
           results["total_count"] = len(results["agents_found"])
+          results["non_agent_count"] = len(results["non_agents_found"])
+          results["non_agent_reasons"] = dict(sorted(results["non_agent_reasons"].items()))
 
           if results["total_count"] == 0:
               results["errors"].append({
                   "type": "no_agents",
-                  "message": "No agent files found in repository",
+                  "message": (
+                      "No agent files found in repository "
+                      f"({results['candidates_scanned']} candidate file(s) scanned, "
+                      f"{results['non_agent_count']} classified as non-agents)"
+                  ),
                   "searched": SCAN_PATTERNS,
-                  "excluded_parts": sorted(EXCLUDED_PARTS)
+                  "excluded_parts": sorted(EXCLUDED_PARTS),
+                  "classifier": CLASSIFIER
               })
 
           print(json.dumps(results))
           return results
 
-      discover_agents("{{repo_path}}")
+      discover_agents(REPO_PATH)
       EOF
     output: "discovery_results"
     parse_json: true
@@ -381,10 +567,15 @@ steps:
   - id: "structural-validation"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_AGENTS_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       from pathlib import Path
+
+      # v1.7.0: through the environment, never a Python string literal --
+      # see the agent-discovery step for what interpolating it costs on Windows.
+      REPO_PATH = os.environ["VALIDATE_AGENTS_REPO_PATH"]
 
       try:
           import yaml
@@ -464,7 +655,7 @@ steps:
           return bundle_tools
       
       # Pre-load bundle-level tool definitions
-      bundle_level_tools = get_bundle_level_tools("{{repo_path}}")
+      bundle_level_tools = get_bundle_level_tools(REPO_PATH)
       
       def parse_agent_frontmatter(file_path: str) -> dict:
           """Parse YAML frontmatter from an agent markdown file."""
@@ -1030,15 +1221,24 @@ steps:
       **Repository Path:** {{repo_path}}
 
       **Discovery Coverage (v1.6.0 -- restate this, do not omit it):**
+      - Candidate files scanned: {{discovery_results.candidates_scanned}}
       - Agents discovered: {{discovery_results.total_count}}
       - Per-location counts: {{discovery_results.location_counts}}
       - Scan patterns: {{discovery_results.scan_patterns}}
       - Excluded parts: {{discovery_results.excluded_parts}}
 
+      **Classification (v1.7.0 -- restate this too):**
+      - Classifier: {{discovery_results.classifier}}
+      - Non-agent files: {{discovery_results.non_agent_count}}
+        ({{discovery_results.non_agent_reasons}})
+      - Which ones: {{discovery_results.non_agents_found}}
+
       A PASS is only meaningful alongside the scope it was reached over. An
       approval that says "all agents pass" without saying WHICH agents were
       looked at is exactly the shape that let 11 violators survive two
-      repo-wide sweeps.
+      repo-wide sweeps. The same applies to the files the classifier set
+      aside: name them, so a file wrongly judged not-an-agent is visible
+      rather than silently unvalidated.
 
       **Quality Classification Results:**
       ```json
@@ -1351,7 +1551,10 @@ steps:
 
       ```
       Scanned: <scan_patterns>, excluding <excluded_parts>
-      Discovered: <total_count> agent files across <len(location_counts)> locations
+      Candidates: <candidates_scanned> files matched the scan
+      Classified as agents: <total_count> across <len(location_counts)> locations
+      Classified as NON-agents: <non_agent_count> (<non_agent_reasons>)
+      Classifier: <classifier>
       ```
 
       then a row per entry of `location_counts`, in the order given:
@@ -1359,6 +1562,22 @@ steps:
       | Location | Agents |
       |----------|--------|
       | agents/  | 16     |
+
+      **Then, if `non_agent_count` > 0, a NON-AGENTS table (REQUIRED --**
+      **never omit it, never fold it into a single number):**
+
+      | File | Reason not an agent |
+      |------|---------------------|
+      | context/agents/multi-agent-patterns.md | no_frontmatter |
+
+      Take every row verbatim from `non_agents_found`. These files matched the
+      scan and were then judged NOT to be agents because their frontmatter
+      declares no `meta:` key (v1.7.0 -- the loader's own contract, see
+      `docs/AGENT_AUTHORING.md`). Naming them is what makes the classifier
+      auditable: a real agent that lost its `meta:` block would appear in this
+      table instead of vanishing from the run, which is the failure mode a
+      classifier can otherwise introduce. Do NOT present them as errors --
+      they are correctly-excluded non-agents.
 
       **Why this is mandatory:** a validator that under-counts silently is
       worse than one that fails loudly. Before v1.6.0 this recipe walked
@@ -1451,7 +1670,7 @@ steps:
 
       ## Metadata
       - **Validated**: [timestamp]
-      - **Recipe**: validate-agents v1.6.0
+      - **Recipe**: validate-agents v1.7.0
       - **Discovery scope**: repo-wide `agents/*.md`. State the
         `scan_patterns` and the `excluded_parts` from `discovery_results`
         verbatim.
@@ -1459,6 +1678,11 @@ steps:
         `location_counts` -- list every location with its count again here,
         so the metadata alone answers "what did this run actually look at?"
         without the reader scrolling back.
+      - **Classification**: state `candidates_scanned`, `classifier` and
+        `non_agent_count` verbatim, and repeat every entry of
+        `non_agents_found` with its reason. "N files matched the scan, M were
+        agents, K were not, and here is which" is the whole point -- a bare
+        agent count cannot be audited.
       - **Quality Thresholds**: see
         `foundation:context/shared/description-authoring-principles.md`
         (canonical -- not restated here). Gates: no structural errors
