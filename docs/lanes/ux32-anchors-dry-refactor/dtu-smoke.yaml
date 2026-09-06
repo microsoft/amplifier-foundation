@@ -1,0 +1,93 @@
+# DTU smoke profile for the anchors / anchors-amp-dev DRY refactor (item ux32).
+#
+# One container, both bundles, pinned to the lane branch on the PUBLIC origin --
+# so the fetch path exercised here is the production one (git+https + a
+# #subdirectory= fragment into a content-hashed cache), not a local worktree
+# override. That is the point of the smoke: the host checks already proved the
+# refactor works when the bundle is a directory on disk; this proves it when the
+# bundle is a git checkout the CLI resolved by itself.
+#
+# Two providers wired, cheapest-first (haiku at priority 0, terra at 1), and NO
+# routing matrix -- the standard eval container mounts `routing: matrix: openai`,
+# which routes delegate sub-work to sol and would turn a $0.05 smoke into a
+# multi-dollar one.
+#
+# Secrets are LITERAL ${VAR} refs (quoted heredoc), expanded at provider-mount
+# time from the env forwarded via `passthrough`. Nothing is embedded here.
+#
+# Launch:
+#   amplifier-digital-twin launch docs/lanes/ux32-anchors-dry-refactor/dtu-smoke.yaml --name ux32-bundle-smoke
+name: ux32-bundle-smoke
+description: anchors + anchors-amp-dev smoke, both pinned to lane/ux32-anchors-dry-refactor.
+
+base:
+  image: ubuntu:24.04
+  config:
+    limits.cpu: "4"
+    limits.memory: "8GiB"
+
+passthrough:
+  allow_external: true
+  services:
+    - name: openai-key
+      key_env: OPENAI_API_KEY
+    - name: openai-base
+      key_env: OPENAI_BASE_URL
+    - name: anthropic-key
+      key_env: ANTHROPIC_API_KEY
+    - name: anthropic-base
+      key_env: ANTHROPIC_BASE_URL
+
+provision:
+  setup_cmds:
+    - apt-get update && apt-get install -y git curl ca-certificates jq
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - uv tool install git+https://github.com/microsoft/amplifier
+    - |
+      mkdir -p /root/.amplifier
+      cat > /root/.amplifier/settings.yaml <<'EOF'
+      bundle:
+        active: anchors-branch
+        added:
+          anchors-branch: git+https://github.com/microsoft/amplifier-foundation@lane/ux32-anchors-dry-refactor#subdirectory=bundles/anchors/bundle.md
+          ampdev-branch: git+https://github.com/microsoft/amplifier-foundation@lane/ux32-anchors-dry-refactor#subdirectory=bundles/anchors-amp-dev/bundle.md
+      config:
+        providers:
+        - config:
+            api_key: ${ANTHROPIC_API_KEY}
+            base_url: ${ANTHROPIC_BASE_URL}
+            default_model: claude-haiku-4-5
+            enable_prompt_caching: 'true'
+            priority: 0
+          id: haiku
+          module: provider-anthropic
+          source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
+        - config:
+            api_key: ${OPENAI_API_KEY}
+            base_url: ${OPENAI_BASE_URL}
+            default_model: gpt-5.6-terra
+            enable_long_context: 'false'
+            priority: 1
+            reasoning_effort: medium
+          id: terra
+          module: provider-openai
+          source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
+        overrides:
+          tool-bash:
+            config:
+              safety_profile: permissive
+      EOF
+      echo "settings.yaml written ($(wc -l < /root/.amplifier/settings.yaml) lines)"
+    # Warm the cache and force the lazy provider install so the readiness probe
+    # is not racing a cold install.
+    - 'amplifier run "Say exactly: warmup-ok" || true'
+
+update:
+  cmds:
+    - 'amplifier run "Say exactly: warmup-ok" || true'
+
+readiness:
+  - name: amplifier-installed
+    command: amplifier --version
+  - name: branch-bundle-cached
+    command: "ls -d /root/.amplifier/cache/amplifier-foundation-* >/dev/null 2>&1"
