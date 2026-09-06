@@ -3,13 +3,25 @@ bundle:
   name: foundation
   version: 2.1.2
   description: |
-    Foundation bundle with enhanced delegate tool.
-    
-    Features:
-    - Two-parameter context inheritance (context_depth + context_scope)
-    - Session resume (use full session_id from delegate calls)
-    - Fixed tool inheritance (explicit declarations always honored)
+    The standard Amplifier foundation with the enhanced delegate tool for
+    agent orchestration.
+
+    Key features:
+    - Delegate tool: two-parameter context control (context_depth + context_scope)
+      - context_depth: HOW MUCH to inherit -- "none" | "recent" | "all"
+      - context_scope: WHICH content to include -- "conversation" | "agents" | "full"
+    - Session resume: continue agent sessions with the full session_id returned
+      by a delegate call
+    - Tool inheritance: explicit agent declarations are always honored
     - Multi-agent collaboration patterns
+    - MCP support: Model Context Protocol integration. To use MCP servers,
+      create `.amplifier/mcp.json` with an "mcpServers" object mapping a server
+      name to its {"url": "..."} entry.
+
+    NOTE: this bundle is composed as a ROOT, so everything below the frontmatter
+    is sent to the model as system instruction (docs/BUNDLE_GUIDE.md). Bundle
+    documentation belongs here in `description` (metadata, never sent), never in
+    the body. The body is the single @mention of the shared instruction file.
 
 includes:
   # Ecosystem expert behaviors (provides @amplifier: and @core: namespaces)
@@ -85,42 +97,5 @@ agents:
     - foundation:web-research
     - foundation:zen-architect
 ---
-
-# Foundation Bundle v2.0
-
-This bundle provides the standard Amplifier foundation with the enhanced delegate tool for agent orchestration.
-
-## Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **Delegate tool** | Two-parameter context control (depth + scope) |
-| **Session resume** | Continue agent sessions with full session_id |
-| **Tool inheritance** | Explicit declarations always honored |
-| **MCP support** | Model Context Protocol integration (configure via mcp.json) |
-
-## Delegate Tool
-
-```python
-# Context depth: HOW MUCH to inherit
-context_depth: "none" | "recent" | "all"
-
-# Context scope: WHICH content to include
-context_scope: "conversation" | "agents" | "full"
-```
-
-## MCP Configuration
-
-To use MCP servers, create `.amplifier/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "your-server": {
-      "url": "https://example.com/mcp"
-    }
-  }
-}
-```
 
 @foundation:context/shared/common-system-base.md
