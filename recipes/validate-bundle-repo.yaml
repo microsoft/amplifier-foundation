@@ -1,9 +1,71 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.12.0
+# Repository-Wide Bundle Validator Recipe v3.13.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.13.0 - THE VALIDATOR COULD NOT FAIL ON A BROKEN AGENT AT ALL.
+#          `agent-description-validation`'s `extract_description()` returned
+#          an EMPTY STRING for six different conditions -- unreadable file,
+#          absent frontmatter, unparseable YAML, non-mapping frontmatter,
+#          non-mapping `meta:`, absent description -- and for a genuinely
+#          empty description too. An empty string then passed every check
+#          cleanly: 0 tokens is under budget, and "" contains no <example>
+#          and no <commentary>. A real agent whose frontmatter was MISSING OR
+#          MALFORMED was reported as checked and clean.
+#          That is worse than an inaccurate count. This repo's
+#          `agents_checked: 32, errors: []` was quoted as evidence that its
+#          agents were clean -- and on this class of problem the number could
+#          not have been anything else. A validator that returns "0 errors"
+#          because it cannot see the error class is worse than one that
+#          reports the gap.
+#          Every condition now has its own status and its own ERROR:
+#          `agent_frontmatter_invalid` (the file is broken) and
+#          `agent_description_missing` (no usable description).
+#        - CLASSIFIER, adopted from validate-agents v1.7.0 BYTE-FOR-BYTE.
+#          Files under an `agents/` directory are classified by `meta:`
+#          presence -- the loader's own contract (docs/AGENT_AUTHORING.md) --
+#          not by the directory name. `context/agents/*.md` are context
+#          documents loaded via `context:`; counting them inflated
+#          `agents_checked` to 32 where the true agent count is 28.
+#          Recipe steps are self-contained heredocs with no import mechanism,
+#          so textual identity is the strongest available single-sourcing;
+#          `TestDiscoveryScopeParity` fails the build if the two copies
+#          differ by one byte, or if they classify this repo differently.
+#          Nothing is dropped silently: every non-agent is named with its
+#          reason in `non_agents_found` (lane 39z0 F4).
+#        - THE WINDOWS DEFECT, in all TEN Python steps of this recipe.
+#          Every one wrote `repo_path = "{{repo_path}}"` -- a filesystem path
+#          inside a Python string literal, where each backslash becomes an
+#          escape sequence. A GitHub Actions Windows checkout at
+#          `D:\a\<repo>\<repo>` parsed `\a` as `\x07`; the path did not
+#          exist, the walk found nothing, and the step reported a clean
+#          result over ZERO files. The path now arrives through the
+#          environment (`VALIDATE_BUNDLE_REPO_PATH`), which has no escape
+#          semantics. Lane 39z0 measured this in validate-agents; the same
+#          line was still here, ten times.
+#        - THE SAME PATTERN, CROSS-CHECKED across this recipe's other
+#          extractors. Two more instances found and fixed, one confirmed safe:
+#            * `behavior-reference-hygiene`'s `extract_frontmatter_yaml()`
+#              returned a bare `{}` for every failure, and `{}` satisfies both
+#              of that step's checks vacuously -- so a behavior file with
+#              broken frontmatter counted toward `behaviors_checked` and
+#              passed. Now `behavior_frontmatter_invalid` (ERROR).
+#            * `mode-validation`'s `extract_frontmatter()` did not falsely
+#              pass -- it silently DROPPED. A mode whose frontmatter broke
+#              stopped being validated with nothing in the output to say so.
+#              Now `mode_frontmatter_invalid` (ERROR) for a broken one, and
+#              `non_modes_found` names every file classified out.
+#            * `parse_yaml_bundle()` (standalone-completeness) already returns
+#              an explicit `{"error": "No YAML frontmatter found"}` -- safe,
+#              unchanged.
+#        - A DEAD ERROR CHANNEL, closed. quality-classification read
+#          `behavior_reference_hygiene.warnings` but never its `errors`. The
+#          step emitted none before this version, so nothing was lost -- but a
+#          validator with an unread error channel is one append away from
+#          losing a real finding silently, which is this version's whole
+#          subject. Both are now read, at their own severities.
+#
 # v3.12.0 - Portability: declare a schema_version 2 dependency manifest
 #          (contract recipe-dependency-manifest.v1). The five
 #          `agent: "foundation:zen-architect"` steps below previously
@@ -399,7 +461,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.12.0"
+version: "3.13.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -625,12 +687,18 @@ steps:
   - id: "packaging-check"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import sys
       from pathlib import Path
 
-      repo_path = "{{repo_path}}"
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      repo_path = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
 
       result = {
           "phase": "packaging_check",
@@ -755,13 +823,19 @@ steps:
   - id: "module-dep-resolvability-check"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       import sys
       from pathlib import Path
 
-      repo_path = "{{repo_path}}"
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      repo_path = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
       published_raw = """{{published_distributions}}"""
 
       result = {
@@ -998,14 +1072,20 @@ steps:
     type: "bash"
     condition: "{{packaging_check.has_pyproject}} == true"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import subprocess
       import sys
       import tempfile
       from pathlib import Path
 
-      repo_path = "{{repo_path}}"
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      repo_path = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
       env_check = json.loads('''{{env_check}}''')
 
       result = {
@@ -1167,8 +1247,9 @@ steps:
   - id: "repo-discovery"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       from pathlib import Path
 
       def estimate_tokens(content: str) -> int:
@@ -1296,7 +1377,12 @@ steps:
           print(json.dumps(results))
           return results
 
-      discover_bundles("{{repo_path}}")
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      discover_bundles(os.environ["VALIDATE_BUNDLE_REPO_PATH"])
       EOF
     output: "discovery_results"
     parse_json: true
@@ -1678,8 +1764,9 @@ steps:
   - id: "behavior-hygiene-validation"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       import sys
       from pathlib import Path
@@ -1969,7 +2056,12 @@ steps:
           print(json.dumps(results))
           return results
 
-      validate_behaviors("{{repo_path}}")
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      validate_behaviors(os.environ["VALIDATE_BUNDLE_REPO_PATH"])
       EOF
     output: "behavior_hygiene_results"
     parse_json: true
@@ -1998,13 +2090,19 @@ steps:
   - id: "behavior-reference-hygiene"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       import sys
       from pathlib import Path
 
-      repo_path = "{{repo_path}}"
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      repo_path = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
       path = Path(repo_path).resolve()
       behaviors_dir = path / "behaviors"
 
@@ -2038,18 +2136,44 @@ steps:
                   result["_name_fallback"] = m.group(1).strip().strip('"').strip("'")
               return result
 
-      def extract_frontmatter_yaml(path: Path) -> dict:
-          """Read a bundle file and return its parsed YAML dict."""
+      # --- Why this returns a STATUS (v3.13.0) -------------------------------
+      # The same defect v3.13.0 fixes in `agent-description-validation`, found
+      # by the cross-check that item asked for: EVERY failure here -- unreadable
+      # file, absent frontmatter, unparseable YAML -- returned a bare `{}`, and
+      # `{}` satisfies both checks below vacuously (`get_bundle_name({})` is
+      # None, `{}.get("includes", [])` is empty). A behavior file with broken
+      # frontmatter was therefore counted in `behaviors_checked` and reported
+      # clean. One instance is a bug; the pattern is the finding.
+      def extract_frontmatter_yaml(path: Path) -> tuple:
+          """Return (status, data). `status` is "ok" only when YAML parsed."""
           try:
-              content = path.read_text()
-              if path.suffix == ".md":
-                  match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
-                  yaml_text = match.group(1) if match else ""
-              else:
-                  yaml_text = content
-              return parse_yaml(yaml_text)
+              content = path.read_text(encoding="utf-8", errors="replace")
           except Exception:
-              return {}
+              return "unreadable", {}
+
+          if path.suffix == ".md":
+              match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+              if not match:
+                  return "no_frontmatter", {}
+              yaml_text = match.group(1)
+          else:
+              yaml_text = content
+
+          try:
+              data = parse_yaml(yaml_text)
+          except Exception:
+              return "unparseable_frontmatter", {}
+
+          if not isinstance(data, dict):
+              return "frontmatter_not_a_mapping", {}
+          return "ok", data
+
+      FRONTMATTER_FIXES = {
+          "unreadable": "The file could not be read as text. Fix the encoding or the permissions.",
+          "no_frontmatter": "Add a `---` YAML frontmatter block declaring `bundle:`.",
+          "unparseable_frontmatter": "The frontmatter block is not valid YAML. Fix the YAML syntax.",
+          "frontmatter_not_a_mapping": "The frontmatter must be a YAML mapping.",
+      }
 
       def get_bundle_name(data: dict) -> str | None:
           """Extract bundle name from parsed YAML data."""
@@ -2076,14 +2200,34 @@ steps:
 
       # ── Read root bundle name (prerequisite for Check B) ─────────────────
       root_bundle_name: str | None = None
+      root_statuses: dict = {}
       for root_filename in ("bundle.md", "bundle.yaml"):
           root_file = path / root_filename
           if root_file.exists():
-              root_data = extract_frontmatter_yaml(root_file)
+              root_status, root_data = extract_frontmatter_yaml(root_file)
+              root_statuses[root_filename] = root_status
               root_bundle_name = get_bundle_name(root_data)
               if root_bundle_name:
                   break
       results["root_bundle_name"] = root_bundle_name
+      results["root_bundle_frontmatter_statuses"] = root_statuses
+
+      # A root bundle that exists but could not be read is NOT "no root bundle".
+      # Check B silently degrades to a no-op when root_bundle_name is None, so
+      # the reason has to be visible or the collision check disappears quietly.
+      if root_bundle_name is None and any(s != "ok" for s in root_statuses.values()):
+          broken = sorted(f"{name} ({status})" for name, status in root_statuses.items() if status != "ok")
+          results["errors"].append({
+              "behavior": None,
+              "type": "root_bundle_frontmatter_invalid",
+              "severity": "ERROR",
+              "message": (
+                  f"Root bundle file(s) exist but their frontmatter could not be "
+                  f"read: {', '.join(broken)}. The root/behavior name-collision "
+                  "check below cannot run at all."
+              ),
+              "fix": "Fix the root bundle's YAML frontmatter."
+          })
 
       # ── Collect behavior files ─────────────────────────────────────────────
       behavior_files: list[Path] = []
@@ -2111,7 +2255,27 @@ steps:
               "issues": []
           }
 
-          data = extract_frontmatter_yaml(behavior_path)
+          status, data = extract_frontmatter_yaml(behavior_path)
+          detail["frontmatter_status"] = status
+          if status != "ok":
+              # Before v3.13.0 this file reached both checks below with an
+              # empty dict and passed them both, while still counting toward
+              # `behaviors_checked`.
+              results["errors"].append({
+                  "behavior": behavior_name,
+                  "type": "behavior_frontmatter_invalid",
+                  "severity": "ERROR",
+                  "message": (
+                      f"Behavior '{behavior_name}' ({behavior_path.name}): frontmatter "
+                      f"could not be read ({status}) -- neither hygiene check below "
+                      "could run against it. Before v3.13.0 it passed both."
+                  ),
+                  "fix": FRONTMATTER_FIXES[status]
+              })
+              detail["issues"].append("behavior_frontmatter_invalid")
+              results["behavior_details"].append(detail)
+              continue
+
           behavior_bundle_name = get_bundle_name(data)
           detail["bundle_name"] = behavior_bundle_name
 
@@ -2175,6 +2339,7 @@ steps:
       results["summary"] = {
           "behaviors_checked": results["behaviors_checked"],
           "root_bundle_name": root_bundle_name,
+          "errors": len(results["errors"]),
           "warnings": len(results["warnings"]),
           "cross_repo_root_refs": sum(
               1 for w in results["warnings"] if w["type"] == "cross_repo_root_bundle_ref"
@@ -3084,18 +3249,28 @@ steps:
   - id: "mode-validation"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       import sys
       from pathlib import Path
 
-      repo_path = "{{repo_path}}"
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      repo_path = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
       path = Path(repo_path).resolve()
 
       results = {
           "phase": "mode_validation",
           "modes_checked": 0,
+          "candidates_scanned": 0,
+          "non_modes_found": [],
+          "non_mode_count": 0,
+          "non_mode_reasons": {},
           "errors": [],
           "warnings": [],
           "mode_details": []
@@ -3142,16 +3317,32 @@ steps:
                   result["mode"] = {"name": m3.group(1).strip()}
               return result
 
+      # --- Why this returns a STATUS (v3.13.0) -------------------------------
+      # Third instance of the pattern the item asked me to cross-check. This
+      # one did not falsely PASS a file -- it silently DROPPED it. An
+      # unreadable file, an absent frontmatter block and an unparseable one all
+      # returned a bare `{}`, and the caller's `if "mode" not in fm: continue`
+      # discarded all three with nothing in the output to say so. A real mode
+      # whose frontmatter broke simply stopped being validated, and
+      # `modes_checked` shrank without explanation. Lane 39z0 F4 named exactly
+      # this risk for the agent classifier and mitigated it by REPORTING every
+      # excluded file by name and reason; the same mitigation applies here.
       def extract_frontmatter(file_path):
-          """Return (parsed_yaml_dict, raw_file_content)."""
+          """Return (status, parsed_yaml_dict, raw_file_content)."""
           try:
               content = file_path.read_text(encoding="utf-8", errors="replace")
-              match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
-              if match:
-                  return parse_yaml(match.group(1)), content
-              return {}, content
           except Exception:
-              return {}, ""
+              return "unreadable", {}, ""
+          match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+          if not match:
+              return "no_frontmatter", {}, content
+          try:
+              fm = parse_yaml(match.group(1))
+          except Exception:
+              return "unparseable_frontmatter", {}, content
+          if not isinstance(fm, dict):
+              return "frontmatter_not_a_mapping", {}, content
+          return "ok", fm, content
 
       def estimate_tokens(s):
           return len(s) // 4 if isinstance(s, str) else 0
@@ -3228,22 +3419,71 @@ steps:
           return mentions
 
       # ── Walk mode files ────────────────────────────────────────────────────
-      for mode_file in sorted(unique_mode_files):
-          fm, _ = extract_frontmatter(mode_file)
+      MODE_FRONTMATTER_FIXES = {
+          "unreadable": "The file could not be read as text. Fix the encoding or the permissions.",
+          "unparseable_frontmatter": "The frontmatter block is not valid YAML. Fix the YAML syntax.",
+          "frontmatter_not_a_mapping": "The frontmatter must be a YAML mapping.",
+          "mode_not_a_mapping": "`mode:` must be a mapping with at least a `name:` key.",
+          "mode_without_name": "Add `name:` under `mode:` -- a mode with no name cannot be activated.",
+      }
 
-          # Skip if no mode: block — probably unrelated markdown
-          if "mode" not in fm:
+      for mode_file in sorted(unique_mode_files):
+          rel_path = str(mode_file.relative_to(path))
+          results["candidates_scanned"] += 1
+          status, fm, _ = extract_frontmatter(mode_file)
+
+          # A file under modes/ whose frontmatter EXISTS but will not parse is
+          # plainly trying to be a mode. Report it; never skip it. (The same
+          # rule validate-agents' classifier applies to `meta:`: unparseable
+          # frontmatter counts as the thing it is trying to be, so the
+          # validator gets to report the YAML error.)
+          if status in ("unreadable", "unparseable_frontmatter", "frontmatter_not_a_mapping"):
+              results["errors"].append({
+                  "mode": None,
+                  "file": rel_path,
+                  "type": "mode_frontmatter_invalid",
+                  "severity": "ERROR",
+                  "message": (
+                      f"{rel_path}: frontmatter could not be read ({status}) -- "
+                      "neither mode check could run against it. Before v3.13.0 "
+                      "this file was skipped silently."
+                  ),
+                  "fix": MODE_FRONTMATTER_FIXES[status]
+              })
               continue
 
-          mode_section = fm.get("mode", {})
-          if not isinstance(mode_section, dict):
+          # `mode:` present but malformed is also a mode, and also an error.
+          mode_section = fm.get("mode")
+          if "mode" in fm and not isinstance(mode_section, dict):
+              status = "mode_not_a_mapping"
+          elif "mode" in fm and not str(mode_section.get("name", "")).strip():
+              status = "mode_without_name"
+          if status in ("mode_not_a_mapping", "mode_without_name"):
+              results["errors"].append({
+                  "mode": None,
+                  "file": rel_path,
+                  "type": "mode_frontmatter_invalid",
+                  "severity": "ERROR",
+                  "message": (
+                      f"{rel_path}: declares a `mode:` block but it is unusable "
+                      f"({status}). Before v3.13.0 this file was skipped silently."
+                  ),
+                  "fix": MODE_FRONTMATTER_FIXES[status]
+              })
+              continue
+
+          # A .md under modes/ that CLEANLY declares no `mode:` block is not a
+          # mode -- the same shape as context/agents/*.md under the agent
+          # classifier. Classified out, and REPORTED by name, so a mode that
+          # lost its block appears here instead of vanishing from the run.
+          if status == "no_frontmatter" or "mode" not in fm:
+              reason = "no_frontmatter" if status == "no_frontmatter" else "frontmatter_without_mode"
+              results["non_modes_found"].append({"file": rel_path, "reason": reason})
+              results["non_mode_reasons"][reason] = results["non_mode_reasons"].get(reason, 0) + 1
               continue
 
           mode_name = str(mode_section.get("name", "")).strip()
-          if not mode_name:
-              continue
 
-          rel_path = str(mode_file.relative_to(path))
           results["modes_checked"] += 1
           detail = {
               "mode": mode_name,
@@ -3328,13 +3568,18 @@ steps:
 
           results["mode_details"].append(detail)
 
+      results["non_mode_count"] = len(results["non_modes_found"])
+      results["non_mode_reasons"] = dict(sorted(results["non_mode_reasons"].items()))
+
       results["passed"] = len(results["errors"]) == 0
       results["summary"] = {
           "modes_checked": results["modes_checked"],
+          "candidates_scanned": results["candidates_scanned"],
+          "non_mode_count": results["non_mode_count"],
           "errors": len(results["errors"]),
           "warnings": len(results["warnings"]),
           "clean_modes": results["modes_checked"] - len(
-              set(e["mode"] for e in results["errors"])
+              set(e["mode"] for e in results["errors"] if e.get("mode"))
           )
       }
 
@@ -3366,24 +3611,70 @@ steps:
   #
   # Check B -- <example>/<commentary> detection (description-authoring-
   # principles.md V3)
-  #   WARNING: any <commentary> tag present (commentary_present)
-  #   WARNING: more than 2 <example> blocks (too_many_examples)
+  #   ERROR: any <commentary> tag present (commentary_present, v3.10.0)
+  #   ERROR: any <example> block present (example_block_present, v3.10.0)
+  #
+  # Check C -- The description could be READ AT ALL (v3.13.0)
+  #   Checks A and B are only meaningful against a description that was
+  #   actually obtained. Before v3.13.0 every failure to obtain one -- an
+  #   unreadable file, absent frontmatter, unparseable YAML, a non-mapping
+  #   `meta:`, an absent `description:` -- produced the same empty string,
+  #   which then satisfied both checks: 0 tokens is under budget, and "" has
+  #   no <example> and no <commentary>. So a MALFORMED AGENT PASSED CLEAN and
+  #   this step structurally could not fail on it.
+  #   ERROR agent_frontmatter_invalid   -- the file is broken
+  #   ERROR agent_description_missing   -- no usable description
+  #   Each error carries `reason` naming the precise condition.
+  #
+  # Scope -- who is an agent (v3.13.0)
+  #   Candidates: <repo>/**/agents/*.md + <repo>/agents/*.md, minus
+  #   EXCLUDED_DIRS. Candidates are then CLASSIFIED by `meta:` presence --
+  #   the loader's own contract (docs/AGENT_AUTHORING.md) -- using the
+  #   classifier copied byte-for-byte from validate-agents v1.7.0.
+  #   `agents_checked` counts CLASSIFIED AGENTS; `candidates_scanned` counts
+  #   the walk. Every non-agent is named with its reason in
+  #   `non_agents_found`, so a real agent that lost its `meta:` block appears
+  #   there instead of vanishing from the run.
   # ============================================================================
 
   - id: "agent-description-validation"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       from pathlib import Path
 
-      repo_path = "{{repo_path}}"
-      path = Path(repo_path).resolve()
+      try:
+          import yaml
+      except ImportError:
+          yaml = None
+
+      # --- How the repo path reaches this step (v3.13.0) ---------------------
+      # Through the ENVIRONMENT. It is never interpolated into Python source.
+      #
+      # `repo_path = "{{repo_path}}"` -- what v3.12.0 and every earlier version
+      # wrote -- puts a filesystem path inside a Python string literal, where
+      # every backslash becomes an escape sequence. On a GitHub Actions Windows
+      # runner, whose checkout lives at `D:\a\<repo>\<repo>`, `\a` parses as
+      # `\x07`: the path does not exist, `rglob` walks nothing, and this step
+      # prints `agents_checked: 0, errors: []` and exits 0 -- a clean PASS over
+      # zero files. Lane 39z0 measured exactly that failure in
+      # `validate-agents` (CI red on windows-latest 3.11/3.12/3.13); the same
+      # line was still here, in every Python step of this recipe.
+      #
+      # An environment variable has no escape semantics, so the path arrives
+      # byte-for-byte on every platform.
+      REPO_PATH = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
 
       results = {
           "phase": "agent_description_validation",
           "agents_checked": 0,
+          "candidates_scanned": 0,
+          "non_agents_found": [],
+          "non_agent_count": 0,
+          "non_agent_reasons": {},
           "errors": [],
           "warnings": [],
           "agent_details": []
@@ -3391,43 +3682,239 @@ steps:
 
       EXCLUDED_DIRS = {"test-fixtures", "tests", "node_modules", ".git", ".venv"}
 
-      agent_files = list(path.rglob("*/agents/*.md")) + list(path.glob("agents/*.md"))
+      # --- What makes a file an agent (v3.13.0) ------------------------------
+      # The block below is COPIED BYTE-FOR-BYTE from `validate-agents.yaml`'s
+      # `agent-discovery` step (v1.7.0, lane 39z0). It is not a second
+      # classifier and must never become one: recipe steps are self-contained
+      # heredocs with no import mechanism between them, so textual identity is
+      # the strongest available form of single-sourcing. It is pinned by
+      # `TestDiscoveryScopeParity::test_both_recipes_carry_the_same_classifier_source`,
+      # which fails the build the moment the two copies differ by one byte.
+      #
+      # Classifying by DIRECTORY NAME is what this replaces. `context/agents/*.md`
+      # are context documents loaded as `context:` by `behaviors/agents.yaml`
+      # and `behaviors/tasks.yaml`; nothing spawns them, and they carry no
+      # frontmatter because they are not agents. Counting them made
+      # `agents_checked` 32 where the true agent count is 28.
+      FRONTMATTER_RE = re.compile(r"\A---\s*\r?\n(.*?)\r?\n---\s*\r?\n", re.DOTALL)
+      # Fallback only, for an environment without PyYAML: a top-level `meta:`
+      # key at column 0 of the frontmatter block.
+      META_KEY_RE = re.compile(r"^meta\s*:", re.MULTILINE)
+
+      CLASSIFIER_MODE = "yaml" if yaml is not None else "regex-fallback"
+      CLASSIFIER = "frontmatter declares a top-level `meta:` key (docs/AGENT_AUTHORING.md)"
+
+      def classify(agent_file: Path) -> tuple:
+          """Return (is_agent, reason) for one candidate file.
+
+          Frontmatter that exists but cannot be parsed counts as an AGENT on
+          purpose: the file is plainly trying to be one, and structural
+          validation must get the chance to report the YAML error. Only a file
+          that cleanly declares no `meta:` is classified out.
+          """
+          try:
+              content = agent_file.read_text(encoding="utf-8")
+          except Exception as exc:
+              # Unreadable is not "not an agent" -- keep it, let Phase 2 say so.
+              return True, f"unreadable ({exc.__class__.__name__})"
+
+          match = FRONTMATTER_RE.match(content)
+          if not match:
+              return False, "no_frontmatter"
+
+          block = match.group(1)
+          if yaml is None:
+              return bool(META_KEY_RE.search(block)), (
+                  "meta_present" if META_KEY_RE.search(block) else "frontmatter_without_meta"
+              )
+
+          try:
+              frontmatter = yaml.safe_load(block)
+          except Exception:
+              return True, "unparseable_frontmatter"
+
+          if isinstance(frontmatter, dict) and "meta" in frontmatter:
+              return True, "meta_present"
+          return False, "frontmatter_without_meta"
+
+      # --- Why the description extractor returns a STATUS (v3.13.0) ----------
+      # v3.12.0's `extract_description()` returned `""` for SIX different
+      # conditions -- unreadable file, absent frontmatter, unparseable YAML,
+      # non-mapping frontmatter, non-mapping `meta:`, and absent description --
+      # and returned `""` for a genuinely empty description too. All seven
+      # collapsed into one indistinguishable value, and an empty string then
+      # passed every check below cleanly: 0 tokens is under budget, and `""`
+      # contains no `<example>` and no `<commentary>`.
+      #
+      # So the validator that is supposed to be the STRICTER of the two could
+      # not fail on this class of defect AT ALL. A real agent whose frontmatter
+      # was malformed or missing was reported as checked and clean. That is
+      # worse than an inaccurate count: `agents_checked: 32, errors: []` was
+      # quoted as evidence that this repo's agents were clean, and on this
+      # exact class of problem the number could not have been anything else.
+      #
+      # Every one of those conditions now has its own status and its own ERROR.
+      DESCRIPTION_FIXES = {
+          "unreadable": "The file could not be read as UTF-8 text. Fix the encoding or the permissions.",
+          "no_frontmatter": "Add a `---` YAML frontmatter block declaring meta.name and meta.description (docs/AGENT_AUTHORING.md).",
+          "no_yaml_module": "PyYAML is not importable in the environment running this recipe, so the description could not be parsed. Install PyYAML; do not read this as a clean agent.",
+          "unparseable_frontmatter": "The frontmatter block is not valid YAML. Fix the YAML syntax.",
+          "frontmatter_not_a_mapping": "The frontmatter must be a YAML mapping with a top-level `meta:` key.",
+          "meta_not_a_mapping": "`meta:` must be a mapping with `name:` and `description:` keys.",
+          "no_description_key": "Add `description:` under `meta:` -- it is the text every delegating model reads.",
+          "description_not_a_string": "`meta.description` must be a string.",
+          "description_empty": "`meta.description` is present but empty. Write the description (see foundation:context/shared/description-authoring-principles.md).",
+      }
+
+      # Statuses that mean "this file is broken" as opposed to "this file has
+      # no usable description". Both are ERRORs; the split lets the report say
+      # which of the two a reader is looking at.
+      FRONTMATTER_STATUSES = {
+          "unreadable",
+          "no_frontmatter",
+          "no_yaml_module",
+          "unparseable_frontmatter",
+          "frontmatter_not_a_mapping",
+          "meta_not_a_mapping",
+      }
+
+      def extract_description(agent_file: Path) -> tuple:
+          """Return (status, description) for one classified agent file.
+
+          `status` is "ok" only when a non-empty string description was
+          actually read. Every other outcome names itself, so no failure can
+          be mistaken for an agent whose description happens to be short.
+          """
+          try:
+              content = agent_file.read_text(encoding="utf-8", errors="replace")
+          except Exception:
+              return "unreadable", ""
+
+          match = FRONTMATTER_RE.match(content)
+          if not match:
+              # Unreachable for a CLASSIFIED agent -- a file with no
+              # frontmatter is classified out above and reported by name in
+              # non_agents_found. Kept as a real branch rather than an
+              # assumption: a future classifier change must not be able to
+              # make this path silently pass again.
+              return "no_frontmatter", ""
+
+          if yaml is None:
+              return "no_yaml_module", ""
+
+          try:
+              fm = yaml.safe_load(match.group(1))
+          except Exception:
+              return "unparseable_frontmatter", ""
+
+          if not isinstance(fm, dict):
+              return "frontmatter_not_a_mapping", ""
+
+          meta = fm.get("meta")
+          if not isinstance(meta, dict):
+              return "meta_not_a_mapping", ""
+          if "description" not in meta:
+              return "no_description_key", ""
+
+          description = meta.get("description")
+          if not isinstance(description, str):
+              return "description_not_a_string", ""
+          if not description.strip():
+              return "description_empty", description
+          return "ok", description
+
+      path = Path(REPO_PATH).expanduser().resolve()
+
+      if not path.exists():
+          # LOUD -- but through the ERROR channel, not a non-zero exit.
+          #
+          # This step is `on_error: continue`, and quality-classification
+          # treats an unparseable payload as {"passed": True, "skipped": True}.
+          # Exiting non-zero here would therefore HIDE a bad repo path behind a
+          # clean skip -- the same vacuous PASS this version exists to remove,
+          # reached through a different door. An ERROR entry reaches
+          # `critical_count` and moves the verdict, which is where loud belongs
+          # in this recipe. (`validate-agents`' discovery step exits 1 instead;
+          # it has no `on_error: continue` above it, so there the exit IS the
+          # loud path.)
+          results["errors"].append({
+              "type": "agent_scan_path_error",
+              "file": None,
+              "severity": "ERROR",
+              "message": (
+                  f"Repository path does not exist: {REPO_PATH} -- no agent file "
+                  "was scanned. This is a run-ending condition, not a finding "
+                  "that the repo's agents are clean."
+              ),
+              "fix": "Check the repo_path context variable passed to this recipe."
+          })
+          results["passed"] = False
+          results["summary"] = {
+              "agents_checked": 0,
+              "candidates_scanned": 0,
+              "non_agent_count": 0,
+              "errors": len(results["errors"]),
+              "warnings": 0
+          }
+          print(json.dumps(results))
+          raise SystemExit(0)
+
+      agent_files = list(path.rglob("*/agents/*.md")) + list((path / "agents").glob("*.md"))
       seen = set()
       unique_agent_files = []
-      for f in agent_files:
-          if EXCLUDED_DIRS & set(f.parts):
+      for f in sorted(agent_files):
+          if EXCLUDED_DIRS & set(f.relative_to(path).parts):
               continue
           resolved = f.resolve()
           if resolved not in seen:
               seen.add(resolved)
               unique_agent_files.append(f)
 
-      def extract_description(agent_file: Path) -> str:
-          try:
-              content = agent_file.read_text(encoding="utf-8", errors="replace")
-          except Exception:
-              return ""
-          match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
-          if not match:
-              return ""
-          try:
-              import yaml
-              fm = yaml.safe_load(match.group(1))
-          except Exception:
-              return ""
-          if not isinstance(fm, dict):
-              return ""
-          meta = fm.get("meta", {})
-          if not isinstance(meta, dict):
-              return ""
-          description = meta.get("description", "")
-          return description if isinstance(description, str) else str(description or "")
+      for agent_file in unique_agent_files:
+          rel_path = agent_file.relative_to(path).as_posix()
+          results["candidates_scanned"] += 1
 
-      for agent_file in sorted(unique_agent_files):
-          description = extract_description(agent_file)
-          rel_path = str(agent_file.relative_to(path))
+          # Nothing is dropped silently. Every non-agent is named with its
+          # reason, so a real agent that lost its `meta:` block appears in the
+          # NON-AGENTS table instead of vanishing from the run (lane 39z0 F4).
+          is_agent, reason = classify(agent_file)
+          if not is_agent:
+              results["non_agents_found"].append({
+                  "file": rel_path,
+                  "reason": reason
+              })
+              results["non_agent_reasons"][reason] = results["non_agent_reasons"].get(reason, 0) + 1
+              continue
+
           results["agents_checked"] += 1
-          detail = {"file": rel_path, "issues": []}
+          status, description = extract_description(agent_file)
+          detail = {"file": rel_path, "description_status": status, "issues": []}
+
+          if status != "ok":
+              error_type = (
+                  "agent_frontmatter_invalid"
+                  if status in FRONTMATTER_STATUSES
+                  else "agent_description_missing"
+              )
+              results["errors"].append({
+                  "type": error_type,
+                  "file": rel_path,
+                  "reason": status,
+                  "severity": "ERROR",
+                  "message": (
+                      f"{rel_path}: agent description could not be read ({status}). "
+                      "Before v3.13.0 this file passed clean with an empty "
+                      "description."
+                  ),
+                  "fix": DESCRIPTION_FIXES[status]
+              })
+              detail["issues"].append(error_type)
+              detail["description_tokens"] = None
+              results["agent_details"].append(detail)
+              # The budget and example checks below are meaningless against an
+              # empty string -- running them would re-manufacture the clean
+              # pass this branch exists to prevent.
+              continue
 
           token_count = len(description) // 4
           detail["description_tokens"] = token_count
@@ -3508,9 +3995,24 @@ steps:
 
           results["agent_details"].append(detail)
 
+      results["non_agent_count"] = len(results["non_agents_found"])
+      results["non_agent_reasons"] = dict(sorted(results["non_agent_reasons"].items()))
+      results["classifier"] = CLASSIFIER
+      results["classifier_mode"] = CLASSIFIER_MODE
+
+      # `skipped` is set ONLY when the scan reached no candidate file at all.
+      # A repo whose candidates were all classified out is NOT skipped -- it
+      # has a NON-AGENTS table to show, and hiding that behind "skipped" would
+      # be the silence this version removes.
+      if results["candidates_scanned"] == 0:
+          results["skipped"] = True
+          results["skip_reason"] = "no agents/*.md candidate files found in this repository"
+
       results["passed"] = len(results["errors"]) == 0
       results["summary"] = {
           "agents_checked": results["agents_checked"],
+          "candidates_scanned": results["candidates_scanned"],
+          "non_agent_count": results["non_agent_count"],
           "errors": len(results["errors"]),
           "warnings": len(results["warnings"])
       }
@@ -3555,12 +4057,18 @@ steps:
   - id: "readme-install-convention-check"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       from pathlib import Path
 
-      repo_path = "{{repo_path}}"
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      repo_path = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
       root_bundle_repo = "{{root_bundle_repo}}".strip().lower() == "true"
       path = Path(repo_path).resolve()
 
@@ -3716,8 +4224,9 @@ steps:
   - id: "body-instruction-check"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import sys
       from pathlib import Path
 
@@ -3742,7 +4251,12 @@ steps:
           }))
           sys.exit(0)
 
-      repo_path = "{{repo_path}}"
+      # The repo path arrives through the ENVIRONMENT, never interpolated into
+      # this Python source: a path inside a string literal is escape-processed,
+      # so a Windows checkout at `D:\a\<repo>\<repo>` became `D:\x07...`,
+      # did not exist, and the step reported a clean result over zero files
+      # (v3.13.0 -- the defect lane 39z0 measured in validate-agents).
+      repo_path = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
       path = Path(repo_path).resolve()
 
       results = {
@@ -4227,7 +4741,20 @@ steps:
                   })
 
           # v3.5.0: Behavior reference hygiene warnings
+          # v3.13.0: ...and its ERRORS, which were never read at all. The step
+          # emitted none before this version, so the channel was dead rather
+          # than lossy -- but a validator with an unread error channel is one
+          # `results["errors"].append(...)` away from losing a real finding
+          # silently, which is the class of defect this version exists to close.
           if not behavior_ref_hygiene.get("skipped", False):
+              for error in behavior_ref_hygiene.get("errors", []):
+                  results["behavior_reference_hygiene_issues"].append({
+                      "type": error.get("type"),
+                      "behavior": error.get("behavior"),
+                      "message": error.get("message"),
+                      "severity": "ERROR",
+                      "fix": error.get("fix", "")
+                  })
               for warning in behavior_ref_hygiene.get("warnings", []):
                   results["behavior_reference_hygiene_issues"].append({
                       "type": warning.get("type"),
@@ -4344,6 +4871,7 @@ steps:
           critical_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"])  # v3.6.0
           critical_count += len([i for i in results["agent_description_issues"] if i.get("severity") == "ERROR"])  # Phase 2.8
           critical_count += len([i for i in results["module_dep_issues"] if i.get("severity") == "ERROR"])  # v3.11.0
+          critical_count += len([i for i in results["behavior_reference_hygiene_issues"] if i.get("severity") == "ERROR"])  # v3.13.0
 
           # Recipe validation impact
           recipe_quality = recipe_validation.get("quality_level", "good")
@@ -4360,7 +4888,7 @@ steps:
           warning_count += len([i for i in results["hygiene_issues"] if i.get("severity") == "WARNING"])
           warning_count += len([i for i in results["context_sink_issues"] if i.get("severity") == "WARNING"])
           warning_count += len([i for i in results["experiment_issues"] if i.get("severity") == "WARNING"])
-          warning_count += len(results["behavior_reference_hygiene_issues"])  # v3.5.0: all are WARNING
+          warning_count += len([i for i in results["behavior_reference_hygiene_issues"] if i.get("severity") == "WARNING"])  # v3.13.0: was `all are WARNING`
           warning_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"])  # v3.6.0
           warning_count += len(results["body_instruction_issues"])  # v3.7.0: all are WARNING
           warning_count += len([i for i in results["agent_description_issues"] if i.get("severity") == "WARNING"])  # Phase 2.8
@@ -4406,7 +4934,8 @@ steps:
               "context_sink_warnings": len([i for i in results["context_sink_issues"] if i.get("severity") == "WARNING"]),
               "tool_placement_suggestions": len(results["tool_placement_issues"]),
               "structure_lint_errors": len(results["structure_lint_issues"]),
-              "behavior_ref_hygiene_warnings": len(results["behavior_reference_hygiene_issues"]),  # v3.5.0
+              "behavior_ref_hygiene_errors": len([i for i in results["behavior_reference_hygiene_issues"] if i.get("severity") == "ERROR"]),  # v3.13.0
+              "behavior_ref_hygiene_warnings": len([i for i in results["behavior_reference_hygiene_issues"] if i.get("severity") == "WARNING"]),  # v3.5.0
               "mode_validation_errors": len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"]),  # v3.6.0
               "mode_validation_warnings": len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"]),  # v3.6.0
               "body_instruction_warnings": len(results["body_instruction_issues"]),  # v3.7.0
@@ -5236,7 +5765,16 @@ steps:
 
       ### Mode Validation (v3.6.0)
       Use mode_validation_results to report:
-      - modes_checked: total number of modes/*.md files with a mode: block
+      - modes_checked: total number of modes/*.md files with a usable mode: block
+      - If `non_mode_count` > 0, a NON-MODES table (REQUIRED -- v3.13.0),
+        every row verbatim from `non_modes_found`:
+        | File | Reason |
+        These files matched the modes/ scan and were not validated as modes.
+        Before v3.13.0 they were skipped with nothing in the output to say so,
+        so a mode whose frontmatter broke silently stopped being checked.
+      - For each ERROR of type mode_frontmatter_invalid (v3.13.0):
+        - [ERROR] the message verbatim -- the file declares or attempts a
+          `mode:` block that could not be read; neither mode check ran on it.
       - For each ERROR of type mode_description_excessive (>800 tokens):
         - [ERROR] "Mode '<name>' description is N tokens — must shorten to <500"
         - Refer author to foundation:context/shared/description-authoring-principles.md (V5)
@@ -5264,7 +5802,29 @@ steps:
 
       ### Agent Description Budget Validation (Phase 2.8)
       Use agent_description_validation_results to report:
-      - agents_checked: total number of agents/*.md files with a meta.description
+      - Report BOTH numbers, never only one (v3.13.0):
+        "N files matched the agent scan, M were classified as agents by `meta:`
+        presence, K were not." Take them verbatim from `candidates_scanned`,
+        `agents_checked` and `non_agent_count`.
+      - agents_checked: number of files CLASSIFIED AS AGENTS (a top-level
+        `meta:` key in the frontmatter -- docs/AGENT_AUTHORING.md). NOT the
+        number of files under an agents/ directory: before v3.13.0 this counted
+        every candidate, including context documents that are not agents.
+      - **Then, if `non_agent_count` > 0, a NON-AGENTS table (REQUIRED --**
+        **never omit it, never summarise it as a count alone):**
+        | File | Reason |
+        Take every row verbatim from `non_agents_found`. These files matched
+        the scan and were NOT validated as agents. Printing them is what keeps
+        the classifier auditable: a real agent that lost its `meta:` block
+        appears in this table instead of vanishing from the run.
+      - For each ERROR of type agent_frontmatter_invalid (v3.13.0):
+        - [ERROR] "<file>: agent frontmatter could not be read (<reason>)"
+        - Before v3.13.0 this file passed clean with an empty description.
+      - For each ERROR of type agent_description_missing (v3.13.0):
+        - [ERROR] "<file>: no usable meta.description (<reason>)"
+      - For each ERROR of type agent_scan_path_error (v3.13.0):
+        - [ERROR] the message verbatim. NOTHING was scanned; this is a
+          run-ending condition, not evidence that the repo's agents are clean.
       - For each ERROR of type agent_description_excessive (>600 tokens, provisional):
         - [ERROR] "Agent description in <file> is N tokens -- must shorten to <300"
         - Refer author to foundation:context/shared/description-authoring-principles.md V5
@@ -5375,6 +5935,12 @@ steps:
       ### Behavior Reference Hygiene (v3.5.0)
       Use behavior_reference_hygiene_results to report:
       - Root bundle name checked for name collision
+      - For each ERROR of type behavior_frontmatter_invalid (v3.13.0):
+        - [ERROR] the message verbatim. Neither hygiene check below could run
+          against that behavior; before v3.13.0 it passed both.
+      - For each ERROR of type root_bundle_frontmatter_invalid (v3.13.0):
+        - [ERROR] the message verbatim. The name-collision check did not run
+          at all -- "no collisions" would be false reassurance.
       - For each WARNING of type cross_repo_root_bundle_ref:
         - [WARNING] "Behavior X includes bare root-bundle ref Y — should reference Y#subdirectory=behaviors/<name>.yaml"
         - The fix: add #subdirectory=behaviors/<name>.yaml to pin the specific behavior file

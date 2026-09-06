@@ -1,0 +1,64 @@
+==============================================================================
+MEASUREMENT 1 -- this repository (the count)
+==============================================================================
+repo: /home/bkrabach/dev/hw-model-performance/lanes/dfni-validate-bundle-repo-count/amplifier-foundation
+head: e49575515f6f6be72ffbb26905b278bfe30ba739
+
+--- BEFORE  origin/main  v3.12.0 ---
+  candidates_scanned : n/a (v3.12.0 did not report it)
+  agents_checked     : 32
+  non_agent_count    : n/a
+  non_agent_reasons  : n/a
+  passed             : True
+  errors             : 0
+  warnings           : []
+  summary            : {'agents_checked': 32, 'errors': 0, 'warnings': 0}
+
+--- AFTER   this branch  v3.13.0 ---
+  candidates_scanned : 32
+  agents_checked     : 28
+  non_agent_count    : 4
+  non_agent_reasons  : {'no_frontmatter': 4}
+      NON-AGENT  context/agents/delegation-instructions.md  (no_frontmatter)
+      NON-AGENT  context/agents/multi-agent-patterns.md  (no_frontmatter)
+      NON-AGENT  context/agents/session-repair-knowledge.md  (no_frontmatter)
+      NON-AGENT  context/agents/session-storage-knowledge.md  (no_frontmatter)
+  passed             : True
+  errors             : 0
+  warnings           : []
+  summary            : {'agents_checked': 28, 'candidates_scanned': 32, 'non_agent_count': 4, 'errors': 0, 'warnings': 0}
+
+==============================================================================
+MEASUREMENT 2 -- synthetic repo (the silent hole)
+==============================================================================
+files:
+  agents/broken-yaml.md
+  agents/empty-description.md
+  agents/good.md
+  agents/no-description.md
+  agents/no-frontmatter.md
+
+--- BEFORE  origin/main  v3.12.0 ---
+  candidates_scanned : n/a (v3.12.0 did not report it)
+  agents_checked     : 5
+  non_agent_count    : n/a
+  non_agent_reasons  : n/a
+  passed             : True
+  errors             : 0
+  warnings           : []
+  summary            : {'agents_checked': 5, 'errors': 0, 'warnings': 0}
+
+--- AFTER   this branch  v3.13.0 ---
+  candidates_scanned : 5
+  agents_checked     : 4
+  non_agent_count    : 1
+  non_agent_reasons  : {'no_frontmatter': 1}
+      NON-AGENT  agents/no-frontmatter.md  (no_frontmatter)
+  passed             : False
+  errors             : 3
+      [agent_frontmatter_invalid] agents/broken-yaml.md (unparseable_frontmatter)
+      [agent_description_missing] agents/empty-description.md (description_empty)
+      [agent_description_missing] agents/no-description.md (no_description_key)
+  warnings           : []
+  summary            : {'agents_checked': 4, 'candidates_scanned': 5, 'non_agent_count': 1, 'errors': 3, 'warnings': 0}
+
