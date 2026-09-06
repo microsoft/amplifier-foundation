@@ -30,7 +30,7 @@ Minimal infrastructure -- core tools, delegate, skills, UX hooks. No modes, no e
 | Todo hooks (reminder, display, session naming) | Yes |
 | Modes (brainstorm, debug, verify, etc.) | No |
 | Expert consultants (amplifier, core, foundation) | No |
-| Heavy context docs (delegation-instructions, multi-agent-patterns) | No |
+| Heavy context docs (delegation-depth, multi-agent-patterns) | No |
 | Design intelligence, browser-tester, terminal-tester | No |
 | Recipes, superpowers, routing-matrix | No |
 

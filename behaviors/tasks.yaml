@@ -15,5 +15,9 @@ tools:
 
 context:
   include:
-    - foundation:context/agents/delegation-instructions.md
-    - foundation:context/agents/multi-agent-patterns.md
+    # Same core file as behaviors/agents.yaml, deliberately: tool-task is a
+    # delegation-shaped tool (it spawns sub-agents), so the imperative and the
+    # triggers apply to it, and sharing one file makes drift between the two
+    # behaviors impossible. It gets no depth: tool-task exposes neither
+    # context_depth/context_scope nor session resumption.
+    - foundation:context/agents/delegation-core.md

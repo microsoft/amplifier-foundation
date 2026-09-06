@@ -1,9 +1,32 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.13.0
+# Repository-Wide Bundle Validator Recipe v3.14.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.14.0 - THE CONTEXT-TOKEN ESTIMATOR UNDERSTATED BY 6.28x, AND LANDED
+#          EXACTLY ON ITS OWN ERROR BOUNDARY WHILE DOING IT.
+#          behavior-hygiene Rule 4 resolved a context.include only two ways:
+#          a leading "@" was charged a flat 500 tokens, anything else was
+#          tried as a relative path. A `<namespace>:<path>` include --
+#          `foundation:context/agents/delegation-instructions.md`, the form
+#          this repo's own behaviors use -- matches NEITHER: it does not
+#          start with "@", and neither `behaviors/foundation:context/...`
+#          nor `<repo>/foundation:context/...` exists. So it fell through to
+#          the flat 500-token default.
+#          behaviors/agents.yaml has two such includes. 2 x 500 = EXACTLY
+#          1000, against a `> 1000` ERROR gate -- so 6,276 real on-disk
+#          tokens were reported as 1000 and graded WARNING, one token below
+#          the ERROR that was true. The measurement that would justify
+#          splitting that context was being taken with a ruler wrong by 6x.
+#          FIX: strip an optional "@" and, for a `<namespace>:<path>` ref,
+#          also try the path part against the behavior dir and the repo
+#          root. When the file is in THIS repo, read it. When it genuinely
+#          is not, keep the 500 fallback but RECORD the include in
+#          `context_unresolved_includes` and set `context_tokens_is_estimate`
+#          -- an unknown folded silently into a number that reads as
+#          measured is the defect, not the fallback itself.
+#
 # v3.13.0 - THE VALIDATOR COULD NOT FAIL ON A BROKEN AGENT AT ALL.
 #          `agent-description-validation`'s `extract_description()` returned
 #          an EMPTY STRING for six different conditions -- unreadable file,
@@ -384,6 +407,12 @@
 # TOKEN ESTIMATION:
 # All size measurements use tokens estimated as: len(content) // 4
 # This provides consistent sizing regardless of line length variations.
+# len//4 runs ~16% HIGH against o200k_base on this repo's markdown
+# (6,276 vs 5,402 for the two files that motivated v3.14.0), so it is
+# conservative in the right direction for a budget gate. What is NOT
+# acceptable is a flat per-file guess standing in for a file this repo can
+# actually read -- see v3.14.0. A behavior whose count includes any such
+# guess is flagged with `context_tokens_is_estimate`.
 
 # --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
 # schema_version 2 makes this recipe portable: every `agent:` reference below
@@ -461,7 +490,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.13.0"
+version: "3.14.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -1966,32 +1995,67 @@ steps:
               total_context_tokens = 0
               if context_includes:
                   detail["context_include_count"] = len(context_includes)
-                  
+                  unresolved_includes = []
+
+                  # v3.14.0 (8rug): resolve `<namespace>:<path>` includes instead of
+                  # charging them a flat 500.
+                  #
+                  # `foundation:context/agents/delegation-instructions.md` does NOT start
+                  # with "@", so it used to take the relative-path branch, where neither
+                  # `behaviors/foundation:context/...` nor `<repo>/foundation:context/...`
+                  # exists -- so it fell through to the flat 500-token default. Two such
+                  # includes summed to EXACTLY 1000 against a `> 1000` ERROR gate, so a
+                  # behavior carrying 6,276 real tokens (measured on disk) landed on the
+                  # boundary and was reported as a WARNING. A 6.28x understatement, with
+                  # the gate reading it as almost-fine.
+                  #
+                  # An include of the form `[@]<namespace>:<relative/path>` names a path
+                  # inside SOME bundle. When that path exists in THIS repo it is this
+                  # repo's own file, and reading it is strictly better than guessing. When
+                  # it does not, the 500-token fallback still applies -- but the include is
+                  # now RECORDED as unresolved, so the estimate's blind spots are visible
+                  # instead of silent.
+                  def _candidate_relpaths(ref: str) -> list[str]:
+                      ref = ref[1:] if ref.startswith("@") else ref
+                      candidates = [ref]
+                      # `<namespace>:<path>` -- but not a URL scheme like `git+https://`
+                      if ":" in ref and "//" not in ref:
+                          namespace, _, rel = ref.partition(":")
+                          if namespace and rel and "/" not in namespace:
+                              candidates.append(rel)
+                      return candidates
+
                   # Estimate tokens for each included file
                   for include_ref in context_includes:
                       if isinstance(include_ref, str):
-                          # Try to resolve and read the file
-                          include_path = None
-                          if include_ref.startswith("@"):
-                              # Bundle reference - can't easily resolve without registry
-                              # Estimate ~500 tokens per awareness file
-                              total_context_tokens += 500
+                          resolved_path = None
+                          for rel in _candidate_relpaths(include_ref):
+                              for base in (behavior_path.parent, path):
+                                  candidate = base / rel
+                                  if candidate.exists() and candidate.is_file():
+                                      resolved_path = candidate
+                                      break
+                              if resolved_path:
+                                  break
+
+                          if resolved_path is not None:
+                              try:
+                                  content = resolved_path.read_text(encoding="utf-8", errors="replace")
+                                  total_context_tokens += estimate_tokens(content)
+                              except Exception:
+                                  total_context_tokens += 500  # Default estimate
+                                  unresolved_includes.append(include_ref)
                           else:
-                              # Relative path
-                              include_path = behavior_path.parent / include_ref
-                              if not include_path.exists():
-                                  include_path = path / include_ref
-                              
-                              if include_path and include_path.exists():
-                                  try:
-                                      content = include_path.read_text()
-                                      total_context_tokens += estimate_tokens(content)
-                                  except:
-                                      total_context_tokens += 500  # Default estimate
-                              else:
-                                  total_context_tokens += 500
-                  
+                              # Genuinely outside this repo (another bundle's namespace).
+                              # Flat estimate -- and say so, rather than folding an
+                              # unknown into a number that reads as measured.
+                              total_context_tokens += 500
+                              unresolved_includes.append(include_ref)
+
                   detail["context_total_tokens"] = total_context_tokens
+                  if unresolved_includes:
+                      detail["context_unresolved_includes"] = unresolved_includes
+                      detail["context_tokens_is_estimate"] = True
                   
                   # ERROR: >1000 tokens (tightened 2026-05-17 per
                   # foundation/docs/BUNDLE_GUIDE.md §"Behavior context.include Policy"

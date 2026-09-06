@@ -41,5 +41,9 @@ tools:
 
 context:
   include:
-    - foundation:context/agents/delegation-instructions.md
-    - foundation:context/agents/multi-agent-patterns.md
+    # AWARENESS ONLY -- 487 tokens on disk (len//4), the estimator's own unit.
+    # The DEPTH halves (delegation-depth.md, multi-agent-patterns.md, ~5,250 tokens
+    # together) are NOT loaded here. They are @-mentioned from the bodies of the
+    # agents that can act on them: foundation-expert (the only agent declaring
+    # tool-delegate) and session-analyst (the only agent that resumes sessions).
+    - foundation:context/agents/delegation-core.md

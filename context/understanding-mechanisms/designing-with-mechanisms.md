@@ -271,7 +271,7 @@ Your bundle's per-turn floor:
 
 | Component | Tokens | Source |
 |-----------|--------|--------|
-| Foundation context files (15+ files) | ~12,000 | `delegation-instructions.md`, `multi-agent-patterns.md`, `AWARENESS_INDEX.md`, philosophy files, etc. |
+| Foundation context files (15+ files) | ~12,000 | `delegation-core.md`, `delegation-depth.md`, `multi-agent-patterns.md`, `AWARENESS_INDEX.md`, philosophy files, etc. |
 | Systems-design content files (5 files) | ~4,000 | `instructions.md`, `system-design-principles.md`, `tradeoff-frame.md`, etc. |
 | Skills L1 visibility (~20 skills) | ~1,000 | One-line descriptions of all composed skills |
 | Active mode body (when in `/systems-design`) | ~1,000 | Mode markdown injected ephemerally |

@@ -187,11 +187,14 @@ class TestVersionAndChangelog:
 
         Bumped 3.11.0 -> 3.12.0 by the schema-v2 migration (dependency
         manifest + enhance_diagrams guard), then 3.12.0 -> 3.13.0 by the
-        agent-classifier / description-status fix (lane dfni). The v3.11.0
-        changelog entry below is unaffected -- changelog entries accumulate.
+        agent-classifier / description-status fix (lane dfni), then
+        3.13.0 -> 3.14.0 by the context-token estimator fix (lane 8rug:
+        `<namespace>:<path>` includes were charged a flat 500 instead of
+        being read). The v3.11.0 changelog entry below is unaffected --
+        changelog entries accumulate.
         """
         data, _ = recipe_data
-        assert data["version"] == "3.13.0"
+        assert data["version"] == "3.14.0"
 
     def test_changelog_has_v3_11_0_entry(self, recipe_data):
         _, content = recipe_data
