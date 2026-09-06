@@ -1,0 +1,64 @@
+........................................................................ [  3%]
+........................................................................ [  7%]
+........................................................................ [ 11%]
+...........................................ss........................... [ 15%]
+........................................................................ [ 19%]
+........................................................................ [ 23%]
+........................................................................ [ 27%]
+......s................................................................. [ 31%]
+........................................................................ [ 35%]
+........................................................................ [ 38%]
+........................................................................ [ 42%]
+........................................................................ [ 46%]
+........................................................................ [ 50%]
+........................................................................ [ 54%]
+........................................................................ [ 58%]
+........................................................................ [ 62%]
+........................................................................ [ 66%]
+........................................................................ [ 70%]
+........................................................................ [ 74%]
+............................................................F........... [ 77%]
+........................................................................ [ 81%]
+........................................................................ [ 85%]
+........................................................................ [ 89%]
+........................................................................ [ 93%]
+........................................................................ [ 97%]
+...............................................                          [100%]
+=================================== FAILURES ===================================
+_______________ TestFileSourceHandler.test_resolve_existing_file _______________
+
+self = <tests.test_sources.TestFileSourceHandler object at 0xec4961bc56e0>
+
+    @pytest.mark.asyncio
+    async def test_resolve_existing_file(self) -> None:
+        """Resolves existing file path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.yaml"
+            test_file.write_text("name: test")
+    
+            handler = FileSourceHandler(base_path=Path(tmpdir))
+            parsed = ParsedURI(
+                scheme="file", host="", path=str(test_file), ref="", subpath=""
+            )
+            result = await handler.resolve(parsed, Path(tmpdir) / "cache")
+    
+            # FileSourceHandler.resolve() calls Path.resolve() internally. On
+            # Windows, tempfile.TemporaryDirectory() may hand back a path
+            # containing an 8.3 short component (e.g. "RUNNER~1") while
+            # resolve() returns the canonical long form (e.g. "runneradmin").
+            # Both spellings name the same file/directory, so resolve the
+            # expected side too rather than comparing raw/short vs.
+            # canonical/long.
+            assert result.active_path == test_file.resolve()
+            # source_root is the parent directory for non-cached files
+>           assert result.source_root == test_file.parent.resolve()
+E           AssertionError: assert PosixPath('/tmp') == PosixPath('/tmp/tmpvbqr8y8k')
+E            +  where PosixPath('/tmp') = ResolvedSource(active_path=PosixPath('/tmp/tmpvbqr8y8k/test.yaml'), source_root=PosixPath('/tmp')).source_root
+E            +  and   PosixPath('/tmp/tmpvbqr8y8k') = resolve()
+E            +    where resolve = PosixPath('/tmp/tmpvbqr8y8k').resolve
+E            +      where PosixPath('/tmp/tmpvbqr8y8k') = PosixPath('/tmp/tmpvbqr8y8k/test.yaml').parent
+
+tests/test_sources.py:73: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_sources.py::TestFileSourceHandler::test_resolve_existing_file
+1 failed, 1843 passed, 3 skipped in 22.10s

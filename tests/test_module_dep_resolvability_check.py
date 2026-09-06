@@ -23,6 +23,7 @@ These tests both:
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -66,18 +67,29 @@ def check_script(steps_by_id):
 def run_check(check_script: str, repo_dir: Path, published_distributions: str = "") -> dict:
     """Run the extracted check script against repo_dir, returning parsed JSON.
 
-    Substitutes the recipe's {{repo_path}} / {{published_distributions}}
-    template placeholders exactly as the recipe executor would, then runs
-    the real script as a subprocess (not imported/exec'd in-process, so a
-    stray sys.exit() in the script can't take down the test runner).
+    Substitutes the recipe's {{published_distributions}} template placeholder
+    exactly as the recipe executor would, and hands the repo path over the way
+    the recipe hands it over -- through the ENVIRONMENT (v3.13.0).
+
+    The repo path is deliberately no longer interpolated into the script's
+    source: a filesystem path inside a Python string literal is escape-
+    processed, so a Windows checkout at `D:\\a\\<repo>\\<repo>` became
+    `D:\\x07...`, did not exist, and every step of this recipe reported a clean
+    result over zero files. Passing it through the environment here means this
+    harness exercises the real mechanism rather than a friendlier substitute.
+
+    Runs as a subprocess (not imported/exec'd in-process, so a stray
+    sys.exit() in the script can't take down the test runner).
     """
-    script = check_script.replace('"{{repo_path}}"', repr(str(repo_dir)))
-    script = script.replace('"""{{published_distributions}}"""', repr(published_distributions))
+    script = check_script.replace('"""{{published_distributions}}"""', repr(published_distributions))
+    env = dict(os.environ)
+    env["VALIDATE_BUNDLE_REPO_PATH"] = str(repo_dir)
     proc = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
     assert proc.returncode == 0, f"Check script failed (exit {proc.returncode}): {proc.stderr}"
     return json.loads(proc.stdout)
@@ -116,9 +128,22 @@ class TestStepExistsAndWired:
         assert step.get("on_error") == "continue"
 
     def test_uses_amplifier_python_interpreter(self, steps_by_id):
-        """CRITICAL repo lesson (v3.9.0): a heredoc must never use bare python3."""
+        """CRITICAL repo lesson (v3.9.0): a heredoc must never use bare python3.
+
+        v3.13.0 prefixes the interpreter with the repo-path environment
+        assignment, so the line is no longer the very first thing in the
+        command -- the interpreter itself is unchanged, which is what this
+        test is actually about.
+        """
         step = steps_by_id["module-dep-resolvability-check"]
-        assert step["command"].strip().startswith("\"${AMPLIFIER_PYTHON:-python3}\" << 'EOF'")
+        command = step["command"].strip()
+        assert command.startswith('VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" '), (
+            "v3.13.0: the repo path must reach the heredoc through the "
+            f"environment, never interpolated into Python source. Got: {command[:80]}"
+        )
+        assert command.startswith(
+            'VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << \'EOF\''
+        )
 
 
 class TestContextVariable:
@@ -161,11 +186,12 @@ class TestVersionAndChangelog:
         """Pinned to the recipe's current release.
 
         Bumped 3.11.0 -> 3.12.0 by the schema-v2 migration (dependency
-        manifest + enhance_diagrams guard). The v3.11.0 changelog entry
-        below is unaffected -- changelog entries accumulate.
+        manifest + enhance_diagrams guard), then 3.12.0 -> 3.13.0 by the
+        agent-classifier / description-status fix (lane dfni). The v3.11.0
+        changelog entry below is unaffected -- changelog entries accumulate.
         """
         data, _ = recipe_data
-        assert data["version"] == "3.12.0"
+        assert data["version"] == "3.13.0"
 
     def test_changelog_has_v3_11_0_entry(self, recipe_data):
         _, content = recipe_data
