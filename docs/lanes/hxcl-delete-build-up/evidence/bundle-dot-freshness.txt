@@ -1,0 +1,25 @@
+=== bundle.dot: does deleting experiments/build-up change it? ===
+
+structural DOT, BEFORE (origin/main)  : 18061 chars
+structural DOT, AFTER  (branch)       : 18061 chars
+path-normalised byte-identical        : True
+'build-up' present in regenerated DOT : False
+'build-up' present in committed dot   : False
+committed bundle.dot == raw structural: False
+
+WHY build-up was never in the DOT: bundle_to_dot.py:126-136 collects
+  experiments/*.yaml, experiments/*.md, and experiments/*/bundle.md.
+  experiments/build-up/ had NO bundle.md at its root -- its entry point was
+  build-up-foundation.md -- so the experiments cluster never contained it.
+  validate-bundle-repo's own repo-discovery agrees: experiments = 3 both
+  before and after (delegation-only/bundle.md, exp-amplifier-dev.md,
+  exp-foundation.md).
+
+DECISION: bundle.dot is NOT regenerated and NOT committed by this lane.
+  1. The deletion provably does not change it (identical above).
+  2. The committed bundle.dot is the LLM-ENHANCED artifact; the raw
+     structural regen differs from it. Committing a regen here would land
+     an un-enhanced DOT over the human-readable one -- exactly 6phe finding
+     F1 (bundle-overview-regen-write rewrites unconditionally; only its
+     INPUT is gated on enhance_diagrams). The replay driver stops before
+     that step for the same reason.

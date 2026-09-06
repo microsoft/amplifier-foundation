@@ -1,0 +1,31 @@
+=== SUITE: branch (lane/hxcl-delete-build-up, build-up deleted + docstring rewritten) ===
+$ uv run pytest -q  | tail
+1 failed, 2032 passed, 3 skipped, 1 warning in 25.08s
+FAILED tests/test_sources.py::TestFileSourceHandler::test_resolve_existing_file
+
+=== SUITE: baseline (git worktree at origin/main = aaa5c47), same host, same venv ===
+$ uv run pytest -q  | tail
+1 failed, 2032 passed, 3 skipped in 23.25s
+FAILED tests/test_sources.py::TestFileSourceHandler::test_resolve_existing_file
+
+=> IDENTICAL: same 1 failure, same 2032 passed, same 3 skipped. The failure is
+   PRE-EXISTING (reproduces at origin/main) and is NOT caused by this change.
+   Note: the goal also named tests/test_grpc_adapter_main.py::TestVerifyModuleType::
+   test_non_isinstance_object_with_mount_passes as a known failure. It does NOT
+   reproduce on this host -- it PASSES at origin/main and on the branch:
+   $ uv run pytest -q <both tests>  ->  1 failed, 1 passed
+
+=== PACKAGING ===
+$ uv build
+Successfully built dist/amplifier_foundation-1.0.0.tar.gz
+Successfully built dist/amplifier_foundation-1.0.0-py3-none-any.whl
+
+wheel: dist/amplifier_foundation-1.0.0-py3-none-any.whl
+entries: 78
+experiments entries: []
+build-up entries: []
+top-level dirs: ['amplifier_foundation', 'amplifier_foundation-1.0.0.dist-info']
+
+=> pyproject's [tool.hatch.build.targets.wheel] packages = ["amplifier_foundation"]
+   -- experiments/ was never in the wheel, so the deletion cannot change its contents.
+   No force-include of experiments/ exists in pyproject.toml.

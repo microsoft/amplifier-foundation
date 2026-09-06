@@ -1,0 +1,58 @@
+=== Docstring retarget: candidate evaluation (deterministic, $0) ===
+
+The docstring at amplifier_foundation/bundle/_dataclass.py:52-56 teaches ONE thing:
+  namespace_root -- a bundle YAML living in behaviors/ whose agents/ live ONE LEVEL ABOVE.
+So a valid retarget must have BOTH: (a) YAML under behaviors/, (b) a SIBLING agents/ dir.
+
+--- Candidate 1: experiments/exp-lean (named in the work item) ---
+$ find experiments/exp-lean -type d
+experiments/exp-lean
+experiments/exp-lean/behaviors
+experiments/exp-lean/context
+$ find experiments/exp-lean -type f
+experiments/exp-lean/behaviors/lean-amplifier-dev.yaml
+experiments/exp-lean/behaviors/lean-foundation.yaml
+experiments/exp-lean/context/delegation-mechanics.md
+experiments/exp-lean/context/exp-lean-amplifier-dev-agents.md
+experiments/exp-lean/context/system-base.md
+experiments/exp-lean/exp-lean-amplifier-dev.md
+experiments/exp-lean/exp-lean-foundation.md
+experiments/exp-lean/README.md
+VERDICT: has behaviors/ + context/, has NO agents/ dir. Does NOT have the shape.
+
+--- Candidate 2: bundles/amplifier-dev.yaml (named in the work item) ---
+$ ls bundles/
+amplifier-dev.yaml
+anchors
+anchors-amp-dev
+minimal.yaml
+with-anthropic.yaml
+with-openai.yaml
+VERDICT: a FLAT yaml at bundles/, not inside a behaviors/ sub-dir; sibling agents/ absent.
+         (bundles/anchors/ DOES have agents/, but its bundle.md sits at that dir's ROOT,
+          so namespace_root is unnecessary there -- the default already resolves.)
+         Does NOT have the shape.
+
+--- Exhaustive check: who actually uses namespace_root in this repo? ---
+$ git grep -n 'namespace_root' -- '*.yaml' '*.yml' '*.md' ':!docs/lanes'
+experiments/build-up/behaviors/build-up-foundation.yaml:7:  # namespace_root: .. tells the registry to set
+experiments/build-up/behaviors/build-up-foundation.yaml:12:  namespace_root: ..
+experiments/build-up/behaviors/build-up-foundation.yaml:46:      0.4.0 — Explicit namespace_root: .. replaces the removed is_relative_to()
+experiments/minimal-delegate/behaviors/minimal-delegate-foundation.yaml:7:  # namespace_root: .. tells the registry to set
+experiments/minimal-delegate/behaviors/minimal-delegate-foundation.yaml:12:  namespace_root: ..
+
+Only TWO users: experiments/build-up (being deleted) and experiments/minimal-delegate.
+$ find experiments/minimal-delegate -type d
+experiments/minimal-delegate
+experiments/minimal-delegate/behaviors
+experiments/minimal-delegate/context
+VERDICT on minimal-delegate: uses namespace_root: .. but has NO agents/ dir -- its
+  namespace_root covers context/ only. It also (a) is under this goal's SCOPE-OUT and
+  (b) is another deletable experiment, i.e. the exact fragility that caused THIS item.
+
+=== DECISION: SELF-CONTAINED REWRITE ===
+After deleting build-up, NO surviving path in this repo has the shape the docstring
+teaches. Retargeting to exp-lean or amplifier-dev.yaml would point at a path that merely
+EXISTS while demonstrating something else -- teaching the wrong thing. Retargeting to
+minimal-delegate would be scope-out AND still lack agents/. The docstring is therefore
+rewritten as an illustrative layout depending on no directory at all.
