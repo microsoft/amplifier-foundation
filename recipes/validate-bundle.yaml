@@ -6,6 +6,18 @@
 # CHANGELOG
 # =============================================================================
 #
+# v2.1.2:
+#   - The synthesize-report prompt opened with a bare "Synthesize all bundle
+#     validation results", never naming its own recipe, and the report header
+#     it asked for ("Bundle Validation Report") named no recipe either -- so
+#     the model filled the gap and produced headers calling this recipe
+#     `validate-recipes`. The prompt now states which recipe it belongs to and
+#     forbids naming another as the producer, and the header is
+#     `validate-bundle Report`.
+#   - The Metadata block hardcoded "Recipe: validate-bundle v2.1.0" and was
+#     never bumped with the file; corrected and now matches `version:`.
+#   - Prompt text only; no step, condition or logic change.
+#
 # v2.1.1:
 #   - Honor the injected AMPLIFIER_PYTHON interpreter in both python heredocs
 #     (was bare `python3`). Companion to validate-single-bundle v2.3.1.
@@ -73,7 +85,7 @@ description: |
   For example, if a behavior is only included by `bundles/amplifier-dev.yaml`
   and NOT by the root `bundle.md`, its context files will only be counted
   when validating `amplifier-dev`.
-version: "2.1.1"
+version: "2.1.2"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "context-health", "dependency-tracing"]
 
@@ -252,6 +264,15 @@ steps:
     prompt: |
       Synthesize all bundle validation results into a comprehensive report.
 
+      You are the final step of the **validate-bundle** recipe. Every place
+      the report names the recipe that produced it -- the header, the
+      Metadata block, any self-reference in prose -- it MUST say
+      `validate-bundle`. Do not name any other recipe (`validate-recipes`,
+      `validate-agents`, `validate-single-bundle`) as the producer: those are
+      different recipes with different scopes, and mislabelling sends a
+      reader to the wrong one. `validate-single-bundle` is the sub-recipe
+      this one invokes per bundle, never the author of this report.
+
       **Repository:** {{bundle_path}}
       
       **Discovery Results:**
@@ -272,7 +293,7 @@ steps:
 
       **Generate a comprehensive report:**
 
-      ## Bundle Validation Report
+      ## validate-bundle Report
 
       ### Executive Summary
       - **Repository:** (path)
@@ -312,7 +333,7 @@ steps:
 
       ### Metadata
       - Validated: (current date/time)
-      - Recipe: validate-bundle v2.1.0
+      - Recipe: validate-bundle v2.1.2
       - Foundation available: (from env_check)
       - Dependency tracing: enabled
     output: "final_report"
