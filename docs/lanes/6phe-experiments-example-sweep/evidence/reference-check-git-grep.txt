@@ -1,0 +1,107 @@
+THE GATE BEFORE ANY DELETION -- run on branch lane/6phe-experiments-example-sweep
+at f1a3781 (origin/main tip), BEFORE `git rm`. Verbatim command + output.
+
+Deliverable: "The `git grep` reference check quoted in full, before any deletion,
+covering bundles/, behaviors/, recipes/, docs/, and experiments/README.md."
+
+================================================================================
+$ git grep -n "behavioral-anchor"
+================================================================================
+bundles/anchors/README.md:100:Promoted from `experiments/behavioral-anchor` to a published bundle. Version
+docs/lanes/ezze-foundation-hygiene/DONE-NOTE.md:140:   `experiments/behavioral-anchor-amplifier-dev/context/amplifier-dev/dev-workflows.md:155`.
+docs/lanes/ux32-anchors-dry-refactor/DONE-NOTE.md:89:| d | exactly one *shipped* copy of each ecosystem doc | `found 3` for each: root, bundle copy, and `experiments/behavioral-anchor-amplifier-dev/` |
+docs/lanes/ux32-anchors-dry-refactor/DONE-NOTE.md:101:`experiments/behavioral-anchor`). Those are not registered bundles and are never
+docs/lanes/ux32-anchors-dry-refactor/DONE-NOTE.md:319:   `experiments/behavioral-anchor-amplifier-dev/context/amplifier-dev/`, frozen
+docs/lanes/ux32-anchors-dry-refactor/evidence/guard-tests-FAIL-BEFORE.txt:112:E           AssertionError: Expected exactly one shipped copy of ecosystem-map.md, found 2: ['bundles/anchors-amp-dev/context/amplifier-dev/ecosystem-map.md', 'context/amplifier-dev/ecosystem-map.md']. Two copies drift; the canonical location is context/amplifier-dev/. (Excluded, frozen and unshipped: ['experiments/behavioral-anchor-amplifier-dev/context/amplifier-dev/ecosystem-map.md'])
+experiments/behavioral-anchor-amplifier-dev/README.md:8:This is the [`behavioral-anchor`](../behavioral-anchor/) experiment extended with an
+experiments/behavioral-anchor-amplifier-dev/README.md:15:amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md' --name behavioral-anchor-amplifier-dev
+experiments/behavioral-anchor-amplifier-dev/README.md:16:amplifier bundle use behavioral-anchor-amplifier-dev
+experiments/behavioral-anchor-amplifier-dev/README.md:24:Same bet as the base behavioral-anchor experiment: a handful of sharp, named
+experiments/behavioral-anchor-amplifier-dev/agents/amplifier-dev-expert.md:32:@behavioral-anchor-amplifier-dev:context/amplifier-dev/ecosystem-map.md
+experiments/behavioral-anchor-amplifier-dev/agents/amplifier-dev-expert.md:34:@behavioral-anchor-amplifier-dev:context/amplifier-dev/dev-workflows.md
+experiments/behavioral-anchor-amplifier-dev/agents/amplifier-dev-expert.md:36:@behavioral-anchor-amplifier-dev:context/amplifier-dev/testing-patterns.md
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:3:  name: behavioral-anchor-amplifier-dev
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:124:    - behavioral-anchor-amplifier-dev:explorer
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:125:    - behavioral-anchor-amplifier-dev:architect
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:126:    - behavioral-anchor-amplifier-dev:builder
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:127:    - behavioral-anchor-amplifier-dev:debugger
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:128:    - behavioral-anchor-amplifier-dev:git-ops
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:129:    - behavioral-anchor-amplifier-dev:researcher
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:130:    - behavioral-anchor-amplifier-dev:amplifier-dev-expert
+experiments/behavioral-anchor-amplifier-dev/behavioral-anchor-amplifier-dev.md:135:@behavioral-anchor-amplifier-dev:context/system.md
+experiments/behavioral-anchor/README.md:15:amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/behavioral-anchor/behavioral-anchor.md' --name behavioral-anchor
+experiments/behavioral-anchor/README.md:16:amplifier bundle use behavioral-anchor
+experiments/behavioral-anchor/README.md:74:own agents and context are referenced through its own `behavioral-anchor:`
+experiments/behavioral-anchor/README.md:82:behavioral-anchor/
+experiments/behavioral-anchor/README.md:84:├── behavioral-anchor.md      # bundle entrypoint (session / tools / hooks / agents)
+experiments/behavioral-anchor/behavioral-anchor.md:3:  name: behavioral-anchor
+experiments/behavioral-anchor/behavioral-anchor.md:122:    - behavioral-anchor:explorer
+experiments/behavioral-anchor/behavioral-anchor.md:123:    - behavioral-anchor:architect
+experiments/behavioral-anchor/behavioral-anchor.md:124:    - behavioral-anchor:builder
+experiments/behavioral-anchor/behavioral-anchor.md:125:    - behavioral-anchor:debugger
+experiments/behavioral-anchor/behavioral-anchor.md:126:    - behavioral-anchor:git-ops
+experiments/behavioral-anchor/behavioral-anchor.md:127:    - behavioral-anchor:researcher
+experiments/behavioral-anchor/behavioral-anchor.md:130:@behavioral-anchor:context/system.md
+tests/test_anchors_bundles_dry.py:40:# out of `experiments/behavioral-anchor`). Nothing there is a registered bundle
+
+================================================================================
+$ git grep -n "behavioral-anchor" -- bundles behaviors recipes docs
+================================================================================
+bundles/anchors/README.md:100:Promoted from `experiments/behavioral-anchor` to a published bundle. Version
+docs/lanes/ezze-foundation-hygiene/DONE-NOTE.md:140:   `experiments/behavioral-anchor-amplifier-dev/context/amplifier-dev/dev-workflows.md:155`.
+docs/lanes/ux32-anchors-dry-refactor/DONE-NOTE.md:89:| d | exactly one *shipped* copy of each ecosystem doc | `found 3` for each: root, bundle copy, and `experiments/behavioral-anchor-amplifier-dev/` |
+docs/lanes/ux32-anchors-dry-refactor/DONE-NOTE.md:101:`experiments/behavioral-anchor`). Those are not registered bundles and are never
+docs/lanes/ux32-anchors-dry-refactor/DONE-NOTE.md:319:   `experiments/behavioral-anchor-amplifier-dev/context/amplifier-dev/`, frozen
+docs/lanes/ux32-anchors-dry-refactor/evidence/guard-tests-FAIL-BEFORE.txt:112:E           AssertionError: Expected exactly one shipped copy of ecosystem-map.md, found 2: [...] (Excluded, frozen and unshipped: ['experiments/behavioral-anchor-amplifier-dev/context/amplifier-dev/ecosystem-map.md'])
+
+  NOTE: `recipes/` and `behaviors/` returned ZERO matches. Nothing composed at
+  runtime referenced either tree.
+
+================================================================================
+$ ls experiments/README.md
+================================================================================
+(experiments/README.md DOES NOT EXIST)
+
+================================================================================
+$ git grep -n "build-up"
+================================================================================
+amplifier_foundation/bundle/_dataclass.py:52:            Example — YAML at ``experiments/build-up/behaviors/build-up-foundation.yaml``
+amplifier_foundation/bundle/_dataclass.py:53:            with agents at ``experiments/build-up/agents/``::
+amplifier_foundation/bundle/_dataclass.py:56:                  name: build-up
+experiments/build-up/README.md:3,10,11,72,73,95,97,99          (self)
+experiments/build-up/behaviors/build-up-foundation.yaml:4,5,6,8,10,36,37,48,87,93,135,136,139,140,141,142,147   (self)
+experiments/build-up/build-up-foundation.md:3,6,8,20,21,24,27  (self)
+experiments/build-up/context/system-base.md:18,22,23,24,25,29,30,31,32,33   (self)
+experiments/minimal-delegate/behaviors/minimal-delegate-foundation.yaml:25:      0.2.0 — Refactored to mirror build-up v3 structure: thin pointer +
+experiments/minimal-delegate/behaviors/minimal-delegate-foundation.yaml:108:# Agents available for delegation: broader pool than build-up (which ships
+experiments/minimal-delegate/minimal-delegate-foundation.md:10:    Where build-up uses 4 purpose-built agents (explorer/planner/coder/tester),
+modules/tool-delegate/tests/test_delegate_self_delegation_disabled.py:175:    file (e.g. delegation-mechanics.md in the build-up bundle), not in
+tests/test_registry.py:394:        The concrete production failure: build-up:coder was loading foundation:explorer's
+tests/test_registry.py:395:        tool list because source_base_paths['build-up'] pointed at the foundation checkout root
+tests/test_registry.py:397:        experiments/build-up/ (where build-up:explorer.md lives at agents/explorer.md).
+tests/test_registry.py:414:            # Sub-bundle directory — simulates experiments/build-up/
+tests/test_registry.py:435:            # Sub-bundle main file — simulates build-up-foundation.md
+tests/test_registry.py:452:            # Behavior YAML — simulates build-up-foundation.yaml with bundle.name: build-up.
+
+================================================================================
+RULINGS DERIVED FROM THE ABOVE
+================================================================================
+1. experiments/behavioral-anchor{,-amplifier-dev}: DELETE.
+   Zero references from `recipes/` or `behaviors/`. The only live reference is
+   ONE provenance sentence in `bundles/anchors/README.md:100`, updated in this
+   change to point at bundles/ and the promoting commits (70a84d0 #259,
+   78d0abe #273) instead of a path that no longer exists. `docs/lanes/*` hits
+   are frozen lane records that quote the violation AS EVIDENCE -- rewriting
+   them would destroy the record; they are left untouched by design.
+   `tests/test_anchors_bundles_dry.py:40` is a comment in the guard file this
+   change rewrites anyway.
+
+2. experiments/build-up: KEEP, STRIP the <example> blocks.
+   The goal permits deletion ONLY on evidence from `experiments/README.md`.
+   That file DOES NOT EXIST, so no such evidence can be quoted and deletion is
+   not authorised. Independently, build-up is referenced LIVE from outside its
+   own tree by `amplifier_foundation/bundle/_dataclass.py:52-56`,
+   `tests/test_registry.py:394-452`,
+   `modules/tool-delegate/tests/test_delegate_self_delegation_disabled.py:175`
+   and `experiments/minimal-delegate/`. Deleting it would have been wrong on
+   two independent grounds.
