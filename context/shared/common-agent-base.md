@@ -26,13 +26,18 @@ For fan-out work: stateless sub-agents cannot see the running total - the **orch
 
 ## Git Commit Message Guidelines
 
+**This is the one place the commit footer is defined.** Every other file in this
+repository references it rather than restating it — one footer, one source.
+
 When creating git commit messages, always insert the following at the end of your commit message:
 
 ```
-🤖 Generated with [Amplifier](https://github.com/microsoft/amplifier)
+Generated with Amplifier
 
 Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.com>
 ```
+
+No emoji — see the tone rule below.
 
 ---
 
@@ -142,9 +147,14 @@ If you need to use a local version of a module (for development or testing), use
 **settings.yaml override example:**
 ```yaml
 sources:
-  tool-bash: file:///home/user/repos/amplifier-module-tool-bash
-  provider-anthropic: file:///home/user/repos/amplifier-module-provider-anthropic
+  modules:
+    tool-bash: file:///home/user/repos/amplifier-module-tool-bash
+    provider-anthropic: file:///home/user/repos/amplifier-module-provider-anthropic
 ```
+
+The `modules:` level is required. The loader reads `sources` → `modules`
+(`amplifier_app_cli/lib/settings.py::AppSettings.get_module_sources`), so a flat
+`sources:` mapping parses cleanly and overrides **nothing**.
 
 When a user asks to use a local version of a module, guide them to the appropriate override layer — the cache itself stays untouched.
 
@@ -196,8 +206,6 @@ The AGENTS.md file is the **anchor point** that appears at every turn of every A
 4. **Philosophy Drift**: The core principles will slowly diverge from reality
 
 IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.
-
-IMPORTANT: Always use the todo tool to plan and track tasks throughout the conversation.
 
 # Code References
 

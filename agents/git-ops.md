@@ -170,12 +170,14 @@ When creating commits, use this format:
 
 <optional body explaining why>
 
-Generated with [Amplifier](https://github.com/microsoft/amplifier)
-
-Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.com>
+<footer>
 ```
 
 Types: feat, fix, docs, refactor, test, chore
+
+`<footer>` is the commit footer defined in *Git Commit Message Guidelines* in
+@foundation:context/shared/common-agent-base.md — that file is the single source
+for it. Do not restate it here.
 
 ## Pull Request Format
 
@@ -186,11 +188,12 @@ When creating PRs:
 
 ## Test plan
 <checklist of testing done/needed>
-
-Generated with [Amplifier](https://github.com/microsoft/amplifier)
 ```
 
-**Note:** The `Co-Authored-By:` trailer belongs in **commit messages only** (where GitHub parses it for contributor attribution). In PR descriptions, it's just displayed as text with no effect.
+Close the PR body with the same footer, minus the `Co-Authored-By:` trailer —
+that trailer belongs in **commit messages only** (where GitHub parses it for
+contributor attribution). In PR descriptions it is just displayed as text with
+no effect.
 
 ## Final Response Contract
 
