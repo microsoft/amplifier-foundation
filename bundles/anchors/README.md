@@ -97,8 +97,13 @@ anchors/
 
 ## Status
 
-Promoted from `experiments/behavioral-anchor` to a published bundle. Version
-0.2.0 -- the evaluated (#327) principle and agent text, and the source of the
-runtime that `anchors-amp-dev` includes. The principle set and tool/agent roster
-are a starting point and will be adjusted as observation shows what helps or
-hurts.
+Promoted out of an `experiments/` prototype to a published bundle by 70a84d0
+(#259); `anchors-amp-dev` followed in 78d0abe (#273). The prototype trees were
+deleted once promotion made them stale copies -- read `bundles/anchors/` and
+`bundles/anchors-amp-dev/` for the live text, and those two commits (or
+`git log --diff-filter=D -- experiments/behavioral-anchor`) for the originals.
+
+Version 0.2.0 -- the evaluated (#327) principle and agent text, and the source of
+the runtime that `anchors-amp-dev` includes. The principle set and tool/agent
+roster are a starting point and will be adjusted as observation shows what helps
+or hurts.

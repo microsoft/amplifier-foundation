@@ -15,12 +15,6 @@ meta:
     Returns: summary of what was implemented, the files changed, test results, and
     any gaps that blocked completion.
 
-    Example:
-    <example>
-    user: "Implement the email validator from spec."
-    assistant: 'I will delegate to coder with the full spec; coder will implement and run tests.'
-    </example>
-
 model_role: [coding, general]
 
 tools:
