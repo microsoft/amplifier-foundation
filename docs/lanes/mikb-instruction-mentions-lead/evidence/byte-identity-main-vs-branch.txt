@@ -1,0 +1,6 @@
+### MAIN (e681764, context includes first)
+A_no_instruction_mentions: sha256=d7f616c6a3088e55f2a21372213acd87438025eb51abf849cb94015846635c34 len=247 'You are Amplifier'@offset=-1
+B_with_instruction_mention: sha256=1b5d114da8f515287d011564fee150c3be2d8792271ab404616d8e8f753458c0 len=379 'You are Amplifier'@offset=333
+### BRANCH (instruction mentions resolved first)
+A_no_instruction_mentions: sha256=d7f616c6a3088e55f2a21372213acd87438025eb51abf849cb94015846635c34 len=247 'You are Amplifier'@offset=-1
+B_with_instruction_mention: sha256=25bcb36828224b93624ecfe9719ee9cd4f32144a69c834b3ee3b68bc2db82fec len=379 'You are Amplifier'@offset=123

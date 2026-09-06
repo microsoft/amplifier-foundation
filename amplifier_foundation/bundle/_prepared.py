@@ -412,10 +412,33 @@ class PreparedBundle:
             deduplicator = ContentDeduplicator()
 
             # Build mention_to_path map for context block attribution
-            # This includes BOTH bundle context files AND @mentions from instruction
+            # This includes BOTH @mentions from instruction AND bundle context files
             mention_to_path: dict[str, Path] = {}
 
-            # 1. Bundle context files (from context: section)
+            # ORDER IS LOAD-BEARING. Both the deduplicator and mention_to_path are
+            # insertion-ordered dicts, and format_context_block emits in that order
+            # (get_unique_files iterates _content_by_hash). The instruction's own
+            # @mentions are the bundle author's primary voice, so they are resolved
+            # FIRST and therefore lead the context block; composed bundles' context:
+            # includes (peripheral awareness files) follow. Resolving them the other
+            # way round buried a root bundle's system.md behind every composed
+            # bundle's includes -- 73% into a 99 KB prompt in the reported case.
+
+            # 1. Resolve @mentions from main instruction (re-loads files each call)
+            mention_results = await load_mentions(
+                main_instruction,
+                resolver=resolver,
+                deduplicator=deduplicator,
+            )
+
+            # Add @mention results to mention_to_path for attribution.
+            # Done before the context: includes below so that a file referenced both
+            # ways leads its paths= label with the author's explicit @mention.
+            for mr in mention_results:
+                if mr.resolved_path:
+                    mention_to_path[mr.mention] = mr.resolved_path
+
+            # 2. Bundle context files (from context: section)
             # Add to deduplicator and mention_to_path for unified formatting
             for context_name, context_path in captured_bundle.context.items():
                 if context_path.exists():
@@ -425,19 +448,7 @@ class PreparedBundle:
                     # Add to mention_to_path for attribution (context_name → path)
                     mention_to_path[context_name] = context_path
 
-            # 2. Resolve @mentions from main instruction (re-loads files each call)
-            mention_results = await load_mentions(
-                main_instruction,
-                resolver=resolver,
-                deduplicator=deduplicator,
-            )
-
-            # Add @mention results to mention_to_path for attribution
-            for mr in mention_results:
-                if mr.resolved_path:
-                    mention_to_path[mr.mention] = mr.resolved_path
-
-            # 3. Format ALL context as XML blocks (bundle context + @mentions)
+            # 3. Format ALL context as XML blocks (@mentions + bundle context)
             # format_context_block uses deduplicator for unique content and
             # mention_to_path for attribution (showing name → resolved path)
             all_context = format_context_block(deduplicator, mention_to_path)
