@@ -1,0 +1,57 @@
+{
+  "bundle": "anchors-amp-dev",
+  "mentions": {
+    "@anchors-amp-dev:context/amplifier-dev/ecosystem-map.md": {
+      "namespace_registered": true,
+      "resolved": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/bundles/anchors-amp-dev/context/amplifier-dev/ecosystem-map.md"
+    },
+    "@anchors-amp-dev:context/amplifier-ecosystem.md": {
+      "namespace_registered": true,
+      "resolved": null
+    },
+    "@anchors-amp-dev:context/system.md": {
+      "namespace_registered": true,
+      "resolved": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/bundles/anchors-amp-dev/context/system.md"
+    },
+    "@anchors:context/system.md": {
+      "namespace_registered": false,
+      "resolved": null
+    },
+    "@foundation:context/amplifier-dev/dev-workflows.md": {
+      "namespace_registered": true,
+      "resolved": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/context/amplifier-dev/dev-workflows.md"
+    },
+    "@foundation:context/amplifier-dev/ecosystem-map.md": {
+      "namespace_registered": true,
+      "resolved": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/context/amplifier-dev/ecosystem-map.md"
+    },
+    "@foundation:context/amplifier-dev/testing-patterns.md": {
+      "namespace_registered": true,
+      "resolved": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/context/amplifier-dev/testing-patterns.md"
+    },
+    "@foundation:context/shared/common-agent-base.md": {
+      "namespace_registered": true,
+      "resolved": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/context/shared/common-agent-base.md"
+    }
+  },
+  "source_base_paths": {
+    "amplifier-tester": "/home/bkrabach/.amplifier/cache/amplifier-bundle-amplifier-tester-51fb043af4f8b374",
+    "amplifier-tester-behavior": "/home/bkrabach/.amplifier/cache/amplifier-bundle-amplifier-tester-51fb043af4f8b374/behaviors",
+    "anchors-amp-dev": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/bundles/anchors-amp-dev",
+    "behavior-logging": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/behaviors",
+    "behavior-redaction": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/behaviors",
+    "behavior-status-context": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/behaviors",
+    "behavior-streaming-ui": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/behaviors",
+    "context-intelligence": "/home/bkrabach/.amplifier/cache/amplifier-bundle-context-intelligence-ecd41f3e6fa67bd2",
+    "context-intelligence-logging-behavior": "/home/bkrabach/.amplifier/cache/amplifier-bundle-context-intelligence-ecd41f3e6fa67bd2/behaviors",
+    "context-intelligence-navigation-behavior": "/home/bkrabach/.amplifier/cache/amplifier-bundle-context-intelligence-ecd41f3e6fa67bd2/behaviors",
+    "digital-twin-universe": "/home/bkrabach/.amplifier/cache/amplifier-bundle-digital-twin-universe-3f1120375ad1dbc5",
+    "digital-twin-universe-behavior": "/home/bkrabach/.amplifier/cache/amplifier-bundle-digital-twin-universe-3f1120375ad1dbc5/behaviors",
+    "foundation": "/home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce",
+    "gitea": "/home/bkrabach/.amplifier/cache/amplifier-bundle-gitea-c559d851424c1857",
+    "gitea-behavior": "/home/bkrabach/.amplifier/cache/amplifier-bundle-gitea-c559d851424c1857/behaviors",
+    "redaction": "/home/bkrabach/.amplifier/cache/amplifier-bundle-redaction-445777b1949c63f3",
+    "redaction-behavior": "/home/bkrabach/.amplifier/cache/amplifier-bundle-redaction-445777b1949c63f3/behaviors"
+  },
+  "uri": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors-amp-dev/bundle.md"
+}

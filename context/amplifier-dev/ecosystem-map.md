@@ -18,7 +18,7 @@
           │                           [ALL MODULES]
           │                                ▲
           └────────────────────────────────┘
-                (modules import core only)
+                (modules import core, never foundation)
 ```
 
 ## Repository Roles
@@ -62,7 +62,7 @@
 └─────────────────────────────────────────┘
 ```
 
-**Key rule**: Modules depend ONLY on amplifier-core; foundation and apps sit above modules in the dependency graph.
+**Key rule**: Modules depend ONLY on amplifier-core, never on foundation or apps.
 
 ### Bundle vs Module
 
@@ -75,11 +75,11 @@
 
 ## Multi-Repo Workspace Pattern
 
-When working across repos, use `amplifier-dev` to create ephemeral workspaces:
+When working across repos, use `amplifier-workspace` to create ephemeral workspaces:
 
 ```bash
 # Create workspace with all core repos as submodules
-amplifier-dev ~/work/my-feature
+amplifier-workspace ~/work/my-feature
 
 # Structure created:
 ~/work/my-feature/

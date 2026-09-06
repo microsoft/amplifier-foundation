@@ -1,7 +1,7 @@
 ---
 bundle:
   name: anchors
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Lean bundle driven by a small set of behavioral principles.
     A minimal system prompt, thin purposeful agents, and a standard tool roster.

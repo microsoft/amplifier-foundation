@@ -27,25 +27,27 @@ desired conduct as a small set of named principles, loaded once at the head of
 the system prompt, and let those principles -- not paragraphs of policy -- anchor
 how the agent acts.
 
-The bundle is built around a small set of principles:
+The bundle is built around three principles:
 
 1. **Investigate before acting** -- understand the problem fully before proposing
    solutions; curiosity over assumptions.
 2. **Minimum viable change** -- nothing speculative; every line, file, and
    abstraction must earn its place.
-3. **Verify at every step** -- run tests, check types, validate assumptions;
-   evidence before assertions.
-4. **Delegate complex work** -- push multi-file exploration, design, implementation,
-   debugging, and git work to sub-agents so the parent context stays lean.
+3. **Verify at every step** -- never claim "done" without proof.
 
 These principles do most of the steering. Everything else in the bundle exists to
 support them.
+
+There is deliberately no "delegate complex work" principle. It was removed in
+#327 after it was measured to cause over-delegation; the agent roster below is
+what makes delegation targets obvious, without a standing instruction to reach
+for them.
 
 ## What's in it
 
 | Component | Notes |
 |-----------|-------|
-| **System prompt** | A minimal prompt: the four principles, a short operating-rules block, and a commit-message convention. That's it. |
+| **System prompt** | A minimal prompt: the three principles, a short operating-rules block, and a commit-message convention. That's it. |
 | **Orchestrator** | `loop-streaming` with extended thinking enabled. |
 | **Context** | `context-simple`, 300k window, auto-compact at 80%. |
 | **Tools** | A standard roster at the parent: filesystem, bash, web, search, todo, apply-patch, delegate, skills (discovery only), mode, recipes. |
@@ -63,9 +65,9 @@ support them.
 - **Pay only for what earns its place.** Skill auto-injection is off, hooks are
   limited to the free-cost set, and the system prompt is deliberately short.
   Capabilities are added back only when a real task shows they're missing.
-- **Delegation-aware by default.** "Delegate complex work" is a first-class
-  principle, not an afterthought -- the parent is expected to route non-trivial
-  work to the agents.
+- **Delegation by contract, not by instruction.** Each agent's USE-WHEN /
+  DO-NOT-USE-WHEN boundary is what routes work, rather than a standing
+  principle telling the parent to delegate (removed in #327).
 
 ## Self-contained by design
 
@@ -95,5 +97,8 @@ anchors/
 
 ## Status
 
-Promoted from `experiments/behavioral-anchor` to a published bundle. Version 0.1.0. The principle set and tool/agent roster are a
-starting point and will be adjusted as observation shows what helps or hurts.
+Promoted from `experiments/behavioral-anchor` to a published bundle. Version
+0.2.0 -- the evaluated (#327) principle and agent text, and the source of the
+runtime that `anchors-amp-dev` includes. The principle set and tool/agent roster
+are a starting point and will be adjusted as observation shows what helps or
+hurts.
