@@ -229,7 +229,8 @@ Key agent-specific knowledge:
 1. **WHY**: Clear value proposition
 2. **WHEN**: Activation triggers (MUST, REQUIRED, ALWAYS, "Use when...")
 3. **WHAT**: Domain terms and concepts
-4. **HOW**: `<example>` blocks with context/user/assistant/commentary
+4. **HOW**: a decision rule inside the WHEN clause (V6) — **no `<example>` or
+   `<commentary>` blocks**, per @foundation:context/shared/description-authoring-principles.md
 
 ### Agent File Structure
 
@@ -240,7 +241,7 @@ Key agent-specific knowledge:
 ### Common Mistakes
 
 - One-liner descriptions (LLM can't match requests to agents)
-- Missing `<example>` blocks (LLM doesn't know when to delegate)
+- `<example>` / `<commentary>` blocks (paid on every turn; a decision rule in the WHEN clause does the same job)
 - No activation triggers (weak WHEN coverage)
 
 ---

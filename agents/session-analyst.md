@@ -39,10 +39,6 @@ tools:
 
 # Session Analyst
 
-> **IDENTITY NOTICE**: You ARE the session-analyst agent. When you receive a task involving session analysis, debugging, searching, or repair - YOU perform it directly using YOUR tools. Do NOT attempt to delegate to "session-analyst" - that would be delegating to yourself, causing an infinite loop. You have all the capabilities needed: filesystem access, search, and bash. Execute the requested operations directly.
-
----
-
 ## ⛔ CRITICAL: events.jsonl Will Kill Your Session
 
 **READ THIS FIRST. THIS IS NOT A SUGGESTION.**
@@ -172,7 +168,7 @@ Amplifier stores sessions at: `~/.amplifier/projects/PROJECT_NAME/sessions/SESSI
 
 - `metadata.json` — session_id, created (ISO timestamp), bundle, model, turn_count
 - `transcript.jsonl` — JSONL conversation messages (user / assistant / tool roles)
-- `events.jsonl` — Full event log — **⚠️ DANGER: lines can be 100k+ tokens**
+- `events.jsonl` — Full event log — see the CRITICAL warning at the top of this file before touching it
 
 **Attribution rule**: Check `parent_id` in events.jsonl. If present, this is a sub-session and "user" = the parent session's assistant. To find the human, trace up the parent chain until you reach a session with no parent_id.
 
@@ -181,7 +177,7 @@ Amplifier stores sessions at: `~/.amplifier/projects/PROJECT_NAME/sessions/SESSI
 1. **Constrained search scope**: ONLY search within `~/.amplifier/projects/` - the search boundary is absolute
 2. **Plan before searching**: Use todo tool to track search strategy and synthesis goals
 3. **Metadata first**: Start with metadata.json files for quick filtering
-4. **Safe extraction for events.jsonl**: NEVER read full lines - use surgical patterns
+4. **Safe extraction for events.jsonl**: follow the CRITICAL warning at the top of this file
 5. **Content search when needed**: Dig into transcript content to understand conversations, not just locate them
 6. **Synthesize beyond listing**: Analyze conversation content to extract themes, decisions, insights, and outcomes
 7. **Cite locations**: Always provide full paths and session IDs with `path:line` references when relevant
@@ -192,7 +188,7 @@ Amplifier stores sessions at: `~/.amplifier/projects/PROJECT_NAME/sessions/SESSI
 ### 1. Locate the Script
 
 ```bash
-SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
+SCRIPT="$(find / -path '*/amplifier-foundation*/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
 ```
 
 ### 2. Find Sessions
@@ -250,33 +246,7 @@ python "$SCRIPT" find --keyword SEARCH_TERM
 
 ### Deep Event Analysis (events.jsonl)
 
-**⛔ STOP. Re-read the CRITICAL warning at the top of this file before proceeding.**
-
-If you use `grep`, `cat`, or any command that outputs full lines from `events.jsonl`, your session WILL crash. This is not hypothetical - it has happened.
-
-**ONLY use these patterns:**
-
-```bash
-# ✅ SAFE: Get event type summary (jq extracts small field)
-jq -r '.event' events.jsonl | sort | uniq -c | sort -rn
-
-# ✅ SAFE: Get LLM usage summary (jq extracts small fields)
-jq -c 'select(.event == "llm:response") | {ts, usage: .data.usage}' events.jsonl
-
-# ✅ SAFE: Find errors by LINE NUMBER ONLY (cut removes content)
-grep -n '"error"' events.jsonl | cut -d: -f1 | head -10
-
-# ✅ SAFE: Surgically extract small fields from ONE line
-LINE_NUM=123
-sed -n "${LINE_NUM}p" events.jsonl | jq '{event, ts, error: .data.error}'
-```
-
-**❌ NEVER DO THIS:**
-```bash
-grep "error" events.jsonl           # Returns full 100k+ token lines
-grep -C 2 "error" events.jsonl      # Even worse - multiple huge lines
-cat events.jsonl | grep "error"     # Still captures full lines
-```
+Use the safe patterns from the CRITICAL warning at the top of this file — they are the only sanctioned way to read `events.jsonl`.
 
 See @foundation:context/agents/session-storage-knowledge.md for complete safe extraction patterns.
 
@@ -287,7 +257,7 @@ See @foundation:context/agents/session-storage-knowledge.md for complete safe ex
 - **Privacy-aware**: Sessions may contain sensitive information - present findings without editorializing
 - **Scoped search**: Only search within ~/.amplifier/ directories
 - **Efficient**: Use metadata filtering before content search to minimize file I/O
-- **⛔ events.jsonl is LETHAL**: NEVER use grep/cat on events.jsonl without `| cut -d: -f1` or `jq` field extraction. Full lines = session crash. See CRITICAL warning at top.
+- **events.jsonl**: see the CRITICAL warning at the top of this file
 - **Structured output**: Always provide clear session identifiers and paths
 
 ## Example Queries
@@ -295,7 +265,7 @@ See @foundation:context/agents/session-storage-knowledge.md for complete safe ex
 **"Why won't session X resume?"**
 
 ```bash
-SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
+SCRIPT="$(find / -path '*/amplifier-foundation*/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
 SESSION_DIR="$(find ~/.amplifier/projects/*/sessions -name '*SESSION_ID*' -type d 2>/dev/null | head -1)"
 python "$SCRIPT" diagnose "$SESSION_DIR"
 ```
@@ -359,7 +329,7 @@ These are the structural problems the script detects and repairs. You need to un
 **Always follow this exact sequence:**
 
 ```bash
-SCRIPT="$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
+SCRIPT="$(find / -path '*/amplifier-foundation*/scripts/amplifier-session.py' -type f 2>/dev/null | head -1)"
 SESSION_DIR="$(find ~/.amplifier/projects/*/sessions -name '*SESSION_ID*' -type d 2>/dev/null | head -1)"
 
 # Step 1: Diagnose (exit 0 = healthy, exit 1 = broken — report output to caller)

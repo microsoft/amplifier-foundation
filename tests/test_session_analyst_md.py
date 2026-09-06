@@ -8,6 +8,8 @@ Verifies that the session-analyst agent documentation has been updated to:
 4. Have no references to the old session-repair.py in workflow sections
 """
 
+import fnmatch
+import re
 from pathlib import Path
 
 import pytest
@@ -15,12 +17,34 @@ import pytest
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-AGENT_FILE = Path(__file__).parent.parent / "agents" / "session-analyst.md"
+REPO_ROOT = Path(__file__).parent.parent
+AGENT_FILE = REPO_ROOT / "agents" / "session-analyst.md"
+AGENTS_BEHAVIOR_FILE = REPO_ROOT / "behaviors" / "agents.yaml"
+
+# The glob the agent uses to locate the unified script.
+#
+# It must match BOTH layouts the script really lives under:
+#   module cache:     .../amplifier-foundation-<hash>/scripts/amplifier-session.py
+#   source checkout:  .../amplifier-foundation/scripts/amplifier-session.py
+#
+# The bare '*/amplifier-foundation/...' form silently missed the cache -- which is
+# where the script actually is at runtime -- so the agent found nothing.
+SCRIPT_DISCOVERY_GLOB = "*/amplifier-foundation*/scripts/amplifier-session.py"
 
 # The unified script path that should appear in the file
 SCRIPT_DISCOVERY_LINE = (
-    "SCRIPT=\"$(find / -path '*/amplifier-foundation/scripts/amplifier-session.py' "
+    f"SCRIPT=\"$(find / -path '{SCRIPT_DISCOVERY_GLOB}' "
     '-type f 2>/dev/null | head -1)"'
+)
+
+# Real-world paths the discovery glob must resolve. The cache path is the one
+# that matters: it is where a released Amplifier install keeps the script.
+CACHE_LAYOUT_PATH = (
+    "/home/user/.amplifier/cache/amplifier-foundation-c909465861f9d6ce"
+    "/scripts/amplifier-session.py"
+)
+CHECKOUT_LAYOUT_PATH = (
+    "/home/user/repos/amplifier-foundation/scripts/amplifier-session.py"
 )
 
 # Old script reference that should NOT appear in workflow sections
@@ -57,16 +81,56 @@ class TestScriptDiscovery:
 
     def test_script_discovery_uses_find(self, content: str) -> None:
         """Discovery must use find command with correct path pattern."""
-        assert (
-            "find / -path '*/amplifier-foundation/scripts/amplifier-session.py'"
-            in content
-        ), "Script discovery 'find' pattern not found in file"
+        assert f"find / -path '{SCRIPT_DISCOVERY_GLOB}'" in content, (
+            "Script discovery 'find' pattern not found in file"
+        )
 
     def test_script_variable_assigned(self, content: str) -> None:
         """SCRIPT variable must be assigned from the find command."""
         assert 'SCRIPT="$(find' in content or "SCRIPT=$(find" in content, (
             "SCRIPT variable assignment not found"
         )
+
+
+# ── Test 1b: Discovery glob resolves the layouts the script really lives in ──
+
+
+def _discovery_globs(content: str) -> list[str]:
+    """Every `-path '<glob>'` in the file that targets amplifier-session.py."""
+    globs = re.findall(r"-path\s+'([^']*)'", content)
+    return [g for g in globs if g.endswith("amplifier-session.py")]
+
+
+class TestScriptDiscoveryResolvesRealLayouts:
+    """The discovery glob must actually match where the script lives.
+
+    `find -path` matches the whole path with shell-glob semantics (`*` spans
+    `/`), which is what `fnmatch.fnmatchcase` models. A glob that compiles
+    fine but matches nothing is the exact defect this guards.
+    """
+
+    def test_at_least_one_discovery_glob(self, content: str) -> None:
+        """There must be a script-discovery glob to check."""
+        assert _discovery_globs(content), (
+            "No `-path '<glob>'` targeting amplifier-session.py found in the file"
+        )
+
+    def test_every_discovery_glob_matches_cache_layout(self, content: str) -> None:
+        """Every discovery glob must match the hashed module-cache layout."""
+        for glob in _discovery_globs(content):
+            assert fnmatch.fnmatchcase(CACHE_LAYOUT_PATH, glob), (
+                f"Discovery glob {glob!r} does not match the module-cache layout "
+                f"{CACHE_LAYOUT_PATH!r} -- this is where the script actually is at "
+                f"runtime, so the agent would find nothing"
+            )
+
+    def test_every_discovery_glob_matches_checkout_layout(self, content: str) -> None:
+        """Every discovery glob must still match a plain source checkout."""
+        for glob in _discovery_globs(content):
+            assert fnmatch.fnmatchcase(CHECKOUT_LAYOUT_PATH, glob), (
+                f"Discovery glob {glob!r} does not match the source-checkout layout "
+                f"{CHECKOUT_LAYOUT_PATH!r}"
+            )
 
 
 # ── Test 2: Old session-repair.py removed from workflow sections ──────────────
@@ -322,3 +386,84 @@ class TestMarkdownValidity:
             or "parent chain" in content
             or "Attribution" in content
         ), "Attribution rule not preserved"
+
+
+# ── Test 11: the self-delegation IDENTITY NOTICE is dead and stays deleted ──
+
+
+class TestNoSelfDelegationNotice:
+    """session-analyst cannot delegate, so it needs no "don't delegate" notice.
+
+    The notice warned the agent not to delegate to itself. That is unreachable:
+    foundation's own composition strips `tool-delegate` from every spawned agent
+    (behaviors/agents.yaml, `settings.exclude_tools`), and session-analyst does
+    not re-declare `tool-delegate` in its own `tools:` block -- which is the only
+    carve-out that would restore it (see amplifier_app_cli/session_spawner.py's
+    `_filter_tools`, "explicit declarations always honored").
+
+    These two tests are the measurement that justified deleting the notice. If
+    either invariant ever changes, the notice becomes live again and this fails.
+    """
+
+    def test_foundation_composition_excludes_delegate(self) -> None:
+        """behaviors/agents.yaml must exclude tool-delegate from spawned agents."""
+        assert AGENTS_BEHAVIOR_FILE.exists(), (
+            f"agents behavior not found: {AGENTS_BEHAVIOR_FILE}"
+        )
+        behavior = AGENTS_BEHAVIOR_FILE.read_text(encoding="utf-8")
+        assert re.search(r"exclude_tools:\s*\[[^\]]*tool-delegate", behavior), (
+            "behaviors/agents.yaml no longer excludes tool-delegate -- spawned "
+            "agents can delegate again, so the self-delegation notice removed "
+            "from session-analyst.md may need to come back"
+        )
+
+    def test_agent_does_not_redeclare_delegate(self, content: str) -> None:
+        """session-analyst must not re-declare tool-delegate in its own tools."""
+        frontmatter = content.split("---", 2)[1]
+        assert "tool-delegate" not in frontmatter, (
+            "session-analyst re-declares tool-delegate, which overrides the "
+            "exclusion -- it can delegate again, so the self-delegation notice "
+            "may need to come back"
+        )
+
+    def test_identity_notice_absent(self, content: str) -> None:
+        """The dead IDENTITY NOTICE must not be reintroduced."""
+        assert "IDENTITY NOTICE" not in content, (
+            "The IDENTITY NOTICE is dead text -- see this class's docstring"
+        )
+
+
+# ── Test 12: the events.jsonl rule is stated once, not five times ──
+
+
+class TestEventsJsonlRuleStatedOnce:
+    """One authoritative warning; everything else points at it.
+
+    The rule was previously restated five times (top warning, Storage Locations,
+    Operating Principles, Deep Event Analysis, Important Constraints). Repetition
+    is paid on every spawn and gives the model five near-identical rules to
+    reconcile instead of one.
+    """
+
+    def test_single_never_do_this_block(self, content: str) -> None:
+        """Only one 'NEVER DO THIS' command block may exist."""
+        occurrences = content.count("NEVER DO THIS")
+        assert occurrences == 1, (
+            f"'NEVER DO THIS' appears {occurrences} times; the events.jsonl rule "
+            f"must be stated exactly once"
+        )
+
+    def test_single_safe_patterns_block(self, content: str) -> None:
+        """Only one 'ALWAYS DO THIS' safe-pattern block may exist."""
+        occurrences = content.count("ALWAYS DO THIS")
+        assert occurrences == 1, (
+            f"'ALWAYS DO THIS' appears {occurrences} times; the safe-pattern list "
+            f"must be stated exactly once"
+        )
+
+    def test_restatements_point_back(self, content: str) -> None:
+        """Sections that mention the rule must point at the one statement."""
+        assert content.count("CRITICAL warning at the top of this file") >= 3, (
+            "Sections that used to restate the events.jsonl rule must instead "
+            "point back at the single CRITICAL warning"
+        )

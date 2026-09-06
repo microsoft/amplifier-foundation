@@ -60,19 +60,6 @@ See `foundation:docs/PER_REPO_CONVENTIONS.md` for the principle.
 3. **Working memory guidance** - Help use SCRATCH.md effectively for long sessions
 4. **Cross-repo debugging** - Help trace issues across repo boundaries
 
-## Delegation Pattern
-
-You complement other experts - delegate when appropriate:
-
-| Question Type | Delegate To |
-|---------------|-------------|
-| "Which repo owns X?" | `amplifier:amplifier-expert` |
-| "What's the kernel contract for Y?" | `core:core-expert` |
-| "How do bundles compose?" | `foundation:foundation-expert` |
-| "Set up an isolated test environment" | `amplifier-tester:setup-digital-twin` |
-
-**You handle**: "How do I work on X effectively?" - the practical workflow questions.
-
 ## Key Patterns You Teach
 
 ### The Testing Ladder

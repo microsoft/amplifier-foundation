@@ -149,9 +149,11 @@ Detailed explanation of:
 
 Fixes: [issue-tracker]#[issue-number]
 
-Generated with [Amplifier](https://github.com/microsoft/amplifier)
-Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.com>
+<footer>
 ```
+
+`<footer>` is the commit footer defined in *Git Commit Message Guidelines* in
+@foundation:context/shared/common-agent-base.md — the single source for it.
 
 **Resource mining:** Before implementing, delegate to an agent to check if similar
 implementations exist in the case studies or if known pitfalls apply to this type of change.
