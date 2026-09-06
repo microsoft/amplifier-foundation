@@ -952,7 +952,7 @@ steps:
               result["warnings"].append({
                   "type": "module_pyproject_parse_error",
                   "module": module_name,
-                  "message": f"Failed to parse {mp.relative_to(path)}: {err}",
+                  "message": f"Failed to parse {mp.relative_to(path).as_posix()}: {err}",
                   "severity": "WARNING"
               })
               continue
@@ -3413,7 +3413,7 @@ steps:
                   try:
                       file_content = md_file.read_text(encoding="utf-8", errors="replace")
                       if slash_pat.search(file_content) or name_pat.search(file_content):
-                          mentions.append(str(md_file.relative_to(path)))
+                          mentions.append(md_file.relative_to(path).as_posix())
                   except Exception:
                       continue
           return mentions
@@ -3428,7 +3428,7 @@ steps:
       }
 
       for mode_file in sorted(unique_mode_files):
-          rel_path = str(mode_file.relative_to(path))
+          rel_path = mode_file.relative_to(path).as_posix()
           results["candidates_scanned"] += 1
           status, fm, _ = extract_frontmatter(mode_file)
 
@@ -4164,7 +4164,7 @@ steps:
                   except Exception:
                       continue
                   if re.search(r'(?<!uv )pip install', doc_text):
-                      doc_pip_hits.append(str(doc_file.relative_to(path)))
+                      doc_pip_hits.append(doc_file.relative_to(path).as_posix())
               if doc_pip_hits:
                   results["info"].append({
                       "type": "docs_pip_install",
@@ -4300,7 +4300,7 @@ steps:
               continue
 
           results["files_checked"] += 1
-          rel_path = str(file_path.relative_to(path))
+          rel_path = file_path.relative_to(path).as_posix()
 
           check = check_body_is_instruction(content)
           if check["verdict"] == "FLAG":
