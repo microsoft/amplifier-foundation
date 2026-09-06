@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from amplifier_foundation.paths.resolution import ParsedURI
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.paths.resolution import parse_uri
+from amplifier_foundation.paths.resolution import strip_uri_drive_prefix
 from amplifier_foundation.sources.git import GitSourceHandler
 from amplifier_foundation.sources.protocol import SourceStatus
 
@@ -198,7 +199,16 @@ def _cached_path_for(uri: str, cache_dir: Path) -> Path | None:
         return active if active.exists() else None
 
     if parsed.is_file:
-        path = Path(parsed.path)
+        # `file:///C:/Users/x` parses to the path "/C:/Users/x": the leading
+        # slash is the URI's authority separator, not a filesystem root. Left
+        # in place, Path() reads it as rooted-but-driveless and resolves it
+        # against whatever the *current* drive happens to be -- so the file
+        # never exists, the walk sees a dead seed, and every transitive source
+        # silently disappears on Windows. Normalized exactly as
+        # FileSourceHandler.resolve() does, via the shared helper.
+        path = Path(strip_uri_drive_prefix(parsed.path))
+        if parsed.subpath:
+            path = path / parsed.subpath
         return path if path.exists() else None
 
     return None

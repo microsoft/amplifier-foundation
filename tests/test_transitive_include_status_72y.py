@@ -300,6 +300,28 @@ async def test_deleted_cache_is_not_resolved_back_into_existence(
     assert not cache_path.exists(), "walk must not have cloned a missing cache"
 
 
+def test_cached_path_for_round_trips_a_file_uri(tmp_path: Path) -> None:
+    """A ``file://`` seed must resolve on Windows too, not just POSIX.
+
+    ``Path.as_uri()`` emits ``file:///C:/Users/x`` on Windows, whose path
+    component parses to ``/C:/Users/x`` -- rooted but driveless. Passed to
+    ``Path()`` unnormalized it resolves against whatever the current drive
+    happens to be, the seed file "does not exist", and the whole walk silently
+    finds nothing. This asserts the round trip on every platform; the Windows
+    CI legs are what make it a real guard.
+    """
+    bundle_file = tmp_path / "bundle.yaml"
+    bundle_file.write_text("bundle:\n  name: x\n  version: '1.0.0'\n")
+    cache = tmp_path / "cache"
+
+    assert _cached_path_for(bundle_file.as_uri(), cache) == bundle_file
+    # #subdirectory= is honoured the same way FileSourceHandler.resolve() does.
+    assert (
+        _cached_path_for(f"{tmp_path.as_uri()}#subdirectory=bundle.yaml", cache)
+        == bundle_file
+    )
+
+
 @pytest.mark.asyncio
 async def test_direct_sources_carry_no_via(tmp_path: Path) -> None:
     """``via`` stays None for a bundle's own directly-declared sources."""
