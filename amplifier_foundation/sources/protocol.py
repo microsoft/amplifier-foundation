@@ -49,6 +49,19 @@ class SourceStatus:
     summary: str = ""
     """Human-readable summary of the status."""
 
+    via: str | None = None
+    """Name of the bundle whose ``includes:`` reaches this source.
+
+    ``None`` for a *direct* source -- one declared by the bundle being checked
+    (its own source URI, a module ``source:``, a session entry).  Set to the
+    display name of the immediate including bundle when this source was found
+    only by walking the include graph, so a report can say *which* bundle pulls
+    a stale cache in rather than presenting it as unattributed.
+
+    Appended last, with a default, so every existing positional/keyword
+    construction of ``SourceStatus`` keeps working unchanged.
+    """
+
     @property
     def is_pinned(self) -> bool:
         """Check if this source is pinned to a specific commit.
