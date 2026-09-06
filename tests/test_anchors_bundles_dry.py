@@ -71,9 +71,8 @@ def _agent_files() -> list[Path]:
 
 
 def _relative_files(root: Path) -> set[str]:
-    return {
-        str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()
-    }
+    """POSIX-style relative paths, so the comparison reads the same on Windows."""
+    return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
 
 
 class TestAmpDevIsAThinVariant:
@@ -136,15 +135,17 @@ class TestNoParallelCopies:
         see UNSHIPPED_TREES for why.
         """
         for name in ECOSYSTEM_DOCS:
-            everywhere = sorted(
-                str(p.relative_to(REPO_ROOT))
+            found = sorted(
+                p.relative_to(REPO_ROOT)
                 for p in REPO_ROOT.rglob(name)
-                if not set(p.relative_to(REPO_ROOT).parts) & {".git"}
+                if ".git" not in p.relative_to(REPO_ROOT).parts
             )
-            unshipped = [
-                c for c in everywhere if c.split("/", 1)[0] in UNSHIPPED_TREES
+            # Compare on path *parts*, never on a string separator -- rglob
+            # yields backslashes on Windows and this runs there too.
+            unshipped = [r.as_posix() for r in found if r.parts[0] in UNSHIPPED_TREES]
+            shipped = [
+                r.as_posix() for r in found if r.parts[0] not in UNSHIPPED_TREES
             ]
-            shipped = [c for c in everywhere if c not in unshipped]
             assert len(shipped) == 1, (
                 f"Expected exactly one shipped copy of {name}, found "
                 f"{len(shipped)}: {shipped}. Two copies drift; the canonical "
@@ -177,7 +178,7 @@ class TestAgentDescriptionsCarryNoExampleBlocks:
                 if tag in description.lower()
             ]
             if tags:
-                rel = agent_file.relative_to(REPO_ROOT)
+                rel = agent_file.relative_to(REPO_ROOT).as_posix()
                 offenders.append(f"{rel} ({', '.join(tags)})")
         assert not offenders, (
             "Agent descriptions must contain no <example>/<commentary> blocks "
