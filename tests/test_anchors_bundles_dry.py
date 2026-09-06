@@ -356,15 +356,93 @@ def _literal_set(text: str, name: str) -> list[set[str]]:
 DISCOVERY_REPO_PATH_ENV = "VALIDATE_AGENTS_REPO_PATH"
 
 
-def _discovery_step_body() -> str:
-    """The agent-discovery step's Python heredoc, verbatim and de-indented."""
-    lines = VALIDATE_AGENTS_RECIPE.read_text(encoding="utf-8").splitlines()
-    step = next(i for i, line in enumerate(lines) if line.strip() == '- id: "agent-discovery"')
+# `validate-bundle-repo` v3.13.0 passes the repo path through this variable,
+# for the same reason and after the same measured failure: ALL TEN of its
+# Python steps wrote `repo_path = "{{repo_path}}"`, so every one of them walked
+# an empty tree on Windows and reported a clean result over zero files.
+REPO_RECIPE_PATH_ENV = "VALIDATE_BUNDLE_REPO_PATH"
+
+# The agent classifier's source span, shared by both recipes. Bounded by its
+# first and last lines rather than by line numbers, so an edit above or below
+# it does not silently change what is being compared.
+_CLASSIFIER_FIRST_LINE = "FRONTMATTER_RE = re.compile("
+_CLASSIFIER_LAST_LINE = 'return False, "frontmatter_without_meta"'
+
+
+def _step_body(recipe: Path, step_id: str) -> str:
+    """One bash step's Python heredoc, verbatim and de-indented."""
+    lines = recipe.read_text(encoding="utf-8").splitlines()
+    step = next(i for i, line in enumerate(lines) if line.strip() == f'- id: "{step_id}"')
     start = next(
         i for i in range(step, len(lines)) if lines[i].rstrip().endswith("<< 'EOF'")
     )
     end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "EOF")
     return "\n".join(line[6:] for line in lines[start + 1 : end])
+
+
+def _python_step_bodies(recipe: Path) -> dict[str, str]:
+    """Every `<< 'EOF'` heredoc in a recipe, keyed by the step id it belongs to."""
+    lines = recipe.read_text(encoding="utf-8").splitlines()
+    bodies: dict[str, str] = {}
+    current = None
+    index = 0
+    while index < len(lines):
+        match = re.match(r'\s*- id: "([^"]+)"', lines[index])
+        if match:
+            current = match.group(1)
+        if lines[index].rstrip().endswith("<< 'EOF'") and current is not None:
+            indent = len(lines[index]) - len(lines[index].lstrip())
+            index += 1
+            collected = []
+            while lines[index].strip() != "EOF":
+                collected.append(lines[index][indent:])
+                index += 1
+            bodies[current] = "\n".join(collected)
+        index += 1
+    return bodies
+
+
+def _classifier_source(recipe: Path, step_id: str) -> str:
+    """The agent classifier block, verbatim, from one step of one recipe."""
+    lines = _step_body(recipe, step_id).splitlines()
+    start = next(
+        i for i, line in enumerate(lines) if line.strip().startswith(_CLASSIFIER_FIRST_LINE)
+    )
+    end = next(
+        i for i in range(start, len(lines)) if lines[i].strip() == _CLASSIFIER_LAST_LINE
+    )
+    return "\n".join(lines[start : end + 1])
+
+
+def _discovery_step_body() -> str:
+    """The agent-discovery step's Python heredoc, verbatim and de-indented."""
+    return _step_body(VALIDATE_AGENTS_RECIPE, "agent-discovery")
+
+
+def _run_repo_recipe_step(step_id: str, repo_path: Path | None = None) -> dict:
+    """Execute one `validate-bundle-repo` step and return its JSON payload.
+
+    Executed, not re-implemented -- same discipline as
+    `_run_recipe_discovery_step`, and for the same reason: a test that
+    reimplements the walk agrees with itself while the recipe drifts.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".py", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(_step_body(VALIDATE_BUNDLE_REPO_RECIPE, step_id))
+        script = handle.name
+    env = dict(os.environ)
+    env[REPO_RECIPE_PATH_ENV] = str(repo_path if repo_path is not None else REPO_ROOT)
+    completed = subprocess.run(
+        [sys.executable, script], capture_output=True, text=True, check=True, env=env
+    )
+    return json.loads(completed.stdout)
 
 
 def _run_recipe_discovery_step(repo_path: Path | None = None) -> dict:
@@ -576,3 +654,307 @@ class TestDiscoveryScopeParity:
 
         with pytest.raises(subprocess.CalledProcessError):
             _run_recipe_discovery_step(REPO_ROOT / "no-such-directory-exists-here")
+
+    # ------------------------------------------------------------------
+    # validate-bundle-repo's half of the same question (v3.13.0, lane dfni)
+    # ------------------------------------------------------------------
+
+    def test_both_recipes_carry_the_same_classifier_source(self) -> None:
+        """The classifier is ONE implementation, present in two files.
+
+        Recipe steps are self-contained heredocs with no import mechanism
+        between them, so a literally shared function is not available (lane
+        xe1u declined that route with the reason). Byte-identity is the
+        strongest substitute: two copies that must agree character for
+        character cannot drift into two different answers, which is the
+        asymmetry the whole #341 -> ux32 -> 6phe -> xe1u -> 39z0 chain existed
+        to remove.
+        """
+        from_agents = _classifier_source(VALIDATE_AGENTS_RECIPE, "agent-discovery")
+        from_repo = _classifier_source(
+            VALIDATE_BUNDLE_REPO_RECIPE, "agent-description-validation"
+        )
+        assert from_agents, "validate-agents.yaml carries no classifier block"
+        assert from_agents == from_repo, (
+            "The agent classifier has diverged between validate-agents.yaml and "
+            "validate-bundle-repo.yaml. It is copied byte-for-byte on purpose; "
+            "edit one and copy it to the other, never edit them separately.\n"
+            f"--- validate-agents ---\n{from_agents}\n"
+            f"--- validate-bundle-repo ---\n{from_repo}"
+        )
+
+    def test_validate_bundle_repo_classifies_exactly_the_guards_agent_files(self) -> None:
+        """Both recipes report the SAME population, proven by running both.
+
+        Before v3.13.0 this recipe counted every candidate under an `agents/`
+        directory: `agents_checked: 32` where the true agent count is 28.
+        """
+        payload = _run_repo_recipe_step("agent-description-validation")
+
+        scanned = {detail["file"] for detail in payload["agent_details"]} | {
+            entry["file"] for entry in payload["non_agents_found"]
+        }
+        from_guard_candidates = {
+            path.relative_to(REPO_ROOT).as_posix() for path in _agent_candidate_files()
+        }
+        assert scanned == from_guard_candidates, (
+            "validate-bundle-repo's scan and this guard's _agent_candidate_files "
+            f"must reach the same files. In recipe not guard: {sorted(scanned - from_guard_candidates)}; "
+            f"in guard not recipe: {sorted(from_guard_candidates - scanned)}"
+        )
+
+        agents = {detail["file"] for detail in payload["agent_details"]}
+        from_guard_agents = {
+            path.relative_to(REPO_ROOT).as_posix() for path in _agent_files()
+        }
+        assert agents == from_guard_agents, (
+            "validate-bundle-repo's classifier and this guard's _agent_files must "
+            f"agree. In recipe not guard: {sorted(agents - from_guard_agents)}; "
+            f"in guard not recipe: {sorted(from_guard_agents - agents)}"
+        )
+        assert agents, "the recipe classified no agents at all -- a PASS over nothing"
+        assert payload["agents_checked"] == len(from_guard_agents), (
+            f"agents_checked={payload['agents_checked']} disagrees with the "
+            f"{len(from_guard_agents)} agents this guard classified"
+        )
+        assert payload["candidates_scanned"] == len(from_guard_candidates)
+
+    def test_validate_bundle_repo_names_every_non_agent_it_excludes(self) -> None:
+        """A classifier that drops silently reintroduces the original defect.
+
+        Lane 39z0 F4: the mitigation for a classifier's own silent-drop risk is
+        that every excluded file is reported by name AND reason. A real agent
+        that lost its `meta:` block must appear here, not vanish.
+        """
+        payload = _run_repo_recipe_step("agent-description-validation")
+        non_agents = {entry["file"]: entry["reason"] for entry in payload["non_agents_found"]}
+
+        context_docs = {
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "context" / "agents").glob("*.md")
+        }
+        assert context_docs, "expected context/agents/*.md to exist in this repo"
+        assert context_docs <= set(non_agents), (
+            "context/agents/*.md must be REPORTED as non-agents, not silently "
+            f"dropped. Missing: {sorted(context_docs - set(non_agents))}"
+        )
+        assert payload["non_agent_count"] == len(payload["non_agents_found"])
+        for path in sorted(context_docs):
+            assert non_agents[path] == "no_frontmatter"
+
+    def test_validate_bundle_repo_fails_an_agent_whose_description_cannot_be_read(
+        self,
+    ) -> None:
+        """The defect this version exists to close, at its cause.
+
+        v3.12.0's `extract_description()` returned `""` for a broken file, a
+        missing `description:`, and an empty one alike -- and `""` passed every
+        check: 0 tokens is under budget, and it contains no <example> and no
+        <commentary>. Four files a maintainer would call agents therefore
+        reported `errors: []`.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "fixture"
+            (repo / "agents").mkdir(parents=True)
+            (repo / "agents" / "good.md").write_text(
+                '---\nmeta:\n  name: good\n  description: "A real description."\n---\nbody\n',
+                encoding="utf-8",
+            )
+            (repo / "agents" / "broken-yaml.md").write_text(
+                '---\nmeta:\n  name: broken\n   description: "bad indent"\n  - stray\n---\nbody\n',
+                encoding="utf-8",
+            )
+            (repo / "agents" / "no-description.md").write_text(
+                "---\nmeta:\n  name: nodesc\n---\nbody\n", encoding="utf-8"
+            )
+            (repo / "agents" / "empty-description.md").write_text(
+                '---\nmeta:\n  name: empty\n  description: ""\n---\nbody\n',
+                encoding="utf-8",
+            )
+            (repo / "agents" / "no-frontmatter.md").write_text(
+                "# no frontmatter at all\n", encoding="utf-8"
+            )
+
+            payload = _run_repo_recipe_step("agent-description-validation", repo)
+
+        assert payload["passed"] is False, (
+            "a repo containing four unusable agent descriptions reported PASS"
+        )
+        errors = {error["file"]: (error["type"], error["reason"]) for error in payload["errors"]}
+        assert errors.get("agents/broken-yaml.md") == (
+            "agent_frontmatter_invalid",
+            "unparseable_frontmatter",
+        )
+        assert errors.get("agents/no-description.md") == (
+            "agent_description_missing",
+            "no_description_key",
+        )
+        assert errors.get("agents/empty-description.md") == (
+            "agent_description_missing",
+            "description_empty",
+        )
+        assert "agents/good.md" not in errors, "the healthy agent was failed"
+
+        # The frontmatter-less file is not an agent at all -- excluded by the
+        # classifier and NAMED, never silently passed with an empty description.
+        assert {entry["file"] for entry in payload["non_agents_found"]} == {
+            "agents/no-frontmatter.md"
+        }
+
+        # And nothing reached the budget checks with an empty string: every
+        # non-ok status carries a null token count rather than a passing 0.
+        for detail in payload["agent_details"]:
+            if detail["description_status"] != "ok":
+                assert detail["description_tokens"] is None, (
+                    f"{detail['file']} was budget-checked against an unreadable "
+                    "description -- 0 tokens is exactly the false pass v3.13.0 removes"
+                )
+
+    def test_validate_bundle_repo_fails_a_behavior_whose_frontmatter_cannot_be_read(
+        self,
+    ) -> None:
+        """The same pattern, second instance (the cross-check).
+
+        `extract_frontmatter_yaml()` returned a bare `{}` for every failure,
+        and `{}` satisfies both of that step's checks vacuously.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "fixture"
+            (repo / "behaviors").mkdir(parents=True)
+            (repo / "bundle.md").write_text(
+                '---\nbundle:\n  name: root\n---\nbody\n', encoding="utf-8"
+            )
+            (repo / "behaviors" / "healthy.md").write_text(
+                "---\nbundle:\n  name: healthy\n---\nbody\n", encoding="utf-8"
+            )
+            (repo / "behaviors" / "broken.md").write_text(
+                "---\nbundle:\n  name: broken\n   includes: [oops\n---\nbody\n",
+                encoding="utf-8",
+            )
+
+            payload = _run_repo_recipe_step("behavior-reference-hygiene", repo)
+
+        types = {(error["behavior"], error["type"]) for error in payload["errors"]}
+        assert ("broken", "behavior_frontmatter_invalid") in types, (
+            "a behavior with unparseable frontmatter passed both hygiene checks: "
+            f"{payload['errors']}"
+        )
+        assert payload["passed"] is False
+        assert ("healthy", "behavior_frontmatter_invalid") not in types
+
+    def test_validate_bundle_repo_never_drops_a_mode_file_silently(self) -> None:
+        """The same pattern, third instance -- silent DROP rather than false pass.
+
+        `if "mode" not in fm: continue` discarded an unreadable file, an absent
+        frontmatter block and an unparseable one alike, with nothing in the
+        output to say so.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "fixture"
+            (repo / "modes").mkdir(parents=True)
+            (repo / "modes" / "healthy.md").write_text(
+                '---\nmode:\n  name: healthy\n  description: "A mode."\n---\nbody\n',
+                encoding="utf-8",
+            )
+            (repo / "modes" / "broken.md").write_text(
+                "---\nmode:\n  name: broken\n   description: bad indent\n  - stray\n---\nbody\n",
+                encoding="utf-8",
+            )
+            (repo / "modes" / "notes.md").write_text(
+                "# Just notes, not a mode\n", encoding="utf-8"
+            )
+
+            payload = _run_repo_recipe_step("mode-validation", repo)
+
+        assert payload["candidates_scanned"] == 3
+        assert payload["modes_checked"] == 1
+
+        broken = [
+            error for error in payload["errors"]
+            if error["type"] == "mode_frontmatter_invalid"
+        ]
+        assert [error["file"] for error in broken] == ["modes/broken.md"], (
+            f"a mode with unparseable frontmatter was skipped silently: {payload}"
+        )
+
+        assert {entry["file"]: entry["reason"] for entry in payload["non_modes_found"]} == {
+            "modes/notes.md": "no_frontmatter"
+        }
+
+    def test_no_validate_bundle_repo_step_interpolates_the_repo_path_into_source(
+        self,
+    ) -> None:
+        """The Windows defect, pinned across EVERY step of this recipe.
+
+        Lane 39z0 fixed three steps in validate-agents. The identical line was
+        still present in all TEN Python steps here -- and this recipe's steps
+        carry `on_error: continue`, so a path that silently resolved to nothing
+        produced a clean payload rather than a visible failure.
+        """
+        offenders: dict[str, list[str]] = {}
+        for step_id, body in _python_step_bodies(VALIDATE_BUNDLE_REPO_RECIPE).items():
+            # Comment lines are exempt: the steps document the defect they fix.
+            hits = [
+                line
+                for line in body.splitlines()
+                if "{{repo_path}}" in line and not line.lstrip().startswith("#")
+            ]
+            if hits:
+                offenders[step_id] = hits
+        assert not offenders, (
+            "These validate-bundle-repo steps interpolate {{repo_path}} into "
+            "Python source. A path inside a string literal is escape-processed, "
+            "which silently destroys every Windows path. Pass it through "
+            f"${REPO_RECIPE_PATH_ENV} instead. Offenders: {offenders}"
+        )
+
+    def test_validate_bundle_repo_survives_a_repo_path_with_escape_sequences(self) -> None:
+        """The Windows defect, reproduced on every platform."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "a\\test\\nested"
+            (repo / "agents").mkdir(parents=True)
+            (repo / "agents" / "probe.md").write_text(
+                '---\nmeta:\n  name: probe\n  description: "probe agent"\n---\nbody\n',
+                encoding="utf-8",
+            )
+            (repo / "context" / "agents").mkdir(parents=True)
+            (repo / "context" / "agents" / "notes.md").write_text(
+                "# Notes\n\nA context document, not an agent.\n", encoding="utf-8"
+            )
+
+            payload = _run_repo_recipe_step("agent-description-validation", repo)
+
+        assert payload["errors"] == [], (
+            f"the step reported errors on an escape-shaped path: {payload['errors']}"
+        )
+        assert {detail["file"] for detail in payload["agent_details"]} == {
+            "agents/probe.md"
+        }, f"the agent was lost under a backslash-escape path: {payload}"
+        assert {entry["file"] for entry in payload["non_agents_found"]} == {
+            "context/agents/notes.md"
+        }
+
+    def test_validate_bundle_repo_reports_a_missing_repo_path_as_an_error(self) -> None:
+        """Never a clean payload over zero files.
+
+        This step is `on_error: continue`, and quality-classification treats an
+        unparseable payload as `{"passed": True, "skipped": True}` -- so a
+        non-zero exit here would HIDE the failure behind a clean skip. The
+        error has to travel in the payload, where it reaches critical_count.
+        """
+        payload = _run_repo_recipe_step(
+            "agent-description-validation", REPO_ROOT / "no-such-directory-here"
+        )
+        assert payload["passed"] is False
+        assert [error["type"] for error in payload["errors"]] == ["agent_scan_path_error"]
+        assert payload.get("skipped") is not True, (
+            "a bad repo path was reported as a clean skip"
+        )

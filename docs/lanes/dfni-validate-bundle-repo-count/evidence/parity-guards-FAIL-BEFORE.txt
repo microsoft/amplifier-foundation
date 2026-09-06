@@ -1,0 +1,33 @@
+FAIL-BEFORE: the 9 new guards run against origin/main's recipe (v3.12.0)
+command: uv run pytest tests/test_anchors_bundles_dry.py -k TestDiscoveryScopeParity
+
+_ TestDiscoveryScopeParity.test_validate_bundle_repo_reports_a_missing_repo_path_as_an_error _
+
+self = <tests.test_anchors_bundles_dry.TestDiscoveryScopeParity object at 0xf4bbba6d7e90>
+
+    def test_validate_bundle_repo_reports_a_missing_repo_path_as_an_error(self) -> None:
+        """Never a clean payload over zero files.
+    
+        This step is `on_error: continue`, and quality-classification treats an
+        unparseable payload as `{"passed": True, "skipped": True}` -- so a
+        non-zero exit here would HIDE the failure behind a clean skip. The
+        error has to travel in the payload, where it reaches critical_count.
+        """
+        payload = _run_repo_recipe_step(
+            "agent-description-validation", REPO_ROOT / "no-such-directory-here"
+        )
+>       assert payload["passed"] is False
+E       assert True is False
+
+tests/test_anchors_bundles_dry.py:956: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_both_recipes_carry_the_same_classifier_source
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_bundle_repo_classifies_exactly_the_guards_agent_files
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_bundle_repo_names_every_non_agent_it_excludes
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_bundle_repo_fails_an_agent_whose_description_cannot_be_read
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_bundle_repo_fails_a_behavior_whose_frontmatter_cannot_be_read
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_bundle_repo_never_drops_a_mode_file_silently
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_no_validate_bundle_repo_step_interpolates_the_repo_path_into_source
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_bundle_repo_survives_a_repo_path_with_escape_sequences
+FAILED tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity::test_validate_bundle_repo_reports_a_missing_repo_path_as_an_error
+9 failed, 7 passed, 6 deselected in 1.02s
