@@ -1,0 +1,38 @@
+validator scope (validate-bundle-repo agent-description-validation): 32 agents
+guard (c) scope (_agent_files):                                      32 agents
+identical sets: True
+in validator not guard: []
+in guard not validator: []
+
+   agents/bug-hunter.md
+   agents/bundle-design-expert.md
+   agents/ecosystem-expert.md
+   agents/explorer.md
+   agents/file-ops.md
+   agents/foundation-expert.md
+   agents/git-ops.md
+   agents/integration-specialist.md
+   agents/modular-builder.md
+   agents/post-task-cleanup.md
+   agents/security-guardian.md
+   agents/session-analyst.md
+   agents/shell-exec.md
+   agents/test-coverage.md
+   agents/web-research.md
+   agents/zen-architect.md
+   bundles/anchors-amp-dev/agents/amplifier-dev-expert.md
+   bundles/anchors/agents/architect.md
+   bundles/anchors/agents/builder.md
+   bundles/anchors/agents/debugger.md
+   bundles/anchors/agents/explorer.md
+   bundles/anchors/agents/git-ops.md
+   bundles/anchors/agents/researcher.md
+   context/agents/delegation-instructions.md
+   context/agents/multi-agent-patterns.md
+   context/agents/session-repair-knowledge.md
+   context/agents/session-storage-knowledge.md
+   examples/agents/file-responder.md
+   experiments/build-up/agents/coder.md
+   experiments/build-up/agents/explorer.md
+   experiments/build-up/agents/planner.md
+   experiments/build-up/agents/tester.md

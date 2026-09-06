@@ -22,16 +22,6 @@ meta:
     Returns: structured report with summary, key file:line references, coverage gaps, and
     suggested next actions or delegations.
 
-    Examples:
-    <example>
-    user: "What does the event handling flow look like?"
-    assistant: 'I will delegate to explorer to map the event modules and summarize the flow.'
-    </example>
-    <example>
-    user: "Find everything related to auth across docs and configs."
-    assistant: 'I will delegate to explorer to survey docs and configs for auth references.'
-    </example>
-
 model_role: [research, general]
 
 tools:

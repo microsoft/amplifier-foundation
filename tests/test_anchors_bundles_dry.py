@@ -36,12 +36,37 @@ SHARED_PATH_ALLOWLIST = {"bundle.md", "README.md"}
 # the shipped surface -- a second copy is the drift vector this refactor removes.
 ECOSYSTEM_DOCS = ("ecosystem-map.md", "dev-workflows.md", "testing-patterns.md")
 
-# `experiments/` holds the frozen pre-promotion originals (anchors was promoted
-# out of `experiments/behavioral-anchor`). Nothing there is a registered bundle
-# or composed at runtime, so its copies cannot drift into a session -- but they
-# are copies, and they are named in the failure message rather than hidden, so
-# a reader is never left wondering why the count looked wrong.
+# `experiments/` used to hold the frozen pre-promotion originals (anchors was
+# promoted out of `experiments/behavioral-anchor`). Nothing there is a registered
+# bundle or composed at runtime, so its copies cannot drift into a session -- but
+# they are copies, and they are named in the failure message rather than hidden,
+# so a reader is never left wondering why the count looked wrong.
+#
+# `test_exactly_one_copy_of_each_ecosystem_doc_repo_wide` (guard d', #362-6phe)
+# now forbids that second copy outright: a frozen copy still rots, and a reader
+# who greps for `ecosystem-map.md` still finds two answers. This exclusion is
+# kept only so the *shipped-surface* guard below keeps reporting an unshipped
+# copy by name instead of merging it into the shipped count.
 UNSHIPPED_TREES = (".git", "experiments")
+
+# The validator's own agent-discovery scope, copied deliberately rather than
+# approximated. `@foundation:recipes/validate-bundle-repo.yaml`'s
+# `agent-description-validation` step globs
+# `rglob("*/agents/*.md") + glob("agents/*.md")` and drops any path containing
+# one of these parts. Two validators disagreeing about which files exist is
+# exactly how the 11 `experiments/` violators survived #341 and ux32:
+# `validate-agents` discovers 23 agents and never walks `experiments/`, while
+# `validate-bundle-repo` discovers 45 and does. This guard follows the wider
+# one. `docs` is added on top of the validator's set: `docs/` holds frozen lane
+# records that quote violations verbatim as evidence and must never be rewritten.
+AGENT_SCAN_EXCLUDED_PARTS = {
+    "test-fixtures",
+    "tests",
+    "node_modules",
+    ".git",
+    ".venv",
+    "docs",
+}
 
 # The anchors include must be a full git URL with a #subdirectory= fragment, not
 # a bare `anchors` name. A bare name resolves only where the CLI happens to have
@@ -64,10 +89,27 @@ def _frontmatter(path: Path) -> dict:
 
 
 def _agent_files() -> list[Path]:
-    """Every shipped agent description in the repo: root `agents/` + bundles."""
-    found = sorted((REPO_ROOT / "agents").glob("*.md"))
-    found += sorted(BUNDLES_DIR.glob("*/agents/*.md"))
-    return found
+    """Every agent description in the repo, at the validator's own scope.
+
+    Not "root `agents/` + bundles" -- that narrower scope is what let the
+    `experiments/` copies keep their `<example>` blocks through two sweeps.
+    See AGENT_SCAN_EXCLUDED_PARTS for the exclusions and why `docs` joins them.
+    """
+    candidates = list(REPO_ROOT.rglob("*/agents/*.md")) + list(
+        (REPO_ROOT / "agents").glob("*.md")
+    )
+    seen: set[Path] = set()
+    found: list[Path] = []
+    for candidate in candidates:
+        relative = candidate.relative_to(REPO_ROOT)
+        if AGENT_SCAN_EXCLUDED_PARTS & set(relative.parts):
+            continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        found.append(candidate)
+    return sorted(found)
 
 
 def _relative_files(root: Path) -> set[str]:
@@ -153,6 +195,33 @@ class TestNoParallelCopies:
                 f"(Excluded, frozen and unshipped: {unshipped})"
             )
 
+    def test_exactly_one_copy_of_each_ecosystem_doc_repo_wide(self) -> None:
+        """Guard d': one copy repo-wide, `experiments/` included.
+
+        The guard above excludes `experiments/` and merely *names* the copies
+        it finds there. That exclusion is precisely why a third copy of every
+        ecosystem doc survived the ux32 refactor: `experiments/behavioral-
+        anchor-amplifier-dev/context/amplifier-dev/` still carried the
+        pre-#341 text, including the deleted "Always delegate" line, and the
+        guard reported it as an excluded footnote rather than a failure.
+
+        "Frozen" is not a safety property. A stale copy is still the second
+        answer a `grep` returns and the second file a reader may edit. Git
+        history preserves the original; the working tree does not need to.
+        """
+        for name in ECOSYSTEM_DOCS:
+            found = sorted(
+                p.relative_to(REPO_ROOT).as_posix()
+                for p in REPO_ROOT.rglob(name)
+                if ".git" not in p.relative_to(REPO_ROOT).parts
+            )
+            assert len(found) == 1, (
+                f"Expected exactly one copy of {name} anywhere in the repo, "
+                f"found {len(found)}: {found}. The canonical location is "
+                "context/amplifier-dev/. A copy under experiments/ counts: "
+                "frozen text still drifts and still answers a grep."
+            )
+
 
 class TestAgentDescriptionsCarryNoExampleBlocks:
     """#340 rejects `<example>`/`<commentary>` in descriptions -- everywhere."""
@@ -162,8 +231,16 @@ class TestAgentDescriptionsCarryNoExampleBlocks:
 
         `description-authoring-principles.md` V3 is 'no `<example>` blocks --
         not "at most 2", zero'. #341 (1b16a7d) applied that to the 16 root
-        agents and stopped there, leaving the bundle agent trees as the repo's
-        last violators. The policy is repo-wide, so the check is too.
+        agents; ux32 (200dfe6) added `bundles/**/agents`; neither reached
+        `experiments/`, where 11 violators sat until
+        `validate-bundle-repo.yaml` -- which discovers 45 agents where
+        `validate-agents.yaml` discovers 23 -- raised `example_block_present`
+        on them.
+
+        The scope is now the validator's own (see `_agent_files`), not a
+        hand-listed set of directories, so a new `*/agents/` tree anywhere in
+        the repo is covered the day it is created rather than the day someone
+        remembers to add it here.
         """
         offenders: list[str] = []
         for agent_file in _agent_files():

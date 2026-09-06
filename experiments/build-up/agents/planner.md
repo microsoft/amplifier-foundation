@@ -21,16 +21,6 @@ meta:
 
     Returns: structured spec or review with concrete next-action recommendations.
 
-    Examples:
-    <example>
-    user: "Add a caching layer to improve API performance."
-    assistant: 'I will delegate to planner to analyze the requirements and produce a spec, then delegate to coder.'
-    </example>
-    <example>
-    user: "Review this module for complexity."
-    assistant: 'I will delegate to planner in REVIEW mode for an objective assessment.'
-    </example>
-
 model_role: [reasoning, general]
 
 tools:

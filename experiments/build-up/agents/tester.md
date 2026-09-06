@@ -15,12 +15,6 @@ meta:
     Returns: pass/fail status, coverage assessment, suggested test additions (with code),
     and any defects found.
 
-    Example:
-    <example>
-    user: "Verify the new validator and check coverage."
-    assistant: 'I will delegate to tester to run the suite, measure coverage, and report gaps.'
-    </example>
-
 model_role: general
 
 tools:
