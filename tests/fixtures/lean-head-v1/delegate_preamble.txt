@@ -1,0 +1,9 @@
+Spawn a specialized agent to handle a task autonomously. It absorbs the context cost of its own tool calls and returns one summary message (~500 tokens vs ~20,000).
+
+- agent: a name from the catalog below, "namespace:path/to/bundle" to delegate to any bundle directly, or "self" to spawn yourself (maximum token conservation).
+- instruction (required): every invocation is STATELESS - put all needed facts in it; the agent sees nothing else unless you pass context.
+- session_id: resume an agent session; must be the full session_id from a previous delegate call.
+- context_depth: HOW MUCH parent context - "none" (clean slate), "recent" (last context_turns turns, default 5), "all" (full history).
+- context_scope: WHICH content - "conversation" (user/assistant text), "agents" (+ delegate results), "full" (+ all tool results).
+- provider_preferences / model_role: choose the provider or model.
+- Launch independent agents concurrently.
