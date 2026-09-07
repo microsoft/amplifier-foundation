@@ -23,7 +23,7 @@ The lane directory contains exactly one checkout:
 └── lane.log
 ```
 
-The 23 targets live in **13 different repositories**. Two are in this one:
+The 23 targets live in **14 different repositories**. Two of them are in this one:
 
 | Half | Target | Repo | This lane |
 |---|---|---|---|
@@ -39,18 +39,27 @@ The 23 targets live in **13 different repositories**. Two are in this one:
 | A | `mode` | amplifier-bundle-modes | **SKIP — byte-identical** (F3) |
 | B | spans 0–8 (9 files) | 8 further repos | patch artifacts |
 
-Nine of those twelve out-of-repo repos are **not even cloned on this host**
+**The binding constraint is the prohibition, not availability.** Procedure 4 says
+*"Never touch other repos"* and the SCOPE-OUTS say *"do not edit files outside the
+paths this lane owns"*. That alone settles it, independent of what happens to be
+on disk.
+
+For completeness: **11 of the 13** out-of-repo repos are not cloned on this host
 (`amplifier-module-tool-filesystem`, `-bash`, `-todo`, `-web`,
 `amplifier-bundle-modes`, `-recipes`, `-gitea`, `-digital-twin-universe`,
-`-amplifier-tester`, `-wayfinder`). Their stock text was read from
-`~/.amplifier/cache/` (read-only) to generate the patches.
+`-amplifier-tester`, `-wayfinder`, `-routing-matrix`). The remaining **2**
+(`amplifier-bundle-skills`, `amplifier-app-cli`) **are** present under
+`/home/bkrabach/dev/` and were still not touched — they are other sessions'
+working checkouts on a shared host, and editing them is exactly the forbidden
+action. Stock text for all 13 was read from `~/.amplifier/cache/` (read-only) to
+generate the patches.
 
 **Consequence for the census.** The saving this lane can realise on its own is
 **614 chars of a measured 320,410-char head** (F5) — 1.7 % of the 36,070-char cut
 the item specifies. The other 98 % is unreachable from here by construction, not
 by underperformance.
 
-**What would close it:** a multi-repo lane (13 checkouts) or 12 sibling lanes,
+**What would close it:** a multi-repo lane (14 checkouts) or 13 sibling lanes,
 each with the corresponding repo. The patches in
 `patches/` are drop-in for whoever gets them.
 
@@ -209,6 +218,31 @@ the single `- agent:` bullet.
   **not** available from this repo's source and is excluded from every number in
   this lane's PR.
 * **No `$/task` re-measurement.** Decided by `g7h3`: −13.57 %, CI [−22.27 %, −4.86 %].
+
+## Corrections to this document (post-resolution)
+
+Three **counting** errors were published in the first version of this note, the
+DONE-NOTE, DONE.json and the PR body, and are corrected above. **No measured
+quantity moved** — every char count, saving and CI result stands.
+
+| Claim as published | Correct |
+|---|---|
+| the 23 targets span **13** repositories | **14** (foundation + 13 others) |
+| **9 of the 12** other repos are not cloned on this host | **11 of the 13** are not cloned; 2 (`amplifier-bundle-skills`, `amplifier-app-cli`) are present and were still not touched |
+| **17** out-of-repo patches (10 tool + **7** context) | **19** (10 tool + **9** context) |
+
+**Root cause, because it is the reusable part:** the repo-presence probe was
+hand-written from the goal's prose and **omitted `amplifier-bundle-routing-matrix`**;
+"12 other repos" was then carried forward by hand instead of being re-derived from
+`patches/fidelity-report.json`, which had the right answer the whole time. The
+saving totals were re-derived from that file and were correct (7,812 + 3,926 =
+11,738) — which is precisely why the derived numbers survived and the hand-carried
+ones did not.
+
+Recorded against the item with `work_erratum` (append-only; the resolution text
+itself is immutable and the work is unaffected), not by reopening — reopening
+clears `closed_at` and moves every throughput roll-up for a change that alters no
+number.
 
 ## Reproducing
 

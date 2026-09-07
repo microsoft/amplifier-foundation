@@ -25,8 +25,8 @@ is blocked by a missing prerequisite, a refused claim, or a broken dependency.
 * **Applied both in-repo rewrites**, byte-verified against v1.
 * **Diffed stock vs lean for all 23 targets** with a purpose-built rule
   extractor; hand-reviewed all 4 flags it raised (F4).
-* **Generated drop-in patches for all 17 out-of-repo targets** (10 tool
-  descriptions + 7 context files that change; 2 identical, 2 in-repo).
+* **Generated drop-in patches for all 19 out-of-repo targets that change** (10
+  tool descriptions + 9 context files; plus 2 out-of-repo no-ops and 2 in-repo).
 * **Built the CI guardrail and proved it RED then GREEN** on real GitHub Actions
   runs across 6 OS/Python legs.
 * **Took a real-session head census on the wire, before and after**, at $0.
@@ -66,12 +66,16 @@ is blocked by a missing prerequisite, a refused claim, or a broken dependency.
 | Full fidelity diff, all 23 targets | **DONE** — 4 flags, 3 false positives, 1 weakening (out-of-repo, advisory) |
 
 **NOT-POSSIBLE reason, stated once and in full** (it is the same reason for all 21):
-*21 of the 23 targets live in 12 repositories that are not in this lane. The lane
-directory contains exactly one checkout, `amplifier-foundation`; 9 of the 12 other
-repos are not cloned on this host at all. GOAL.md forbids editing another repo and
-classifies this as a defect in the goal rather than a task — so the work that
-could be done here was done (2 targets shipped, all 23 diffed, all 17 changing
-out-of-repo targets patched), and the defect is reported as F1.*
+*21 of the 23 targets live in 13 repositories that are not in this lane. The lane
+directory contains exactly one checkout, `amplifier-foundation`.* ***The binding
+constraint is GOAL.md's prohibition, not availability**: 11 of the 13 are not
+cloned on this host, but the other 2 (`amplifier-bundle-skills`,
+`amplifier-app-cli`) ARE present here and were still not touched, because
+Procedure 4 says "Never touch other repos" and those are other sessions' working
+checkouts on a shared host.* *GOAL.md classifies this as a defect in the goal
+rather than a task — so the work that could be done here was done (2 targets
+shipped, all 23 diffed, all 19 changing out-of-repo targets patched), and the
+defect is reported as F1.*
 
 ## 3. Spend
 
@@ -235,7 +239,7 @@ regression the absolute was meant to catch.
 
 ## 8. Follow-ups this lane is handing over
 
-1. **The 17 out-of-repo patches** in `patches/` — 10 tool descriptions, 7 context
+1. **The 19 out-of-repo patches** in `patches/` — 10 tool descriptions, 9 context
    files, 11,738 chars of saving, drop-in.
 2. **F6 — `amplifier source add` ignores `AMPLIFIER_HOME` and writes to the real
    `~/.amplifier/settings.yaml`.** A foot-gun on any shared or CI host.
