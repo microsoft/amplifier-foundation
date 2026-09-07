@@ -31,6 +31,21 @@
 > head on a host composing 86 tools where the eval container composed 14. Cite
 > it as a composition, never as "the head is 48k".
 >
+> **And the bytes are dollars, measured end-to-end on the daily driver.**
+> `model_performance-g7h3` bought 98 paired end-to-end tasks to price a leaner
+> head rather than argue it: **−13.57% $/task, 95% CI [−22.27%, −4.86%]**,
+> with all three pre-registered estimators excluding zero. Head bytes are not
+> a tidiness metric. They are the per-request bill of every session that
+> composes the bundle, whether the capability is used or not.
+>
+> **Per bundle, at the granularity an author works in:** android-tester's
+> three agents rendered **6,258 → 1,911 bytes** of `delegate` catalog after
+> that sweep — a 69.5% cut on one bundle's always-on line item. (UTF-8 bytes
+> of each description as stored plus the catalog line's own framing;
+> re-measured 2026-09-07 from that repo's pre- and post-sweep commits
+> `443e393` and `863afa1`. Its whole-bundle head cost over the same pair is
+> in V5.)
+>
 > **This scope statement exists because the previous one was implicit and
 > quietly stopped being true.** PR #341 set the no-`<example>` policy below in
 > 2026-08; it was applied inside `amplifier-foundation` and **nowhere else**.
@@ -179,6 +194,16 @@ was not (1.37x below the nearest). It is a WARNING, not an ERROR, because
 foundation's own root bundle exceeds it — that is a design conversation, not
 a build break.
 
+**One corroboration the threshold did not get to choose.** android-tester was
+swept by hand (lane `kp79`) before this check existed. Running Phase 2.86 over
+its pre- and post-sweep commits afterwards gives **8,116 → 3,791 chars** — the
+hand pass crossed a line it had never seen, from the wrong side to the right
+one. Over the same pair, the four checks go from **9 agent ERRORs**
+(`agent_description_excessive`, `example_block_present`, `commentary_present`)
+and 1 head-cost WARNING to **zero of either**. The thresholds and an
+independent human judgement of "short enough" agree; reproduce with
+`docs/lanes/8050-principles-to-tooling/run_checks.py`.
+
 Note what the anchors row shows: `bundles/anchors` mounts `tool-skills` with
 `visibility.enabled: false`, so its 1,261 chars of skill descriptions are
 **not** in the head. The check reports that amount separately as
@@ -295,7 +320,9 @@ stability, quality-neutrality — real every-turn wire savings) but must not
 be sold as delegation-behavior fixes. The lever is mechanical spawn budgets,
 not description wording — separate work.
 
-The wave measured delegation counts and wire sizes, not V5's token-ceiling
-thresholds — **agent `meta.description` budgets in V5 remain provisional.**
-It supplies real distribution data (8,060 / 14,562 / 16,461 chars across
-arms) but WARN/ERROR calibration is still open.
+The wave measured delegation counts and wire sizes, **not** ceiling
+calibration, and it is not the source of V5's caps. It supplies real
+distribution data (8,060 / 14,562 / 16,461 chars across arms); the caps come
+from the 2026-09-07 nine-repo corpus tabulated in V5, which is what moved the
+agent budget from provisional to **enforced**. Read this section as history,
+not as an open question — V5's table is the answer to it.
