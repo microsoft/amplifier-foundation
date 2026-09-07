@@ -132,8 +132,29 @@ FAILED TestGuardrailAHeadCensus::test_delegate_preamble_within_budget
 Exactly 4 failures, all of them the guardrail, on all 6 legs. Nothing else in the
 suite moved.
 
-**GREEN — guardrail present, lean head:** see `PUBLICATION` below for the SHA and
-run URL, filled in from the remote after the head commit landed.
+**GREEN — guardrail present, lean head:**
+`46fbd454c99e90662aee3447efff7d23115969c0`
+<https://github.com/microsoft/amplifier-foundation/actions/runs/34143774767>
+
+```
+conclusion: success   (all 6 legs: ubuntu + windows x Python 3.11/3.12/3.13)
+```
+
+Same workflow, same legs, same guardrail — the only difference between the two
+runs is the head text. **The guardrail failed before it was allowed to pass.**
+
+## 4b. PRs
+
+| PR | SHA | State |
+|---|---|---|
+| [#372](https://github.com/microsoft/amplifier-foundation/pull/372) | `46fbd454c99e90662aee3447efff7d23115969c0` (guardrail-green head commit) | draft → ready when its own CI is green. **Not merged — the manager merges.** |
+
+Commits on the branch, in order:
+
+| SHA | CI | What |
+|---|---|---|
+| `5833f84f843912f2e5bb696225a4d63fafc98256` | **RED (4 failed)** | guardrail only, stock head |
+| `46fbd454c99e90662aee3447efff7d23115969c0` | **GREEN** | the lean head + artifacts |
 
 ## 5. What the guardrail does NOT prove — stated on purpose
 
