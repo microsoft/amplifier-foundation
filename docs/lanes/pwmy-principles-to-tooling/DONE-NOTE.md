@@ -247,6 +247,43 @@ this item):
   load-bearing ("fixes the merged `tools:` list and tool-skills' search path…
   reproduces the previously shipped mount plan byte-for-byte"). One-line fix.
 
+**F5 — `publication/v1` does not state the ORDER of its own steps, and I got it
+wrong.** Corrected on this item by erratum (2026-09-07T18:21:13Z), not by
+reopen.
+
+The contract says the marker must carry "values a remote read returned". It does
+**not** say *when* the read must happen relative to `work_resolve`. I read that
+as "the values must be remote-derived", which they were:
+
+| | |
+|---|---|
+| 18:15:14Z | `publication_readback.sh` read the remote — **supplied** the marker's values |
+| 18:16:04Z | marker written; then parsed back **from disk** — valid JSON, `pr_url` present, `head_sha` 40 chars |
+| 18:16:18Z | `work_resolve` |
+| 18:17:03Z / 18:20:10Z | readback re-run and diffed field-for-field against the marker — **8/8 match** |
+
+Under the stricter reading — written → **read back against the remote** →
+validated, all *before* the resolve is invoked — the validating diff sat outside
+that window. Between write and resolve I did only a **local** check, which is
+weaker than a remote diff. No published value is wrong (verified 8/8 against the
+live remote, `head_sha a6025b86…` equals origin's head, PR #373 open), but the
+prerequisite ordering was not performed in that position, and the resolution
+over-claimed by not saying so.
+
+**Decision, recorded here per GOAL.md's "choose, record the choice, continue":**
+erratum, not reopen. The work is not wrong; `work_reopen` would clear a correct
+`closed_at` and move every throughput roll-up by one item to re-close at
+identical values, for an ordering that cannot be retroactively changed. That is
+exactly the churn lane 1ru paid for.
+
+**The generalisable finding:** the contract should say the order it wants, in
+the words it wants it followed. A one-line addition to `publication/v1` —
+*"write the marker, then run `publication_readback.sh` and diff it against the
+marker, and only then resolve"* — removes the ambiguity for every lane. Without
+it, "verified" reads as a property of the values (which was satisfied) rather
+than as a positioned step (which was not). `merge_gate.sh` checks the marker's
+**content** against GitHub, so it cannot catch this class of defect either.
+
 **F4 — `validate-agents` cannot complete on a Windows checkout, and nothing had
 ever exercised it there.** Found by *this branch's own CI*, not by inspection:
 windows-latest / Python 3.13 went red while ubuntu 3.11/3.12/3.13 passed.
@@ -441,6 +478,9 @@ the docstring, matching how the three prior bumps were handled.
    (anchors-amp-dev README include order) — reported above, not fixed.
 4. **F4** — `validate-agents` on Windows. Reported above; a correct fix belongs
    to the runner's step-payload handling, not to this item.
+5. **F5** — `publication/v1` should state the ORDER of its steps
+   (write → readback → validate → resolve). Corrected on this item by erratum;
+   the contract change itself is somebody's next item.
 5. **R1's threshold** (awareness term-overlap at 0.60) has never fired on a real
    corpus file. `best_coverage` is reported for every file so it can be
    re-argued from data.
