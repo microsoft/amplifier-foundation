@@ -557,39 +557,6 @@ class SessionNamingHook:
                 return float(value)
         return 100.0
 
-    @staticmethod
-    def _vendor_of(provider: Any) -> str | None:
-        """Vendor identity of a provider via the kernel contract
-        ``get_info().id`` (e.g. ``"anthropic"``), lowercased.
-
-        Returns None when the vendor cannot be established — callers must
-        treat that as "cannot prove same vendor" and refuse, never as "no
-        conflict". Two mount names sharing an id (anthropic-sonnet /
-        anthropic-haiku) are the SAME vendor.
-        """
-        get_info = getattr(provider, "get_info", None)
-        if not callable(get_info):
-            return None
-        try:
-            info = get_info()
-        except Exception as e:  # pragma: no cover - defensive
-            logger.debug("get_info() failed while checking provider vendor: %s", e)
-            return None
-        vendor = getattr(info, "id", None)
-        if vendor is None and isinstance(info, dict):
-            vendor = info.get("id")
-        if isinstance(vendor, str) and vendor.strip():
-            return vendor.strip().lower()
-        return None
-
-    def _same_vendor(self, a: Any, b: Any) -> bool:
-        """True only when both vendors are known AND equal (fail closed)."""
-        if a is b:
-            return True
-        vendor_a = self._vendor_of(a)
-        vendor_b = self._vendor_of(b)
-        return bool(vendor_a and vendor_b and vendor_a == vendor_b)
-
     def _select_session_provider(
         self, providers: dict[str, Any]
     ) -> tuple[str | None, Any | None]:
@@ -783,7 +750,20 @@ class SessionNamingHook:
                 logger.debug("No session provider resolved for session naming")
                 return None
 
-            # Resolution order: model_role (same vendor only) > session provider
+            # Resolution order: model_role (any MOUNTED provider) > session provider
+            #
+            # Naming is an out-of-band chore, not a turn of the conversation.
+            # The routing matrix's `fast` role is exactly the user's statement
+            # of which cheap model to use for chores, so a candidate the
+            # resolver returns is honoured whenever it is mounted in this
+            # session -- whatever vendor answers the conversation. #348's
+            # same-vendor rule was a stand-in for attribution that the
+            # llm:* stamping below now provides directly (scorers exclude
+            # naming's own events by marker, not by vendor). What #348 keeps:
+            # no silent borrow of an arbitrary provider (the fallback is the
+            # session's OWN provider, never dict order), a candidate that is
+            # not mounted here is refused loudly, and a stale pin skips the
+            # turn rather than answering on a provider the user never chose.
             provider = None
             provider_name: str | None = None
             model_override: str | None = None
@@ -830,23 +810,17 @@ class SessionNamingHook:
                                 str(resolved_provider_name),
                                 "no provider with that name is mounted in this session",
                             )
-                        elif self._same_vendor(candidate, session_provider):
+                        else:
                             provider = candidate
                             provider_name = candidate_name
                             model_override = resolved[0].model
-                        else:
-                            refusal = (
-                                str(candidate_name),
-                                "it is a different provider vendor than the one"
-                                " answering this session",
-                            )
                     else:
                         role_had_no_candidates = True
 
             # Fall back to the session's OWN provider. Reached when model_role
             # is unset, no resolver capability is registered, the role resolved
-            # to no candidates, or the resolved candidate was refused as
-            # foreign — the last two are announced loudly below rather than
+            # to no candidates, or the resolved candidate is not mounted here
+            # — the last two are announced loudly below rather than
             # substituted silently.
             if provider is None:
                 provider = session_provider
