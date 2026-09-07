@@ -219,6 +219,47 @@ the single `- agent:` bullet.
   this lane's PR.
 * **No `$/task` re-measurement.** Decided by `g7h3`: −13.57 %, CI [−22.27 %, −4.86 %].
 
+## F1b — the defect is CONTAINED, not RESOLVED. Filed as `model_performance-pq7q`
+
+F1 above, the 13 per-repo children under `model_performance-hyid`, and this
+lane's resolution all route *around* one occurrence. None of them stops the next
+goal being written the same way. That distinction is worth naming, because
+"reported" reads like "handled" and it is not.
+
+**The sharpest statement of the defect** — sharper than the repo count, and the
+one that makes it undeniable. The *item's own first acceptance criterion* is:
+
+> Given the in-product lean head is implemented from the real sources, when the
+> head census is taken on the wire for claude-opus-5, then `instructions` and
+> `tools` are byte-equal to what `leanhead_shim.py` produces for variant v1
+> (21,654 + 26,595 = 48,249 ch), **with no shim installed**.
+
+That requires all 23 targets. **It was unsatisfiable by the lane that held the
+item, by construction, on day one** — not through effort, scope creep, or a
+spend cap, but because a PR cannot be opened against
+`amplifier-module-tool-filesystem`'s origin from a checkout of
+`amplifier-foundation`. Verified: this worktree's only origin is
+`microsoft/amplifier-foundation`, and none of the 19 out-of-repo target files
+exist in it.
+
+**Containment worked; prevention is missing.** GOAL.md's clause — *"that is a
+DEFECT IN THIS GOAL, not a task … report it, ship the patch as an artifact, and
+resolve"* — is why this lane resolved cleanly instead of churning terminal
+states the way `1ru` did. But it is a containment rule. It tells a lane what to
+do once the defective goal has already been dispatched, and the cost is still
+paid: a lane spends its run producing patches nobody asked it to produce.
+
+**Same shape as `1ru`, so the fix should be the same shape.** GOAL.md already
+carries an `AUTHORING RULE` for spend caps, added after `1ru` was handed a
+deliverable with a 0.0 % chance of landing at its stated authority — knowable on
+day one. There is no equivalent for scope vs provisioning. `pq7q` proposes one,
+in the same voice and the same place, plus a mechanical pre-dispatch check with
+no judgment in it: *every repo named in a deliverable must resolve to a
+directory inside the lane directory.*
+
+zc6t's figures for that record: **23 deliverables named across 14 repositories,
+1 worktree provisioned, 2 of 23 reachable.**
+
 ## Corrections to this document (post-resolution)
 
 Three **counting** errors were published in the first version of this note, the
