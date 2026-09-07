@@ -1,0 +1,4 @@
+### Pre-existing suite failures reproduce at origin/main (detached worktree /tmp/j05m-mainchk, this host)
+FAILED tests/test_sources.py::TestFileSourceHandler::test_resolve_existing_file
+FAILED tests/test_grpc_adapter_main.py::TestVerifyModuleType::test_non_isinstance_object_with_mount_passes
+2 failed in 0.16s
