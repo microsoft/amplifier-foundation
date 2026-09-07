@@ -240,7 +240,11 @@ regression the absolute was meant to catch.
 ## 8. Follow-ups this lane is handing over
 
 1. **The 19 out-of-repo patches** in `patches/` — 10 tool descriptions, 9 context
-   files, 11,738 chars of saving, drop-in.
+   files, 11,738 chars of saving, drop-in. **Filed as `model_performance-hyid`**
+   (follow-up-of this item), so they are queued work rather than orphaned
+   artifacts. That item carries the per-repo char table, the two verified no-ops,
+   the `edit_file` fidelity debt, and the requirement that each repo's guardrail
+   be shown red before green.
 2. **F6 — `amplifier source add` ignores `AMPLIFIER_HOME` and writes to the real
    `~/.amplifier/settings.yaml`.** A foot-gun on any shared or CI host.
 3. **F4 — `edit_file`'s lean text weakens "NEVER write new files unless
