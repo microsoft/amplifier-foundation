@@ -93,8 +93,35 @@ def run_repo_step(step_id: str, repo_path: Path) -> dict:
     return _run(BUNDLE_REPO_RECIPE, step_id, repo_path, "VALIDATE_BUNDLE_REPO_PATH")
 
 
+#: The literal `structural-validation` uses to receive the discovery payload:
+#: a `json.loads` of a triple-quoted template placeholder. Kept as data so the
+#: harness fails loudly if the recipe moves it, rather than silently running a
+#: step that never got its input.
+DISCOVERY_SUBSTITUTION = "json.loads(" + "'''" + "{{discovery_results}}" + "'''" + ")"
+
+
 def run_agents_structural(repo_path: Path) -> dict:
-    """agent-discovery -> structural-validation, the two-step chain."""
+    """agent-discovery -> structural-validation, the two-step chain.
+
+    The discovery payload reaches the second step through the ENVIRONMENT, not
+    through source substitution -- and that substitution is a REAL DEFECT in
+    the recipe, not merely a harness inconvenience.
+
+    `structural-validation` json.loads a triple-quoted template placeholder. On
+    Windows the discovery JSON carries a path like ``D:\\a\\repo\\...``; Python
+    collapses each doubled backslash while parsing the triple-quoted literal,
+    leaving ``\\a`` -- not a valid JSON escape -- and the step dies with
+    ``Invalid \\escape``. Measured on windows-latest / Python 3.13 in CI on
+    this branch. It is the same class of bug v1.7.0 fixed for ``repo_path``,
+    still live on the step-to-step payload, and it means `validate-agents`
+    cannot complete on a Windows checkout at all. Reported as F4 in
+    ``docs/lanes/pwmy-principles-to-tooling/DONE-NOTE.md``; fixing it means
+    changing how the runner hands large JSON between steps, which is its own
+    item.
+
+    This harness routes around it so these tests measure the CHECKS rather than
+    that defect. Every other line of the step body is executed verbatim.
+    """
     env = dict(os.environ)
     env["VALIDATE_AGENTS_REPO_PATH"] = str(repo_path)
     discovery = subprocess.run(
@@ -104,9 +131,14 @@ def run_agents_structural(repo_path: Path) -> dict:
         env=env,
     )
     assert discovery.returncode == 0, discovery.stderr
-    body = _step_body(AGENTS_RECIPE, "structural-validation").replace(
-        "{{discovery_results}}", discovery.stdout.strip()
+    raw = _step_body(AGENTS_RECIPE, "structural-validation")
+    assert DISCOVERY_SUBSTITUTION in raw, (
+        "the discovery-payload substitution point moved; update this harness"
     )
+    body = raw.replace(
+        DISCOVERY_SUBSTITUTION, "json.loads(os.environ['ALIGNMENT_DISCOVERY_JSON'])"
+    )
+    env["ALIGNMENT_DISCOVERY_JSON"] = discovery.stdout.strip()
     proc = subprocess.run([sys.executable, "-c", body], capture_output=True, text=True, env=env)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)

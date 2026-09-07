@@ -247,6 +247,30 @@ this item):
   load-bearing ("fixes the merged `tools:` list and tool-skills' search path…
   reproduces the previously shipped mount plan byte-for-byte"). One-line fix.
 
+**F4 — `validate-agents` cannot complete on a Windows checkout, and nothing had
+ever exercised it there.** Found by *this branch's own CI*, not by inspection:
+windows-latest / Python 3.13 went red while ubuntu 3.11/3.12/3.13 passed.
+
+`structural-validation` receives the discovery payload as
+`json.loads('''{{discovery_results}}''')`. On a Windows runner the discovery
+JSON carries `D:\a\amplifier-foundation\...`; Python collapses each doubled
+backslash while parsing the triple-quoted literal, leaving `\a`, which is not a
+valid JSON escape. The step dies with `Invalid \escape`. `quality-classification`
+then parses that step's (absent) output under `on_error: fail`, so the whole
+recipe fails.
+
+This is **the same class of bug v1.7.0 fixed for `repo_path`** — a filesystem
+path inside a Python string literal — still live on the step-to-step payload.
+It went unnoticed because CI runs pytest, not recipes, and until this branch no
+test executed that step body with a real Windows path.
+
+**Reported, not fixed here.** A correct fix changes how the runner hands large
+JSON between steps (the shell-assignment trick used for `repo_path` is not safe
+for a payload that can itself contain quotes), which is its own item. The test
+harness routes around it explicitly and says so in its docstring, so nobody
+reads the green CI as evidence the defect is gone: every other line of the step
+body still executes verbatim.
+
 **F3 — `docs/` is scanned, and it bit me.** Committing four evidence
 `SKILL.md` files under `docs/lanes/` took this repo's shipped-skill count from
 **3 to 7** and its largest head-cost figure from **26,368 to 28,279**. I widened
@@ -415,6 +439,8 @@ the docstring, matching how the three prior bumps were handled.
    that repo.
 3. **F1** (`no_composable_surface` on nested variant bundles) and **F2**
    (anchors-amp-dev README include order) — reported above, not fixed.
-4. **R1's threshold** (awareness term-overlap at 0.60) has never fired on a real
+4. **F4** — `validate-agents` on Windows. Reported above; a correct fix belongs
+   to the runner's step-payload handling, not to this item.
+5. **R1's threshold** (awareness term-overlap at 0.60) has never fired on a real
    corpus file. `best_coverage` is reported for every file so it can be
    re-argued from data.
