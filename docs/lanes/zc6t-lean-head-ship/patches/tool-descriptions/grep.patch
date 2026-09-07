@@ -1,0 +1,32 @@
+--- a/grep.description
++++ b/grep.description
+@@ -1,25 +1,9 @@
+-
+ Search file contents with regex patterns. Uses ripgrep when available (fast), falls back to Python re.
+ 
+-CAPABILITIES:
+-- Full regex syntax (e.g., "log.*Error", "function\s+\w+")
+-- Filter by glob pattern (e.g., "*.js", "**/*.tsx") or file type (e.g., "py", "js", "rust")
+-- Output modes: "files_with_matches" (default), "content" (with line content), "count"
+-- Multiline matching with `multiline: true` for patterns spanning lines
++Filter with `glob` ("*.js", "**/*.tsx") or `type` ("py", "js", "rust"). Output modes: "files_with_matches" (default), "content" (matching lines; supports -A/-B/-C context and -n line numbers), "count". `-i: true` = case-insensitive; `multiline: true` = patterns spanning lines.
+ 
+-SCOPE AND LIMITS:
+-- By default, excludes common non-source directories: node_modules, .venv, .git, __pycache__, build dirs
+-- Results are limited by default (200 files/counts, 500 content matches) to prevent context overflow
+-- In content mode, each matched line is truncated to 2000 characters (marked "... [truncated]") and the total
+-  serialized result is capped at 100,000 bytes -- both configurable, set to 0 to disable
+-- Set `include_ignored: true` to search excluded directories
+-- Set explicit `head_limit: 0` for unlimited results (use with caution on large codebases)
++Ripgrep regex, not grep - literal braces need escaping: `interface\{\}` finds `interface{}`.
+ 
+-PATTERN SYNTAX:
+-- Uses ripgrep regex (not grep) - literal braces need escaping: `interface\{\}` to find `interface{}`
+-- Case insensitive: use `-i: true`
+-- Context lines: use `-A`, `-B`, or `-C` parameters with content mode
++Limits: node_modules, .venv, .git, __pycache__ and build dirs are excluded unless `include_ignored: true`. Results are capped by default (200 files/counts, 500 content matches); `head_limit: 0` = unlimited (use with caution). In content mode each matched line is truncated to 2000 characters (marked "... [truncated]") and the total serialized result is capped at 100,000 bytes - both configurable, set to 0 to disable.
+ 
+-PAGINATION:
+-- Use `head_limit` and `offset` for pagination
+-- Response includes `total_matches` to know how many exist beyond the limit
++Paginate with `head_limit` + `offset`; the response includes `total_matches` (how many exist beyond the limit).

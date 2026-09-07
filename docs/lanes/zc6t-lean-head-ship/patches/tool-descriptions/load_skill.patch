@@ -1,0 +1,47 @@
+--- a/load_skill.description
++++ b/load_skill.description
+@@ -1,37 +1,11 @@
+-
+-Load domain knowledge from an available skill. Skills provide specialized knowledge, workflows, 
+-best practices, and standards. Use when you need domain expertise, coding guidelines, or 
+-architectural patterns.
++Load domain knowledge from an available skill: specialized workflows, best practices, standards, coding guidelines, architectural patterns. Skills complement documentation and web search, they do not replace them.
+ 
+ Operations:
++- load_skill(list=True) - all available skills with descriptions.
++- load_skill(search="pattern") - skills whose name or description matches.
++- load_skill(info="skill-name") - metadata only (name, description, version, license, path), content not loaded. Use it to check a skill before loading, to conserve context.
++- load_skill(skill_name="skill-name") - loads the complete skill content into context and returns skill_directory.
+ 
+-**List all skills:**
+-  load_skill(list=True)
+-  Returns a formatted list of all available skills with descriptions.
++A skill may reference companion files: pass the returned skill_directory to read_file, e.g. read_file(skill_directory + "/examples/code.py").
+ 
+-**Search for skills:**
+-  load_skill(search="pattern")
+-  Filters skills by name or description matching the search term.
+-
+-**Get skill metadata:**
+-  load_skill(info="skill-name")
+-  Returns metadata (name, description, version, license, path) without loading full content.
+-  Use this to check details before loading or when you just need basic information.
+-
+-**Load full skill content:**
+-  load_skill(skill_name="skill-name")
+-  Loads the complete skill content into context. Returns skill_directory path for accessing
+-  companion files referenced in the skill.
+-
+-Usage Guidelines:
+-- Use info operation to check skills before loading to conserve context
+-- Skills may reference companion files - use the returned skill_directory path with read_file tool
+-  Example: If skill returns skill_directory="/path/to/skill", you can read companion files with
+-  read_file(skill_directory + "/examples/code.py")
+-- Skills complement but don't replace documentation or web search - use for standardized workflows
+-  and best practices specific to the skill domain
+-
+-Skill Discovery:
+-- Skills are discovered from configured directories (workspace, user, or custom paths)
+-- First-match-wins priority if same skill exists in multiple directories
+-- Workspace skills (.amplifier/skills/) override user skills (~/.amplifier/skills/)
++Discovery: configured directories (workspace, user, custom paths), first-match-wins; workspace skills (.amplifier/skills/) override user skills (~/.amplifier/skills/).

@@ -1,0 +1,11 @@
+Low-level shell execution, a fallback primitive: prefer a specialized capability when one exists (better error handling, structured output, safety guardrails); bash returns raw text with no retry logic.
+
+Use for: builds and tests (pytest, npm test, cargo build, make), package management (pip, npm, cargo, brew), version control (git status, git diff, git commit), containers (docker, podman, kubectl), GitHub CLI (gh pr create, gh issue list), and system utilities when no specialized option exists.
+
+Output: long output is truncated to prevent context overflow - you get first lines, "[...truncated...]", last lines, and byte counts. WARNING: truncation may break parsing of JSON, XML or similar structured data; for large structured output, redirect to a file (command > output.json) and read portions of that file instead.
+
+Constraints:
+- Commands time out after 30 seconds by default; pass `timeout` to increase it for builds, tests, or monitoring, and `run_in_background` for indefinite processes (dev servers, watchers).
+- Interactive commands (-i flags, editors requiring input) are not supported and will fail.
+- Destructive commands (rm -rf /, sudo rm, etc.) are blocked.
+- Quote paths containing spaces (cd "/path/with spaces"), prefer absolute paths, chain dependent commands with && (mkdir foo && cd foo).

@@ -1,0 +1,19 @@
+--- a/glob.description
++++ b/glob.description
+@@ -1,14 +1,5 @@
++Fast file pattern matching at any codebase size: finds files by name pattern ("**/*.js", "src/**/*.ts"), returns matching paths sorted by modification time plus `total_files` to tell whether results were capped.
+ 
+-- Fast file pattern matching tool that works with any codebase size
+-- Supports glob patterns like "**/*.js" or "src/**/*.ts"
+-- Returns matching file paths sorted by modification time
+-- Use this tool when you need to find files by name patterns
+-- When you are doing an open ended search that may require multiple rounds of globbing and grepping, delegate to an agent (e.g. foundation:explorer) instead
+-- You can call multiple tools in a single response. It is always better to speculatively perform multiple searches in parallel if they are potentially useful.
++Run several globs in parallel in one response when useful. For an open-ended search needing multiple rounds of globbing and grepping, delegate to an agent (e.g. foundation:explorer) instead.
+ 
+-SCOPE AND LIMITS:
+-- By default, excludes common non-source directories: node_modules, .venv, .git, __pycache__, build dirs
+-- Results are limited to 500 files by default to prevent context overflow
+-- Set `include_ignored: true` to search excluded directories
+-- Response includes `total_files` to know if results were capped
+-                   +Limits: node_modules, .venv, .git, __pycache__ and build dirs are excluded unless `include_ignored: true`; results are limited to 500 files by default to prevent context overflow.

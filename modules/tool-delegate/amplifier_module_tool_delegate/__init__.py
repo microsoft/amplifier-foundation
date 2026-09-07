@@ -720,30 +720,28 @@ class DelegateTool:
             List of feature definitions
         """
         return [
-            {
-                "name": "self_delegation",
-                "enabled": self.self_delegation_enabled,
-                "description": '- agent="self": Spawn yourself as a sub-agent (maximum token conservation)',
-                "disabled_note": None,
-            },
+            # `self_delegation` is deliberately NOT a registry row: the lean head
+            # folds `agent="self"` into the single `- agent:` bullet in
+            # `description` rather than emitting a second line for it. The stock
+            # text emitted BOTH (the hardcoded line in `base_description` and this
+            # row), so every session shipped the self-delegation line twice.
             {
                 "name": "session_resume",
                 "enabled": self.session_resume_enabled,
-                "description": "- Use session_id to resume an existing agent session (must be full session_id from previous delegate call)",
+                "description": "- session_id: resume an agent session; must be the full session_id from a previous delegate call.",
                 "disabled_note": "- Session resumption is disabled",
             },
             {
                 "name": "context_inheritance",
                 "enabled": self.context_inheritance_enabled,
-                "description": """Context control (two independent parameters):
-- context_depth: HOW MUCH context - "none" (clean slate), "recent" (last N turns), "all" (full history)
-- context_scope: WHICH content - "conversation" (text only), "agents" (+ agent results), "full" (+ all tools)""",
+                "description": """- context_depth: HOW MUCH parent context - "none" (clean slate), "recent" (last context_turns turns, default 5), "all" (full history).
+- context_scope: WHICH content - "conversation" (user/assistant text), "agents" (+ delegate results), "full" (+ all tool results).""",
                 "disabled_note": "- Context inheritance is disabled (agents always start fresh)",
             },
             {
                 "name": "provider_selection",
                 "enabled": self.provider_selection_enabled,
-                "description": "- Use provider_preferences to specify model/provider for the agent",
+                "description": "- provider_preferences / model_role: choose the provider or model.",
                 "disabled_note": None,
             },
             {
@@ -909,29 +907,39 @@ class DelegateTool:
         agents_list = self._get_agent_list()
         feature_desc = self._compose_feature_descriptions()
 
-        base_description = """Spawn a specialized agent to handle tasks autonomously.
+        base_description = (
+            "Spawn a specialized agent to handle a task autonomously. It absorbs "
+            "the context cost of its own tool calls and returns one summary "
+            "message (~500 tokens vs ~20,000).\n"
+        )
 
-Why delegate: Every tool call YOU make consumes YOUR context window permanently.
-Agents absorb that cost and return only summaries (~500 tokens vs ~20,000 tokens).
-Delegation = longer, more effective sessions.
-
-Special agent values:
-- agent="namespace:path/to/bundle": Delegate to any bundle directly as an agent"""
-
-        # Add self-delegation if enabled
+        # The `agent` bullet carries the self-delegation affordance inline, so
+        # `agent="self"` is advertised iff the feature is enabled -- the same
+        # invariant the stock text held with a separate line.
         if self.self_delegation_enabled:
-            base_description += '\n- agent="self": Spawn yourself as a sub-agent (maximum token conservation)'
+            base_description += (
+                '\n- agent: a name from the catalog below, "namespace:path/to/bundle" '
+                'to delegate to any bundle directly, or "self" to spawn yourself '
+                "(maximum token conservation)."
+            )
+        else:
+            base_description += (
+                '\n- agent: a name from the catalog below, or "namespace:path/to/bundle" '
+                "to delegate to any bundle directly."
+            )
+
+        # `instruction` is the one parameter a caller can never omit, and the
+        # stateless contract is the rule most often broken -- it stays adjacent.
+        base_description += (
+            "\n- instruction (required): every invocation is STATELESS - put all "
+            "needed facts in it; the agent sees nothing else unless you pass context."
+        )
 
         # Add feature-based sections
-        base_description += f"\n\n{feature_desc}"
+        base_description += f"\n{feature_desc}"
 
         # Add usage notes
-        base_description += """
-
-Agent usage notes:
-- Launch multiple agents concurrently when tasks are independent
-- When an agent completes, it returns a single message back to you
-- Each agent invocation is stateless - provide complete context in your instruction"""
+        base_description += "\n- Launch independent agents concurrently."
 
         if agents_list:
             agent_desc = "\n".join(

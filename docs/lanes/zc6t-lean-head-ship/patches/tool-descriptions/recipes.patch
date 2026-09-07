@@ -1,0 +1,40 @@
+--- a/recipes.description
++++ b/recipes.description
+@@ -1,29 +1,12 @@
+-Execute multi-step AI agent recipes (workflows).
+-
+-Recipes are declarative YAML specifications that define multi-step agent workflows with:
+-- Sequential execution with state persistence
+-- Agent delegation with context accumulation
+-- Automatic checkpointing for resumability
+-- Error handling and retry logic
+-- Approval gates for human-in-loop workflows (staged recipes)
++Execute multi-step AI agent recipes (workflows). Recipes are declarative YAML specifications with sequential execution and state persistence, agent delegation with context accumulation, automatic checkpointing for resumability, error handling and retry logic, and approval gates for human-in-loop (staged) recipes.
+ 
+ Operations:
+-- execute: Run a recipe from YAML file
+-- resume: Resume interrupted session
+-- list: List active sessions
+-- validate: Validate recipe structure (schema-v2 recipes are checked by the
+-  runner library: manifest parse + dependency plan preflight, nothing executed)
+-- approvals: List pending approvals across sessions
+-- approve: Approve a stage to continue execution
+-- deny: Deny a stage to stop execution
+-- cancel: Cancel a running recipe session (graceful or immediate)
++- execute - run a recipe from a YAML file (recipe_path + optional context).
++- resume - resume an interrupted session (session_id).
++- list - list active sessions.
++- validate - validate recipe structure; schema-v2 recipes are checked by the runner library (manifest parse + dependency plan preflight), nothing executed.
++- approvals - list pending approvals across sessions.
++- approve / deny - continue or stop a staged recipe (session_id + stage_name; deny takes an optional reason, approve an optional message).
++- cancel - cancel a running session (session_id; `immediate: true` does not wait for the current step).
+ 
+-Example:
+-  Execute recipe: {{"operation": "execute", "recipe_path": "@recipes:examples/code-review.yaml", "context": {{"file_path": "src/auth.py"}}}}
+-  Resume session: {{"operation": "resume", "session_id": "recipe_20251118_143022_a3f2"}}
+-  List sessions: {{"operation": "list"}}
+-  Validate recipe: {{"operation": "validate", "recipe_path": "@recipes:examples/my-recipe.yaml"}}
+-  List approvals: {{"operation": "approvals"}}
+-  Approve stage: {{"operation": "approve", "session_id": "...", "stage_name": "planning", "message": "merge"}}
+-  Deny stage: {{"operation": "deny", "session_id": "...", "stage_name": "planning", "reason": "needs revision"}}
+-  Cancel recipe: {{"operation": "cancel", "session_id": "...", "immediate": false}}+recipe_path supports @bundle:path (e.g. @recipes:examples/code-review.yaml).

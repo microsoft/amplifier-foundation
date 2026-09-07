@@ -1,0 +1,11 @@
+Load domain knowledge from an available skill: specialized workflows, best practices, standards, coding guidelines, architectural patterns. Skills complement documentation and web search, they do not replace them.
+
+Operations:
+- load_skill(list=True) - all available skills with descriptions.
+- load_skill(search="pattern") - skills whose name or description matches.
+- load_skill(info="skill-name") - metadata only (name, description, version, license, path), content not loaded. Use it to check a skill before loading, to conserve context.
+- load_skill(skill_name="skill-name") - loads the complete skill content into context and returns skill_directory.
+
+A skill may reference companion files: pass the returned skill_directory to read_file, e.g. read_file(skill_directory + "/examples/code.py").
+
+Discovery: configured directories (workspace, user, custom paths), first-match-wins; workspace skills (.amplifier/skills/) override user skills (~/.amplifier/skills/).

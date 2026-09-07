@@ -1,0 +1,10 @@
+{
+  "model": "claude-opus-5",
+  "instr_chars": 99557,
+  "tools_chars": 220853,
+  "head_chars": 320410,
+  "n_tools": 86,
+  "n_system_blocks": 1,
+  "n_context_file_blocks": 24,
+  "you_are_amplifier_at": 248
+}
