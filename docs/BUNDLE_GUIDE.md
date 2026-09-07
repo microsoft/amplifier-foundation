@@ -1310,12 +1310,16 @@ agents:
 
 ```yaml
 # behaviors/my-domain-with-awareness.yaml
-# Acceptable variant: a tiny breadcrumb if delegation isn't reliable enough
-# in the target audience of this behavior. Keep it under 500 tokens.
+# Variant: always-on context that carries what the catalog line CANNOT --
+# a cross-cutting hazard, a routing table to other bundles, a prerequisite.
+# NOT "this domain exists, delegate to my-domain-expert": that duplicates the
+# agent's own meta.description, and validate-bundle-repo.yaml Phase 2.84
+# warns on it (awareness_is_pointer_only). See "Awareness: concept + trigger
+# + pointer" above for the test this file has to pass.
 
 context:
   include:
-    - my-bundle:context/my-domain-awareness.md    # ~30 lines, "domain exists, delegate"
+    - my-bundle:context/my-domain-hazards.md    # true of EVERY agent in the bundle
 ```
 
 **Worked example (bad — anti-pattern):**

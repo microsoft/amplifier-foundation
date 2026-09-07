@@ -58,7 +58,7 @@ meta:
 
 See `context/shared/description-authoring-principles.md` for trigger
 phrasing (decision rules over bare absolutes), the example policy (no
-`<example>` blocks, no `<commentary>`), and the token budget.
+`<example>` blocks, no `<commentary>`), and the character budget.
 
 ### Real Example
 
@@ -427,7 +427,11 @@ meta:
 
 ### The Behavior + Agent Pattern
 
-Pair your expert agent with a behavior that injects a thin awareness pointer:
+**The default behavior has no `context.include` at all.** The agent's own
+`meta.description` is the discovery surface — it is already concatenated into
+the `delegate` catalog and paid on every request. A context file that says
+"this domain exists, delegate to `my-expert`" is a second copy of that same
+sentence, paid twice:
 
 ```yaml
 # behaviors/my-expert.yaml
@@ -437,16 +441,20 @@ bundle:
 
 agents:
   include:
-    - my-bundle:my-expert    # Heavy agent file
-
-context:
-  include:
-    - my-bundle:context/my-awareness.md  # Thin pointer (~30 lines)
+    - my-bundle:my-expert    # Heavy agent file; its meta.description IS the pointer
 ```
 
-The thin awareness file tells root sessions: "This domain exists. Delegate to `my-bundle:my-expert`."
-
 The agent file carries all the heavy @mentions that only load when the agent is actually spawned.
+
+Add a `context.include` only when you can name something it says that the
+catalog line cannot — a cross-cutting hazard, a routing table to *other*
+bundles, or a prerequisite the session needs before any of the capabilities
+work. `validate-bundle-repo.yaml` Phase 2.84 warns
+(`awareness_is_pointer_only`) on a file that is when-to-use prose plus a
+`delegate(`/`load_skill(` pointer, which is precisely the file this section
+used to recommend. The full test, the three legitimate content types, and the
+four rules are in
+[BUNDLE_GUIDE.md — Awareness: concept + trigger + pointer](BUNDLE_GUIDE.md#awareness-concept--trigger--pointer).
 
 ### Anti-Pattern: Heavy Context in Behaviors
 
@@ -457,16 +465,21 @@ context:
     - my-bundle:docs/FULL_GUIDE.md      # 500 lines in every session!
     - my-bundle:docs/REFERENCE.md       # More bloat
 
-# ✅ GOOD: Thin pointer in behavior, heavy docs in agent
+# ❌ ALSO BAD: a file whose whole content is "domain exists, delegate to X"
 context:
   include:
-    - my-bundle:context/awareness.md    # 30 lines: "domain exists, delegate"
+    - my-bundle:context/awareness.md    # duplicates the agent's own description
 
-# ✅ EVEN BETTER: No always-on context at all when an expert agent owns the domain
+# ✅ GOOD: no always-on context at all when an expert agent owns the domain
 agents:
   include:
     - my-bundle:my-expert    # Agent meta.description IS the discovery surface
 # (no context.include block needed — the agent catalog tells the LLM "this exists")
+
+# ✅ ALSO GOOD: always-on context that carries what no description can
+context:
+  include:
+    - my-bundle:context/hazards.md      # a hazard true of EVERY agent in the bundle
 ```
 
 ### Hard policy: behavior `context.include` token budget
