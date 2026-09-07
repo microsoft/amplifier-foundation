@@ -18,6 +18,22 @@ includes:
   # Context Intelligence: session event capture + local-JSONL navigation
   - bundle: git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-logging.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-navigation.yaml
+  # Model routing: the hook that makes every agent's `model_role` mean something.
+  #
+  # Every anchors agent declares a role (explorer: [general, fast]; architect:
+  # reasoning; ...). Without hooks-routing those declarations are dead config
+  # and every sub-agent silently inherits the parent's provider -- measured
+  # 2026-09-07: a session on anchors-amp-dev spawned explorer with
+  # `provider_preferences: null` and ran it on the parent's opus while
+  # `amplifier routing show` said "balanced ... active" for every role.
+  #
+  # amplifier-app-cli ALSO composes this behavior on every session (routing is
+  # app-level policy there, like skills/wayfinder). Including it here too is
+  # deliberate, not redundant: anchors does not need the CLI to work, and a
+  # host that mounts anchors without app-cli must still route. Compose dedupes
+  # by module id, so the two never produce a second hook. Cost: one ~750-byte
+  # context file (the model_role contract) and the role-definitions skill.
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main#subdirectory=behaviors/routing.yaml
 
 session:
   raw: true
