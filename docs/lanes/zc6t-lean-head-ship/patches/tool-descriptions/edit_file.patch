@@ -1,0 +1,23 @@
+--- a/edit_file.description
++++ b/edit_file.description
+@@ -1,14 +1,9 @@
++Perform exact string replacements in a file. file_path accepts absolute paths, relative paths, and @bundle-name:path bundle resources (full form in read_file's description).
+ 
+-Performs exact string replacements in files.
+-Supports @mention paths for accessing bundle resources.
++Hard constraints:
++- You must have called read_file on the file at least once in this conversation; editing without reading errors.
++- The edit will FAIL if `old_string` is not unique in the file. Provide a larger old_string with more surrounding context, or use `replace_all` to change every instance (also how to rename a variable across a file).
++- new_string must differ from old_string.
++- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix (prefix = spaces + line number + tab). Never include any part of that prefix in old_string or new_string.
+ 
+-Usage:
+-- The file_path parameter accepts absolute paths, relative paths, and @bundle-name:path
+-  bundle resources — see the read_file tool description for the full form.
+-- You must use your read_file tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
+-- When editing text from read_file tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab. Everything after that tab is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
+-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
+-- The edit_file will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.
+-- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
+-    +Prefer editing existing files over creating new ones. Do not add emojis unless asked.

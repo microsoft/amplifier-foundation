@@ -1,0 +1,12 @@
+Execute multi-step AI agent recipes (workflows). Recipes are declarative YAML specifications with sequential execution and state persistence, agent delegation with context accumulation, automatic checkpointing for resumability, error handling and retry logic, and approval gates for human-in-loop (staged) recipes.
+
+Operations:
+- execute - run a recipe from a YAML file (recipe_path + optional context).
+- resume - resume an interrupted session (session_id).
+- list - list active sessions.
+- validate - validate recipe structure; schema-v2 recipes are checked by the runner library (manifest parse + dependency plan preflight), nothing executed.
+- approvals - list pending approvals across sessions.
+- approve / deny - continue or stop a staged recipe (session_id + stage_name; deny takes an optional reason, approve an optional message).
+- cancel - cancel a running session (session_id; `immediate: true` does not wait for the current step).
+
+recipe_path supports @bundle:path (e.g. @recipes:examples/code-review.yaml).

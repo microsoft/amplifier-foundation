@@ -1,0 +1,5 @@
+Manage your todo list for tracking complex multi-step tasks: create a list when starting such work, update it after each completed step, stay accountable through long turns.
+
+Each item has content (imperative, e.g. "Run tests"), activeForm (present continuous, e.g. "Running tests"), and status - one of "pending", "in_progress", "completed". Actions: create and update replace the whole list; list reads the current one.
+
+Keep exactly ONE item "in_progress" at a time; mark an item "completed" immediately after finishing it.

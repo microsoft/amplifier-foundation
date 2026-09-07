@@ -1,0 +1,78 @@
+--- a/context/skills-instructions.md
++++ b/context/skills-instructions.md
+@@ -1,69 +1,7 @@
+ # Skills System
+-
+-You have access to the skills system for loading domain knowledge packages.
+-
+-## What Are Skills?
+-
+-Skills are domain knowledge packages following the [Agent Skills specification](https://agentskills.io/specification). They provide structured information through progressive disclosure:
+-
+-- **Level 1 (Metadata)**: Name + description (~100 tokens) - always visible via list/search
+-- **Level 2 (Content)**: Full markdown body (~1-5k tokens) - loaded on demand
+-- **Level 3 (References)**: Additional files (0 tokens until accessed via read_file)
+-
+-## Skills Visibility
+-
+-The available-skills catalog is injected into your context automatically before each
+-request. You don't need to call `load_skill(list=true)` first.
+-
+-## Available Tool: load_skill
+-
+-Operations and usage are in the `load_skill` tool description. The common case is
+-`load_skill(skill_name="…")` to load a skill's full content.
+-
+-## Enhanced Skills (Fork Execution)
+-
+-Some skills use `context: fork` to run as isolated subagents. When you load a fork skill with `load_skill(skill_name="...")`, instead of returning content to inject into conversation, the skill:
+-
+-1. Spawns a fresh subagent with its own context window
+-2. The skill's instructions become the subagent's task prompt
+-3. The subagent executes the task independently
+-4. The result is returned with a `response` field containing the subagent's output
+-
+-**When you receive a fork skill result**, present the `response` content to the user. The response IS the work product — it contains the subagent's analysis, findings, or actions. Do not describe the metadata (`session_id`, `context`, `turn_count`) — present the actual response.
+-
+-### Built-in Power Skills
+-
+-Three power skills ship with the curated collection. These are user-invoked via slash commands and always fork:
+-
+-| Skill | Slash Command | What It Does |
+-|-------|--------------|--------------|
+-| `code-review` | `/code-review [focus]` | Spawns 3 parallel review agents (code reuse, quality, efficiency) to review recent changes and apply fixes |
+-| `mass-change` | `/mass-change <instruction>` | Decomposes a large change into 5–30 independent units, spawns parallel agents to implement each |
+-| `session-debug` | `/session-debug [issue]` | Diagnoses session issues by delegating to the session-analyst agent |
+-
+-These skills have `disable-model-invocation: true`, meaning they won't appear in the automatic skills visibility list. They are invoked by the user explicitly — via slash command (`/session-debug`, `/code-review`, `/mass-change`) or by calling `load_skill(skill_name="session-debug")` directly. When the user types one of these slash commands, load and execute the corresponding skill.
+-
+-## Discovering, Configuring, and Authoring Skills
+-
+-Skill discovery paths and precedence, `tool-skills` configuration (`skills_dirs`,
+-`visibility`), and how to ship skills from a bundle (`config.skills` source types, the
+-`#subdirectory=` fragment, the silently-ignored top-level `skills:` key) are bundle-author
+-concerns. Load `load_skill(skill_name="skills-assist")` or read its `authoring-guide.md`
+-companion when you need them.
+-
+-## Skills Expert
+-
+-When you need help authoring a skill, understanding the Agent Skills specification, checking compatibility across Amplifier versions, or deciding between skills and agents, use the built-in skills expert:
+-
+-- Call `load_skill(skill_name="skills-assist")` to consult the skills expert directly
+-- Or use the `/skills-assist` slash command for interactive guidance
+-
+-The skills expert (`/skills-assist`) is an authoritative consultant covering skill authoring patterns, the enhanced skills format, spec compatibility, and the skills-vs-agents decision framework.
+-
+-## Skills vs Agents
+-
+-Use this quick guide to decide whether to use a skill or a delegate agent:
+-
+-- **Start with a skill** — if the task is a self-contained knowledge package, a pattern guide, or instructions for the current agent to follow, a skill is the right fit. Skills are lightweight and load into the current context.
+-- **Graduate to an agent** — if the task requires its own tool set, a clean context window, isolated execution, or parallel delegation, use `delegate` with an agent instead. Fork skills (`context: fork`) bridge the gap by running as isolated subagents while still being distributed as skills.
+-- **When in doubt, ask `/skills-assist`** — the skills expert can evaluate your use case and recommend the right approach based on your specific requirements.
++Skills = domain knowledge packages ([Agent Skills spec](https://agentskills.io/specification)), progressive disclosure: L1 name+description always visible, L2 full body on demand, L3 reference files via read_file.
++The catalog is auto-injected before each request — do not call `load_skill(list=true)` first. Usual call `load_skill(skill_name="…")`; other operations are in the tool description.
++Fork skills (`context: fork`) run as isolated subagents: own context window, the skill's instructions as task prompt, independent execution, result carries `response`. Present that `response` to the user — it IS the work product; never describe metadata (`session_id`, `context`, `turn_count`).
++Power skills — always fork, `disable-model-invocation: true`, so absent from the skills-visibility list and invoked by the user via slash command or `load_skill(skill_name="session-debug")`; when the user types one, load and execute it. `code-review` (`/code-review [focus]`): 3 parallel review agents (code reuse, quality, efficiency) over recent changes, applies fixes. `mass-change` (`/mass-change <instruction>`): splits a large change into 5–30 independent units, one parallel agent each. `session-debug` (`/session-debug [issue]`): diagnoses session issues via the session-analyst agent.
++Bundle-author concerns — discovery paths/precedence, `tool-skills` config (`skills_dirs`, `visibility`), bundle shipping (`config.skills` source types, `#subdirectory=` fragment, silently-ignored top-level `skills:` key) — plus authoring, the spec, cross-version compatibility and skills-vs-agents: `load_skill(skill_name="skills-assist")`, `/skills-assist`, or its `authoring-guide.md`.
++Skill vs agent: a skill is a self-contained knowledge package / pattern guide / instructions loaded into the current context; `delegate` to an agent when the task needs its own tool set, clean context window, isolated execution, or parallel delegation; fork skills bridge both; unsure → `/skills-assist`.

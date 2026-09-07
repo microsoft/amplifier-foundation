@@ -1,0 +1,98 @@
+--- a/context/modes-instructions.md
++++ b/context/modes-instructions.md
+@@ -1,86 +1,10 @@
+ # Amplifier Modes
+-
+-Modes are runtime behavior overlays that modify how you operate without changing the underlying bundle. When a mode is active, you receive mode-specific guidance and tool policies are enforced.
+-
+-## Commands
+-
+-| Command | Description |
+-|---------|-------------|
+-| `/mode <name>` | Activate a mode (or toggle if already active) |
+-| `/modes` | List all available modes |
+-| `/mode off` | Deactivate current mode |
+-
+-## How Modes Work
+-
+-When a mode is active:
+-
+-1. **Context injection** - The mode's guidance appears as a `<system-reminder source="mode-<name>">` in your context
+-2. **Tool policies** - Tools are categorized per the mode's configuration
+-3. **Visual indicator** - The user sees `[mode]>` in their prompt
+-
+-## Tool Policies
+-
+-Modes specify how tools should behave:
+-
+-| Policy | Behavior |
+-|--------|----------|
+-| `safe` | Tool works normally |
+-| `warn` | First call is blocked with a warning; retry to proceed |
+-| `confirm` | Requires user approval before execution |
+-| `block` | Tool is disabled entirely |
+-
+-If a tool isn't listed, `default_action` applies (`block` by default).
+-
+-**When a tool is blocked or warned:** You'll receive a tool result indicating the mode policy. For `warn` tools, explain what you intend to do and call again if appropriate.
+-
+-**When a tool requires confirmation:** The approval system will prompt the user. Wait for their decision before proceeding.
+-
+-**Infrastructure tools (`mode`, `todo`) bypass the mode tool cascade.** They are always callable regardless of the active mode's `default_action` or `tools.*` lists — you can always call `mode(operation="set"|"clear"|"list"|"current")` to navigate between modes and `todo` to manage task state. Mode authors should NOT list these in `tools.safe` redundantly; the bypass is handled by `hooks-mode` config (`infrastructure_tools: ["mode", "todo"]`, default). A mode with `default_action: block` and no explicit listing of these tools is NOT a trap. See `mode-schema-reference.md §3.4` for details.
+-
+-## Custom Modes
+-
+-Users can create custom modes by adding `.md` files to:
+-- `.amplifier/modes/` - Project-specific modes
+-- `~/.amplifier/modes/` - User-global modes
+-
+-Mode files use YAML frontmatter with a `mode:` section defining name, description, and tool policies, followed by markdown content that gets injected as guidance.
+-
+-### Authoring a Mode
+-
+-To write or edit a mode file — frontmatter schema, field reference, shortcut rules,
+-`contributes` blocks, and naming guidance — read `@modes:context/mode-schema-reference.md`
+-or delegate to the `mode-author` agent.
+-
+-## For You (The Agent)
+-
+-When you see `<system-reminder source="mode-<name>">` in your context:
+-
+-1. **You are in that mode** - The user explicitly chose this behavior
+-2. **Follow the guidance** - The mode's markdown content tells you how to behave
+-3. **Respect tool policies** - Blocked tools will fail; warned tools need justification; confirmed tools need user approval
+-4. **Honor user intent** - The mode reflects what the user wants from this interaction
+-
+-**Anti-pattern:** Ignoring mode guidance or trying to work around tool restrictions.
+-
+-**Correct pattern:** Adapt your approach to work within the mode's constraints. If the user needs capabilities the mode restricts, suggest they use `/mode off`.
+-
+-## Mode Tool (Agent-Initiated Transitions)
+-
+-When the `mode` tool is available, agents can request mode changes programmatically:
+-
+-| Operation | Description |
+-|-----------|-------------|
+-| `mode(operation="list")` | List available modes |
+-| `mode(operation="current")` | Check active mode |
+-| `mode(operation="set", name="plan")` | Request mode activation |
+-| `mode(operation="clear")` | Deactivate current mode |
+-
+-The default gate policy is `warn` — the first request is blocked with a reminder. Call again to confirm the transition. This prevents accidental mode changes while still allowing agent-driven workflows.
+-
+-## Capabilities Are Ephemeral
+-
+-Modes can contribute tools, agents, skills, or context when they activate, and remove them when they deactivate. **The currently-listed capabilities are authoritative for what is available right now.** Check them — tools schema, agent catalog in `delegate`, skills-visibility list, the active-mode reminder — before invoking anything.
+-
+-If earlier conversation turns reference a capability that you no longer see in your current available set — a tool call, an agent delegation, a skill load — assume it was contributed by a mode that has since been deactivated. **Do not attempt to re-invoke it.** It will fail. Past in-mode turns are not a template for current behavior; the live capability list is.
+-
+-This applies whether a mode is currently active or not, and to any future contribution mechanism beyond today's `tools`, `agents`, `skills`, and `context`. The rule is: trust the current set, not the conversation history's evidence of past sets.
++Modes = runtime behavior overlays; an active mode injects guidance and enforces tool policies.
++`/mode <name>` activate (toggles if active) · `/modes` list · `/mode off` deactivate.
++An active mode shows as `<system-reminder source="mode-<name>">`, categorizes tools per its config, displays `[mode]>` to the user.
++Policies: `safe` normal · `warn` first call blocked, retry to proceed · `confirm` user approval required before execution · `block` disabled. Unlisted tools → `default_action` (default `block`). Blocked/warned calls return a policy result: for `warn` state your intent and call again if appropriate; for `confirm` wait for the user's decision from the approval system.
++`mode` and `todo` are infrastructure tools: always callable, bypassing the cascade under any `default_action`/`tools.*`, so `mode(operation="set"|"clear"|"list"|"current")` and `todo` are never blocked. Authors must NOT list them in `tools.safe`; the bypass is `hooks-mode` config (`infrastructure_tools: ["mode", "todo"]`, default); `default_action: block` without them is not a trap. See `mode-schema-reference.md §3.4`.
++Custom modes: `.md` in `.amplifier/modes/` (project) or `~/.amplifier/modes/` (user-global); YAML frontmatter `mode:` (name, description, tool policies) + markdown guidance. Authoring (schema, fields, shortcut rules, `contributes` blocks, naming): read `@modes:context/mode-schema-reference.md` or delegate to `mode-author`.
++In a mode the user explicitly chose it: follow its guidance, respect tool policies, honor user intent; never ignore guidance or route around restrictions; adapt, and suggest `/mode off` if the user needs restricted capabilities.
++Agent-initiated: `mode(operation="list"|"current"|"clear")`, `mode(operation="set", name="plan")`. Gate policy defaults to `warn`: first request blocked with a reminder, call again to confirm.
++Capabilities are ephemeral — modes add/remove tools, agents, skills, context. Currently-listed capabilities are authoritative: check the tools schema, `delegate` agent catalog, skills-visibility list, active-mode reminder before invoking anything. A capability from an earlier turn that is no longer listed came from a deactivated mode — do NOT re-invoke it, it will fail. Holds with or without an active mode, and for any future contribution mechanism beyond `tools`/`agents`/`skills`/`context`: trust the current set, not history.

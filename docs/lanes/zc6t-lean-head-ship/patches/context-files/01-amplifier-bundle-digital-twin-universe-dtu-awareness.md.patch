@@ -1,0 +1,28 @@
+--- a/context/dtu-awareness.md
++++ b/context/dtu-awareness.md
+@@ -1,22 +1,3 @@
+-# Digital Twin Universe Environments
+-
+-You have access to Digital Twin Universe (DTU) capabilities for on-demand isolated environments stood up from declarative profiles. Use it to simulate real-world deployment scenarios so code can be tested as if actually deployed.
+-
+-## When to Use
+-
+-- User needs an isolated environment to test code in a realistic deployment setting
+-- User wants to launch a simulated Amplifier user environment or web UI
+-- User needs an ephemeral container with DNS rewriting, API passthrough, or port forwarding
+-- User has local repos that need to be tested as if they were already published
+-
+-## How to Use
+-
+-Build a DTU profile for a project, launch and verify an environment (also handles Gitea setup for local repos):
+-```
+-delegate(agent="digital-twin-universe:dtu-profile-builder", instruction="<what the user needs>", context_depth="recent", context_scope="conversation")
+-```
+-
+-If the user's request doesn't match this agent (e.g. general DTU questions, installation help, troubleshooting), load the skill instead:
+-```
+-load_skill(skill_name="digital-twin-universe")
+-```
++# Digital Twin Universe (DTU)
++On-demand isolated environments from declarative profiles; test code as if actually deployed — realistic-deployment testing, a simulated Amplifier user environment or web UI, an ephemeral container with DNS rewriting / API passthrough / port forwarding, local repos tested as if published.
++Build a profile, launch and verify an environment (also handles Gitea setup for local repos): `delegate(agent="digital-twin-universe:dtu-profile-builder", instruction="<what the user needs>", context_depth="recent", context_scope="conversation")`. Other DTU needs (general questions, install help, troubleshooting): `load_skill(skill_name="digital-twin-universe")`.
