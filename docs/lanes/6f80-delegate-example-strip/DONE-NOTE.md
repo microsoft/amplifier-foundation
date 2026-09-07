@@ -19,8 +19,8 @@ absorbed.
 | 3 | Boundary test proving nothing outside the blocks is consumed | **DONE** |
 | 4 | Debug log line naming every stripped agent | **DONE** |
 | 5 | Before/after delegate-catalog bytes on the owner's app list | **DONE** (9,474 chars, not the goal's predicted ~20,000 — see F1) |
-| 6 | CI green (6 legs); suite failure set ⊆ main's | **DONE locally**; CI legs run on the draft PR |
-| 7 | DRAFT PR; the manager merges | **DONE** |
+| 6 | CI green (6 legs); suite failure set ⊆ main's | **DONE** — 6/6 pass + CLA |
+| 7 | DRAFT PR; the manager merges | **DONE** — [#376](https://github.com/microsoft/amplifier-foundation/pull/376), draft → ready on green. **Not merged.** |
 
 **Spend: $0.00 of $0.00 authority.** No API call, no DTU, no infrastructure
 registered. The measurement is a pure offline render over the host's existing
@@ -210,24 +210,36 @@ following the precedent of `tests/test_named_delegate_matrix_67u.py`.
 finding for the manager: either add `modules/tool-delegate/tests` to the CI
 command, or drop the path argument and let `testpaths` do its job.
 
-### F3 — a sibling lane holds this item because of a copy-paste in ITS goal file.
+### F3 — a sibling lane's GOAL.md carries THIS item's id. It claimed 6f80 for ~2.5 minutes.
 
 `work_claim(model_performance-6f80)` was refused at the first call of this
-session: *"issue already claimed by agent-spark-1-105059"*. That PID is a live
-`amplifier run /goal` in
-`lanes/hd-work-tracker/amplifier-work-tracker` — a different lane, on a
-different repo, doing different work ("21 tool descriptions + a 7,481-char
-awareness file"). Its `GOAL.md` OUTCOME block names **`model_performance-6f80`**
-verbatim, so it claimed this item on startup.
+session: *"issue already claimed by agent-spark-1-105059"*. That PID was a live
+`amplifier run /goal` whose cwd is
+`lanes/hd-work-tracker/amplifier-work-tracker` — a **different lane, on a
+different repo, doing different work**: *"21 tool descriptions + a 7,481-char
+awareness file"*. Its `GOAL.md` OUTCOME branch A names
+**`model_performance-6f80`** verbatim, so it claimed this item on startup.
 
-Consequence if unaddressed: that lane will `work_resolve` **this** item with
-**its** summary, and 6f80's record will describe work-tracker's tool
-descriptions instead of tool-delegate's renderer.
+The three lanes launched together at 13:24:06–07 (`6f80`, `hd-browser-bridge`,
+`hd-work-tracker`); only `hd-work-tracker`'s goal carries the wrong id.
 
-This is the one thing this lane cannot fix from inside its own worktree — the
-defect is in another lane's goal file, which this lane does not own and must not
-edit. The deliverables are all met; the bookkeeping needs the manager. See
-"Terminal state" below for exactly what was done about it.
+**It resolved itself without intervention.** The sibling released the item at
+`20:26:49Z` — about 2.5 minutes after claiming it — and this lane claimed it
+cleanly at `20:35`. So the collision cost nothing here: the engineering work
+proceeded in parallel with the refusal (the deliverables live entirely inside
+this worktree and never needed the claim), and the item was held by its own
+lane before resolution.
+
+**The goal-file defect is still real and still unfixed**, and it is the second
+lane in this batch to be pointed at another lane's item id. Two costs it can
+still impose on a future run: (1) if the sibling had *resolved* instead of
+releasing, 6f80's public record would now describe work-tracker's tool
+descriptions; (2) whatever item `hd-work-tracker` was *supposed* to resolve is
+not named anywhere in its goal, so it has no correct id to resolve at all.
+
+Reported, not absorbed. This lane does not edit another lane's goal file, and
+the goal's own rule says a defect in a goal is reported against the goal rather
+than worked around.
 
 ---
 
@@ -241,6 +253,33 @@ edit. The deliverables are all met; the bookkeeping needs the manager. See
 
 Main's four failures are precisely this lane's four fail-before assertions.
 Branch failure set is **empty**, so ⊆ main's holds trivially.
+
+**CI: 6/6 legs pass** on `cff5225` (run
+[34159936813](https://github.com/microsoft/amplifier-foundation/actions/runs/34159936813)),
+plus `license/cla`:
+
+```
+Tests (ubuntu-latest,  Python 3.11)  pass  50s
+Tests (ubuntu-latest,  Python 3.12)  pass  49s
+Tests (ubuntu-latest,  Python 3.13)  pass  42s
+Tests (windows-latest, Python 3.11)  pass  1m21s
+Tests (windows-latest, Python 3.12)  pass  1m12s
+Tests (windows-latest, Python 3.13)  pass  1m29s
+license/cla                          pass
+```
+
+## Publication (publication/v1, read back from the remote)
+
+```
+repo      microsoft/amplifier-foundation
+branch    lane/6f80-delegate-example-strip
+head_sha  cff52256c4e6c54437f57983349f8e9d03345525
+PR        #376  https://github.com/microsoft/amplifier-foundation/pull/376
+state     open, ready for review (draft until CI went green)
+```
+
+Verified with `publication_readback.sh`, not from local `git log`.
+**The PR is NOT merged — the manager merges.**
 
 ## Deviations
 
