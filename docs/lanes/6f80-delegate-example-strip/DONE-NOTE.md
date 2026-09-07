@@ -20,7 +20,7 @@ absorbed.
 | 4 | Debug log line naming every stripped agent | **DONE** |
 | 5 | Before/after delegate-catalog bytes on the owner's app list | **DONE** (9,474 chars, not the goal's predicted ~20,000 — see F1) |
 | 6 | CI green (6 legs); suite failure set ⊆ main's | **DONE** — 6/6 pass + CLA |
-| 7 | DRAFT PR; the manager merges | **DONE** — [#376](https://github.com/microsoft/amplifier-foundation/pull/376), draft → ready on green. **Not merged.** |
+| 7 | DRAFT PR; the manager merges | **DONE** — [#376](https://github.com/microsoft/amplifier-foundation/pull/376), **DRAFT**. **Not merged.** (briefly marked ready in error — see F4) |
 
 **Spend: $0.00 of $0.00 authority.** No API call, no DTU, no infrastructure
 registered. The measurement is a pure offline render over the host's existing
@@ -241,6 +241,37 @@ Reported, not absorbed. This lane does not edit another lane's goal file, and
 the goal's own rule says a defect in a goal is reported against the goal rather
 than worked around.
 
+### F4 — the goal says both "DRAFT PR" and "mark ready when green". I followed the wrong one; the manager caught it.
+
+Three places say DRAFT and one says ready:
+
+| where | text |
+|---|---|
+| DELIVERABLES | "**DRAFT PR; the manager merges.**" |
+| Procedure 4 | "open a DRAFT PR with `gh pr create --draft`" |
+| acceptance criteria | "the PR is DRAFT until green, and the manager merges it" |
+| KNOWN (twice) | "**Do NOT merge.** DRAFT PR, mark ready when green, stop." |
+
+I read "DRAFT until green" + "mark ready when green" as authorising the
+transition and ran `gh pr ready 376`. **That was wrong**, and the goal itself
+says so twice over: DELIVERABLES is the deliverable list, and the goal's own
+tie-break rule — *"If two objectives here read as equally required, treat the
+FIRST as the objective"* — puts DELIVERABLES ahead of KNOWN. The correct
+reading is that green is what makes the PR *mergeable by the manager*, not what
+authorises the lane to change its state.
+
+**Corrected**: `gh pr ready --undo 376` → `isDraft: true`, verified by a fresh
+`gh pr view`. The item was **reopened** rather than given an erratum, because a
+wrong PR state is wrong *work*, not a wrong sentence; `closed_at` was cleared
+and the item re-resolved, which moves this batch's throughput by one item —
+stated here rather than hidden.
+
+**The goal-text defect stands and is reported, not absorbed.** Two adjacent
+sentences authorise opposite end states for the same deliverable, and the only
+thing that resolved it was a human reading the PR. Suggested fix for the next
+goal of this shape: delete "mark ready when green" and say *"leave the PR in
+DRAFT; the manager marks it ready and merges."*
+
 ---
 
 ## Suite and lint
@@ -274,7 +305,7 @@ license/cla                          pass
 repo      microsoft/amplifier-foundation
 branch    lane/6f80-delegate-example-strip
 PR        #376  https://github.com/microsoft/amplifier-foundation/pull/376
-state     open, ready for review (draft until CI went green — 6/6 + CLA)
+state     open, DRAFT (CI 6/6 + CLA green on the head)
 head_sha  see the lane's DONE.json
 ```
 
