@@ -121,6 +121,15 @@ What does this agent do? What value does it provide?
 #### 2. WHEN - The Deciding Factor
 The condition that should cause delegation, phrased as a decision rule
 (see description-authoring-principles.md V6) rather than a bare imperative.
+State it FIRST -- a description is read by a router deciding whether this
+is the thing, not by a person learning what it does (V7).
+
+#### 2b. DO NOT USE WHEN - and what to use instead
+The half most often missing. Name the sibling that SHOULD handle the case
+you are rejecting. Its absence is what produces the silent failure this
+whole policy exists to prevent: a router picks the nearest-sounding
+capability, does the wrong work, and gives nobody a reason to trace it
+back. One clause removes a whole class of misroute.
 
 #### 3. Authoritative On (optional)
 Domain terms this agent owns, so questions in that domain route here.
@@ -139,12 +148,17 @@ field.
 meta:
   name: my-agent
   description: |
-    [ONE SENTENCE: What this agent does]
+    [TRIGGER FIRST: the condition under which this applies, then what it does]
 
-    Use when [the deciding factor -- context shape, not a bare imperative].
+    USE WHEN: [the deciding factor -- context shape, not a bare imperative].
+    DO NOT USE WHEN: [the case that belongs elsewhere] -- use [name].
 
     **Authoritative on:** [comma-separated domain terms/keywords]
 ```
+
+Budget: <= 600 chars for the whole block. If a routing fact will not fit,
+keep the fact and exceed the cap -- and say which fact forced it. Fidelity
+beats brevity (V7).
 
 ### Anti-Patterns
 
@@ -154,12 +168,32 @@ meta:
 ❌ Any `<example>` block, or any `<commentary>` tag -- both are banned
 entirely (description-authoring-principles.md V3), not merely capped
 
-### Description Token Budget
+### Description Length Cap
 
-**Provisional** (pending A/B calibration -- see
-description-authoring-principles.md V5): WARN above 300 tokens, ERROR
-above 600 tokens. Enforced by `foundation:recipes/validate-agents.yaml`
-and `foundation:recipes/validate-bundle-repo.yaml`.
+**<= 600 characters. ERROR above 1,200** (2x the cap). Enforced by
+`foundation:recipes/validate-agents.yaml` and
+`foundation:recipes/validate-bundle-repo.yaml`; the numbers and the
+measurement behind them are in description-authoring-principles.md V5.
+
+Chars, not tokens: chars are the unit every head measurement in this
+program was taken in, and they need no tokenizer. The superseded token
+tier (ERROR above 600 tokens = 2,400 chars) sat above the longest
+description in every already-aligned repo measured, so it could not fire
+on the defect it existed to catch.
+
+For an existing repo that is over the cap, do not shorten by hand and by
+eye -- run `foundation:recipes/refresh-descriptions.yaml`, which proposes
+a rewrite WITH a fidelity table accounting for every routing fact. See
+[BUNDLE_GUIDE.md - Refreshing descriptions](BUNDLE_GUIDE.md#refreshing-descriptions).
+
+### Awareness files are not a place to describe an agent
+
+If you find yourself writing an always-on `context.include` that says "this
+agent exists, and here is when to delegate to it", stop: that is the agent's
+`meta.description`, and a second copy is paid on every request and can drift
+from the first. An awareness file is for a CONCEPT that has no catalog line of
+its own. The full rule, and the validator that enforces it, are in
+[BUNDLE_GUIDE.md - Awareness: concept + trigger + pointer](BUNDLE_GUIDE.md#awareness-concept--trigger--pointer).
 
 ---
 

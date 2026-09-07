@@ -1,0 +1,83 @@
+---
+name: rotate-staging-key
+description: >
+  The staging API key needs replacing: reads the current key name from
+  deploy/config.yaml, generates a replacement, stores it in the vault,
+  restarts the workers one at a time, and verifies /healthz.
+  USE WHEN rotating, replacing, or revoking the staging API key.
+  DO NOT USE WHEN rotating a production or non-API secret — use the
+  production secret runbook.
+user-invocable: true
+allowed-tools:
+  - read_file
+  - bash
+model_role: general
+---
+
+# Rotate Staging API Key
+
+Replace the staging deployment's API key end to end. Success is not "ran the
+commands" — it is: a new key stored at `staging/api-key` in the vault, both
+worker pods restarted sequentially with the queue never draining, and
+`curl -sf $STAGING/healthz` returning 0.
+
+## Inputs
+
+- `$ARGUMENTS`: (Optional) Path to the deploy config if it is not the default
+  `deploy/config.yaml`.
+
+## Steps
+
+### 1. Read the current key name
+
+Read `deploy/config.yaml` and extract the name of the key currently in use.
+Do not guess the name — the vault path and the config must agree.
+
+**Success criteria**: The current key name is known and quoted back before
+anything is changed.
+**Artifacts**: `key_name` — used in steps 2 and 3.
+
+### 2. Generate the replacement
+
+```
+keygen --env staging
+```
+
+Capture the generated value. Never echo it into a log or transcript that
+outlives this step.
+
+**Success criteria**: A new key value exists in hand for step 3.
+**Artifacts**: `new_key` — used in step 3.
+
+### 3. Write the new key to the vault
+
+```
+vault put staging/api-key <new_key>
+```
+
+**Human checkpoint**: Confirm before writing. This overwrites the live staging
+secret and is not reversible without the previous value.
+
+**Success criteria**: `vault put` exits 0 and a read-back of `staging/api-key`
+returns the new value.
+
+### 4. Restart the worker pods — one at a time
+
+Restart the first worker pod, wait for it to report ready, and only then
+restart the second.
+
+**Rules**: Never restart both workers together. Rotating them one at a time is
+what keeps the queue from draining — this is the failure this skill exists to
+prevent.
+
+**Success criteria**: Both workers have restarted, each was ready before the
+next was touched, and queue depth never hit zero.
+
+### 5. Confirm the deployment is healthy
+
+```
+curl -sf $STAGING/healthz
+```
+
+**Success criteria**: The command exits 0. If it does not, the rotation is not
+done — investigate before declaring success.

@@ -1,0 +1,100 @@
+{
+  "phase": "scan_descriptions",
+  "repo_path": "/tmp/refresh-demo/browser-tester-pre",
+  "validator_recipe": "/home/bkrabach/dev/hw-model-performance/lanes/pwmy-principles-to-tooling/amplifier-foundation/recipes/validate-bundle-repo.yaml",
+  "output_dir": "/tmp/refresh-demo/out",
+  "caps": {
+    "agent_warn_chars": 600,
+    "agent_error_chars": 1200,
+    "skill_warn_chars": 400,
+    "skill_error_chars": 800
+  },
+  "violations": [
+    {
+      "file": "agents/browser-operator.md",
+      "kind": "agent",
+      "issues": [
+        {
+          "type": "example_block_present",
+          "severity": "ERROR",
+          "message": "agents/browser-operator.md: description has 2 <example> block(s) -- example blocks are rejected entirely, not merely capped"
+        },
+        {
+          "type": "agent_description_high",
+          "severity": "WARNING",
+          "message": "Agent description in agents/browser-operator.md is 819 chars (>600 cap -- consider trimming)."
+        }
+      ],
+      "chars": 819
+    },
+    {
+      "file": "agents/browser-researcher.md",
+      "kind": "agent",
+      "issues": [
+        {
+          "type": "example_block_present",
+          "severity": "ERROR",
+          "message": "agents/browser-researcher.md: description has 2 <example> block(s) -- example blocks are rejected entirely, not merely capped"
+        },
+        {
+          "type": "agent_description_high",
+          "severity": "WARNING",
+          "message": "Agent description in agents/browser-researcher.md is 877 chars (>600 cap -- consider trimming)."
+        }
+      ],
+      "chars": 877
+    },
+    {
+      "file": "agents/visual-documenter.md",
+      "kind": "agent",
+      "issues": [
+        {
+          "type": "example_block_present",
+          "severity": "ERROR",
+          "message": "agents/visual-documenter.md: description has 2 <example> block(s) -- example blocks are rejected entirely, not merely capped"
+        },
+        {
+          "type": "agent_description_high",
+          "severity": "WARNING",
+          "message": "Agent description in agents/visual-documenter.md is 761 chars (>600 cap -- consider trimming)."
+        }
+      ],
+      "chars": 761
+    }
+  ],
+  "awareness_warnings": [],
+  "head_cost": [
+    {
+      "file": "bundle.md",
+      "head_chars": 6458,
+      "context_chars": 4001,
+      "agent_description_chars": 2457,
+      "agents_counted": 3,
+      "skill_description_chars": 0,
+      "skills_counted": 0,
+      "is_lower_bound": true,
+      "unresolved_refs": [
+        "foundation:context/shared/common-system-base.md"
+      ]
+    },
+    {
+      "file": "behaviors/browser-tester.yaml",
+      "head_chars": 3183,
+      "context_chars": 3183,
+      "agent_description_chars": 0,
+      "agents_counted": 0,
+      "skill_description_chars": 0,
+      "skills_counted": 0,
+      "is_lower_bound": false
+    }
+  ],
+  "counts": {
+    "violations": 3,
+    "agent_errors": 3,
+    "agent_warnings": 3,
+    "skill_errors": 0,
+    "skill_warnings": 0,
+    "awareness_warnings": 0,
+    "head_cost_warnings": 1
+  }
+}

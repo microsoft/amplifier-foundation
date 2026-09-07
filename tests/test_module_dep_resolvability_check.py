@@ -190,11 +190,14 @@ class TestVersionAndChangelog:
         agent-classifier / description-status fix (lane dfni), then
         3.13.0 -> 3.14.0 by the context-token estimator fix (lane j05m,
         extracted from 8rug: `<namespace>:<path>` includes were charged a
-        flat 500 instead of being read). The v3.11.0 changelog entry below
-        is unaffected -- changelog entries accumulate.
+        flat 500 instead of being read), then 3.14.0 -> 3.15.0 by the
+        description-alignment checks (lane pwmy: char-based length cap,
+        skill descriptions, awareness redundancy, bundle head cost). The
+        v3.11.0 changelog entry below is unaffected -- changelog entries
+        accumulate.
         """
         data, _ = recipe_data
-        assert data["version"] == "3.14.0"
+        assert data["version"] == "3.15.0"
 
     def test_changelog_has_v3_11_0_entry(self, recipe_data):
         _, content = recipe_data

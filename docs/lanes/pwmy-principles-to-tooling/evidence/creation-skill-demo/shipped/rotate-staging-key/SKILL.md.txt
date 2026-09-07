@@ -1,0 +1,86 @@
+---
+name: rotate-staging-key
+description: >
+  Rotate the staging deployment's API key end to end — read the current key
+  name, generate a replacement, write it to the vault, restart the workers
+  one at a time, and confirm staging health. Use when the staging API key is
+  expiring, may be compromised, or is being cycled on schedule, or when the
+  user says "rotate the staging key", "rotate staging api key", "new staging
+  credentials", "replace the staging vault secret", or "cycle the staging
+  API key".
+user-invocable: true
+allowed-tools:
+  - read_file
+  - bash
+model_role: general
+---
+
+# Rotate Staging API Key
+
+Rotate the API key used by the staging deployment and prove staging is still
+healthy afterward. Success is not "a new key was generated" — it is a new key
+stored in the vault, both worker pods running on it, and `/healthz` returning
+success against staging.
+
+## Inputs
+
+- `$ARGUMENTS`: (Optional) The key name to rotate, if it differs from the one
+  recorded in `deploy/config.yaml`.
+
+## Steps
+
+### 1. Read the current key name
+
+Read `deploy/config.yaml` and identify the key name currently in use by the
+staging deployment. Use it for every later step unless `$ARGUMENTS` overrides it.
+
+**Success criteria**: The current staging key name is known and stated.
+
+**Artifacts**: The key name, used by steps 2 and 3.
+
+### 2. Generate the replacement key
+
+```
+keygen --env staging
+```
+
+**Success criteria**: A new key value has been generated for the staging
+environment.
+
+**Artifacts**: The new key value, used by step 3.
+
+### 3. Write the new key to the vault
+
+```
+vault put staging/api-key
+```
+
+Write the key generated in step 2 under the key name from step 1.
+
+**Human checkpoint**: Confirm with the user before writing — this overwrites the
+live staging secret and is not reversible without a re-rotation.
+
+**Success criteria**: `vault put` reports success and the new value is stored at
+`staging/api-key`.
+
+### 4. Restart the worker pods — one at a time
+
+Restart the two staging worker pods sequentially: restart the first, wait for it
+to come back healthy, and only then restart the second.
+
+**Rules**: Never restart both workers at once. Rotating them one at a time is
+what keeps the queue from draining — this is the correction that motivated
+capturing this process.
+
+**Success criteria**: Both worker pods have restarted and are running, and the
+queue never went empty during the rotation.
+
+### 5. Confirm staging health
+
+```
+curl -sf $STAGING/healthz
+```
+
+**Success criteria**: The health check exits zero. If it fails, staging is
+running on a key it cannot use — investigate before ending the session, and do
+not treat the rotation as complete.

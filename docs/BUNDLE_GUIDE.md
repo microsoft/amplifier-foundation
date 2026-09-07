@@ -375,6 +375,137 @@ See [amplifier-bundle-recipes/context/recipe-instructions.md](https://github.com
 
 ---
 
+## Awareness: concept + trigger + pointer
+
+An **awareness file** is a `context.include` whose job is to tell the model
+that a capability exists. It is always-on: every byte is paid on every request
+of every session that composes the behavior, used or not. The agent catalog
+and the visible-skills block already announce a capability, in a line that is
+paid anyway — so most awareness files are a second copy of a sentence the
+session already has.
+
+Enforced by `foundation:recipes/validate-bundle-repo.yaml` Phase 2.84
+(`awareness_redundant_with_catalog`, `awareness_is_pointer_only` — both
+WARNING; the rules and their thresholds are stated in the step).
+
+### The test: what can this file say that a catalog line cannot?
+
+**An awareness file exists ONLY for a CONCEPT that has no catalog line of its
+own.** "This agent exists and here is when to delegate to it" is not a
+concept — that is the agent's own `meta.description`, and writing it twice
+means the two copies can drift and the model has to arbitrate between them
+(description-authoring-principles.md V1).
+
+Legitimate awareness content, in practice:
+
+- A cross-cutting **hazard** that spans several capabilities and belongs to
+  none of them ("uiautomator is the sensor; the screenshot is never for
+  targeting" — true of every agent in that bundle).
+- A **routing table** between capabilities in this bundle and capabilities in
+  *other* bundles, which no single description owns.
+- A **prerequisite** the session must know before any of the capabilities can
+  work at all (a CLI that must be installed, an env var that must be set).
+
+### The four rules
+
+1. **One line, one place.** If a fact belongs in a description, put it in the
+   description. If it belongs in an agent's instruction, put it there. Do not
+   also say it in awareness prose "for emphasis" — a rule stated twice is two
+   copies that can drift, which measurably destabilized a compliant model (V1).
+2. **Operating rules live where they act.** A rule the *agent* must follow
+   goes in the agent's own contract — its markdown body — where it is loaded
+   when the agent runs. A rule about *calling a tool* goes in the tool
+   description, which the tool layer renders. Neither belongs in always-on
+   awareness prose, where every session pays for a rule that applies to one
+   sub-agent.
+3. **Event-driven guidance is injected by the hook that fires it, not
+   always-on.** If guidance is only relevant when something happens, the hook
+   that observes it is the right place to inject it. Putting it in
+   `context.include` pays for it on every request in order to be correct on a
+   few.
+4. **Root body = instruction only.** Everything below a bundle's frontmatter
+   is sent to the model as system instruction. Documentation prose there is a
+   defect, not a comment — see
+   [What Goes Below the Frontmatter](#what-goes-below-the-frontmatter). And
+   **instruction `@mention`s lead the context block** (foundation `2ef5e12`,
+   PR #359): the instruction the body names is placed first, not appended
+   after whatever else composed into the session.
+
+### The thin-variant pattern (worked example)
+
+`bundles/anchors` and `bundles/anchors-amp-dev` in this repository are the
+worked example. `anchors-amp-dev` is `anchors` plus one layer of
+Amplifier-ecosystem knowledge: it includes the anchors bundle by URL and adds
+one agent and one context file. Everything else — session, tools, hooks,
+agents, behaviors — is inherited, **so the two cannot drift**.
+
+Measured head cost (`validate-bundle-repo.yaml` Phase 2.86): anchors **2,483
+chars**, anchors-amp-dev **1,760**. Both under the 4,000-char warning. That is
+what a variant costs when it inherits instead of copying.
+
+**A root bundle is never composed as a behavior.** A behavior is a slice that
+composes into someone else's session; a root bundle defines a whole session.
+Including a root bundle from a behavior pulls an entire session definition
+into a composition that expected a slice (see app-cli #316). Include the
+behavior, or include the root bundle as a root bundle — never one as the
+other.
+
+---
+
+## Refreshing descriptions
+
+For an existing repository — one written before these rules, or one that has
+drifted — `foundation:recipes/refresh-descriptions.yaml` is the entry point:
+
+```bash
+amplifier tool invoke recipes operation=execute \
+  recipe_path=foundation:recipes/refresh-descriptions.yaml \
+  context='{"repo_path": "/path/to/your/bundle-repo"}'
+```
+
+It writes four files into `<repo>/.description-refresh/` (override with
+`output_dir`) and **changes nothing in the repository**:
+
+| File | What it carries |
+|---|---|
+| `violations.json` | every description over the cap or carrying an `<example>`/`<commentary>` block, machine-readable |
+| `proposals.md` | a compliant rewrite for each, **with a fidelity table** |
+| `verdict.json` | the rewrites re-checked against the same thresholds, plus the gate on the fidelity tables themselves |
+| `REPORT.md` | the summary, including the per-bundle head-cost table |
+
+### Why the rewrite step is an agent and not a regex
+
+The entire risk in shortening a description is dropping a **routing fact** — a
+trigger, a boundary, a "do not use for X, use Y instead". A regex cannot see
+that a clause is the only thing standing between a request and the wrong
+capability. Nothing errors when it goes. The failure surfaces much later as
+"it didn't use the right thing", with nobody tracing it back.
+
+So the proposal step is an agent, every proposal carries a table with one row
+per routing fact and where it went, and the verify step **rejects a proposal
+that has no fidelity table**. Fidelity beats brevity at every point of
+conflict: a rewrite that keeps a fact and misses the cap is a PASS with a
+stated reason; a rewrite that hits the cap by dropping a trigger is not.
+
+### It reproduces hand-done work
+
+Measured against the hand sweep of `amplifier-bundle-browser-tester`
+(lane `kp79`), run clean-room against the pre-sweep state:
+
+| | agent descriptions, 3 files | examples removed |
+|---|---|---|
+| before | 2,457 chars | 0 of 6 |
+| hand sweep (kp79) | 1,664 chars | 6 of 6 |
+| `refresh-descriptions` | 1,644 chars | 6 of 6 |
+
+Same three files identified, every pre-existing routing fact retained in both,
+totals within 1.2%. The one difference is recorded in
+`docs/lanes/pwmy-principles-to-tooling/DONE-NOTE.md`: the hand pass added a
+`web_fetch` cross-reference to `browser-operator` that the tool added to
+`browser-researcher` only.
+
+---
+
 ## Directory Conventions
 
 Bundle repos follow **conventions** that enable maximum reusability and composition. These are patterns, not code-enforced rules.

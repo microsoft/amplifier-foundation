@@ -1,9 +1,77 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.14.0
+# Repository-Wide Bundle Validator Recipe v3.15.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.15.0 - THE DESCRIPTION RULES WERE A CONVENTION, AND A CONVENTION QUIETLY
+#          STOPS BEING TRUE.
+#          PR #341 set the no-<example> policy for description surfaces in
+#          context/shared/description-authoring-principles.md. It was applied
+#          inside amplifier-foundation and NOWHERE ELSE, because nothing at
+#          authoring or validation time said otherwise. A sweep a year later
+#          found 29 files across 6 repos still shipping example blocks in
+#          descriptions and fixed them BY HAND (android-tester 8/8 -> 0,
+#          browser-tester 6 -> 0, reality-check 10/10 -> 0, dot-graph 28/28 -> 0
+#          with its agent descriptions 14,615 -> 6,484 chars, context-
+#          intelligence 3 -> 0, plus two forks). This version moves the rules
+#          to where they execute.
+#        - (1) THE LENGTH GATE IS NOW CHARACTERS, AND IT CAN ACTUALLY FIRE.
+#          Phase 2.8 gated on tokens: WARN >300, ERROR >600, i.e. 1,200 and
+#          2,400 chars at chars/4. Measured across 9 bundle repos on
+#          2026-09-07, the ERROR line sat ABOVE THE LONGEST DESCRIPTION IN
+#          EVERY ALREADY-ALIGNED REPO (foundation: n=24, mean 410, max 761), so
+#          on an aligned repo it was unfireable and on an unaligned one it
+#          caught only the very worst. Now WARN >600 chars, ERROR >1,200 (2x).
+#          On the aligned corpus that is 6 warnings and ZERO errors; on the
+#          unswept corpus 17 of 54 agents cross the ERROR line. Tokens stay as
+#          a reported metric. validate-agents.yaml v1.8.0 carries the same two
+#          numbers, and a test fails the build if they diverge.
+#        - (2) NEW PHASE 2.82: SKILL DESCRIPTIONS. The <example>/<commentary>
+#          policy was written for every description surface and enforced on
+#          agents only, in one repo. Skill frontmatter `description` renders
+#          into the hooks-skills-visibility block on every request exactly as
+#          an agent description renders into the delegate catalog. Same example
+#          policy (ERROR), a tighter length cap (WARN >400, ERROR >800 chars --
+#          a session commonly sees 30+ skills where it has 6-24 agents), and
+#          v3.13.0's own lesson applied from the start: each way of FAILING to
+#          read a description gets its own status and its own ERROR, because
+#          collapsing them into "" makes a broken skill pass every check clean.
+#        - (3) NEW PHASE 2.84: AWARENESS REDUNDANCY. An always-on context file
+#          that only restates an agent/skill catalog entry is the same sentence
+#          bought twice -- the catalog line is paid anyway. Two measurable
+#          rules, both WARNING, both STATED IN THE STEP so a reader can audit a
+#          finding instead of trusting it: R1 term-overlap (>= 60% of a file's
+#          substantive sentences >= 60% covered by one description's key terms)
+#          and R2 pointer-only (the file invokes delegate()/load_skill() naming
+#          an in-repo entry, and >= 60% of its sentences are trigger-shaped by
+#          phrase or by sitting under a "When/How to Use" heading).
+#          CALIBRATED, not guessed: across every cached bundle repo on one host
+#          (36 context files), R1 fires 0 times (max coverage observed 0.333)
+#          and R2 fires 3 times -- each on a file that genuinely is when-to-use
+#          prose plus a pointer. `best_coverage` is reported for every file
+#          whether or not it fires, so the threshold can be re-argued against
+#          real numbers rather than re-guessed.
+#        - (4) NEW PHASE 2.86: BUNDLE HEAD COST -- the number a bundle author
+#          never sees. context chars + agent description chars + skill
+#          description chars, per bundle, WARNING at 4,000. THE THRESHOLD IS
+#          JUSTIFIED AGAINST THE MEASURED BUNDLES, not asserted: the two
+#          bundles explicitly engineered for head cost measure 2,483
+#          (bundles/anchors) and 1,760 (bundles/anchors-amp-dev); the nearest
+#          unengineered one measures 5,479, then 14,198 (foundation's own root
+#          bundle), 15,002, 26,368, 29,684 and 87,555. 4,000 is the smallest
+#          round number above every engineered bundle and below every
+#          unengineered one. WARNING, not ERROR, because foundation's own root
+#          bundle exceeds it -- that is a design conversation, not a build
+#          break. An include this repo cannot resolve is NOT charged a flat
+#          guess: the total is marked `is_lower_bound` and the unresolved refs
+#          are named (v3.14.0's lesson).
+#        - (5) FAIL-BEFORE, REPRODUCIBLE BY ANYONE. test-fixtures/misaligned-
+#          bundle/ violates all four at once, and
+#          tests/test_description_alignment_checks.py runs the recipe's own
+#          step bodies against it. Pointing ALIGNMENT_RECIPE_DIR at a checkout
+#          of the pre-change recipes makes the suite fail: 21 failed / 1 passed
+#          at origin/main 4384805, 22 passed on this branch.
 # v3.14.0 - THE CONTEXT-TOKEN ESTIMATOR UNDERSTATED BY 6.28x, AND LANDED
 #          EXACTLY ON ITS OWN ERROR BOUNDARY WHILE DOING IT.
 #          behavior-hygiene Rule 4 resolved a context.include only two ways:
@@ -490,7 +558,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.14.0"
+version: "3.15.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -3746,6 +3814,15 @@ steps:
 
       EXCLUDED_DIRS = {"test-fixtures", "tests", "node_modules", ".git", ".venv"}
 
+      # --- The description length cap, in CHARACTERS (v3.15.0) ---------------
+      # foundation:context/shared/description-authoring-principles.md V5.
+      # WARN at the cap, ERROR at 2x. Measured, not chosen: across 9 bundle
+      # repos on 2026-09-07, the one corpus that had the #341 policy applied
+      # (foundation, n=24 agents, mean 410, max 761) has ZERO descriptions over
+      # 1,200 chars, while the unswept repos put 17 of 54 there.
+      AGENT_DESCRIPTION_WARN_CHARS = 600
+      AGENT_DESCRIPTION_ERROR_CHARS = 1200
+
       # --- What makes a file an agent (v3.13.0) ------------------------------
       # The block below is COPIED BYTE-FOR-BYTE from `validate-agents.yaml`'s
       # `agent-discovery` step (v1.7.0, lane 39z0). It is not a second
@@ -3980,40 +4057,56 @@ steps:
               # pass this branch exists to prevent.
               continue
 
-          token_count = len(description) // 4
+          # v3.15.0: the GATE is CHARACTERS. Tokens stay a reported metric.
+          #
+          # Chars are the unit every head measurement in this program was taken
+          # in, they need no tokenizer, and a validator counts them identically
+          # on every platform. The superseded token tier (WARN 300 / ERROR 600
+          # tokens == 1,200 / 2,400 chars at chars/4) put its ERROR line ABOVE
+          # the longest description in every already-aligned repo measured
+          # (foundation max 761 chars), so it could not fire on the defect it
+          # existed to catch.
+          char_count = len(description)
+          token_count = char_count // 4
+          detail["description_chars"] = char_count
           detail["description_tokens"] = token_count
 
-          if token_count > 600:
+          if char_count > AGENT_DESCRIPTION_ERROR_CHARS:
               results["errors"].append({
                   "type": "agent_description_excessive",
                   "file": rel_path,
+                  "chars": char_count,
                   "tokens": token_count,
                   "severity": "ERROR",
                   "message": (
-                      f"Agent description in {rel_path} is {token_count} tokens "
-                      f"(>600 threshold -- must shorten)."
+                      f"Agent description in {rel_path} is {char_count} chars "
+                      f"(>{AGENT_DESCRIPTION_ERROR_CHARS} threshold, 2x the "
+                      f"{AGENT_DESCRIPTION_WARN_CHARS}-char cap -- must shorten)."
                   ),
                   "fix": (
-                      "Shorten the description to <300 tokens. See "
-                      "foundation:context/shared/description-authoring-principles.md "
-                      "V5 (provisional tier)."
+                      f"Shorten the description to <={AGENT_DESCRIPTION_WARN_CHARS} chars. "
+                      "See foundation:context/shared/description-authoring-principles.md "
+                      "V5. For a proposed rewrite WITH a fidelity table, run "
+                      "recipes/refresh-descriptions.yaml."
                   )
               })
               detail["issues"].append("agent_description_excessive")
-          elif token_count > 300:
+          elif char_count > AGENT_DESCRIPTION_WARN_CHARS:
               results["warnings"].append({
                   "type": "agent_description_high",
                   "file": rel_path,
+                  "chars": char_count,
                   "tokens": token_count,
                   "severity": "WARNING",
                   "message": (
-                      f"Agent description in {rel_path} is {token_count} tokens "
-                      f"(>300 threshold -- consider trimming)."
+                      f"Agent description in {rel_path} is {char_count} chars "
+                      f"(>{AGENT_DESCRIPTION_WARN_CHARS} cap -- consider trimming)."
                   ),
                   "fix": (
-                      "Trim description toward <300 tokens. See "
-                      "foundation:context/shared/description-authoring-principles.md "
-                      "V5 (provisional tier)."
+                      f"Trim description toward <={AGENT_DESCRIPTION_WARN_CHARS} chars. "
+                      "See foundation:context/shared/description-authoring-principles.md "
+                      "V5, or run recipes/refresh-descriptions.yaml for a proposed "
+                      "rewrite with a fidelity table."
                   )
               })
               detail["issues"].append("agent_description_high")
@@ -4084,6 +4177,938 @@ steps:
       print(json.dumps(results))
       EOF
     output: "agent_description_validation_results"
+    parse_json: true
+    timeout: 120
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
+  # PHASE 2.82: Skill Description Validation (v3.15.0)
+  #
+  # Phase 2.8 above checks AGENT descriptions. Skill descriptions were never
+  # checked by any recipe, in any repo -- and they are paid the same way: the
+  # `hooks-skills-visibility` block renders every visible skill's frontmatter
+  # `description` into the head on EVERY request. PR #341's no-<example> policy
+  # was written for both surfaces and enforced on neither outside foundation.
+  #
+  # Checks (foundation:context/shared/description-authoring-principles.md):
+  #   A  length, in CHARS:   WARNING >400 (skill_description_high)
+  #                          ERROR   >800 (skill_description_excessive, 2x)
+  #   B  <example> / <commentary>: ERROR, same policy as agents (V3)
+  #   C  the description could be READ AT ALL -- the v3.13.0 lesson, applied
+  #      here from the start: an unreadable file, absent frontmatter,
+  #      unparseable YAML, a non-mapping frontmatter or an absent/empty
+  #      `description` each get their OWN status and their own ERROR, because
+  #      collapsing them into "" makes a broken skill pass every check clean.
+  #
+  # Scope: <repo>/**/SKILL.md minus EXCLUDED_DIRS. A SKILL.md is a skill by
+  # definition of its filename (the Agent Skills spec), so unlike agents there
+  # is no classifier to share -- but non-skills are still named, never dropped.
+  # ============================================================================
+
+  - id: "skill-description-validation"
+    type: "bash"
+    command: |
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json
+      import os
+      import re
+      from pathlib import Path
+
+      try:
+          import yaml
+      except ImportError:
+          yaml = None
+
+      # Through the environment, never interpolated into Python source -- see
+      # Phase 2.8 for what a Windows path costs inside a string literal.
+      REPO_PATH = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
+
+      # The repo-wide exclusion set, IDENTICAL to every other EXCLUDED_DIRS in
+      # this recipe -- `tests/test_anchors_bundles_dry.py` fails the build if
+      # they diverge by one entry, and the only permitted difference from
+      # validate-agents' wider `EXCLUDED_PARTS` is the documented `docs`.
+      #
+      # CONSEQUENCE, MEASURED AND LEFT AS-IS: `docs/` IS scanned here. A
+      # SKILL.md committed under docs/ as documentation or lane evidence counts
+      # as a shipped skill and also lands in the head-cost total (observed
+      # live: skills_checked 3 -> 7, largest_head_chars 26,368 -> 28,279 when
+      # four evidence files were added under docs/lanes/). Reported rather than
+      # silently widened: narrowing this set is a change to a contract another
+      # lane established, and would hide a real agent or skill that genuinely
+      # lives under docs/. Name evidence files something other than SKILL.md.
+      EXCLUDED_DIRS = {"test-fixtures", "tests", "node_modules", ".git", ".venv"}
+
+      # description-authoring-principles.md V5. Skills are capped tighter than
+      # agents (400 vs 600) because the visible-skills block lists EVERY skill
+      # a session can see, and a session commonly sees 30+ where it has 6-24
+      # agents: measured 2026-09-07, the skills bundle ships n=31 skills
+      # (mean 413, max 928 chars) against foundation's n=24 agents.
+      SKILL_DESCRIPTION_WARN_CHARS = 400
+      SKILL_DESCRIPTION_ERROR_CHARS = 800
+
+      FRONTMATTER_RE = re.compile(r"\A---\s*\r?\n(.*?)\r?\n---\s*\r?\n", re.DOTALL)
+
+      DESCRIPTION_FIXES = {
+          "unreadable": "The file could not be read as UTF-8 text. Fix the encoding or the permissions.",
+          "no_frontmatter": "Add a `---` YAML frontmatter block declaring name and description (Agent Skills spec).",
+          "no_yaml_module": "PyYAML is not importable in the environment running this recipe, so the description could not be parsed. Install PyYAML; do not read this as a clean skill.",
+          "unparseable_frontmatter": "The frontmatter block is not valid YAML. Fix the YAML syntax.",
+          "frontmatter_not_a_mapping": "The frontmatter must be a YAML mapping with `name:` and `description:` keys.",
+          "no_description_key": "Add a `description:` key to the skill frontmatter -- without it the skill cannot be matched to a request.",
+          "description_not_a_string": "`description` must be a string.",
+          "description_empty": "`description` is present but empty. Write it (see foundation:context/shared/description-authoring-principles.md).",
+      }
+
+      FRONTMATTER_STATUSES = {
+          "unreadable",
+          "no_frontmatter",
+          "no_yaml_module",
+          "unparseable_frontmatter",
+          "frontmatter_not_a_mapping",
+      }
+
+      results = {
+          "phase": "skill_description_validation",
+          "excluded_dirs": sorted(EXCLUDED_DIRS),
+          "skills_checked": 0,
+          "candidates_scanned": 0,
+          "errors": [],
+          "warnings": [],
+          "skill_details": [],
+          "thresholds": {
+              "warn_chars": SKILL_DESCRIPTION_WARN_CHARS,
+              "error_chars": SKILL_DESCRIPTION_ERROR_CHARS,
+          },
+      }
+
+      def extract_description(skill_file):
+          try:
+              content = skill_file.read_text(encoding="utf-8", errors="replace")
+          except Exception:
+              return "unreadable", ""
+          match = FRONTMATTER_RE.match(content)
+          if not match:
+              return "no_frontmatter", ""
+          if yaml is None:
+              return "no_yaml_module", ""
+          try:
+              fm = yaml.safe_load(match.group(1))
+          except Exception:
+              return "unparseable_frontmatter", ""
+          if not isinstance(fm, dict):
+              return "frontmatter_not_a_mapping", ""
+          if "description" not in fm:
+              return "no_description_key", ""
+          description = fm.get("description")
+          if not isinstance(description, str):
+              return "description_not_a_string", ""
+          if not description.strip():
+              return "description_empty", description
+          return "ok", description
+
+      path = Path(REPO_PATH).expanduser().resolve()
+
+      if not path.exists():
+          results["errors"].append({
+              "type": "skill_scan_path_error",
+              "file": None,
+              "severity": "ERROR",
+              "message": (
+                  f"Repository path does not exist: {REPO_PATH} -- no SKILL.md was "
+                  "scanned. This is a run-ending condition, not a finding that the "
+                  "repo's skills are clean."
+              ),
+              "fix": "Check the repo_path context variable passed to this recipe.",
+          })
+          results["passed"] = False
+          results["summary"] = {"skills_checked": 0, "candidates_scanned": 0, "errors": 1, "warnings": 0}
+          print(json.dumps(results))
+          raise SystemExit(0)
+
+      skill_files = []
+      for f in sorted(path.rglob("SKILL.md")):
+          if EXCLUDED_DIRS & set(f.relative_to(path).parts):
+              continue
+          skill_files.append(f)
+
+      for skill_file in skill_files:
+          rel_path = skill_file.relative_to(path).as_posix()
+          results["candidates_scanned"] += 1
+          results["skills_checked"] += 1
+          status, description = extract_description(skill_file)
+          detail = {"file": rel_path, "description_status": status, "issues": []}
+
+          if status != "ok":
+              error_type = (
+                  "skill_frontmatter_invalid"
+                  if status in FRONTMATTER_STATUSES
+                  else "skill_description_missing"
+              )
+              results["errors"].append({
+                  "type": error_type,
+                  "file": rel_path,
+                  "reason": status,
+                  "severity": "ERROR",
+                  "message": f"{rel_path}: skill description could not be read ({status}).",
+                  "fix": DESCRIPTION_FIXES[status],
+              })
+              detail["issues"].append(error_type)
+              detail["description_chars"] = None
+              results["skill_details"].append(detail)
+              # The checks below are meaningless against an empty string.
+              continue
+
+          char_count = len(description)
+          detail["description_chars"] = char_count
+          detail["description_tokens"] = char_count // 4
+
+          if char_count > SKILL_DESCRIPTION_ERROR_CHARS:
+              results["errors"].append({
+                  "type": "skill_description_excessive",
+                  "file": rel_path,
+                  "chars": char_count,
+                  "severity": "ERROR",
+                  "message": (
+                      f"Skill description in {rel_path} is {char_count} chars "
+                      f"(>{SKILL_DESCRIPTION_ERROR_CHARS} threshold, 2x the "
+                      f"{SKILL_DESCRIPTION_WARN_CHARS}-char cap -- must shorten)."
+                  ),
+                  "fix": (
+                      f"Shorten to <={SKILL_DESCRIPTION_WARN_CHARS} chars. See "
+                      "foundation:context/shared/description-authoring-principles.md V5, "
+                      "or run recipes/refresh-descriptions.yaml for a proposed rewrite "
+                      "with a fidelity table."
+                  ),
+              })
+              detail["issues"].append("skill_description_excessive")
+          elif char_count > SKILL_DESCRIPTION_WARN_CHARS:
+              results["warnings"].append({
+                  "type": "skill_description_high",
+                  "file": rel_path,
+                  "chars": char_count,
+                  "severity": "WARNING",
+                  "message": (
+                      f"Skill description in {rel_path} is {char_count} chars "
+                      f"(>{SKILL_DESCRIPTION_WARN_CHARS} cap -- consider trimming)."
+                  ),
+                  "fix": (
+                      f"Trim toward <={SKILL_DESCRIPTION_WARN_CHARS} chars. See "
+                      "foundation:context/shared/description-authoring-principles.md V5."
+                  ),
+              })
+              detail["issues"].append("skill_description_high")
+
+          commentary_count = description.lower().count("<commentary>")
+          detail["commentary_count"] = commentary_count
+          if commentary_count > 0:
+              results["errors"].append({
+                  "type": "commentary_present",
+                  "file": rel_path,
+                  "severity": "ERROR",
+                  "message": f"{rel_path}: skill description has {commentary_count} <commentary> tag(s) -- rejected entirely",
+                  "fix": "Delete <commentary> tags (and the <example> block containing them). See description-authoring-principles.md V3.",
+              })
+              detail["issues"].append("commentary_present")
+
+          example_count = len(re.findall(r"<example>", description, re.IGNORECASE))
+          detail["example_count"] = example_count
+          if example_count > 0:
+              results["errors"].append({
+                  "type": "example_block_present",
+                  "file": rel_path,
+                  "severity": "ERROR",
+                  "message": f"{rel_path}: skill description has {example_count} <example> block(s) -- example blocks are rejected entirely, not merely capped",
+                  "fix": "Delete all <example> blocks. State the trigger as a decision rule in the WHEN clause (V6). See description-authoring-principles.md V3.",
+              })
+              detail["issues"].append("example_block_present")
+
+          results["skill_details"].append(detail)
+
+      if results["candidates_scanned"] == 0:
+          results["skipped"] = True
+          results["skip_reason"] = "no SKILL.md files found in this repository"
+
+      results["passed"] = len(results["errors"]) == 0
+      results["summary"] = {
+          "skills_checked": results["skills_checked"],
+          "candidates_scanned": results["candidates_scanned"],
+          "errors": len(results["errors"]),
+          "warnings": len(results["warnings"]),
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "skill_description_validation_results"
+    parse_json: true
+    timeout: 120
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
+  # PHASE 2.84: Awareness Redundancy (v3.15.0)
+  #
+  # An "awareness" file is a context.include that exists to tell the model a
+  # capability exists. It is ALWAYS-ON: every byte is paid on every request of
+  # every session that loads the bundle. The agent catalog and the visible-
+  # skills block already say a capability exists, in a line that is paid
+  # anyway -- so an awareness file that only restates a catalog entry is a
+  # SECOND copy of the same sentence, bought twice.
+  #
+  # THE RULE, STATED SO A READER CAN AUDIT IT (both sub-rules are WARNING; a
+  # judgment call about what a doc is FOR is not a build break):
+  #
+  #   Terms:      key term  = /[a-z][a-z0-9_-]{3,}/ over lowercased text,
+  #                           minus STOPWORDS (listed in full below).
+  #               sentence  = split on /[.!?]\s+|\n/, outside fenced code,
+  #                           excluding ATX headings and bare list bullets.
+  #               substantive sentence = a sentence with >= MIN_SENTENCE_TERMS
+  #                           (3) key terms. Shorter ones carry no measurable
+  #                           overlap signal in either direction.
+  #
+  #   R1 awareness_redundant_with_catalog
+  #       covered(sentence, entry) := |terms(sentence) & terms(entry.description)|
+  #                                   / |terms(sentence)|  >= SENTENCE_COVER (0.60)
+  #       coverage(entry)          := covered sentences / substantive sentences
+  #       FIRES when substantive >= MIN_FILE_SENTENCES (3)
+  #             and max over entries of coverage(entry) >= FILE_REDUNDANT (0.60)
+  #       Reports the winning entry by name and the coverage that won.
+  #
+  #   R2 awareness_is_pointer_only
+  #       FIRES when the file invokes `delegate(` or `load_skill(` naming an
+  #       agent/skill that exists IN THIS REPO, and >= TRIGGER_SHARE (0.60) of
+  #       its substantive sentences are trigger-shaped (TRIGGER_RE below) --
+  #       i.e. the file is "when to use X" plus a pointer to X, which is what
+  #       the catalog line already is.
+  #
+  # WHY 0.60 AND NOT 0.5 OR 0.8: calibrated against this repo's own context
+  # files, which are NOT awareness files and must not fire. Reported per file
+  # as `best_coverage` whether or not it fires, so the threshold can be
+  # re-argued against real numbers instead of re-guessed.
+  # ============================================================================
+
+  - id: "awareness-redundancy-check"
+    type: "bash"
+    command: |
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json
+      import os
+      import re
+      from pathlib import Path
+
+      try:
+          import yaml
+      except ImportError:
+          yaml = None
+
+      REPO_PATH = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
+
+      EXCLUDED_DIRS = {"test-fixtures", "tests", "node_modules", ".git", ".venv"}
+
+      SENTENCE_COVER = 0.60
+      FILE_REDUNDANT = 0.60
+      TRIGGER_SHARE = 0.60
+      MIN_SENTENCE_TERMS = 3
+      MIN_FILE_SENTENCES = 3
+
+      STOPWORDS = {
+          "that", "this", "with", "from", "have", "will", "when", "what", "your",
+          "they", "them", "then", "than", "into", "each", "only", "more", "most",
+          "some", "such", "been", "were", "does", "done", "also", "here", "there",
+          "which", "while", "where", "would", "could", "should", "about", "after",
+          "before", "every", "other", "their", "these", "those", "using", "used",
+          "make", "makes", "made", "need", "needs", "want", "wants", "like",
+          "just", "over", "under", "same", "both", "must", "never", "always",
+          "instead", "rather", "because", "through", "across", "between",
+      }
+
+      # A sentence is CATALOG-SHAPED if it states a trigger, either by phrase
+      # or by POSITION -- sitting under a "When to Use" / "How to Use" heading.
+      # Position matters more than phrasing in practice: the awareness files
+      # this rule exists to find write their triggers as bullets ("User needs
+      # an isolated environment ...") that carry no trigger PHRASE at all.
+      TRIGGER_RE = re.compile(
+          r"\b(use when|when to use|use this|use it|use the|use for|triggers? on|"
+          r"use proactively|proactively when|delegate to|do not use|"
+          r"do not attempt|always delegate|use these|user (needs|wants|has|asks))\b"
+      )
+      WHEN_HEADING_RE = re.compile(
+          r"^\s*(when|how)\s+to\s+use|^\s*usage\b|^\s*triggers?\b|"
+          r"^\s*when\s+to\s+(delegate|reach)",
+          re.IGNORECASE,
+      )
+      POINTER_RE = re.compile(r"(delegate\s*\(|load_skill\s*\()")
+      FENCE_RE = re.compile(r"^\s*```")
+      HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
+      MENTION_RE = re.compile(r"@([A-Za-z0-9_.-]+):([^\s`\"')\]]+)")
+      FRONTMATTER_RE = re.compile(r"\A---\s*\r?\n(.*?)\r?\n---\s*\r?\n", re.DOTALL)
+      TERM_RE = re.compile(r"[a-z][a-z0-9_-]{3,}")
+
+      def terms(text):
+          return {t for t in TERM_RE.findall(text.lower()) if t not in STOPWORDS}
+
+      def substantive_sentences(text):
+          """(sentence, enclosing heading) outside fenced code.
+
+          Headings and bare bullets are not sentences; the heading each
+          sentence sits under is carried alongside it, because a trigger
+          stated as a bullet under "When to Use" is a trigger.
+          """
+          out = []
+          in_fence = False
+          heading = ""
+          for raw in text.splitlines():
+              if FENCE_RE.match(raw):
+                  in_fence = not in_fence
+                  continue
+              if in_fence:
+                  continue
+              if HEADING_RE.match(raw):
+                  heading = raw.lstrip("# ").strip()
+                  continue
+              line = raw.strip()
+              if not line:
+                  continue
+              line = re.sub(r"^[-*+]\s+|^\d+\.\s+|^\|", "", line)
+              for piece in re.split(r"(?<=[.!?])\s+", line):
+                  piece = piece.strip()
+                  if not piece:
+                      continue
+                  if len(terms(piece)) >= MIN_SENTENCE_TERMS:
+                      out.append((piece, heading))
+          return out
+
+      def read(p):
+          try:
+              return p.read_text(encoding="utf-8", errors="replace")
+          except Exception:
+              return ""
+
+      def frontmatter_and_body(content):
+          m = FRONTMATTER_RE.match(content)
+          if not m:
+              return content, ""
+          return m.group(1), content[m.end():]
+
+      def resolve(repo, base_dir, ref):
+          """Resolve a context reference inside THIS repo, or None.
+
+          Same shape as behavior-hygiene's resolver (v3.14.0): strip an optional
+          '@', and for a `<namespace>:<path>` ref also try the path part against
+          the repo root and the referring file's own directory.
+          """
+          ref = ref.strip().lstrip("@")
+          if ref.startswith(("http://", "https://", "git+")):
+              return None
+          candidates = []
+          if ":" in ref:
+              _, _, rest = ref.partition(":")
+              if rest and not rest.startswith("//"):
+                  candidates += [repo / rest, base_dir / rest]
+          candidates += [base_dir / ref, repo / ref]
+          for c in candidates:
+              try:
+                  if c.is_file():
+                      return c
+              except OSError:
+                  continue
+          return None
+
+      results = {
+          "phase": "awareness_redundancy",
+          "excluded_dirs": sorted(EXCLUDED_DIRS),
+          "context_files_checked": 0,
+          "catalog_entries": 0,
+          "errors": [],
+          "warnings": [],
+          "file_details": [],
+          "rule": {
+              "sentence_cover": SENTENCE_COVER,
+              "file_redundant": FILE_REDUNDANT,
+              "trigger_share": TRIGGER_SHARE,
+              "min_sentence_terms": MIN_SENTENCE_TERMS,
+              "min_file_sentences": MIN_FILE_SENTENCES,
+          },
+      }
+
+      path = Path(REPO_PATH).expanduser().resolve()
+      if not path.exists() or yaml is None:
+          results["skipped"] = True
+          results["skip_reason"] = (
+              "repository path does not exist" if not path.exists() else "PyYAML not available"
+          )
+          results["passed"] = True
+          results["summary"] = {"context_files_checked": 0, "catalog_entries": 0, "errors": 0, "warnings": 0}
+          print(json.dumps(results))
+          raise SystemExit(0)
+
+      # --- The catalog: every agent + skill description this repo ships -------
+      catalog = []
+      agent_files = list(path.rglob("*/agents/*.md")) + list((path / "agents").glob("*.md"))
+      for f in sorted(set(agent_files)):
+          if EXCLUDED_DIRS & set(f.relative_to(path).parts):
+              continue
+          fm_text, _ = frontmatter_and_body(read(f))
+          try:
+              fm = yaml.safe_load(fm_text)
+          except Exception:
+              continue
+          if not isinstance(fm, dict) or not isinstance(fm.get("meta"), dict):
+              continue
+          d = fm["meta"].get("description")
+          name = fm["meta"].get("name") or f.stem
+          if isinstance(d, str) and d.strip():
+              catalog.append({"kind": "agent", "name": str(name), "file": f.relative_to(path).as_posix(), "terms": terms(d)})
+      for f in sorted(path.rglob("SKILL.md")):
+          if EXCLUDED_DIRS & set(f.relative_to(path).parts):
+              continue
+          fm_text, _ = frontmatter_and_body(read(f))
+          try:
+              fm = yaml.safe_load(fm_text)
+          except Exception:
+              continue
+          if not isinstance(fm, dict):
+              continue
+          d = fm.get("description")
+          name = fm.get("name") or f.parent.name
+          if isinstance(d, str) and d.strip():
+              catalog.append({"kind": "skill", "name": str(name), "file": f.relative_to(path).as_posix(), "terms": terms(d)})
+      results["catalog_entries"] = len(catalog)
+      catalog_names = {c["name"] for c in catalog}
+
+      # --- Every context file a bundle or behavior pulls into the head --------
+      bundle_files = []
+      for pattern in ("bundle.md", "bundles/*.yaml", "bundles/*.md", "bundles/*/bundle.md", "behaviors/*.yaml", "behaviors/*.md"):
+          bundle_files += list(path.glob(pattern))
+      seen_refs = {}
+      for bf in sorted(set(bundle_files)):
+          if EXCLUDED_DIRS & set(bf.relative_to(path).parts):
+              continue
+          content = read(bf)
+          fm_text, body = frontmatter_and_body(content)
+          if not body and bf.suffix in (".yaml", ".yml"):
+              fm_text, body = content, ""
+          refs = []
+          try:
+              data = yaml.safe_load(fm_text)
+          except Exception:
+              data = None
+          if isinstance(data, dict):
+              ctx = data.get("context")
+              if isinstance(ctx, dict):
+                  inc = ctx.get("include") or []
+                  if isinstance(inc, list):
+                      refs += [str(x) for x in inc if isinstance(x, str)]
+              elif isinstance(ctx, list):
+                  refs += [str(x) for x in ctx if isinstance(x, str)]
+          refs += [f"{ns}:{p}" for ns, p in MENTION_RE.findall(body)]
+          for ref in refs:
+              target = resolve(path, bf.parent, ref)
+              if target is None:
+                  continue
+              rel = target.relative_to(path).as_posix() if str(target).startswith(str(path)) else str(target)
+              seen_refs.setdefault(rel, []).append(bf.relative_to(path).as_posix())
+
+      for rel, referrers in sorted(seen_refs.items()):
+          target = path / rel
+          text = read(target)
+          _, body = frontmatter_and_body(text)
+          body = body or text
+          sentences = substantive_sentences(body)
+          results["context_files_checked"] += 1
+          detail = {
+              "file": rel,
+              "referenced_by": sorted(set(referrers)),
+              "substantive_sentences": len(sentences),
+              "chars": len(text),
+              "issues": [],
+          }
+
+          if len(sentences) < MIN_FILE_SENTENCES:
+              detail["best_coverage"] = None
+              detail["skip_reason"] = f"fewer than {MIN_FILE_SENTENCES} substantive sentences"
+              results["file_details"].append(detail)
+              continue
+
+          sentence_terms = [terms(s) for s, _h in sentences]
+          best = {"coverage": 0.0, "entry": None}
+          for entry in catalog:
+              covered = 0
+              for st in sentence_terms:
+                  if not st:
+                      continue
+                  if len(st & entry["terms"]) / len(st) >= SENTENCE_COVER:
+                      covered += 1
+              coverage = covered / len(sentence_terms)
+              if coverage > best["coverage"]:
+                  best = {"coverage": coverage, "entry": entry}
+          detail["best_coverage"] = round(best["coverage"], 3)
+          if best["entry"]:
+              detail["best_entry"] = f"{best['entry']['kind']}:{best['entry']['name']}"
+
+          if best["coverage"] >= FILE_REDUNDANT and best["entry"]:
+              entry = best["entry"]
+              results["warnings"].append({
+                  "type": "awareness_redundant_with_catalog",
+                  "file": rel,
+                  "entry": f"{entry['kind']}:{entry['name']}",
+                  "entry_file": entry["file"],
+                  "coverage": round(best["coverage"], 3),
+                  "severity": "WARNING",
+                  "message": (
+                      f"{rel} is redundant with catalog entry {entry['kind']}:{entry['name']} "
+                      f"({entry['file']}): {round(best['coverage'] * 100)}% of its "
+                      f"{len(sentences)} substantive sentences are already covered by that "
+                      f"description, at or above the {int(FILE_REDUNDANT * 100)}% rule. "
+                      f"Referenced by: {', '.join(sorted(set(referrers)))}."
+                  ),
+                  "fix": (
+                      "An always-on context file that restates a catalog entry is paid twice. "
+                      "Keep the catalog line and delete the awareness file, or cut the file "
+                      "down to the concept the catalog line CANNOT carry. See "
+                      "docs/BUNDLE_GUIDE.md 'Awareness: concept + trigger + pointer'."
+                  ),
+              })
+              detail["issues"].append("awareness_redundant_with_catalog")
+
+          pointed_at = [n for n in catalog_names if n and n in body]
+          if POINTER_RE.search(body) and pointed_at:
+              trigger_hits = sum(
+                  1
+                  for s, h in sentences
+                  if TRIGGER_RE.search(s.lower()) or WHEN_HEADING_RE.search(h)
+              )
+              share = trigger_hits / len(sentences)
+              detail["trigger_share"] = round(share, 3)
+              if share >= TRIGGER_SHARE:
+                  results["warnings"].append({
+                      "type": "awareness_is_pointer_only",
+                      "file": rel,
+                      "entry": sorted(pointed_at)[0],
+                      "trigger_share": round(share, 3),
+                      "severity": "WARNING",
+                      "message": (
+                          f"{rel} is when-to-use prose plus a delegate()/load_skill() pointer "
+                          f"({round(share * 100)}% of its {len(sentences)} substantive sentences "
+                          f"are trigger-shaped, at or above the {int(TRIGGER_SHARE * 100)}% rule), "
+                          f"naming {', '.join(sorted(pointed_at)[:3])}. The catalog entry already "
+                          "carries both, and is paid anyway."
+                      ),
+                      "fix": (
+                          "Move the trigger into the agent/skill description (where routing reads "
+                          "it) and delete the awareness file, unless it teaches a CONCEPT that has "
+                          "no catalog line of its own."
+                      ),
+                  })
+                  detail["issues"].append("awareness_is_pointer_only")
+
+          results["file_details"].append(detail)
+
+      if results["context_files_checked"] == 0:
+          results["skipped"] = True
+          results["skip_reason"] = "no in-repo context files are referenced by any bundle or behavior"
+
+      results["passed"] = len(results["errors"]) == 0
+      results["summary"] = {
+          "context_files_checked": results["context_files_checked"],
+          "catalog_entries": results["catalog_entries"],
+          "errors": len(results["errors"]),
+          "warnings": len(results["warnings"]),
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "awareness_redundancy_results"
+    parse_json: true
+    timeout: 120
+    on_error: "continue"
+    depends_on: ["repo-discovery"]
+
+  # ============================================================================
+  # PHASE 2.86: Bundle Head Cost (v3.15.0)
+  #
+  # THE NUMBER A BUNDLE AUTHOR NEVER SEES: how many characters this bundle adds
+  # to EVERY root prompt of EVERY session that loads it, whether or not a
+  # single one of its capabilities is used.
+  #
+  #   head_chars = context chars + agent description chars + skill description chars
+  #
+  # HOW EACH TERM IS COMPUTED (state it so a reader can audit the number):
+  #   context chars   Every `context.include` entry plus every `@ns:path`
+  #                   mention in the bundle body that RESOLVES INSIDE THIS
+  #                   REPO, summed by file size, plus the bundle body itself
+  #                   (for a polyglot bundle.md the body IS the root
+  #                   instruction). A reference this repo does not carry is
+  #                   NOT guessed at: it is listed in `unresolved_refs` and
+  #                   the total is marked `is_lower_bound`. A lower bound is a
+  #                   true statement; a flat guess folded into a number that
+  #                   reads as measured is the v3.14.0 defect.
+  #   agent chars     len(meta.description) for agents under this bundle's own
+  #                   `agents/` directory -- or the repo-root `agents/` for a
+  #                   repo-root bundle. Attribution by LOCATION, because an
+  #                   `agents.include` list can name agents from other repos
+  #                   that this scan cannot see.
+  #   skill chars     len(description) for every `skills/**/SKILL.md` in this
+  #                   repo, counted ONLY when this bundle file itself mounts
+  #                   `tool-skills` without `visibility.enabled: false`. A
+  #                   bundle that disables visibility does not pay this half;
+  #                   the amount is still reported, as
+  #                   `skill_description_chars_excluded`, because turning
+  #                   visibility off is a real lever and the reader should see
+  #                   what it bought.
+  #
+  # THRESHOLD: WARNING at 4,000 chars. JUSTIFIED, not asserted -- measured
+  # 2026-09-07 across the bundles on this host:
+  #     engineered for head cost:  anchors 2,483 | anchors-amp-dev 1,760
+  #     not engineered:            context-intelligence 7,464 | foundation root
+  #                                14,198 | superpowers 15,523 | dot-graph
+  #                                30,413 | converge 89,733
+  # 4,000 is the smallest round number above every bundle that was explicitly
+  # cost-engineered and below every bundle that was not -- a 1.6x margin over
+  # the largest engineered bundle and a 1.9x gap below the nearest unengineered
+  # one. WARNING and not ERROR because foundation's own root bundle exceeds it:
+  # that is a design conversation, not a build break.
+  # ============================================================================
+
+  - id: "bundle-head-cost"
+    type: "bash"
+    command: |
+      VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json
+      import os
+      import re
+      from pathlib import Path
+
+      try:
+          import yaml
+      except ImportError:
+          yaml = None
+
+      REPO_PATH = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
+
+      EXCLUDED_DIRS = {"test-fixtures", "tests", "node_modules", ".git", ".venv"}
+      HEAD_COST_WARN_CHARS = 4000
+
+      FRONTMATTER_RE = re.compile(r"\A---\s*\r?\n(.*?)\r?\n---\s*\r?\n", re.DOTALL)
+      MENTION_RE = re.compile(r"@([A-Za-z0-9_.-]+):([^\s`\"')\]]+)")
+
+      results = {
+          "phase": "bundle_head_cost",
+          "excluded_dirs": sorted(EXCLUDED_DIRS),
+          "bundles_measured": 0,
+          "errors": [],
+          "warnings": [],
+          "bundle_details": [],
+          "threshold_chars": HEAD_COST_WARN_CHARS,
+      }
+
+      def read(p):
+          try:
+              return p.read_text(encoding="utf-8", errors="replace")
+          except Exception:
+              return ""
+
+      def frontmatter_and_body(content):
+          m = FRONTMATTER_RE.match(content)
+          if not m:
+              return content, ""
+          return m.group(1), content[m.end():]
+
+      def resolve(repo, base_dir, ref):
+          ref = ref.strip().lstrip("@")
+          if ref.startswith(("http://", "https://", "git+")):
+              return None
+          candidates = []
+          if ":" in ref:
+              _, _, rest = ref.partition(":")
+              if rest and not rest.startswith("//"):
+                  candidates += [repo / rest, base_dir / rest]
+          candidates += [base_dir / ref, repo / ref]
+          for c in candidates:
+              try:
+                  if c.is_file():
+                      return c
+              except OSError:
+                  continue
+          return None
+
+      def agent_description(p):
+          fm_text, _ = frontmatter_and_body(read(p))
+          try:
+              fm = yaml.safe_load(fm_text)
+          except Exception:
+              return None
+          if not isinstance(fm, dict) or not isinstance(fm.get("meta"), dict):
+              return None
+          d = fm["meta"].get("description")
+          return d if isinstance(d, str) else None
+
+      def skill_description(p):
+          fm_text, _ = frontmatter_and_body(read(p))
+          try:
+              fm = yaml.safe_load(fm_text)
+          except Exception:
+              return None
+          if not isinstance(fm, dict):
+              return None
+          d = fm.get("description")
+          return d if isinstance(d, str) else None
+
+      def mounts_visible_skills(data):
+          """(mounts_tool_skills, visibility_enabled) for one bundle's own tools."""
+          if not isinstance(data, dict):
+              return False, False
+          tools = data.get("tools")
+          if not isinstance(tools, list):
+              return False, False
+          for tool in tools:
+              if not isinstance(tool, dict):
+                  continue
+              if tool.get("module") != "tool-skills":
+                  continue
+              config = tool.get("config") if isinstance(tool.get("config"), dict) else {}
+              visibility = config.get("visibility") if isinstance(config.get("visibility"), dict) else {}
+              enabled = visibility.get("enabled", True)
+              return True, bool(enabled)
+          return False, False
+
+      path = Path(REPO_PATH).expanduser().resolve()
+      if not path.exists() or yaml is None:
+          results["skipped"] = True
+          results["skip_reason"] = (
+              "repository path does not exist" if not path.exists() else "PyYAML not available"
+          )
+          results["passed"] = True
+          results["summary"] = {"bundles_measured": 0, "errors": 0, "warnings": 0}
+          print(json.dumps(results))
+          raise SystemExit(0)
+
+      skill_files = [
+          f for f in sorted(path.rglob("SKILL.md"))
+          if not (EXCLUDED_DIRS & set(f.relative_to(path).parts))
+      ]
+      repo_skill_chars = 0
+      repo_skill_count = 0
+      for f in skill_files:
+          d = skill_description(f)
+          if isinstance(d, str) and d.strip():
+              repo_skill_chars += len(d)
+              repo_skill_count += 1
+
+      bundle_files = []
+      for pattern in ("bundle.md", "bundles/*.yaml", "bundles/*.md", "bundles/*/bundle.md", "behaviors/*.yaml", "behaviors/*.md"):
+          bundle_files += list(path.glob(pattern))
+
+      for bf in sorted(set(bundle_files)):
+          if EXCLUDED_DIRS & set(bf.relative_to(path).parts):
+              continue
+          content = read(bf)
+          fm_text, body = frontmatter_and_body(content)
+          if not body and bf.suffix in (".yaml", ".yml"):
+              fm_text, body = content, ""
+          try:
+              data = yaml.safe_load(fm_text)
+          except Exception:
+              data = None
+
+          refs = []
+          if isinstance(data, dict):
+              ctx = data.get("context")
+              if isinstance(ctx, dict):
+                  inc = ctx.get("include") or []
+                  if isinstance(inc, list):
+                      refs += [str(x) for x in inc if isinstance(x, str)]
+              elif isinstance(ctx, list):
+                  refs += [str(x) for x in ctx if isinstance(x, str)]
+          refs += [f"{ns}:{p}" for ns, p in MENTION_RE.findall(body)]
+
+          context_chars = len(body.strip())
+          resolved_refs = []
+          unresolved_refs = []
+          for ref in refs:
+              target = resolve(path, bf.parent, ref)
+              if target is None:
+                  unresolved_refs.append(ref)
+                  continue
+              context_chars += len(read(target))
+              resolved_refs.append(ref)
+
+          bundle_dir = bf.parent
+          agents_dir = (path / "agents") if bundle_dir == path else (bundle_dir / "agents")
+          agent_chars = 0
+          agent_count = 0
+          if agents_dir.is_dir():
+              for f in sorted(agents_dir.glob("*.md")):
+                  d = agent_description(f)
+                  if isinstance(d, str) and d.strip():
+                      agent_chars += len(d)
+                      agent_count += 1
+
+          mounts_skills, visible = mounts_visible_skills(data)
+          skill_chars = repo_skill_chars if (mounts_skills and visible) else 0
+          excluded_skill_chars = repo_skill_chars if (mounts_skills and not visible) else 0
+
+          head_chars = context_chars + agent_chars + skill_chars
+          results["bundles_measured"] += 1
+          detail = {
+              "file": bf.relative_to(path).as_posix(),
+              "head_chars": head_chars,
+              "context_chars": context_chars,
+              "agent_description_chars": agent_chars,
+              "agents_counted": agent_count,
+              "skill_description_chars": skill_chars,
+              "skills_counted": repo_skill_count if skill_chars else 0,
+              "is_lower_bound": bool(unresolved_refs),
+          }
+          if unresolved_refs:
+              detail["unresolved_refs"] = unresolved_refs
+          if excluded_skill_chars:
+              detail["skill_description_chars_excluded"] = excluded_skill_chars
+              detail["skill_exclusion_reason"] = "this bundle mounts tool-skills with visibility.enabled: false"
+          results["bundle_details"].append(detail)
+
+          if head_chars > HEAD_COST_WARN_CHARS:
+              bound = " (lower bound -- some refs are not in this repo)" if unresolved_refs else ""
+              results["warnings"].append({
+                  "type": "bundle_head_cost_high",
+                  "file": detail["file"],
+                  "head_chars": head_chars,
+                  "context_chars": context_chars,
+                  "agent_description_chars": agent_chars,
+                  "skill_description_chars": skill_chars,
+                  "severity": "WARNING",
+                  "message": (
+                      f"{detail['file']} adds {head_chars} chars to every root prompt"
+                      f"{bound}: {context_chars} context + {agent_chars} agent descriptions "
+                      f"({agent_count}) + {skill_chars} skill descriptions "
+                      f"(>{HEAD_COST_WARN_CHARS} threshold)."
+                  ),
+                  "fix": (
+                      "Every byte here is paid on every request of every session that loads this "
+                      "bundle, used or not. Measured comparison: the two bundles engineered for "
+                      "head cost sit at 2,483 and 1,760 chars. Move always-on prose into an agent "
+                      "(paid only when delegated to) or a skill (paid only when loaded), shorten "
+                      "the descriptions (see description-authoring-principles.md V5), or split "
+                      "the bundle."
+                  ),
+              })
+
+      if results["bundles_measured"] == 0:
+          results["skipped"] = True
+          results["skip_reason"] = "no bundle or behavior files found in this repository"
+
+      results["bundle_details"].sort(key=lambda d: d["head_chars"], reverse=True)
+      results["passed"] = len(results["errors"]) == 0
+      results["summary"] = {
+          "bundles_measured": results["bundles_measured"],
+          "errors": len(results["errors"]),
+          "warnings": len(results["warnings"]),
+          "largest_head_chars": max((d["head_chars"] for d in results["bundle_details"]), default=0),
+      }
+
+      print(json.dumps(results))
+      EOF
+    output: "bundle_head_cost_results"
     parse_json: true
     timeout: 120
     on_error: "continue"
@@ -4501,6 +5526,30 @@ steps:
       except (json.JSONDecodeError, ValueError):
           agent_description_validation = {"passed": True, "skipped": True, "errors": [], "warnings": []}
 
+      # v3.15.0: Parse the three new description-alignment step outputs. Each
+      # falls back to a SKIPPED shape on an unparseable payload, matching every
+      # sibling above -- but note what that costs: a skipped step contributes
+      # nothing to the verdict, so a step that dies silently reads as clean.
+      # That is why each of these steps prints its own summary even when it
+      # finds nothing.
+      skill_description_raw = '''{{skill_description_validation_results}}'''
+      try:
+          skill_description_validation = json.loads(skill_description_raw)
+      except (json.JSONDecodeError, ValueError):
+          skill_description_validation = {"passed": True, "skipped": True, "errors": [], "warnings": []}
+
+      awareness_redundancy_raw = '''{{awareness_redundancy_results}}'''
+      try:
+          awareness_redundancy = json.loads(awareness_redundancy_raw)
+      except (json.JSONDecodeError, ValueError):
+          awareness_redundancy = {"passed": True, "skipped": True, "errors": [], "warnings": []}
+
+      bundle_head_cost_raw = '''{{bundle_head_cost_results}}'''
+      try:
+          bundle_head_cost = json.loads(bundle_head_cost_raw)
+      except (json.JSONDecodeError, ValueError):
+          bundle_head_cost = {"passed": True, "skipped": True, "errors": [], "warnings": [], "bundle_details": []}
+
       # v3.10.0: Parse README install-instructions convention check results
       readme_convention_raw = '''{{readme_install_convention_results}}'''
       try:
@@ -4630,6 +5679,9 @@ steps:
               "mode_validation_issues": [],  # v3.6.0
               "body_instruction_issues": [],  # v3.7.0
               "agent_description_issues": [],  # Phase 2.8
+              "skill_description_issues": [],  # v3.15.0 Phase 2.82
+              "awareness_redundancy_issues": [],  # v3.15.0 Phase 2.84
+              "head_cost_issues": [],  # v3.15.0 Phase 2.86
               "readme_convention_issues": [],  # v3.10.0
               "module_dep_issues": [],  # v3.11.0
               # v3.2.0: Environment status tracking
@@ -4879,6 +5931,55 @@ steps:
                       "fix": warning.get("fix", "")
                   })
 
+          # v3.15.0 Phase 2.82: skill description findings. Same tier as the
+          # agent half above -- an <example> block in a skill description is
+          # paid on every request exactly as one in an agent description is,
+          # and no recipe checked for it before this version.
+          if not skill_description_validation.get("skipped", False):
+              for error in skill_description_validation.get("errors", []):
+                  results["skill_description_issues"].append({
+                      "type": error.get("type"),
+                      "file": error.get("file"),
+                      "message": error.get("message"),
+                      "severity": "ERROR",
+                      "fix": error.get("fix", "")
+                  })
+              for warning in skill_description_validation.get("warnings", []):
+                  results["skill_description_issues"].append({
+                      "type": warning.get("type"),
+                      "file": warning.get("file"),
+                      "message": warning.get("message"),
+                      "severity": "WARNING",
+                      "fix": warning.get("fix", "")
+                  })
+
+          # v3.15.0 Phase 2.84: awareness redundancy. WARNING only -- whether a
+          # doc duplicates a catalog entry is a judgment the rule can only
+          # measure, not settle.
+          if not awareness_redundancy.get("skipped", False):
+              for warning in awareness_redundancy.get("warnings", []):
+                  results["awareness_redundancy_issues"].append({
+                      "type": warning.get("type"),
+                      "file": warning.get("file"),
+                      "entry": warning.get("entry"),
+                      "message": warning.get("message"),
+                      "severity": "WARNING",
+                      "fix": warning.get("fix", "")
+                  })
+
+          # v3.15.0 Phase 2.86: head cost. WARNING only -- foundation's own root
+          # bundle exceeds the threshold, and that is a design conversation.
+          if not bundle_head_cost.get("skipped", False):
+              for warning in bundle_head_cost.get("warnings", []):
+                  results["head_cost_issues"].append({
+                      "type": warning.get("type"),
+                      "file": warning.get("file"),
+                      "head_chars": warning.get("head_chars"),
+                      "message": warning.get("message"),
+                      "severity": "WARNING",
+                      "fix": warning.get("fix", "")
+                  })
+
           # v3.10.0: README install-instructions convention findings.
           # Severity is "needs_work" (not ERROR/WARNING) -- these are
           # structural/convention findings, same tier as orphan_agents /
@@ -4934,6 +6035,7 @@ steps:
           critical_count += len([i for i in results["experiment_issues"] if i.get("severity") == "ERROR"])
           critical_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "ERROR"])  # v3.6.0
           critical_count += len([i for i in results["agent_description_issues"] if i.get("severity") == "ERROR"])  # Phase 2.8
+          critical_count += len([i for i in results["skill_description_issues"] if i.get("severity") == "ERROR"])  # v3.15.0
           critical_count += len([i for i in results["module_dep_issues"] if i.get("severity") == "ERROR"])  # v3.11.0
           critical_count += len([i for i in results["behavior_reference_hygiene_issues"] if i.get("severity") == "ERROR"])  # v3.13.0
 
@@ -4956,6 +6058,9 @@ steps:
           warning_count += len([i for i in results["mode_validation_issues"] if i.get("severity") == "WARNING"])  # v3.6.0
           warning_count += len(results["body_instruction_issues"])  # v3.7.0: all are WARNING
           warning_count += len([i for i in results["agent_description_issues"] if i.get("severity") == "WARNING"])  # Phase 2.8
+          warning_count += len([i for i in results["skill_description_issues"] if i.get("severity") == "WARNING"])  # v3.15.0
+          warning_count += len(results["awareness_redundancy_issues"])  # v3.15.0: all are WARNING
+          warning_count += len(results["head_cost_issues"])  # v3.15.0: all are WARNING
           if recipe_quality == "polish":
               warning_count += 1
           
@@ -5005,6 +6110,11 @@ steps:
               "body_instruction_warnings": len(results["body_instruction_issues"]),  # v3.7.0
               "agent_description_errors": len([i for i in results["agent_description_issues"] if i.get("severity") == "ERROR"]),  # Phase 2.8
               "agent_description_warnings": len([i for i in results["agent_description_issues"] if i.get("severity") == "WARNING"]),  # Phase 2.8
+              "skill_description_errors": len([i for i in results["skill_description_issues"] if i.get("severity") == "ERROR"]),  # v3.15.0
+              "skill_description_warnings": len([i for i in results["skill_description_issues"] if i.get("severity") == "WARNING"]),  # v3.15.0
+              "awareness_redundancy_warnings": len(results["awareness_redundancy_issues"]),  # v3.15.0
+              "head_cost_warnings": len(results["head_cost_issues"]),  # v3.15.0
+              "largest_head_chars": bundle_head_cost.get("summary", {}).get("largest_head_chars", 0),  # v3.15.0
               "readme_convention_needs_work": len([i for i in results["readme_convention_issues"] if i.get("severity") == "needs_work"]),  # v3.10.0
               "module_dep_errors": len([i for i in results["module_dep_issues"] if i.get("severity") == "ERROR"])  # v3.11.0
           }
@@ -5711,6 +6821,15 @@ steps:
       **Agent Description Budget Validation (Phase 2.8):**
       ```json
       {{agent_description_validation_results}}
+
+      SKILL DESCRIPTION VALIDATION RESULTS (v3.15.0):
+      {{skill_description_validation_results}}
+
+      AWARENESS REDUNDANCY RESULTS (v3.15.0):
+      {{awareness_redundancy_results}}
+
+      BUNDLE HEAD COST RESULTS (v3.15.0):
+      {{bundle_head_cost_results}}
       ```
 
       **README Install-Instructions Convention Check (v3.10.0):**
@@ -5889,11 +7008,13 @@ steps:
       - For each ERROR of type agent_scan_path_error (v3.13.0):
         - [ERROR] the message verbatim. NOTHING was scanned; this is a
           run-ending condition, not evidence that the repo's agents are clean.
-      - For each ERROR of type agent_description_excessive (>600 tokens, provisional):
-        - [ERROR] "Agent description in <file> is N tokens -- must shorten to <300"
-        - Refer author to foundation:context/shared/description-authoring-principles.md V5
-      - For each WARNING of type agent_description_high (>300 tokens, provisional):
-        - [WARNING] "Agent description in <file> is N tokens -- consider trimming toward <300"
+      - For each ERROR of type agent_description_excessive (>1,200 chars, 2x the cap):
+        - [ERROR] "Agent description in <file> is N chars -- must shorten to <=600"
+        - Refer author to foundation:context/shared/description-authoring-principles.md V5,
+          and to `recipes/refresh-descriptions.yaml` for a proposed rewrite WITH a
+          fidelity table (the whole risk in shortening is dropping a routing fact)
+      - For each WARNING of type agent_description_high (>600 chars):
+        - [WARNING] "Agent description in <file> is N chars -- consider trimming toward <=600"
         - Same reference as above
       - For each ERROR of type commentary_present (v3.10.0 -- was WARNING):
         - [ERROR] "<file>: description has N <commentary> tag(s) -- rejected entirely (V3)"
@@ -5903,6 +7024,56 @@ steps:
       - If agent_description_validation_results.skipped == true: "Agent description validation: skipped (no agents/*.md files found)"
       - If body_instruction_check_results.skipped == true: "Body instruction check: skipped (no bundle.md or agents/*.md files found)"
       - commentary_present and example_block_present ARE blocking (ERROR); the token-budget findings above stay WARNING/ERROR per their own thresholds
+
+      ### Skill Description Validation (v3.15.0)
+      Use skill_description_validation_results to report:
+      - skills_checked: how many SKILL.md files were read.
+      - For each ERROR of type skill_frontmatter_invalid / skill_description_missing:
+        - [ERROR] the message verbatim, with its `reason`.
+      - For each ERROR of type skill_description_excessive (>800 chars, 2x the 400 cap):
+        - [ERROR] "Skill description in <file> is N chars -- must shorten to <=400"
+      - For each WARNING of type skill_description_high (>400 chars):
+        - [WARNING] "Skill description in <file> is N chars -- consider trimming"
+      - For each ERROR of type example_block_present / commentary_present:
+        - [ERROR] the message verbatim. This half of the #341 policy was
+          enforced by NO recipe before v3.15.0, in any repository -- a sweep
+          across 6 repos found 29 files still carrying example blocks.
+      - If no issues: "Skill description validation: all N skills within cap, no example/commentary blocks"
+      - If skipped == true: "Skill description validation: skipped (no SKILL.md files found)"
+
+      ### Awareness Redundancy (v3.15.0)
+      Use awareness_redundancy_results to report:
+      - context_files_checked and catalog_entries, both verbatim.
+      - STATE THE RULE, from `rule`, so the reader can audit the finding rather
+        than trust it: a sentence counts as covered when >= `sentence_cover` of
+        its key terms appear in a catalog description; a file is redundant when
+        >= `file_redundant` of its substantive sentences are covered; a file is
+        pointer-only when it invokes delegate()/load_skill() naming an in-repo
+        entry and >= `trigger_share` of its sentences are trigger-shaped.
+      - For each WARNING of type awareness_redundant_with_catalog:
+        - [WARNING] "<file> duplicates <entry> (<coverage> covered)" -- ALWAYS
+          name the entry. A redundancy finding that does not say what it is
+          redundant WITH is not actionable.
+      - For each WARNING of type awareness_is_pointer_only:
+        - [WARNING] the message verbatim, including the trigger share.
+      - If no issues: "Awareness redundancy: N context files checked against M
+        catalog entries, none redundant"
+
+      ### Bundle Head Cost (v3.15.0)
+      Use bundle_head_cost_results to report, ALWAYS -- this line prints whether
+      or not anything exceeded the threshold, because the number is the point:
+      - A table, largest first, from `bundle_details`:
+        | Bundle | head chars | context | agent descriptions | skill descriptions |
+      - The head-cost line for the repo: "Largest bundle head cost: N chars
+        (threshold <threshold_chars>)".
+      - Mark any row with `is_lower_bound` as a LOWER BOUND and name its
+        `unresolved_refs`. A reference this repo does not carry is never
+        guessed at.
+      - Where `skill_description_chars_excluded` is present, say so: that bundle
+        mounts tool-skills with visibility disabled and does not pay that half.
+      - For each WARNING of type bundle_head_cost_high:
+        - [WARNING] the message verbatim, then the comparison: the two bundles
+          engineered for head cost measure 2,483 and 1,760 chars.
 
       ### README Install-Instructions Convention Check (v3.10.0)
       Use readme_install_convention_results to report:

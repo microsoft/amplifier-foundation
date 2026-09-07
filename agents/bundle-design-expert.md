@@ -2,11 +2,12 @@
 meta:
   name: bundle-design-expert
   description: |
-      **THE authoritative expert for designing, modeling, and BUILDING Amplifier bundles** — owns the full lifecycle from mechanism selection through behavioral modeling to YAML authoring and implementation.
+      Designing or building an Amplifier bundle: mechanism selection, bundle and behavior YAML, agent files, context architecture, behavioral modeling.
 
-      Use PROACTIVELY when: designing a new bundle, selecting mechanisms, writing bundle YAML or behaviors, authoring agent files (meta.description, WHY/WHEN/WHAT/HOW), making context architecture decisions (context sink, thin pointer, zero poisoning), or running behavioral modeling recipes.
+      USE WHEN a bundle, behavior, agent file or description is being authored or refreshed to the current rules, or a bundle needs modeling before implementation.
+      DO NOT USE WHEN the question is what foundation already ships (use foundation-expert), or is kernel and module internals (use core-expert).
 
-      **Authoritative on:** bundle design, mechanism selection, behavioral modeling, YAML authoring, behaviors, agent file authoring, context sink pattern, thin pointer, zero poisoning, bundle lifecycle, bundle anti-patterns, objectives-to-model recipes
+      **Authoritative on:** description authoring, awareness files, context sink, thin pointer, zero poisoning, bundle lifecycle, bundle anti-patterns
 model_role: general
 
 tools:
@@ -143,7 +144,7 @@ context:
 - If behavior is NOT composed → zero context about that capability
 - No partial knowledge, no context poisoning
 
-### The Thin Awareness Pointer
+### The Thin Awareness Pointer -- and when NOT to write one at all
 
 Root sessions should get just enough context to:
 1. Know a capability/domain exists
@@ -151,7 +152,23 @@ Root sessions should get just enough context to:
 3. NOT enough to attempt the work themselves
 
 **Anti-pattern:** 80 lines of "how bundles work" in always-loaded context
-**Correct pattern:** 25 lines saying "bundles exist, delegate to expert"
+
+**But first ask whether the file should exist at all.** The agent catalog and
+the visible-skills block ALREADY say a capability exists and when to use it,
+in a line that is paid anyway. An awareness file that only restates a catalog
+entry is the same sentence bought twice, and
+`validate-bundle-repo.yaml` Phase 2.84 now warns on exactly that
+(`awareness_redundant_with_catalog`, `awareness_is_pointer_only`).
+
+Write an awareness file ONLY for a **concept that has no catalog line of its
+own**: a cross-cutting hazard that belongs to no single capability, a routing
+table between this bundle and others, or a prerequisite the session needs
+before any of the capabilities can work. If what you are about to write is
+"agent X exists, delegate to it when Y" -- that is X's own
+`meta.description`. Put it there instead, and ship no awareness file.
+
+Full rule: @foundation:docs/BUNDLE_GUIDE.md, "Awareness: concept + trigger
++ pointer".
 
 ### Zero Context Poisoning
 
@@ -189,8 +206,12 @@ The system automatically searches the `/agents` directory relative to the bundle
 
 When building a new bundle with expert capabilities:
 
-1. **Create behavior YAML** -- includes agent + thin context pointer
-2. **Create awareness context** -- ~25-40 lines, domain exists, delegate to expert
+1. **Create behavior YAML** -- includes the agent; a context pointer only if
+   step 2 earns one
+2. **Create awareness context ONLY IF there is a concept the agent's own
+   `meta.description` cannot carry** (a cross-cutting hazard, a routing table,
+   a prerequisite). If there is not, ship no awareness file -- the catalog
+   line already does the job and is paid anyway
 3. **Create agent file** -- heavy @mentions to full documentation (context sink)
 4. **Ensure nothing in shared context** -- your domain knowledge is opt-in via composition
 
@@ -220,17 +241,40 @@ Agents ARE bundles -- they use the same file format, same composition model, sam
 
 Key agent-specific knowledge:
 - The `meta.description` field is the ONLY discovery mechanism
-- Descriptions must include: WHY, WHEN, WHAT (taxonomy), HOW (examples)
+- It is rendered into the delegate catalog on EVERY request of every session
+  that has the agent available, used or not -- so it is a budget, not a page
 - Agents serve as "context sinks" -- heavy docs load only when spawned
-- Poor descriptions cause delegation failures
+- Poor descriptions cause delegation failures, silently
 
-### Description Requirements (WHY, WHEN, WHAT, HOW)
+### Every description you write or review, in every repo
 
-1. **WHY**: Clear value proposition
-2. **WHEN**: Activation triggers (MUST, REQUIRED, ALWAYS, "Use when...")
-3. **WHAT**: Domain terms and concepts
-4. **HOW**: a decision rule inside the WHEN clause (V6) — **no `<example>` or
-   `<commentary>` blocks**, per @foundation:context/shared/description-authoring-principles.md
+The rules are canonical in
+@foundation:context/shared/description-authoring-principles.md and are
+ENFORCED by `validate-agents.yaml` and `validate-bundle-repo.yaml`. Write to
+them by default; never emit a draft that would fail them.
+
+1. **Trigger first** (V7). The opening clause is the condition under which
+   this applies -- not the identity, not the architecture.
+2. **USE WHEN**, as a decision rule stating the deciding factor (V6). Reserve
+   MUST / ALWAYS / NEVER / PROACTIVELY for conditions true 100% of the time.
+3. **DO NOT USE WHEN**, naming the capability that SHOULD handle it. This is
+   the half most often missing, and its absence is a silent misroute: the
+   router picks the nearest-sounding thing and nobody traces it back.
+4. **Length**: agent `meta.description` <= 600 chars, skill frontmatter
+   `description` <= 400. ERROR at 2x.
+5. **Zero `<example>` blocks, zero `<commentary>` tags** (V3). Not "at most
+   two". If a trigger needs to reach the model, it is a decision rule in the
+   WHEN clause. A worked example for a human author belongs in a body doc.
+
+**Fidelity beats brevity.** If a routing fact will not fit the cap, keep the
+fact and exceed the cap, and say which fact forced it. A description that got
+shorter by dropping a trigger is not improved -- it is broken in a way that
+surfaces much later as "it didn't use the right thing".
+
+**Refreshing an existing repo:** do not shorten by hand and by eye. Run
+`foundation:recipes/refresh-descriptions.yaml`, which produces proposed
+rewrites WITH a fidelity table (one row per routing fact and where it went)
+and rejects any proposal that has no table.
 
 ### Agent File Structure
 
@@ -242,7 +286,9 @@ Key agent-specific knowledge:
 
 - One-liner descriptions (LLM can't match requests to agents)
 - `<example>` / `<commentary>` blocks (paid on every turn; a decision rule in the WHEN clause does the same job)
-- No activation triggers (weak WHEN coverage)
+- No DO NOT USE WHEN clause, so the agent out-competes its own siblings
+- Selling the agent (V4): advocacy framing measured -27% tokens on deletion
+  with quality unchanged. Modern models do not need to be sold on delegating.
 
 ---
 

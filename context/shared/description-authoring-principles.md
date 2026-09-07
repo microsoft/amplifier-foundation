@@ -9,6 +9,39 @@
 > paragraph from this file into another doc, stop — link instead (see V1/V2
 > below, and don't make this file the exception to its own rule).
 
+> **Scope: EVERY bundle, not just this repository.** These rules apply to any
+> Amplifier bundle in any repository — foundation, the first-party bundles,
+> and third-party ones. They are enforced by `recipes/validate-agents.yaml`
+> and `recipes/validate-bundle-repo.yaml`, which take a `repo_path` and run
+> against any bundle repo, not only this one.
+>
+> **The one-line WHY.** A description is not documentation you pay for when
+> the capability is used. Agent `meta.description` is concatenated into the
+> `delegate` tool's own description, and skill `description` is concatenated
+> into the `hooks-skills-visibility` block; both render into the **always-on
+> head** and are therefore **paid on every request of every session** whether
+> or not the agent is ever delegated to or the skill ever loaded.
+>
+> The bill is measured, not asserted. In the composition
+> `model_performance-zc6t` measured on the wire (bundle `anchors-amp-dev`,
+> claude-opus-5), the runtime-appended **agent catalog alone was 12,904 chars
+> before that lane's work and 3,597 after** — carried on every request. That
+> lane's head reduction (**84,319 → 48,249 chars**) is a *bundle-composition*
+> figure and not a universal one: the same commit measured 320,410 chars of
+> head on a host composing 86 tools where the eval container composed 14. Cite
+> it as a composition, never as "the head is 48k".
+>
+> **This scope statement exists because the previous one was implicit and
+> quietly stopped being true.** PR #341 set the no-`<example>` policy below in
+> 2026-08; it was applied inside `amplifier-foundation` and **nowhere else**.
+> A batch a year later found **29 files across 6 repos** still shipping
+> example blocks in descriptions and swept them by hand (android-tester 8/8 →
+> 0, browser-tester 6 → 0, reality-check 10/10 → 0, dot-graph 28/28 → 0
+> — its agent descriptions **14,615 → 6,484 chars** — context-intelligence
+> 3 → 0, plus two forks). A rule that lives only as a convention is a rule
+> that quietly stops being true; that is why the caps in V5 are now
+> **validator-enforced** rather than advisory.
+
 Evidence base: a measured eval campaign (A/B testing across paired runs)
 found the patterns this file discourages measurably harm compliant modern
 models. Citations are inline per principle. The campaign is ongoing — see
@@ -78,21 +111,80 @@ tool's own imperative language verbatim back at it. A description that large
 is not thorough — it is a second system prompt smuggled into a metadata
 field, read on every turn whether or not the tool is ever called.
 
-**Budgets (token count via the same tokenizer the validators use):**
+**Budgets. The enforced unit is CHARACTERS.** Chars are what every head
+measurement in this program was taken in, they need no tokenizer, and they
+are what a validator can count identically on every platform. Where a token
+figure is quoted below it is the same chars/4 estimator the recipes use
+(calibrated in `tests/test_context_include_estimator.py`: median 1.128 vs
+o200k_base, range 0.940–1.312, i.e. it runs HIGH on prose so a budget gate
+fires early, never late).
 
 | Surface | WARN | ERROR | Status |
 |---|---|---|---|
+| Agent `meta.description` | > 600 chars | > 1,200 chars (2x) | **Enforced** — validate-agents.yaml, validate-bundle-repo.yaml Phase 2.8 |
+| Skill frontmatter `description` | > 400 chars | > 800 chars (2x) | **Enforced** — validate-bundle-repo.yaml Phase 2.82 |
 | Mode `description` | > 500 tokens | > 800 tokens | Established (validate-bundle-repo.yaml Phase 2.7) |
-| Agent `meta.description` | > 300 tokens | > 600 tokens | **Provisional** — pending wave calibration |
-| Skill frontmatter `description` | see skills authoring guide | see skills authoring guide | Shared cap: `max_skills_visible` bounds total visible-catalog cost |
 | Tool description | no fixed ceiling yet | no fixed ceiling yet | Flag any single tool >10% of a typical tool-description budget as a design smell |
+
+**Where 600 / 400 come from — measured, not chosen.** Description lengths
+across 9 bundle repositories on one host, 2026-09-07 (`n` = descriptions
+carrying a non-empty string):
+
+| Corpus | n | mean | median | p90 | max | over cap | over 2x |
+|---|---|---|---|---|---|---|---|
+| foundation agents (aligned by #341) | 24 | 410 | 427 | 721 | 761 | 6 | **0** |
+| all agents, 8 repos incl. unswept | 54 | 1,084 | 739 | 2,396 | 3,235 | 36 | **17** |
+| foundation skills | 3 | 420 | 384 | 566 | 566 | 1 | **0** |
+| skills-bundle skills | 31 | 413 | 312 | 814 | 928 | 13 | **4** |
+
+The cap is the value that separates *already-aligned* from *never-aligned*:
+the one corpus that had the policy applied (foundation, #341) has **zero**
+descriptions over 2x, while unswept repos put 17 of 54 there — dot-graph's
+local checkout averages 2,302 chars/agent and puts **12 of 12** over the
+ERROR line. WARN at the cap is deliberately noisy on aligned repos (6 of 24
+foundation agents warn today); the ERROR line is what has to be a real
+defect, and on the aligned corpus it is empty.
 
 Agent tiers are lower than mode tiers because agent descriptions are paid
 **by every session that has the agent in its catalog**, regardless of
 whether it's ever delegated to — mode descriptions are paid only by sessions
-that load that mode. Treat the agent-tier numbers as provisional — the 2026-08-30
-delegation wave (P1-P3, see below) reported on delegation *frequency*, not on
-token-ceiling calibration; that calibration remains open.
+that load that mode. The *token*-tier numbers (WARN 300 / ERROR 600 tokens ≈
+1,200 / 2,400 chars) that this table replaces for agents remain provisional
+and are superseded as a gate: the 2026-08-30 delegation wave (P1-P3, see
+below) reported on delegation *frequency*, not on ceiling calibration, and
+its ERROR tier at 2,400 chars sat above the max of every aligned repo, so it
+could not fire on the defect this file describes.
+
+**Head cost is a bundle-level number, not only a per-description one.** The
+validators report, per bundle, `context.include` chars + agent description
+chars + skill description chars, with a **WARNING at 4,000 chars**
+(`validate-bundle-repo.yaml` Phase 2.86, which states the attribution rule
+for each term). The threshold is measured the same way — every figure below
+is that step's own output on 2026-09-07:
+
+| Bundle | head chars | engineered for head cost? |
+|---|---|---|
+| `bundles/anchors-amp-dev/bundle.md` | 1,760 | yes |
+| `bundles/anchors/bundle.md` | 2,483 | yes |
+| context-intelligence `bundle.md` | 5,479 | no |
+| foundation `bundle.md` (root) | 14,198 | no |
+| superpowers `bundle.md` | 15,002 | no |
+| foundation `behaviors/agents.yaml` | 26,368 | no |
+| dot-graph `bundle.md` | 29,684 | no |
+| converge `bundle.md` | 87,555 | no |
+
+4,000 is the smallest round number above every bundle that was explicitly
+cost-engineered (1.6x headroom over the largest) and below every bundle that
+was not (1.37x below the nearest). It is a WARNING, not an ERROR, because
+foundation's own root bundle exceeds it — that is a design conversation, not
+a build break.
+
+Note what the anchors row shows: `bundles/anchors` mounts `tool-skills` with
+`visibility.enabled: false`, so its 1,261 chars of skill descriptions are
+**not** in the head. The check reports that amount separately as
+`skill_description_chars_excluded` rather than silently omitting it, because
+turning visibility off is a real lever and the reader should see what it
+bought.
 
 ## V6 — Provider disposition: absolutes for invariants, decision rules for judgment
 
@@ -126,6 +218,36 @@ AFTER (decision rule):
 The AFTER version gives the model the actual factor to weigh (context cost,
 answer shape) instead of a bright line the model must either obey literally
 or silently override.
+
+## V7 — Shape: trigger first, then USE WHEN / DO NOT USE WHEN
+
+A description is read by a router deciding *whether this is the thing*, not by
+a person learning what it does. Order it accordingly.
+
+1. **Trigger first.** The opening clause states the condition under which this
+   capability applies — not its identity, not its history, not its
+   architecture. "Use for `type: browser` acceptance tests" routes; "A
+   sophisticated browser automation subsystem" does not.
+2. **Then USE WHEN.** The positive decision rule, as a rule and not as a
+   dialogue (V3, V6).
+3. **Then DO NOT USE WHEN.** Explicit, and pointing at the thing that *should*
+   handle it. This is the half most often missing, and its absence is what
+   produces the silent failure this whole policy exists to prevent: a router
+   that picks the nearest-sounding capability, does the wrong work, and gives
+   nobody a reason to trace it back. "DO NOT USE for interactive TUIs — use
+   `terminal-tester`" costs one clause and removes a whole class of misroute.
+
+Everything else — how it works, what it carries, what it depends on — belongs
+in the body, which is read on demand and not on every request.
+
+**The one rule this shape must never lose: fidelity beats brevity.** A
+description that got shorter by dropping a trigger has not been improved; it
+has been broken in a way that surfaces later as "it didn't use the right
+thing", with no trace back to the commit that caused it. Any automated or
+assisted shortening pass must therefore show a **fidelity table** — every
+routing fact in the before text, and where it went in the after text — which
+is why `recipes/refresh-descriptions.yaml` is agent-driven and not a regex.
+See `docs/BUNDLE_GUIDE.md` §"Refreshing descriptions".
 
 ## Example policy (all description surfaces)
 
