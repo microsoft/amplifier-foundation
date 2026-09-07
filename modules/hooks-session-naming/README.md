@@ -68,6 +68,20 @@ Resolution order:
 If the conversation is pinned to a provider that is no longer mounted, naming is
 **skipped** for that turn rather than run on some other provider.
 
+### Keeping naming on one vendor
+
+If a session must not emit even a small call on another vendor -- an evaluation
+cell pinned to anthropic, say -- the fix is configuration, not a code rule:
+
+- configure only the providers you want used in that session or cell (a role
+  candidate that resolves to a provider that is not mounted is refused), or
+- select a provider-specific or custom routing matrix (`amplifier routing use
+  anthropic`, or your own file under `~/.amplifier/routing/`) so `fast`
+  resolves inside the vendor.
+
+Either keeps naming cheap *and* single-vendor without a code path that silently
+overrides the user's matrix.
+
 ### History: the leak, and the rule that briefly over-corrected it
 
 Session naming used to resolve `model_role` through the routing matrix and, when
