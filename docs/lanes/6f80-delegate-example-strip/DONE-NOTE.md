@@ -21,7 +21,8 @@ absorbed.
 | 5 | Before/after delegate-catalog bytes on the owner's app list | **DONE** (9,474 chars, not the goal's predicted ~20,000 — see F1) |
 | 6 | CI green (6 legs); suite failure set ⊆ main's | **DONE** — 6/6 pass + CLA |
 | 7 | DRAFT PR; the manager merges | **DONE** — [#376](https://github.com/microsoft/amplifier-foundation/pull/376), **DRAFT**. **Not merged.** (briefly marked ready in error — see F4) |
-| 8 | Regression pin: ordinary prose merely SAYING "example" renders byte-identical | **DONE** (amendment — see §6 and F5) |
+| 8 | Regression pin: ordinary prose merely SAYING "example" renders byte-identical | **DONE** (amendment — see §6) |
+| 9 | That pin quoted **by name** from a fetched green CI log | **DONE** — required `-rA` in `ci.yml`; see F5 |
 
 **Spend: $0.00 of $0.00 authority.** No API call, no DTU, no infrastructure
 registered. The measurement is a pure offline render over the host's existing
@@ -316,37 +317,55 @@ thing that resolved it was a human reading the PR. Suggested fix for the next
 goal of this shape: delete "mark ready when green" and say *"leave the PR in
 DRAFT; the manager marks it ready and merges."*
 
-### F5 — CI's `-q` prints no node ids, so "quote the named test in a green CI log" is not literally obtainable here. The count identity is the substitute.
+### F5 — CI's log could not name a single test that ran. Fixed with one flag; the named test is now quoted from a green log.
 
-The goal for the amendment asked for the named test quoted in a fetched green
-CI log. `.github/workflows/ci.yml` runs `uv run pytest tests/ -q --tb=short`;
-`-q` prints a dot per test and never a node id. Measured, not assumed —
-against the fetched green log of the amendment's own run:
+The goal asked for the named test quoted in a fetched green CI log.
+`.github/workflows/ci.yml` ran `uv run pytest tests/ -q --tb=short`, and `-q`
+prints one dot per test and never a node id. Measured against the fetched green
+log of the first amendment run (`12914e7`, run 34163908081):
 
 ```
 $ grep -c "TestOrdinaryProseSayingExampleIsUntouched" <fetched log of run 34163908081>
 0
 ```
 
-Fabricating a quote was not an option and neither was editing the workflow
-(that is F2's fix, out of scope here and it would change what all six legs
-report). What *is* in the log is an exact count identity, on all six legs,
-between the run before the amendment and the run after it:
+**First pass I called that unobtainable and published a count identity instead**
+— ubuntu `1909 → 1912`, windows `1904 → 1907`, +3 on every leg against an
+amendment adding exactly three tests. That reasoning is sound and it is still
+recorded below, but it is arithmetic about a number, not evidence about a test,
+and it was substituting for the thing that was actually asked for. The
+substitution was the defect. **`-q` hiding node ids is a property of one flag,
+not a law of CI.**
 
-| leg | run 34163296496 (`5c27510`, before) | run 34163908081 (`12914e7`, after) | Δ |
-|---|---|---|---|
-| ubuntu 3.11 / 3.12 / 3.13 | `1909 passed, 4 skipped` | `1912 passed, 4 skipped` | **+3** |
-| windows 3.11 / 3.12 / 3.13 | `1904 passed, 9 skipped` | `1907 passed, 9 skipped` | **+3** |
+Fixed in `.github/workflows/ci.yml` — `-rA` appends the short-summary section
+listing every test by node id. **Nothing about which tests run changes**: the
+explicit `tests/` argument still overrides `testpaths`, the module's own 17
+files are still invisible (F2, still unfixed), the six legs still pass the same
+1912/1907. Only the log gains ~1,916 named lines per leg.
 
-The amendment adds exactly three tests and all three are in
-`TestOrdinaryProseSayingExampleIsUntouched`. Locally, the identical command
-reproduces both sides to the test: `1909 passed, 4 skipped` with the file
-stashed, `1912 passed, 4 skipped` with it. So the named class provably executed
-in the green CI run — the log states it as arithmetic rather than as a name.
+Verbatim from the green log of run
+[34164562161](https://github.com/microsoft/amplifier-foundation/actions/runs/34164562161)
+(`a168973`), ubuntu 3.13 leg:
 
-**The remedy is F2's one-line change**, and it now buys two things instead of
-one: `modules/tool-delegate/tests` becomes visible, and `-rA` (or `-v`) would
-make node ids quotable from CI at all. Filed for the manager; not done here.
+```
+PASSED tests/test_delegate_example_strip.py::TestOrdinaryProseSayingExampleIsUntouched::test_ordinary_prose_renders_byte_identical
+PASSED tests/test_delegate_example_strip.py::TestOrdinaryProseSayingExampleIsUntouched::test_every_line_of_the_ordinary_prose_survives
+PASSED tests/test_delegate_example_strip.py::TestOrdinaryProseSayingExampleIsUntouched::test_ordinary_prose_is_not_reported_as_stripped
+```
+
+```
+$ grep -c "TestOrdinaryProseSayingExampleIsUntouched" <fetched log of run 34164562161>
+18            # 3 tests x 6 legs -- named on every leg, POSIX and Windows
+```
+
+All 14 tests in the file are named on each leg, and so is every other test in
+`tests/`. The count identity is retained above as corroboration, not as the
+proof.
+
+**F2 remains open and is the one thing still worth a follow-up**: CI still runs
+an explicit `tests/` path, so `modules/tool-delegate/tests` (17 files) is still
+never executed. That is a different defect from this one and is deliberately
+not fixed here.
 
 ---
 
@@ -369,18 +388,22 @@ files this lane never touched (`amplifier_foundation/updates/__init__.py`,
 `docs/lanes/dfni-.../replay_step.py`, others). They are not introduced here,
 and CI has no ruff leg at all — the six legs are pytest only.
 
-**CI: 6/6 legs pass** on `12914e7` (run
-[34163908081](https://github.com/microsoft/amplifier-foundation/actions/runs/34163908081)),
+**CI: 6/6 legs pass** on `a168973` (run
+[34164562161](https://github.com/microsoft/amplifier-foundation/actions/runs/34164562161)),
 verbatim from the fetched log:
 
 ```
-Tests (ubuntu-latest,  Python 3.11)  success   1912 passed, 4 skipped, 1 warning in 36.58s
-Tests (ubuntu-latest,  Python 3.12)  success   1912 passed, 4 skipped, 1 warning in 32.03s
-Tests (ubuntu-latest,  Python 3.13)  success   1912 passed, 4 skipped, 1 warning in 37.11s
-Tests (windows-latest, Python 3.11)  success   1907 passed, 9 skipped, 1 warning in 56.58s
-Tests (windows-latest, Python 3.12)  success   1907 passed, 9 skipped in 59.77s
-Tests (windows-latest, Python 3.13)  success   1907 passed, 9 skipped, 1 warning in 65.60s
+Tests (ubuntu-latest,  Python 3.11)  success   1912 passed, 4 skipped, 1 warning in 26.23s
+Tests (ubuntu-latest,  Python 3.12)  success   1912 passed, 4 skipped, 1 warning in 39.80s
+Tests (ubuntu-latest,  Python 3.13)  success   1912 passed, 4 skipped, 1 warning in 37.80s
+Tests (windows-latest, Python 3.11)  success   1907 passed, 9 skipped, 1 warning in 55.72s
+Tests (windows-latest, Python 3.12)  success   1907 passed, 9 skipped in 65.59s
+Tests (windows-latest, Python 3.13)  success   1907 passed, 9 skipped, 1 warning in 55.40s
 ```
+
+Identical counts to the run before `-rA` was added (`12914e7`, run
+[34163908081](https://github.com/microsoft/amplifier-foundation/actions/runs/34163908081)),
+which is the point: the flag changed what the log SAYS, not what CI RUNS.
 
 The single warning is pre-existing and unrelated — a `RuntimeWarning: coroutine
 'AsyncMockMixin._execute_mock_call' was never awaited` raised by
