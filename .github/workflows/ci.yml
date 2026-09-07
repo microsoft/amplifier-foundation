@@ -31,5 +31,11 @@ jobs:
       - name: Install dependencies (with grpc-adapter)
         run: uv sync --extra grpc-adapter
 
+      # `-rA` appends the short-summary section listing every test by node id.
+      # Without it `-q` prints one dot per test and the log can never name what
+      # ran, so "prove test X executed in CI" is unanswerable from the log --
+      # you are reduced to inferring it from the passed COUNT, which is
+      # arithmetic about a number, not evidence about a test. Nothing about
+      # which tests run changes here; only whether the log says their names.
       - name: Run tests
-        run: uv run pytest tests/ -q --tb=short
+        run: uv run pytest tests/ -q --tb=short -rA
