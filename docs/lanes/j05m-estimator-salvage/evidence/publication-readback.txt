@@ -1,0 +1,15 @@
+{
+  "marker_contract": "publication/v1",
+  "publication": {
+    "required": true,
+    "repo": "microsoft/amplifier-foundation",
+    "branch": "lane/j05m-estimator-salvage",
+    "pushed": true,
+    "head_sha": "6e701862fb871ae71cae8a1fd5de874105ad8bf5",
+    "verified_by": "git ls-remote --heads https://github.com/microsoft/amplifier-foundation.git lane/j05m-estimator-salvage; gh pr list --repo microsoft/amplifier-foundation --head lane/j05m-estimator-salvage --state all --json number,url,state,headRefOid",
+    "verified_at": "2026-09-07T01:01:14Z",
+    "pr_number": 371,
+    "pr_url": "https://github.com/microsoft/amplifier-foundation/pull/371",
+    "pr_state": "draft open"
+  }
+}
