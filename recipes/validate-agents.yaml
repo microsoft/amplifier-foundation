@@ -1,8 +1,28 @@
 # validate-agents.yaml
-# Agent Definition Validator Recipe v1.4.0
+# Agent Definition Validator Recipe v1.8.0
 # Validates agent definitions in a bundle repository for quality, tool access, and structural requirements
 #
 # CHANGELOG:
+# v1.8.0 - THE LENGTH GATE COULD NOT FIRE ON AN ALIGNED REPO, AND BARELY FIRED
+#          ON AN UNALIGNED ONE.
+#          The gate was tokens: WARN >300, ERROR >600 -- 1,200 and 2,400 chars
+#          at the chars/4 estimator this repo uses. Measured 2026-09-07 across
+#          9 bundle repos: foundation's own agents (the one corpus with PR
+#          #341's policy applied) run n=24, mean 410, MAX 761 chars, so the
+#          ERROR line sat above every description in the repo it was supposed
+#          to govern. Now WARN >600 chars, ERROR >1,200 (2x the cap), as a
+#          structural ERROR in structural-validation and as the quality gate in
+#          quality-classification. Tokens remain a reported metric.
+#        - The two numbers are BYTE-IDENTICAL to validate-bundle-repo.yaml
+#          v3.15.0 Phase 2.8's AGENT_DESCRIPTION_WARN_CHARS/_ERROR_CHARS, and
+#          tests/test_description_alignment_checks.py fails the build if they
+#          diverge. Two validators that disagree about the cap are worse than
+#          one.
+#        - SCOPE NOTE: skill descriptions, awareness redundancy and bundle head
+#          cost are repo-wide concerns and live in validate-bundle-repo.yaml
+#          v3.15.0 (Phases 2.82 / 2.84 / 2.86). This recipe stays agent-scoped.
+#        - No threshold, severity, skip rule or exclusion set changed other
+#          than the description length gate named above.
 # v1.7.0 - Two defects in v1.6.0's widened discovery, both silent.
 #        - (1) CLASSIFICATION BY DIRECTORY NAME. v1.6.0 treated every
 #          `agents/*.md` as an agent, so `context/agents/*.md` -- four
@@ -237,7 +257,7 @@ description: |
   
   This recipe helps maintain agent quality across the Amplifier ecosystem by codifying
   the audit criteria discovered in manual reviews.
-version: "1.7.0"
+version: "1.8.0"
 author: "Amplifier Foundation Team"
 tags: ["agents", "validation", "quality", "audit", "tools", "descriptions"]
 
@@ -612,6 +632,16 @@ steps:
           "planning": "Renamed to 'reasoning'",
       }
 
+      # v1.8.0: description length caps, in CHARACTERS (description-authoring-
+      # principles.md V5). Measured 2026-09-07 across 9 bundle repos: the one
+      # corpus with the #341 policy applied (foundation, n=24, mean 410, max
+      # 761) has ZERO descriptions over 1,200 chars; unswept repos put 17 of 54
+      # there. Kept BYTE-IDENTICAL to validate-bundle-repo.yaml Phase 2.8's
+      # AGENT_DESCRIPTION_WARN_CHARS / _ERROR_CHARS -- two validators that
+      # disagree about the cap are worse than one.
+      DESCRIPTION_WARN_CHARS = 600
+      DESCRIPTION_ERROR_CHARS = 1200
+
       discovery = json.loads('''{{discovery_results}}''')
       
       def get_bundle_level_tools(repo_path: str) -> dict:
@@ -881,6 +911,39 @@ steps:
                   "remediation": "Expand description to explain WHAT the agent does and WHEN to delegate to it"
               })
 
+          # v1.8.0: the length CAP, in characters. WARN at the cap, ERROR at 2x.
+          # description-authoring-principles.md V5. Chars, not tokens: chars are
+          # the unit every head measurement in this program was taken in, they
+          # need no tokenizer, and a validator counts them identically on every
+          # platform. The superseded token tier (ERROR >600 tokens == 2,400
+          # chars) sat ABOVE the longest description in every already-aligned
+          # repo measured (foundation max 761), so it could not fire on the
+          # defect it existed to catch.
+          if result["description_length"] > DESCRIPTION_ERROR_CHARS:
+              result["errors"].append({
+                  "severity": "ERROR",
+                  "code": "DESCRIPTION_EXCESSIVE",
+                  "message": (
+                      f"Description is {result['description_length']} chars "
+                      f"(>{DESCRIPTION_ERROR_CHARS}, 2x the {DESCRIPTION_WARN_CHARS}-char cap)"
+                  ),
+                  "remediation": (
+                      f"Shorten to <={DESCRIPTION_WARN_CHARS} chars. For a proposed rewrite WITH a "
+                      "fidelity table (so a routing fact cannot be dropped silently), run "
+                      "recipes/refresh-descriptions.yaml. See description-authoring-principles.md V5/V7."
+                  )
+              })
+          elif result["description_length"] > DESCRIPTION_WARN_CHARS:
+              result["warnings"].append({
+                  "severity": "WARNING",
+                  "code": "DESCRIPTION_HIGH",
+                  "message": f"Description is {result['description_length']} chars (>{DESCRIPTION_WARN_CHARS} cap)",
+                  "remediation": (
+                      f"Trim toward <={DESCRIPTION_WARN_CHARS} chars. See "
+                      "description-authoring-principles.md V5/V7."
+                  )
+              })
+
           # Check for <commentary> tags -- v1.4.0: ERROR, not WARNING.
           # <commentary> only ever occurs inside an <example> block, and
           # example blocks are now rejected entirely (see below), so this
@@ -990,8 +1053,8 @@ steps:
       # 1. No structural errors (valid YAML, has meta.name, meta.description)
       # 2. Has explicit tools section (even if empty)
       # 3. Description >= 100 characters
-      # 4. Description token budget respected (provisional: WARN >300 tok,
-      #    ERROR >600 tok -- description-authoring-principles.md V5)
+      # 4. Description length cap respected, in CHARS (v1.8.0: WARN >600,
+      #    ERROR >1200 -- description-authoring-principles.md V5)
       #
       # has_strong_trigger / absolute_keyword_count are reported as METRICS
       # below, not gates. A measured eval campaign found these do not by
@@ -1006,9 +1069,11 @@ steps:
       # routes through has_errors -> "critical" below -- no separate
       # classify_agent branch needed for them.
 
-      # Provisional token thresholds (see description-authoring-principles.md V5)
-      DESCRIPTION_TOKEN_WARN = 300
-      DESCRIPTION_TOKEN_ERROR = 600
+      # v1.8.0: the gate is CHARACTERS (description-authoring-principles.md V5).
+      # Same two numbers as structural-validation above and as
+      # validate-bundle-repo.yaml Phase 2.8. Tokens remain a reported metric.
+      DESCRIPTION_WARN_CHARS = 600
+      DESCRIPTION_ERROR_CHARS = 1200
 
       def classify_agent(agent: dict) -> dict:
           """Classify a single agent's quality level."""
@@ -1037,12 +1102,12 @@ steps:
           elif description_length < 100:
               quality = "needs_work"
               reason = f"Description too short ({description_length} chars)"
-          elif description_tokens > DESCRIPTION_TOKEN_ERROR:
+          elif description_length > DESCRIPTION_ERROR_CHARS:
               quality = "needs_work"
-              reason = f"Description is {description_tokens} tokens (>{DESCRIPTION_TOKEN_ERROR} threshold -- must shorten)"
-          elif description_tokens > DESCRIPTION_TOKEN_WARN:
+              reason = f"Description is {description_length} chars (>{DESCRIPTION_ERROR_CHARS} threshold -- must shorten)"
+          elif description_length > DESCRIPTION_WARN_CHARS:
               quality = "polish"
-              reason = f"Description is {description_tokens} tokens (>{DESCRIPTION_TOKEN_WARN} threshold -- consider trimming)"
+              reason = f"Description is {description_length} chars (>{DESCRIPTION_WARN_CHARS} cap -- consider trimming)"
           elif has_model_role_errors:
               quality = "needs_work"
               reason = "Invalid or deprecated model_role values"
