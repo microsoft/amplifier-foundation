@@ -231,6 +231,48 @@ def test_skill_over_2x_errors_and_at_cap_warns(tmp_path: Path) -> None:
     assert "skill_description_high" in types_of(warn_result, "warnings")
 
 
+def test_docs_is_scanned_and_that_is_a_trap_worth_pinning() -> None:
+    """`docs/` is NOT excluded here, on purpose, and it bites.
+
+    Measured live while building this change: committing four evidence
+    `SKILL.md` files under `docs/lanes/` took this repo's shipped-skill count
+    from 3 to 7 and its largest head-cost figure from 26,368 to 28,279 chars.
+
+    The exclusion set is NOT widened to hide that. It is pinned byte-for-byte
+    against every other `EXCLUDED_DIRS` in the recipe by
+    `tests/test_anchors_bundles_dry.py::TestDiscoveryScopeParity`, whose
+    documented delta from validate-agents' wider scope is exactly `docs` --
+    and narrowing it here would hide a skill that genuinely lives under docs/.
+    So the rule is: do not name an evidence file `SKILL.md`. This test is what
+    catches it if someone does.
+    """
+    result = run_repo_step("skill-description-validation", REPO_ROOT)
+    assert "docs" not in result["excluded_dirs"], (
+        "docs/ is deliberately scanned -- see TestDiscoveryScopeParity's documented delta"
+    )
+    assert result["skills_checked"] == 3, (
+        "this repo ships exactly 3 skills; a higher count means a non-skill file "
+        f"named SKILL.md was committed: {[d['file'] for d in result['skill_details']]}"
+    )
+
+
+def test_every_new_step_reports_the_scope_it_scanned() -> None:
+    """A number is not auditable unless the scope it was taken over is stated."""
+    for step in (
+        "skill-description-validation",
+        "awareness-redundancy-check",
+        "bundle-head-cost",
+    ):
+        result = run_repo_step(step, REPO_ROOT)
+        assert set(result["excluded_dirs"]) == {
+            ".git",
+            ".venv",
+            "node_modules",
+            "test-fixtures",
+            "tests",
+        }, step
+
+
 def test_a_broken_skill_does_not_pass_clean(tmp_path: Path) -> None:
     """v3.13.0's lesson, applied to skills from the start.
 

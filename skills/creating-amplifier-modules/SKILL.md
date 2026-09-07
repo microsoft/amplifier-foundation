@@ -94,7 +94,15 @@ class MyTool:
 
     @property
     def description(self) -> str:
-        return "Description of what this tool does and when to use it."
+        # A tool description IS a description surface: it is rendered into the
+        # tool block on EVERY request of every session that mounts the tool,
+        # used or not. Write it to
+        # foundation:context/shared/description-authoring-principles.md --
+        # trigger first, then USE WHEN, then DO NOT USE WHEN naming what
+        # should handle the rejected case; zero <example> blocks. One measured
+        # tool description ran 15,271 chars -- 56% of that session's entire
+        # tool-description budget -- and drove 7-8x over-delegation (V5).
+        return "What this tool does. USE WHEN <condition>. DO NOT USE WHEN <condition> -- use <alternative>."
 
     @property
     def input_schema(self) -> dict:
@@ -291,13 +299,17 @@ After creating a module, verify it will pass protocol compliance:
 - [ ] Does `mount()` call `await coordinator.mount("tools", tool, name=tool.name)`?
 - [ ] Does the tool class have a `name` property (string)?
 - [ ] Does the tool class have a `description` property (string)?
+- [ ] Does that description lead with the TRIGGER, carry a DO NOT USE WHEN
+      clause naming the alternative, and contain zero `<example>` blocks?
+      (foundation:context/shared/description-authoring-principles.md -- a tool
+      description is paid on every request whether or not the tool is called)
 - [ ] Does the tool class have an `input_schema` property (dict)?
 - [ ] Does the tool class have a callable `execute()` method?
 - [ ] Does `mount()` return a metadata dict (not `None`)?
 - [ ] Does `pyproject.toml` declare the `amplifier.modules` entry point?
 - [ ] Do tests verify `coordinator.mount()` was called (not that result is `None`)?
 
-All eight boxes must be checked before committing.
+All nine boxes must be checked before committing.
 
 ---
 

@@ -4224,6 +4224,19 @@ steps:
       # Phase 2.8 for what a Windows path costs inside a string literal.
       REPO_PATH = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
 
+      # The repo-wide exclusion set, IDENTICAL to every other EXCLUDED_DIRS in
+      # this recipe -- `tests/test_anchors_bundles_dry.py` fails the build if
+      # they diverge by one entry, and the only permitted difference from
+      # validate-agents' wider `EXCLUDED_PARTS` is the documented `docs`.
+      #
+      # CONSEQUENCE, MEASURED AND LEFT AS-IS: `docs/` IS scanned here. A
+      # SKILL.md committed under docs/ as documentation or lane evidence counts
+      # as a shipped skill and also lands in the head-cost total (observed
+      # live: skills_checked 3 -> 7, largest_head_chars 26,368 -> 28,279 when
+      # four evidence files were added under docs/lanes/). Reported rather than
+      # silently widened: narrowing this set is a change to a contract another
+      # lane established, and would hide a real agent or skill that genuinely
+      # lives under docs/. Name evidence files something other than SKILL.md.
       EXCLUDED_DIRS = {"test-fixtures", "tests", "node_modules", ".git", ".venv"}
 
       # description-authoring-principles.md V5. Skills are capped tighter than
@@ -4257,6 +4270,7 @@ steps:
 
       results = {
           "phase": "skill_description_validation",
+          "excluded_dirs": sorted(EXCLUDED_DIRS),
           "skills_checked": 0,
           "candidates_scanned": 0,
           "errors": [],
@@ -4602,6 +4616,7 @@ steps:
 
       results = {
           "phase": "awareness_redundancy",
+          "excluded_dirs": sorted(EXCLUDED_DIRS),
           "context_files_checked": 0,
           "catalog_entries": 0,
           "errors": [],
@@ -4879,6 +4894,7 @@ steps:
 
       results = {
           "phase": "bundle_head_cost",
+          "excluded_dirs": sorted(EXCLUDED_DIRS),
           "bundles_measured": 0,
           "errors": [],
           "warnings": [],

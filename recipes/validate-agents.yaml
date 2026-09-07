@@ -194,8 +194,8 @@
 #   description-authoring-principles.md V3 bans them entirely, not just >2)
 # - Has explicit tools section (even if empty [])
 # - Description >= 100 characters
-# - Description token budget respected (provisional: WARN >300 tok,
-#   ERROR >600 tok -- see foundation:context/shared/
+# - Description length cap respected: WARN >600 chars, ERROR >1200
+#   (v1.8.0 -- see foundation:context/shared/
 #   description-authoring-principles.md V5)
 #
 # NOTE: presence of MUST/ALWAYS/REQUIRED/PROACTIVELY keywords is reported
@@ -1735,7 +1735,7 @@ steps:
 
       ## Metadata
       - **Validated**: [timestamp]
-      - **Recipe**: validate-agents v1.7.0
+      - **Recipe**: validate-agents v1.8.0
       - **Discovery scope**: repo-wide `agents/*.md`. State the
         `scan_patterns` and the `excluded_parts` from `discovery_results`
         verbatim.
@@ -1754,7 +1754,12 @@ steps:
         (including any `<example>`/`<commentary>` block in the
         description -- rejected entirely per V3, not merely capped),
         explicit tools section, description >= 100 chars, description
-        token budget (provisional WARN >300 / ERROR >600 tok).
+        length cap in CHARS (v1.8.0: WARN >600, ERROR >1200 -- the
+        superseded token tier put its ERROR above the longest
+        description in every aligned repo measured, so it could not
+        fire). Point an author over the cap at
+        `foundation:recipes/refresh-descriptions.yaml`, which proposes a
+        rewrite WITH a fidelity table rather than shortening by eye.
         MUST/ALWAYS/REQUIRED/PROACTIVELY keyword presence is reported as
         a metric, not a gate.
       - **Severity Guide**:

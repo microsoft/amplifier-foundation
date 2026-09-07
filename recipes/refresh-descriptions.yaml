@@ -1,0 +1,527 @@
+# refresh-descriptions.yaml
+# Description Alignment Refresh Recipe v1.0.0
+#
+# THE ENTRY POINT a bundle author runs to bring an EXISTING repo into line with
+# foundation:context/shared/description-authoring-principles.md.
+#
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=foundation:recipes/refresh-descriptions.yaml \
+#     context='{"repo_path": "/path/to/repo"}'
+#
+# It produces three things, in one directory:
+#
+#   violations.json  every description over the cap or carrying an
+#                    <example>/<commentary> block, machine-readable
+#   proposals.md     a compliant REWRITE for each one, WITH A FIDELITY TABLE
+#   verdict.json     the rewrites re-checked against the same thresholds, plus
+#                    the structural gate on the fidelity tables themselves
+#
+# WHY THE REWRITE STEP IS AN AGENT AND NOT A REGEX
+#
+# The entire risk in shortening a description is dropping a ROUTING FACT -- a
+# trigger, a boundary, a "do not use for X, use Y instead". A regex cannot see
+# that a clause is the only thing standing between a request and the wrong
+# capability. Nothing errors when it goes; the failure surfaces much later as
+# "it didn't use the right thing", with nobody tracing it back.
+#
+# So: an agent proposes, a table records every routing fact and where it went,
+# and step 3 REFUSES a proposal that has no fidelity table. Fidelity beats
+# brevity at every point of conflict -- a rewrite that keeps a fact and misses
+# the cap is a PASS with a note, never a failure.
+#
+# WHY THE SCANNER IS NOT COPIED HERE
+#
+# The thresholds and the agent classifier live in validate-bundle-repo.yaml.
+# This recipe EXTRACTS AND EXECUTES that recipe's own step bodies rather than
+# reimplementing them: a second implementation would agree with itself while
+# the validator drifted, and this repo has already paid for that lesson three
+# times in one batch (lanes xe1u, 39z0, dfni). If the validator recipe cannot
+# be found, this recipe FAILS LOUD naming every path it looked in -- it never
+# silently falls back to a private copy of the rules.
+#
+# CHANGELOG:
+# v1.0.0 - Initial release. Companion to validate-bundle-repo v3.15.0 /
+#          validate-agents v1.8.0 (model_performance-pwmy).
+
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:bundle-design-expert"
+
+name: refresh-descriptions
+description: |
+  Bring an existing bundle repository's agent and skill descriptions into line
+  with description-authoring-principles.md: find every violation, propose a
+  compliant rewrite for each, and record a fidelity table proving no routing
+  fact was dropped in the shortening.
+
+  Read-only with respect to the repository. Nothing is applied automatically;
+  the proposals are written to an output directory for a human to review and
+  land.
+version: "1.0.0"
+author: "Amplifier Foundation Team"
+tags: ["bundle", "descriptions", "refresh", "alignment", "fidelity"]
+
+context:
+  repo_path: ""  # Required: path to the bundle repository to refresh
+  output_dir: ""  # Optional: where to write violations/proposals/verdict (default: <repo_path>/.description-refresh)
+  validator_recipe: ""  # Optional: explicit path to validate-bundle-repo.yaml. Default: searched, see scan step.
+
+steps:
+  # ==========================================================================
+  # STEP 1: Scan -- using the VALIDATOR'S OWN step bodies, never a copy
+  # ==========================================================================
+
+  - id: "scan-descriptions"
+    type: "bash"
+    command: |
+      REFRESH_REPO_PATH="{{repo_path}}" \
+      REFRESH_OUTPUT_DIR="{{output_dir}}" \
+      REFRESH_VALIDATOR_RECIPE="{{validator_recipe}}" \
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json
+      import os
+      import subprocess
+      import sys
+      from pathlib import Path
+
+      # Paths arrive through the ENVIRONMENT, never interpolated into Python
+      # source: a Windows checkout at D:\a\<repo>\<repo> parses \a as \x07
+      # inside a string literal, and the run then reports a clean pass over
+      # zero files (validate-agents v1.7.0, validate-bundle-repo v3.13.0).
+      REPO_PATH = Path(os.environ["REFRESH_REPO_PATH"]).expanduser().resolve()
+      OUTPUT_DIR = os.environ.get("REFRESH_OUTPUT_DIR") or ""
+      EXPLICIT_RECIPE = os.environ.get("REFRESH_VALIDATOR_RECIPE") or ""
+
+      out_dir = Path(OUTPUT_DIR).expanduser() if OUTPUT_DIR else REPO_PATH / ".description-refresh"
+      out_dir.mkdir(parents=True, exist_ok=True)
+
+      def find_validator():
+          """Locate validate-bundle-repo.yaml. Fail loud, never fall back to a copy."""
+          searched = []
+          if EXPLICIT_RECIPE:
+              p = Path(EXPLICIT_RECIPE).expanduser()
+              searched.append(str(p))
+              if p.is_file():
+                  return p, searched
+          local = REPO_PATH / "recipes" / "validate-bundle-repo.yaml"
+          searched.append(str(local))
+          if local.is_file():
+              return local, searched
+          cache = Path.home() / ".amplifier" / "cache"
+          searched.append(str(cache / "**/recipes/validate-bundle-repo.yaml"))
+          if cache.is_dir():
+              hits = sorted(
+                  cache.glob("*/recipes/validate-bundle-repo.yaml"),
+                  key=lambda p: p.stat().st_mtime,
+                  reverse=True,
+              )
+              if hits:
+                  return hits[0], searched
+          return None, searched
+
+      def step_body(recipe: Path, step_id: str) -> str:
+          lines = recipe.read_text(encoding="utf-8").splitlines()
+          step = next(i for i, ln in enumerate(lines) if ln.strip() == f'- id: "{step_id}"')
+          start = next(i for i in range(step, len(lines)) if lines[i].rstrip().endswith("<< 'EOF'"))
+          end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "EOF")
+          indent = len(lines[start]) - len(lines[start].lstrip())
+          return "\n".join(ln[indent:] for ln in lines[start + 1 : end])
+
+      def run_step(recipe: Path, step_id: str) -> dict:
+          env = dict(os.environ)
+          env["VALIDATE_BUNDLE_REPO_PATH"] = str(REPO_PATH)
+          proc = subprocess.run(
+              [sys.executable, "-c", step_body(recipe, step_id)],
+              capture_output=True, text=True, env=env,
+          )
+          if proc.returncode != 0:
+              raise SystemExit(
+                  f"validator step {step_id} exited {proc.returncode}:\n{proc.stderr[-2000:]}"
+              )
+          return json.loads(proc.stdout)
+
+      recipe, searched = find_validator()
+      if recipe is None:
+          print(json.dumps({
+              "phase": "scan_descriptions",
+              "passed": False,
+              "error": "validate-bundle-repo.yaml not found -- refusing to run a private copy of the rules",
+              "searched": searched,
+              "fix": "Pass validator_recipe=/path/to/validate-bundle-repo.yaml, or run this recipe from a repo that carries one.",
+          }))
+          raise SystemExit(1)
+
+      agents = run_step(recipe, "agent-description-validation")
+      skills = run_step(recipe, "skill-description-validation")
+      awareness = run_step(recipe, "awareness-redundancy-check")
+      head = run_step(recipe, "bundle-head-cost")
+
+      # One violation record per FILE, carrying every issue against it. The
+      # agent needs the whole picture per artifact, not one row per finding.
+      violations = {}
+      for source, kind in ((agents, "agent"), (skills, "skill")):
+          for item in source.get("errors", []) + source.get("warnings", []):
+              path = item.get("file")
+              if not path:
+                  continue
+              rec = violations.setdefault(path, {
+                  "file": path, "kind": kind, "issues": [], "chars": item.get("chars"),
+              })
+              rec["issues"].append({
+                  "type": item.get("type"),
+                  "severity": item.get("severity"),
+                  "message": item.get("message"),
+              })
+              if item.get("chars") and not rec.get("chars"):
+                  rec["chars"] = item["chars"]
+
+      payload = {
+          "phase": "scan_descriptions",
+          "repo_path": str(REPO_PATH),
+          "validator_recipe": str(recipe),
+          "output_dir": str(out_dir),
+          "caps": {
+              "agent_warn_chars": 600, "agent_error_chars": 1200,
+              "skill_warn_chars": 400, "skill_error_chars": 800,
+          },
+          "violations": sorted(violations.values(), key=lambda v: v["file"]),
+          "awareness_warnings": awareness.get("warnings", []),
+          "head_cost": head.get("bundle_details", []),
+          "counts": {
+              "violations": len(violations),
+              "agent_errors": len(agents.get("errors", [])),
+              "agent_warnings": len(agents.get("warnings", [])),
+              "skill_errors": len(skills.get("errors", [])),
+              "skill_warnings": len(skills.get("warnings", [])),
+              "awareness_warnings": len(awareness.get("warnings", [])),
+              "head_cost_warnings": len(head.get("warnings", [])),
+          },
+      }
+      (out_dir / "violations.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+      payload["passed"] = True
+      print(json.dumps({k: v for k, v in payload.items() if k not in ("violations", "awareness_warnings", "head_cost")}))
+      EOF
+    output: "scan_results"
+    parse_json: true
+    timeout: 300
+    on_error: "fail"
+
+  # ==========================================================================
+  # STEP 2: Propose -- agent-driven, because a regex cannot see a routing fact
+  # ==========================================================================
+
+  - id: "propose-rewrites"
+    agent: "foundation:bundle-design-expert"
+    condition: "{{scan_results.counts.violations}} > 0"
+    depends_on: ["scan-descriptions"]
+    prompt: |
+      Propose compliant rewrites for every description violation in this repository.
+
+      **Repository:** {{scan_results.repo_path}}
+      **Findings:** `{{scan_results.output_dir}}/violations.json` — read this file first.
+
+      ## The rules you are writing to
+
+      Read `foundation:context/shared/description-authoring-principles.md`. The
+      operative parts:
+
+      - **V7 shape** — trigger first, then USE WHEN, then DO NOT USE WHEN (with
+        the thing that SHOULD handle it named).
+      - **V3 example policy** — zero `<example>` blocks, zero `<commentary>`
+        tags, in any description surface. Not "at most 2". Zero.
+      - **V5 caps** — agent `meta.description` ≤ 600 chars, skill frontmatter
+        `description` ≤ 400 chars.
+      - **V6** — absolutes (MUST / ALWAYS / NEVER / PROACTIVELY) only for
+        conditions true 100% of the time. Everything else gets a decision rule.
+
+      ## What you must do, per violating file
+
+      1. **Read the whole file**, not just its description. A routing fact is
+         often only visible against what the artifact actually does.
+      2. **Enumerate the ROUTING FACTS in the current description.** A routing
+         fact is anything a router needs in order to choose this capability or
+         reject it: a trigger condition, a named alternative, a scope boundary,
+         a named surface it is authoritative on, a prerequisite. Prose that
+         only sells the capability is NOT a routing fact — deleting it is the
+         point (V4).
+      3. **Write the rewrite** in the V7 shape, inside the cap if possible.
+      4. **Build the fidelity table** — one row per routing fact:
+
+         | Routing fact | In the current text | In the proposed text | Where it went |
+
+         Every fact must be accounted for. A fact that is genuinely obsolete
+         may be dropped — say so in "Where it went" and say why (V2).
+
+      ## The rule you may not break
+
+      **Fidelity beats brevity.** If a routing fact cannot survive the cap,
+      KEEP THE FACT AND EXCEED THE CAP, and write one line saying which fact
+      forced it. A rewrite that misses the cap for a named reason is a good
+      outcome. A rewrite that hits the cap by dropping a trigger is a
+      mis-routing waiting to happen, and it will surface later as "it didn't
+      use the right thing" with nothing pointing back here.
+
+      ## Output
+
+      Write `{{scan_results.output_dir}}/proposals.md` with one `##` section
+      per file, each containing, in this order:
+
+      - `### Current (N chars)` — the current description in a fenced block
+      - `### Proposed (M chars)` — the proposed description in a fenced block,
+        ready to paste into the frontmatter
+      - `### Fidelity table` — the table above. **This heading is checked by
+        the next step. A section without it is rejected.**
+      - `### Notes` — anything dropped as obsolete, or any cap deliberately
+        exceeded and the fact that forced it.
+
+      Then reply with a short summary: how many files, how many rewrites land
+      inside the cap, how many deliberately exceed it and why.
+    output: "proposal_summary"
+    timeout: 1800
+    on_error: "fail"
+
+  # ==========================================================================
+  # STEP 3: Verify -- the proposals are re-checked, and so are their tables
+  # ==========================================================================
+
+  - id: "verify-proposals"
+    type: "bash"
+    condition: "{{scan_results.counts.violations}} > 0"
+    depends_on: ["propose-rewrites"]
+    command: |
+      REFRESH_OUTPUT_DIR="{{scan_results.output_dir}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json
+      import os
+      import re
+      from pathlib import Path
+
+      out_dir = Path(os.environ["REFRESH_OUTPUT_DIR"])
+      proposals = out_dir / "proposals.md"
+      scan = json.loads((out_dir / "violations.json").read_text(encoding="utf-8"))
+      caps = scan["caps"]
+
+      verdict = {
+          "phase": "verify_proposals",
+          "proposals_file": str(proposals),
+          "sections": [],
+          "errors": [],
+          "warnings": [],
+      }
+
+      if not proposals.is_file():
+          verdict["errors"].append({
+              "type": "proposals_missing",
+              "severity": "ERROR",
+              "message": f"{proposals} was not written -- there is nothing to review.",
+          })
+          verdict["passed"] = False
+          print(json.dumps(verdict))
+          raise SystemExit(0)
+
+      text = proposals.read_text(encoding="utf-8")
+      sections = re.split(r"^##\s+(?!#)", text, flags=re.MULTILINE)[1:]
+      expected = {v["file"] for v in scan["violations"]}
+      covered = set()
+
+      for section in sections:
+          title = section.splitlines()[0].strip()
+          name = title.strip("`")
+
+          # A `##` section that does not name a violating file is narrative,
+          # not a proposal -- a summary table, a preamble. Validating it as a
+          # proposal rejects the whole run for a heading. It is recorded, not
+          # graded. The hole this could open is already closed below: every
+          # violating file must still have a section of its own
+          # (violations_not_addressed), so a MISSPELLED heading still fails.
+          if name not in expected:
+              verdict.setdefault("extra_sections", []).append(name)
+              continue
+
+          covered.add(name)
+          entry = {"section": name, "issues": []}
+
+          # THE STRUCTURAL GATE. A shortening pass with no fidelity table is
+          # exactly the silent trigger-drop this recipe exists to prevent, so
+          # its absence is an ERROR and not a style note.
+          if not re.search(r"^###\s+Fidelity table", section, flags=re.MULTILINE):
+              verdict["errors"].append({
+                  "type": "fidelity_table_missing",
+                  "file": name,
+                  "severity": "ERROR",
+                  "message": f"{name}: proposal carries no '### Fidelity table' section -- rejected.",
+                  "fix": "Every rewrite must account for each routing fact in the current text.",
+              })
+              entry["issues"].append("fidelity_table_missing")
+          else:
+              rows = [
+                  ln for ln in section.splitlines()
+                  if ln.strip().startswith("|") and ln.count("|") >= 4
+              ]
+              # header + separator + at least one fact
+              if len(rows) < 3:
+                  verdict["errors"].append({
+                      "type": "fidelity_table_empty",
+                      "file": name,
+                      "severity": "ERROR",
+                      "message": f"{name}: the fidelity table has no rows -- no routing fact was accounted for.",
+                  })
+                  entry["issues"].append("fidelity_table_empty")
+              entry["fidelity_rows"] = max(0, len(rows) - 2)
+
+          proposed = re.search(
+              r"^###\s+Proposed[^\n]*\n+```[^\n]*\n(.*?)^```",
+              section,
+              flags=re.MULTILINE | re.DOTALL,
+          )
+          if not proposed:
+              verdict["errors"].append({
+                  "type": "proposed_text_missing",
+                  "file": name,
+                  "severity": "ERROR",
+                  "message": f"{name}: no '### Proposed' fenced block to check.",
+              })
+              entry["issues"].append("proposed_text_missing")
+              verdict["sections"].append(entry)
+              continue
+
+          body = proposed.group(1)
+          entry["proposed_chars"] = len(body.strip())
+
+          kind = next((v["kind"] for v in scan["violations"] if v["file"] == name), "agent")
+          cap = caps["agent_warn_chars"] if kind == "agent" else caps["skill_warn_chars"]
+          entry["cap"] = cap
+
+          if re.search(r"<example>|<commentary>", body, flags=re.IGNORECASE):
+              verdict["errors"].append({
+                  "type": "proposal_still_has_example",
+                  "file": name,
+                  "severity": "ERROR",
+                  "message": f"{name}: the PROPOSED text still carries an <example>/<commentary> block.",
+              })
+              entry["issues"].append("proposal_still_has_example")
+
+          if entry["proposed_chars"] > cap:
+              # Not an error. Fidelity beats brevity -- but it must be SAID.
+              verdict["warnings"].append({
+                  "type": "proposal_over_cap",
+                  "file": name,
+                  "severity": "WARNING",
+                  "chars": entry["proposed_chars"],
+                  "cap": cap,
+                  "message": (
+                      f"{name}: proposal is {entry['proposed_chars']} chars against a {cap} cap. "
+                      "Acceptable ONLY if the Notes section names the routing fact that forced it."
+                  ),
+              })
+              entry["issues"].append("proposal_over_cap")
+              if not re.search(r"^###\s+Notes", section, flags=re.MULTILINE):
+                  verdict["errors"].append({
+                      "type": "over_cap_without_reason",
+                      "file": name,
+                      "severity": "ERROR",
+                      "message": f"{name}: over the cap with no Notes section naming why.",
+                  })
+                  entry["issues"].append("over_cap_without_reason")
+
+          verdict["sections"].append(entry)
+
+      missing = sorted(expected - covered)
+      if missing:
+          verdict["errors"].append({
+              "type": "violations_not_addressed",
+              "severity": "ERROR",
+              "message": f"{len(missing)} violating file(s) have no proposal section: {', '.join(missing[:5])}",
+          })
+
+      verdict["summary"] = {
+          "violations_found": len(expected),
+          "sections_written": len(sections),
+          "errors": len(verdict["errors"]),
+          "warnings": len(verdict["warnings"]),
+      }
+      verdict["passed"] = len(verdict["errors"]) == 0
+      (out_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
+      print(json.dumps(verdict))
+      EOF
+    output: "verify_results"
+    parse_json: true
+    timeout: 120
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 4: Report
+  # ==========================================================================
+
+  - id: "report"
+    type: "bash"
+    depends_on: ["scan-descriptions"]
+    command: |
+      REFRESH_OUTPUT_DIR="{{scan_results.output_dir}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json
+      import os
+      from pathlib import Path
+
+      out_dir = Path(os.environ["REFRESH_OUTPUT_DIR"])
+      scan = json.loads((out_dir / "violations.json").read_text(encoding="utf-8"))
+      verdict_path = out_dir / "verdict.json"
+      verdict = json.loads(verdict_path.read_text(encoding="utf-8")) if verdict_path.is_file() else None
+
+      lines = ["# Description refresh", ""]
+      lines.append(f"Repository: `{scan['repo_path']}`")
+      lines.append(f"Rules read from: `{scan['validator_recipe']}`")
+      lines.append("")
+      counts = scan["counts"]
+      lines.append("| Finding | Count |")
+      lines.append("|---|---|")
+      for key in (
+          "violations", "agent_errors", "agent_warnings", "skill_errors",
+          "skill_warnings", "awareness_warnings", "head_cost_warnings",
+      ):
+          lines.append(f"| {key.replace('_', ' ')} | {counts[key]} |")
+      lines.append("")
+
+      if counts["violations"] == 0:
+          lines.append("No description violations. Nothing to propose.")
+      elif verdict is None:
+          lines.append("Proposals were not verified -- `verdict.json` is absent.")
+      else:
+          s = verdict["summary"]
+          lines.append(
+              f"Proposals: {s['sections_written']} written for {s['violations_found']} "
+              f"violating files; {s['errors']} rejected, {s['warnings']} over the cap "
+              f"with a stated reason."
+          )
+          lines.append("")
+          if verdict["errors"]:
+              lines.append("## Rejected proposals")
+              lines.append("")
+              for e in verdict["errors"]:
+                  lines.append(f"- **{e['type']}** — {e['message']}")
+              lines.append("")
+          lines.append("Review `proposals.md` and apply the rewrites you accept. ")
+          lines.append("Nothing has been changed in the repository.")
+
+      lines.append("")
+      lines.append("## Head cost (chars added to every root prompt)")
+      lines.append("")
+      lines.append("| Bundle | head chars | context | agents | skills |")
+      lines.append("|---|---|---|---|---|")
+      for d in scan["head_cost"][:10]:
+          bound = " (lower bound)" if d.get("is_lower_bound") else ""
+          lines.append(
+              f"| `{d['file']}` | {d['head_chars']}{bound} | {d['context_chars']} | "
+              f"{d['agent_description_chars']} | {d['skill_description_chars']} |"
+          )
+
+      report = "\n".join(lines) + "\n"
+      (out_dir / "REPORT.md").write_text(report, encoding="utf-8")
+      print(report)
+      EOF
+    output: "refresh_report"
+    timeout: 120
+    on_error: "continue"

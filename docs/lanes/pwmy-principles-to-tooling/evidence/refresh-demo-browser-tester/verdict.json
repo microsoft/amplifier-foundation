@@ -1,0 +1,39 @@
+{
+  "phase": "verify_proposals",
+  "proposals_file": "/tmp/refresh-demo/out/proposals.md",
+  "sections": [
+    {
+      "section": "agents/browser-operator.md",
+      "issues": [],
+      "fidelity_rows": 15,
+      "proposed_chars": 526,
+      "cap": 600
+    },
+    {
+      "section": "agents/browser-researcher.md",
+      "issues": [],
+      "fidelity_rows": 15,
+      "proposed_chars": 564,
+      "cap": 600
+    },
+    {
+      "section": "agents/visual-documenter.md",
+      "issues": [],
+      "fidelity_rows": 17,
+      "proposed_chars": 554,
+      "cap": 600
+    }
+  ],
+  "errors": [],
+  "warnings": [],
+  "extra_sections": [
+    "Cap summary"
+  ],
+  "summary": {
+    "violations_found": 3,
+    "sections_written": 4,
+    "errors": 0,
+    "warnings": 0
+  },
+  "passed": true
+}
