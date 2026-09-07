@@ -273,12 +273,19 @@ license/cla                          pass
 ```
 repo      microsoft/amplifier-foundation
 branch    lane/6f80-delegate-example-strip
-head_sha  cff52256c4e6c54437f57983349f8e9d03345525
 PR        #376  https://github.com/microsoft/amplifier-foundation/pull/376
-state     open, ready for review (draft until CI went green)
+state     open, ready for review (draft until CI went green — 6/6 + CLA)
+head_sha  see the lane's DONE.json
 ```
 
-Verified with `publication_readback.sh`, not from local `git log`.
+`head_sha` is deliberately NOT quoted here. This note is itself committed and
+pushed, so any sha written in it is the sha of the commit *before* the one that
+carries it — exactly the stale-abbreviation failure `publication/v1` exists to
+prevent (lane 74w claimed `039eb32` while the PR carried `88a62eb`). The
+authoritative value is read back from the remote with `publication_readback.sh`
+**after** the final push and recorded, full 40-hex, in
+`lanes/6f80-delegate-example-strip/DONE.json`.
+
 **The PR is NOT merged — the manager merges.**
 
 ## Deviations
