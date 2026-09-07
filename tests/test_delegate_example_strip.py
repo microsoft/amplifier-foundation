@@ -25,7 +25,15 @@ WHAT THESE TESTS GUARANTEE
    routing fact, and any text sharing a line with the block -- survives
    byte-for-byte. A regex that eats a paragraph past the closing tag is the
    failure mode this class exists to catch.
-3. OBSERVABILITY (``TestStrippedAgentsAreNamedInDebugLog``): a debug line
+3. NO COLLATERAL DAMAGE (``TestOrdinaryProseSayingExampleIsUntouched``): a
+   description that merely uses the WORDS "example" and "commentary" in
+   ordinary prose -- no tags anywhere -- renders byte-identical. This is the
+   shape most of the real corpus is in, and it is the shape that breaks if the
+   strip is ever re-keyed off the WORD instead of the TAG. Measured, not
+   asserted: with both the guard and the regex re-keyed to the bare word, all
+   three of these fail; the tagged fixtures in classes 1 and 2 miss most of
+   that damage, because no fixture of theirs says "example" outside a tag.
+4. OBSERVABILITY (``TestStrippedAgentsAreNamedInDebugLog``): a debug line
    NAMES each stripped agent. Silent stripping is how a bundle author whose
    examples vanish is left with no way to find out why.
 """
@@ -97,6 +105,27 @@ A stray commentary block outside any example is still a defect.
 </commentary>
 
 FINAL LINE SURVIVES."""
+
+
+# The named regression fixture. Ordinary prose that USES the words "example"
+# and "commentary" -- repeatedly, in several positions, including at a line
+# start and directly against punctuation -- and carries no ``<example>`` or
+# ``<commentary>`` tag anywhere. This is the shape most of the real corpus is
+# in: it must come out of the renderer byte-identical. What protects it is that
+# BOTH the cheap ``"<example" in lowered`` guard and the regex key off the tag
+# rather than the word -- re-key both and every line below is silently deleted
+# from the catalog, with the description on disk still looking perfectly fine.
+ORDINARY_PROSE_SAYING_EXAMPLE = (
+    "Turn a repository into a worked example a newcomer can follow.\n"
+    "\n"
+    "USE WHEN: an example-driven walkthrough is what the reader needs, or\n"
+    "existing commentary in the code has to be turned into a narrative.\n"
+    "DO NOT USE WHEN: the example already exists -- point at it instead.\n"
+    "\n"
+    "Authoritative on: example selection, commentary on trade-offs.\n"
+    "example: prefer a real commit over a synthetic example. commentary,\n"
+    "for example, belongs beside the code it explains.\n"
+)
 
 
 # =============================================================================
@@ -228,7 +257,79 @@ class TestNothingOutsideTheBlocksIsConsumed:
 
 
 # =============================================================================
-# 3. OBSERVABILITY -- the strip names who it stripped
+# 3. NO COLLATERAL DAMAGE -- prose that only SAYS "example" is not a block
+# =============================================================================
+
+
+class TestOrdinaryProseSayingExampleIsUntouched:
+    """The word is not the tag.
+
+    ``test_a_description_with_no_blocks_is_byte_identical`` above proves the
+    pass-through for text that never says "example" at all. That is the easy
+    half, and it cannot tell a tag-keyed strip from a word-keyed one -- its
+    fixture contains neither. This class covers the half that actually gets
+    damaged: prose that says "example" and "commentary" out loud, repeatedly,
+    with no tags in it.
+
+    This is a REGRESSION PIN, not a fail-before: the behaviour is correct on
+    this branch and is trivially correct at main (where nothing strips at
+    all). What it buys is that the correctness stops being accidental.
+
+    Measured against three mutants of ``_strip_example_blocks``:
+
+    * guard word-keyed, regex still tag-keyed -> 14/14 still pass. The
+      widened guard alone is unobservable; the regex refuses the prose.
+    * regex word-keyed, guard still tag-keyed -> these three still pass. The
+      tag-keyed guard short-circuits before the regex is ever reached, which
+      is precisely what the guard is for.
+    * BOTH word-keyed -> these three fail. Two pre-existing tests fail too,
+      but only on their tagged fixtures; every byte of ordinary prose that
+      says "example" is lost silently, and this class is the only thing in
+      the file that sees it.
+    """
+
+    def test_ordinary_prose_renders_byte_identical(self):
+        tool = _make_tool(
+            {"fixture:tutor": {"description": ORDINARY_PROSE_SAYING_EXAMPLE}}
+        )
+
+        entry = _catalog_entry(tool, "fixture:tutor")
+
+        assert entry == f"  - fixture:tutor: {ORDINARY_PROSE_SAYING_EXAMPLE}", (
+            "A description that only USES the word 'example' was altered by "
+            "the strip. The renderer must key off the tag, never the word."
+        )
+
+    def test_every_line_of_the_ordinary_prose_survives(self):
+        """Byte-identity is the contract; this reports WHICH line was eaten."""
+        tool = _make_tool(
+            {"fixture:tutor": {"description": ORDINARY_PROSE_SAYING_EXAMPLE}}
+        )
+
+        entry = _catalog_entry(tool, "fixture:tutor")
+
+        for line in ORDINARY_PROSE_SAYING_EXAMPLE.splitlines():
+            assert line in entry, f"Ordinary prose line was consumed: {line!r}"
+
+    def test_ordinary_prose_is_not_reported_as_stripped(self, caplog):
+        """Nothing was stripped, so nothing may be named -- and the author of
+        a perfectly clean description must never be told otherwise."""
+        tool = _make_tool(
+            {"fixture:tutor": {"description": ORDINARY_PROSE_SAYING_EXAMPLE}}
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="amplifier_module_tool_delegate"):
+            _ = tool.description
+
+        assert not [
+            record
+            for record in caplog.records
+            if "fixture:tutor" in record.getMessage()
+        ], "An untouched description was reported as stripped."
+
+
+# =============================================================================
+# 4. OBSERVABILITY -- the strip names who it stripped
 # =============================================================================
 
 
