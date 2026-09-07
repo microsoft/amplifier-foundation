@@ -129,7 +129,9 @@ def _make_resolver(
     """
     resolver = MagicMock()
     resolver.name = name
-    resolver.resolve = AsyncMock(return_value=return_value if return_value is not None else [])
+    resolver.resolve = AsyncMock(
+        return_value=return_value if return_value is not None else []
+    )
     return resolver
 
 
@@ -355,7 +357,9 @@ class TestModelRoleResolution:
 
         resolver = _make_resolver(
             return_value=[
-                ProviderPreference(provider="anthropic", model="claude-haiku-4-5", config={}),
+                ProviderPreference(
+                    provider="anthropic", model="claude-haiku-4-5", config={}
+                ),
             ]
         )
         hook = _make_hook(
@@ -377,6 +381,7 @@ class TestModelRoleResolution:
         call_kwargs = anthropic_provider.complete.call_args
         request = call_kwargs[0][0]
         assert request.model == "claude-haiku-4-5"
+
     @pytest.mark.asyncio
     async def test_model_role_falls_back_when_no_resolver_capability(self) -> None:
         """No model_role_resolver capability → falls back to priority provider."""
@@ -395,6 +400,7 @@ class TestModelRoleResolution:
             "Must fall back to priority provider when model_role_resolver capability is absent"
         )
         resolver.resolve.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_no_model_role_uses_priority_provider(self) -> None:
         """Without model_role, existing behavior is preserved (priority provider)."""
@@ -568,23 +574,38 @@ class TestModelRoleResolution:
 
 
 class TestProviderPurity:
-    """A session pinned to provider X must never emit a naming call on Y.
+    """Naming never BORROWS a provider; it may ROUTE to one the user configured.
 
-    Measured leak this pins shut (model_performance-egh): the routing matrix
-    defaults to openai, so in an Anthropic-pinned session ``model_role="fast"``
-    resolved to an openai candidate, and the unmatched-candidate path fell
-    through to ``next(iter(providers.values()))`` — an order-dependent,
-    SILENT borrow of whichever provider instance happened to be first in the
-    mount dict. 321 foreign responses across 12 capture roots came from here.
+    The leak #348 pinned shut (model_performance-egh): the unmatched-candidate
+    path fell through to ``next(iter(providers.values()))`` -- an
+    order-dependent, SILENT borrow of whichever provider instance happened to
+    be first in the mount dict. 321 foreign responses across 12 capture roots
+    came from that line. It is gone; the fallback is the session's OWN provider.
+
+    What #348 also added -- a same-vendor rule for the ``model_role``
+    candidate -- was a stand-in for attribution. Naming is an out-of-band
+    chore, not a turn of the conversation, and the matrix's ``fast`` role is
+    the user's own statement of which cheap model to use for chores. Since
+    naming's llm:* events are now stamped (TestAttribution below) scorers
+    exclude them by MARKER, not by vendor, so the candidate is honoured
+    whenever it is MOUNTED here -- whatever vendor answers the conversation.
+    Measured 2026-09-07 on a live host: the rule made every naming call run on
+    claude-opus-5 while ``fast`` resolved to gpt-5.6-luna, the exact expensive
+    default the role exists to avoid.
+
+    Still refused, loudly: a candidate that is not mounted in this session,
+    and a stale pin (the turn is skipped rather than answered elsewhere).
     """
 
     @pytest.mark.asyncio
-    async def test_pinned_session_never_calls_foreign_vendor(self, caplog) -> None:
-        """Anthropic-pinned session + openai-resolving role → anthropic only.
+    async def test_role_candidate_is_used_across_vendors(self, caplog) -> None:
+        """Anthropic-pinned session + openai-resolving ``fast`` -> naming runs on openai.
 
-        The mount dict deliberately lists openai FIRST, so the old
-        ``next(iter(providers))`` fallback would have picked openai even
-        without the resolver ever matching.
+        The mount dict deliberately lists openai FIRST so the old
+        ``next(iter(providers))`` fallback and the correct routing land on the
+        same provider for different reasons; the assertions below tell them
+        apart: the ROUTED call carries the role's model override and warns
+        about nothing.
         """
         openai_provider = _make_vendor_provider("openai")
         anthropic_provider = _make_vendor_provider("anthropic")
@@ -595,7 +616,7 @@ class TestProviderPurity:
 
         resolver = _make_resolver(
             return_value=[
-                ProviderPreference(provider="openai", model="gpt-5-mini", config={}),
+                ProviderPreference(provider="openai", model="gpt-5.6-luna", config={}),
             ]
         )
         hook = _make_hook(
@@ -608,28 +629,20 @@ class TestProviderPurity:
         with caplog.at_level("WARNING"):
             result = await hook._call_provider("name this session", "session-pin")
 
-        assert not openai_provider.complete.called, (
-            "A session pinned to anthropic must NEVER emit a naming call on "
-            "openai — this is the cross-provider leak"
+        assert openai_provider.complete.called, (
+            "The matrix's `fast` candidate is mounted here; naming must use it "
+            "even though the conversation is answered by anthropic"
         )
-        assert anthropic_provider.complete.called, (
-            "Naming must run on the session's own pinned provider"
+        assert not anthropic_provider.complete.called, (
+            "The session's own (expensive) provider must not be used when the "
+            "cheap role candidate is available"
         )
         assert result is not None
-
-        request = anthropic_provider.complete.call_args[0][0]
-        assert request.model is None, (
-            "A refused foreign candidate must not leave its model override "
-            "behind on the session's own provider"
+        assert openai_provider.complete.call_args[0][0].model == "gpt-5.6-luna", (
+            "Routing, not borrowing: the role's model override must ride along"
         )
-
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= 30]
-        assert warnings, "Refusing a foreign provider must be loud, not silent"
-        assert any("openai" in m for m in warnings), (
-            "The warning must name the provider that was refused"
-        )
-        assert any("anthropic-sonnet" in m for m in warnings), (
-            "The warning must name the provider actually used"
+        assert not [r for r in caplog.records if r.levelno >= 30], (
+            "Honouring a mounted role candidate is the normal path -- no warning"
         )
 
     @pytest.mark.asyncio
@@ -664,12 +677,12 @@ class TestProviderPurity:
         assert haiku.complete.call_args[0][0].model == "claude-haiku-4-5"
 
     @pytest.mark.asyncio
-    async def test_unknown_vendor_candidate_is_refused(self, caplog) -> None:
-        """Fail closed: a candidate whose vendor cannot be established is refused.
+    async def test_vendor_identity_is_not_required(self) -> None:
+        """A mounted candidate whose ``get_info()`` is broken is still usable.
 
-        ``get_info()`` is the only contract for vendor identity. If it is
-        missing or unreadable, sameness cannot be PROVEN, and an unprovable
-        sameness is exactly how the leak got in.
+        Vendor identity was only ever needed for the same-vendor rule. With
+        that rule gone, "mounted in this session" is the whole criterion, and a
+        provider that cannot describe itself is not thereby foreign.
         """
         session_provider = _make_vendor_provider("anthropic")
         mystery = _make_mock_provider()
@@ -691,14 +704,10 @@ class TestProviderPurity:
             provider_pin="anthropic-sonnet",
         )
 
-        with caplog.at_level("WARNING"):
-            await hook._call_provider("name this session", "session-unknown")
+        await hook._call_provider("name this session", "session-unknown")
 
-        assert not mystery.complete.called, (
-            "An unprovable-vendor candidate must be refused, not borrowed"
-        )
-        assert session_provider.complete.called
-        assert [r for r in caplog.records if r.levelno >= 30]
+        assert mystery.complete.called
+        assert not session_provider.complete.called
 
     @pytest.mark.asyncio
     async def test_resolved_provider_not_mounted_is_refused(self, caplog) -> None:
@@ -770,17 +779,16 @@ class TestProviderPurity:
         assert any("anthropic-sonnet" in m for m in warnings)
 
     @pytest.mark.asyncio
-    async def test_cross_provider_refusal_warns_once_per_session(
-        self, caplog
-    ) -> None:
-        """The refusal warning fires once per session, then drops to DEBUG."""
-        providers = {
-            "openai-gpt-5": _make_vendor_provider("openai"),
-            "anthropic-sonnet": _make_vendor_provider("anthropic"),
-        }
+    async def test_not_mounted_refusal_warns_once_per_session(self, caplog) -> None:
+        """The refusal warning fires once per session, then drops to DEBUG.
+
+        The only refusal left is "resolved to a provider that is not mounted
+        here"; it must still be loud exactly once.
+        """
+        providers = {"anthropic-sonnet": _make_vendor_provider("anthropic")}
         resolver = _make_resolver(
             return_value=[
-                ProviderPreference(provider="openai", model="gpt-5-mini", config={}),
+                ProviderPreference(provider="openai", model="gpt-5.6-luna", config={}),
             ]
         )
         hook = _make_hook(
@@ -799,6 +807,9 @@ class TestProviderPurity:
             second_debug = [r for r in caplog.records if r.levelno == 10]
 
         assert first, "First refusal in a session must warn"
+        assert any("openai" in r.getMessage() for r in first), (
+            "The warning must name the provider that was refused"
+        )
         assert not second, "Second refusal in the SAME session must not re-warn"
         assert second_debug, "Repeat refusals must still be logged at DEBUG"
 
@@ -924,9 +935,7 @@ class TestNamingEventAttribution:
         assert hook._stamped_provider(provider) is hook._stamped_provider(provider)
 
     @pytest.mark.asyncio
-    async def test_unstampable_provider_skips_rather_than_leaks(
-        self, caplog
-    ) -> None:
+    async def test_unstampable_provider_skips_rather_than_leaks(self, caplog) -> None:
         """If events cannot be stamped, skip the call — loudly.
 
         An unattributable naming call is worse than a missing session name:
@@ -995,11 +1004,13 @@ class TestNoStreamingEvents:
     them as foreground output and renders the naming JSON to the terminal.
     """
 
-    _STREAM_EVENTS = frozenset({
-        "llm:stream_block_start",
-        "llm:stream_block_delta",
-        "llm:stream_block_end",
-    })
+    _STREAM_EVENTS = frozenset(
+        {
+            "llm:stream_block_start",
+            "llm:stream_block_delta",
+            "llm:stream_block_end",
+        }
+    )
 
     def _make_streaming_simulator(self, emitted: list) -> MagicMock:
         """Mock provider that conditionally emits stream events.
@@ -1015,8 +1026,7 @@ class TestNoStreamingEvents:
 
         async def _complete(request: ChatRequest) -> MagicMock:
             force_no_stream = (
-                request.metadata is not None
-                and request.metadata.get("stream") is False
+                request.metadata is not None and request.metadata.get("stream") is False
             )
             if not force_no_stream:
                 emitted.append("llm:stream_block_start")
@@ -1154,7 +1164,9 @@ class TestParseResponseTruncation:
                 '{"action": "set", "name": "My Session", "description": "trunc'
             )
         warnings = [r for r in caplog.records if r.levelno >= 30]  # WARNING+
-        assert not warnings, f"unexpected warning(s): {[r.getMessage() for r in warnings]}"
+        assert not warnings, (
+            f"unexpected warning(s): {[r.getMessage() for r in warnings]}"
+        )
 
     def test_markdown_wrapped_response_parses(self) -> None:
         hook = _make_hook()
