@@ -764,6 +764,17 @@ class SessionNamingHook:
             # session's OWN provider, never dict order), a candidate that is
             # not mounted here is refused loudly, and a stale pin skips the
             # turn rather than answering on a provider the user never chose.
+            #
+            # IF YOU NEED NAMING TO STAY ON ONE VENDOR -- e.g. an evaluation
+            # cell pinned to anthropic that must not emit even a small openai
+            # call -- the fix is CONFIGURATION, not a rule here:
+            #   * configure only the providers you want used in that
+            #     session/cell (a candidate that is not mounted is refused), or
+            #   * select a provider-specific or custom routing matrix
+            #     (`amplifier routing use anthropic`, or your own file under
+            #     ~/.amplifier/routing/) so `fast` resolves inside the vendor.
+            # Either keeps naming cheap AND single-vendor without re-adding a
+            # code path that silently overrides the user's matrix.
             provider = None
             provider_name: str | None = None
             model_override: str | None = None
