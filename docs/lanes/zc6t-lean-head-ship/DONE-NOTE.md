@@ -253,3 +253,41 @@ regression the absolute was meant to catch.
 4. **F7 — the stock `delegate` preamble emitted the self-delegation line twice**
    (76 chars per request, every session, both wires). Fixed here; worth knowing it
    shipped.
+
+## 9. The out-of-repo remainder is queued work, not an orphaned artifact
+
+Filed after review, because *"needs a lane with those repos"* is a hope and a
+queued item with acceptance criteria is work. `model_performance-hyid` is a
+**blocked tracker** (do not claim); the 13 children below are independently
+claimable, one per repo — the parent goal's own unit, *"One PR per repo"* — so
+13 lanes can run in parallel instead of one agent serialising 13 PRs. These are
+leaf text edits with no cross-repo code dependency, so nothing needs sequencing
+between them.
+
+| # | item | repo | targets | ch |
+|---|---|---|---|---:|
+| 1 | `model_performance-oth3` | `amplifier-module-tool-filesystem` | read_file, write_file, edit_file, grep, glob | 1,783 |
+| 2 | `model_performance-i11t` | `amplifier-module-tool-bash` | bash | 679 |
+| 3 | `model_performance-o53s` | `amplifier-module-tool-todo` | todo | 141 |
+| 4 | `model_performance-4qg2` | `amplifier-module-tool-web` | web_fetch (+ web_search NO-OP, verify & state) | 83 |
+| 5 | `model_performance-1q1f` | `amplifier-bundle-skills` | load_skill + skills-instructions.md | 3,164 |
+| 6 | `model_performance-va53` | `amplifier-bundle-modes` | modes-instructions.md (+ mode NO-OP, verify & state) | 2,467 |
+| 7 | `model_performance-d8s3` | `amplifier-bundle-recipes` | recipes | 561 |
+| 8 | `model_performance-lkf7` | `amplifier-bundle-gitea` | gitea-awareness.md | 280 |
+| 9 | `model_performance-aj2j` | `amplifier-bundle-digital-twin-universe` | dtu-awareness.md | 407 |
+| 10 | `model_performance-mvc8` | `amplifier-bundle-amplifier-tester` | amplifier-tester-awareness.md | 826 |
+| 11 | `model_performance-w2cj` | `amplifier-app-cli` | cli-awareness.md | 60 |
+| 12 | `model_performance-y16x` | `amplifier-bundle-wayfinder` | wayfinder-voice.md + propose-and-ack.md | 874 |
+| 13 | `model_performance-7kxh` | `amplifier-bundle-routing-matrix` | routing-instructions.md | 413 |
+| | | | **TOTAL** | **11,738** |
+
+Each child repeats the rules rather than referencing the tracker, so no child
+depends on reading another item: edit the real source (a tool module's OWN
+description string, never a shim and never the call site; a bundle's own context
+file) · add a guardrail and **show it RED before GREEN**, quoting both run URLs ·
+pin **per artifact**, never to a whole-head absolute · draft PR, ready on green,
+**do not merge** · $0 spend, ships on g7h3 and 5zp, re-buy neither.
+
+Two children (`4qg2`, `va53`) additionally require their **no-op** target
+(`web_search`, `mode`) to be verified and **stated** — an unchanged file in a PR
+is noise, but a silently skipped one is a gap.
