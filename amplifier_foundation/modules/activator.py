@@ -160,6 +160,8 @@ class ModuleActivator:
         install_deps: bool = True,
         base_path: Path | None = None,
         strict: bool = False,
+        install_python: str | None = None,
+        install_constraints: Path | None = None,
     ) -> None:
         """Initialize module activator.
 
@@ -173,10 +175,18 @@ class ModuleActivator:
             strict: If True, activation failures in activate_all() raise
                     ModuleActivationError instead of being logged and skipped.
                     Mirrors BundleRegistry(strict=...) for include failures.
+            install_python: Python interpreter targeted by dependency installs.
+                Defaults to the current interpreter.
+            install_constraints: Optional uv constraints file passed to dependency
+                installs.
         """
         self.cache_dir = cache_dir or get_amplifier_home() / "cache"
         self.install_deps = install_deps
         self.strict = strict
+        self.install_python = (
+            install_python if install_python is not None else sys.executable
+        )
+        self.install_constraints = install_constraints
         self._resolver = SimpleSourceResolver(
             cache_dir=self.cache_dir, base_path=base_path
         )
@@ -655,7 +665,7 @@ class ModuleActivator:
                     "-e",
                     str(module_path),
                     "--python",
-                    sys.executable,
+                    self.install_python,
                     "--quiet",
                     # Ignore [tool.uv.sources] in the package's pyproject.toml.
                     # Modules use this section for dev convenience (pointing
@@ -665,6 +675,8 @@ class ModuleActivator:
                     # native toolchains (Rust, protobuf) that users don't have.
                     "--no-sources",
                 ]
+                if self.install_constraints is not None:
+                    cmd.extend(["--constraints", str(self.install_constraints)])
                 if overrides:
                     import tempfile
 
@@ -704,17 +716,20 @@ class ModuleActivator:
                     Path(overrides_file.name).unlink(missing_ok=True)
         elif requirements.exists():
             try:
+                cmd = [
+                    "uv",
+                    "pip",
+                    "install",
+                    "-r",
+                    str(requirements),
+                    "--python",
+                    self.install_python,
+                    "--quiet",
+                ]
+                if self.install_constraints is not None:
+                    cmd.extend(["--constraints", str(self.install_constraints)])
                 subprocess.run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "-r",
-                        str(requirements),
-                        "--python",
-                        sys.executable,
-                        "--quiet",
-                    ],
+                    cmd,
                     check=True,
                     capture_output=True,
                     text=True,
