@@ -1,0 +1,26 @@
+{
+  "agents": 68,
+  "example_open_tags_before": 25,
+  "commentary_open_tags_before": 13,
+  "example_open_tags_after": 0,
+  "commentary_open_tags_after": 0,
+  "raw_description_chars": 46590,
+  "delegate_description_chars_before": 49954,
+  "delegate_description_chars_after": 40480,
+  "saved_chars": 9474,
+  "saved_pct": 18.97,
+  "agents_stripped": [
+    "amplifier-online:deployment-guide",
+    "amplifier-tester:setup-digital-twin",
+    "amplifier-tester:validator",
+    "app-cli:cli-expert",
+    "digital-twin-universe:dtu-profile-builder",
+    "infographic-builder:infographic-builder",
+    "notify:notify-expert",
+    "terminal-tester:terminal-debugger",
+    "terminal-tester:terminal-operator",
+    "terminal-tester:terminal-visual-tester"
+  ]
+}
+
+fidelity: 0 surviving line(s) missing from the render

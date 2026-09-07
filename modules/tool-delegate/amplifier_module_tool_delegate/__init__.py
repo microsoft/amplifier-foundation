@@ -94,6 +94,44 @@ logger = logging.getLogger(__name__)
 # not to blow up its context window.
 DEFAULT_PARTIAL_MAX_CHARS = 20000
 
+# Every agent's ``meta.description`` is concatenated into THIS tool's own
+# description, which loads on every turn whether or not that agent is ever
+# delegated to. ``context/shared/description-authoring-principles.md`` V3
+# sets the policy -- zero ``<example>`` blocks, zero ``<commentary>`` tags,
+# in any description surface -- and PR #341 applied it inside foundation and
+# nowhere else, because nothing at render time said otherwise.
+#
+# So the catalog strips them itself. Not at LOAD time: the description on
+# disk stays whatever its author wrote. We render a stripped copy, which is
+# the only version of this defence a third-party bundle cannot re-import.
+#
+# The boundary is the closing tag and not one byte past it. ``.*?`` is
+# non-greedy, so it stops at the FIRST matching close; the optional leading
+# indent and single trailing newline are consumed only when the block owns
+# whole lines, so a block sitting inline in a sentence loses the block and
+# keeps the sentence. An UNPAIRED opening tag matches nothing and is left
+# alone -- swallowing the rest of a description because its author forgot a
+# close tag would delete exactly the routing facts this catalog exists to
+# carry.
+_DESCRIPTION_EXAMPLE_BLOCK = re.compile(
+    r"(?:^[ \t]*)?<(example|commentary)\b[^>]*>.*?</\1\s*>(?:[ \t]*\n)?",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_example_blocks(description: str) -> str:
+    """Return ``description`` without its ``<example>``/``<commentary>`` blocks.
+
+    Surgical by contract: no reflowing, no whitespace normalisation, no
+    truncation. A description carrying no blocks is returned unchanged --
+    identity, not a rebuilt copy.
+    """
+    lowered = description.lower()
+    if "<example" not in lowered and "<commentary" not in lowered:
+        return description
+    return _DESCRIPTION_EXAMPLE_BLOCK.sub("", description)
+
+
 #: The single model-visible ``status`` value for a delegate that exceeded
 #: ``settings.timeout``, on BOTH the spawn and resume paths, and on the
 #: ``delegate:error`` event that accompanies them. One constant, one string,
@@ -1122,15 +1160,39 @@ class DelegateTool:
     def _get_agent_list(self) -> list[dict[str, Any]]:
         """Get list of available agents from mount plan.
 
+        ``<example>``/``<commentary>`` blocks are stripped HERE, at
+        catalog-render time -- see ``_strip_example_blocks``. The mounted
+        config is read, never written: a bundle's own description file is
+        left exactly as its author wrote it.
+
         Returns:
-            List of agent definitions with name and description
+            List of agent definitions with name and render-ready description
         """
         agents = self.coordinator.config.get("agents", {})
         sorted_agents = sorted(agents.items(), key=lambda item: item[0])
-        return [
-            {"name": name, "description": cfg.get("description", "No description")}
-            for name, cfg in sorted_agents
-        ]
+
+        catalog: list[dict[str, Any]] = []
+        stripped: list[str] = []
+        for name, cfg in sorted_agents:
+            description = cfg.get("description", "No description")
+            rendered = _strip_example_blocks(description)
+            if rendered != description:
+                stripped.append(name)
+            catalog.append({"name": name, "description": rendered})
+
+        if stripped:
+            # NAME them. A count alone leaves a bundle author whose examples
+            # vanished with no way to discover why -- which would trade one
+            # silent behaviour for another.
+            logger.debug(
+                "delegate catalog: stripped <example>/<commentary> blocks from "
+                "%d agent description(s) at render time (the descriptions on "
+                "disk are unchanged): %s",
+                len(stripped),
+                ", ".join(stripped),
+            )
+
+        return catalog
 
     async def _get_parent_messages(self) -> list[dict[str, Any]] | None:
         """Get all messages from parent session.
