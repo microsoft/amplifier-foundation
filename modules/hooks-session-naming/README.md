@@ -129,7 +129,7 @@ shared provider instance is never mutated, so the foreground conversation's own
 events are unaffected. If a provider's events cannot be stamped, the naming call
 is **skipped** with a WARNING rather than emitted unattributably.
 
-Note: the provider call has a 10 s hard timeout. A timed-out call can leave a
+Note: the provider call has a 60 s hard timeout. A timed-out call can leave a
 stamped `llm:request` with no matching `llm:response` — the stamp is what makes
 that orphan identifiable rather than mysterious.
 
@@ -153,9 +153,9 @@ Session naming is designed to be entirely non-blocking. Here is how the async ma
 
 3. **`done_callback`**: `task.add_done_callback(self._pending_tasks.discard)` is registered on each task so it removes itself from the set upon completion, keeping the set lean.
 
-4. **`session:end` drain (15s timeout)**: The `on_session_end` handler iterates `_pending_tasks` and calls `asyncio.wait_for(asyncio.shield(task), timeout=15.0)` for each. This gives in-flight naming tasks up to 15 seconds to complete before session teardown. If a task times out or is cancelled, the error is logged at `DEBUG` level and teardown continues — naming is best-effort.
+4. **`session:end` drain (15s timeout)**: The `on_session_end` handler iterates `_pending_tasks` and calls `asyncio.wait_for(task, timeout=15.0)` for each. This gives in-flight naming tasks up to 15 seconds to complete before session teardown. On drain timeout the task is cancelled; the error is logged at `DEBUG` level and teardown continues — naming is best-effort.
 
-5. **Internal 10s provider timeout**: Inside `_generate_name`, the LLM provider call is wrapped in `asyncio.wait_for(self._call_provider(prompt), timeout=10.0)`. This caps stalled or slow providers and ensures the naming task itself finishes well within the `session:end` 15-second drain window.
+5. **Internal 60s provider timeout**: Inside `_generate_name`, both initial naming and description updates wrap the provider call with `asyncio.wait_for(..., timeout=NAMING_PROVIDER_TIMEOUT_SECONDS)`. The 60-second limit gives slower requests more time without blocking the conversation. The separate 15-second session-end drain is unchanged and can cancel an in-flight request earlier during teardown.
 
 ## How It Works
 
