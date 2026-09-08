@@ -102,6 +102,11 @@ def _write(path: Path, content: str) -> Path:
     return path
 
 
+_ANCHORS_SYSTEM = (
+    Path(__file__).parent.parent / "bundles" / "anchors" / "context" / "system.md"
+)
+
+
 @pytest.mark.asyncio
 async def test_public_factory_uses_prepared_bundle_and_target_session(
     tmp_path: Path,
@@ -299,3 +304,60 @@ async def test_mentions_resolved_payload_semantics_unchanged(tmp_path: Path) -> 
 
     # The instruction's mention now leads the resolutions list as well.
     assert payload["resolutions"][0]["mention"] == "@ns:context/system.md"
+
+
+@pytest.mark.asyncio
+async def test_anchors_system_loads_session_cwd_agents_not_bundle_or_process_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual anchors system mention resolves nested @AGENTS.md in session_cwd."""
+    anchors_root = _ANCHORS_SYSTEM.parent.parent
+    assert _ANCHORS_SYSTEM.read_text(encoding="utf-8").endswith("```\n\n@AGENTS.md\n")
+
+    session_cwd = tmp_path / "session-cwd"
+    cwd_agents = _write(
+        session_cwd / "AGENTS.md",
+        "SESSION CWD AGENTS\n@AGENTS.md",
+    )
+    bundle_root = tmp_path / "bundle-root"
+    _write(bundle_root / "AGENTS.md", "BUNDLE-LOCAL AGENTS DECOY")
+    process_cwd = tmp_path / "process-cwd"
+    _write(process_cwd / "AGENTS.md", "PROCESS CWD AGENTS DECOY")
+    monkeypatch.chdir(process_cwd)
+
+    bundle = Bundle(
+        name="host",
+        base_path=bundle_root,
+        source_base_paths={"anchors": anchors_root},
+        instruction="@anchors:context/system.md",
+    )
+    prompt = await _make_prepared(bundle)._create_system_prompt_factory(
+        bundle, _make_mock_session(), session_cwd=session_cwd
+    )()
+
+    assert str(cwd_agents.resolve()) in prompt
+    assert prompt.count("SESSION CWD AGENTS") == 1
+    assert "BUNDLE-LOCAL AGENTS DECOY" not in prompt
+    assert "PROCESS CWD AGENTS DECOY" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_anchors_system_missing_cwd_agents_is_nonfatal(tmp_path: Path) -> None:
+    """Absent optional cwd AGENTS.md leaves the anchors system prompt usable."""
+    bundle_root = tmp_path / "bundle-root"
+    _write(bundle_root / "AGENTS.md", "BUNDLE-LOCAL AGENTS DECOY")
+    session_cwd = tmp_path / "session-cwd"
+    session_cwd.mkdir()
+    bundle = Bundle(
+        name="host",
+        base_path=bundle_root,
+        source_base_paths={"anchors": _ANCHORS_SYSTEM.parent.parent},
+        instruction="@anchors:context/system.md",
+    )
+
+    prompt = await _make_prepared(bundle)._create_system_prompt_factory(
+        bundle, _make_mock_session(), session_cwd=session_cwd
+    )()
+
+    assert "You are Amplifier" in prompt
+    assert "BUNDLE-LOCAL AGENTS DECOY" not in prompt
