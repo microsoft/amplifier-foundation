@@ -102,6 +102,32 @@ def _write(path: Path, content: str) -> Path:
     return path
 
 
+@pytest.mark.asyncio
+async def test_public_factory_uses_prepared_bundle_and_target_session(
+    tmp_path: Path,
+) -> None:
+    """The public API keeps mention content and events owned by its target."""
+    _write(tmp_path / "context" / "system.md", "TARGET SESSION BODY")
+    bundle = Bundle(
+        name="target-ns",
+        base_path=tmp_path,
+        instruction="@target-ns:context/system.md",
+    )
+    prepared = _make_prepared(bundle)
+    target_session = _make_mock_session()
+
+    factory = prepared.create_system_prompt_factory(
+        target_session, session_cwd=tmp_path
+    )
+    prompt = await factory()
+
+    assert "TARGET SESSION BODY" in prompt
+    target_session.coordinator.hooks.emit.assert_called_once()
+    event_name, payload = target_session.coordinator.hooks.emit.call_args.args
+    assert event_name == MENTIONS_RESOLVED
+    assert payload["resolutions"][0]["mention"] == "@target-ns:context/system.md"
+
+
 # ── 1. FAIL-BEFORE: the instruction's mention leads the context block ────────
 
 

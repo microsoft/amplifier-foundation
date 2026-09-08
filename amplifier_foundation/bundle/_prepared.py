@@ -507,6 +507,31 @@ class PreparedBundle:
 
         return factory
 
+    def create_system_prompt_factory(
+        self,
+        session: Any,
+        *,
+        session_cwd: Path | None = None,
+    ) -> "Callable[[], Awaitable[str]]":
+        """Create this prepared bundle's system-prompt factory for ``session``.
+
+        The returned factory is deliberately bound to the target session.  In
+        particular, mention-resolution events are emitted through that
+        session's coordinator, not through a session that happened to create
+        the factory.
+
+        Args:
+            session: Target session that owns factory event emission.
+            session_cwd: Working directory for local @-mentions.  Defaults to
+                the prepared bundle's base path.
+
+        Returns:
+            Async callable that returns this bundle's system prompt.
+        """
+        return self._create_system_prompt_factory(
+            self.bundle, session, session_cwd=session_cwd
+        )
+
     async def create_session(
         self,
         session_id: str | None = None,
