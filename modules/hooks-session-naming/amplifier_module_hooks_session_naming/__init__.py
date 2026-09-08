@@ -19,6 +19,8 @@ from amplifier_core import HookResult
 
 logger = logging.getLogger(__name__)
 
+NAMING_PROVIDER_TIMEOUT_SECONDS = 60.0
+
 # Provenance stamped onto every event this module's own LLM call emits.
 # The provider writes llm:request / llm:response into the SESSION'S event
 # stream through the coordinator it was mounted with, and the kernel adds
@@ -329,11 +331,13 @@ class SessionNamingHook:
             # Call the provider — hard timeout caps stalled providers
             try:
                 response = await asyncio.wait_for(
-                    self._call_provider(prompt, session_id), timeout=10.0
+                    self._call_provider(prompt, session_id),
+                    timeout=NAMING_PROVIDER_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "Session naming provider call timed out (10 s) for session %s",
+                    "Session naming provider call timed out (%g s) for session %s",
+                    NAMING_PROVIDER_TIMEOUT_SECONDS,
                     session_id[:8],
                 )
                 await self.coordinator.hooks.emit(

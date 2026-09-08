@@ -281,11 +281,41 @@ class TestSessionEndDrain:
 
 
 class TestProviderTimeout:
-    """_generate_name must handle a stalled provider call within 10 s."""
+    """Naming and description updates allow 60 s for the provider call."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_update", [False, True])
+    async def test_provider_call_uses_sixty_second_timeout(
+        self, tmp_path: Path, is_update: bool
+    ) -> None:
+        """Both naming paths use the longer deadline and persist the result."""
+        provider = _make_mock_provider()
+        hook = _make_hook(providers={"provider-1": provider})
+        hook._get_conversation_context = AsyncMock(
+            return_value="some conversation text"
+        )
+        if is_update:
+            hook._save_metadata(
+                tmp_path, {"name": "Existing Name", "description": "Before update"}
+            )
+
+        with patch("asyncio.wait_for", wraps=asyncio.wait_for) as wait_for:
+            await hook._generate_name(
+                "session-abc123", tmp_path, is_update=is_update
+            )
+
+        wait_for.assert_awaited_once()
+        assert wait_for.await_args.kwargs["timeout"] == 60.0
+        provider.complete.assert_awaited_once()
+        metadata = hook._load_metadata(tmp_path)
+        assert metadata["name"] == ("Existing Name" if is_update else "Test Session")
+        assert metadata["description"] == "A test."
+        assert metadata["description_updated_at"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_update", [False, True])
     async def test_generate_name_returns_on_provider_timeout(
-        self, tmp_path: Path
+        self, tmp_path: Path, is_update: bool, caplog: pytest.LogCaptureFixture
     ) -> None:
         """_generate_name catches asyncio.TimeoutError from stalled _call_provider."""
         hook = _make_hook()
@@ -294,19 +324,34 @@ class TestProviderTimeout:
         hook._get_conversation_context = AsyncMock(
             return_value="some conversation text"
         )
-        hook._load_metadata = MagicMock(return_value={})
+        metadata = {"turn_count": 5 if is_update else 1}
+        if is_update:
+            metadata.update(name="Existing Name", description="Existing description")
+        hook._save_metadata(tmp_path, metadata)
+        metadata_path = tmp_path / "metadata.json"
+        original_metadata = metadata_path.read_bytes()
+        timeouts = []
 
         # Replace wait_for with a version that closes the coroutine before
         # raising, so the GC never sees an unawaited coroutine (no RuntimeWarning)
         async def fake_wait_for(coro, timeout=None):  # noqa: RUF029
+            timeouts.append(timeout)
             coro.close()
             raise asyncio.TimeoutError
 
         with patch("asyncio.wait_for", new=fake_wait_for):
             # Must not raise — timeout must be caught inside _generate_name
-            await hook._generate_name("session-abc123", tmp_path, is_update=False)
+            await hook._generate_name(
+                "session-abc123", tmp_path, is_update=is_update
+            )
 
-        # If we reach here, the timeout was handled correctly — no exception propagated
+        assert timeouts == [60.0]
+        assert "Session naming provider call timed out (60 s)" in caplog.text
+        hook.coordinator.hooks.emit.assert_awaited_once_with(
+            "session-naming:timeout",
+            {"session_id": "session-abc123", "is_update": is_update},
+        )
+        assert metadata_path.read_bytes() == original_metadata
 
 
 # =============================================================================
