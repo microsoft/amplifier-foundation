@@ -319,14 +319,14 @@ async def test_mentions_resolved_payload_semantics_unchanged(tmp_path: Path) -> 
     assert payload["resolutions"][0]["mention"] == "@ns:context/system.md"
 
 
-# ── 5. anchors: the shipped root instruction discovers standard AGENTS files ─
+# ── 5. anchors: the shipped root instruction discovers workspace AGENTS ───────
 
 
 @pytest.mark.asyncio
-async def test_shipped_anchors_root_loads_standard_agents_and_workspace_scratch(
+async def test_shipped_anchors_root_loads_workspace_agents_and_scratch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The shipped anchors root resolves system.md's AGENTS chain at session CWD."""
+    """The shipped anchors root loads workspace AGENTS and its SCRATCH chain only."""
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     global_agents = _write(
@@ -348,39 +348,42 @@ async def test_shipped_anchors_root_loads_standard_agents_and_workspace_scratch(
     )
     prompt = await factory()
 
-    # The actual root bundle instruction enters its namespaced system context,
-    # whose standard AGENTS mentions resolve from the supplied session CWD.
+    # The actual root bundle instruction enters its namespaced system context.
     assert prompt.startswith(f"{bundle.instruction}\n\n---\n\n")
     assert [block.body for block in _blocks(prompt)] == [
         (ANCHORS_DIR / "context" / "system.md").read_text(encoding="utf-8"),
-        global_agents.read_text(encoding="utf-8"),
-        local_agents.read_text(encoding="utf-8"),
         workspace_agents.read_text(encoding="utf-8"),
         scratch.read_text(encoding="utf-8"),
     ]
+    assert global_agents.read_text(encoding="utf-8") not in prompt
+    assert local_agents.read_text(encoding="utf-8") not in prompt
 
 
 @pytest.mark.asyncio
-async def test_shipped_anchors_root_skips_absent_optional_agents(
+async def test_shipped_anchors_root_permits_missing_workspace_agents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Absent home and .amplifier AGENTS files do not prevent workspace discovery."""
-    home = tmp_path / "empty-home"
+    """A missing workspace AGENTS permits the root prompt without .amplifier fallback."""
+    home = tmp_path / "home"
     workspace = tmp_path / "workspace"
-    workspace_agents = _write(
-        workspace / "AGENTS.md", "WORKSPACE AGENTS SENTINEL\n@SCRATCH.md"
+    global_agents = _write(
+        home / ".amplifier" / "AGENTS.md", "GLOBAL AGENTS SENTINEL"
     )
-    scratch = _write(workspace / "SCRATCH.md", "WORKSPACE SCRATCH SENTINEL")
+    local_agents = _write(
+        workspace / ".amplifier" / "AGENTS.md", "LOCAL AGENTS SENTINEL"
+    )
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
 
-    factory = _make_prepared(_shipped_anchors_bundle()).create_system_prompt_factory(
+    bundle = _shipped_anchors_bundle()
+    factory = _make_prepared(bundle).create_system_prompt_factory(
         _make_mock_session(), session_cwd=workspace
     )
     prompt = await factory()
 
+    assert prompt.startswith(f"{bundle.instruction}\n\n---\n\n")
     assert [block.body for block in _blocks(prompt)] == [
         (ANCHORS_DIR / "context" / "system.md").read_text(encoding="utf-8"),
-        workspace_agents.read_text(encoding="utf-8"),
-        scratch.read_text(encoding="utf-8"),
     ]
+    assert global_agents.read_text(encoding="utf-8") not in prompt
+    assert local_agents.read_text(encoding="utf-8") not in prompt
