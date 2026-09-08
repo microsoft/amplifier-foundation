@@ -74,7 +74,8 @@ DELEGATE_MODULE_DIR = REPO_ROOT / "modules" / "tool-delegate"
 # above what shipped would let the head regrow up to it silently, which is the
 # whole failure mode.
 OWNED_HEAD_BUDGET_CHARS = {
-    "bundles/anchors/context/system.md": 1142,
+    # Required cwd-AGENTS auto-loading rule costs +12 chars.
+    "bundles/anchors/context/system.md": 1154,
     "bundles/anchors-amp-dev/context/amplifier-ecosystem.md": 1300,
     "delegate:preamble": 938,
 }
@@ -247,10 +248,11 @@ class TestGuardrailAHeadCensus:
         lean = sum(OWNED_HEAD_BUDGET_CHARS.values())
         stock = sum(OWNED_HEAD_STOCK_CHARS.values())
         assert lean < stock, f"lean {lean} is not below stock {stock}"
-        assert stock - lean == 600, (
-            f"The recorded saving moved: {stock - lean} chars, was 600. Update "
-            "both tables and the DONE-NOTE together, or the published census "
-            "and this repo disagree."
+        assert stock - lean == 588, (
+            f"The current saving moved: {stock - lean} chars, expected 588 "
+            "after the original measured 600-char saving absorbed the required "
+            "cwd-AGENTS rule. Update the budget and DONE-NOTE together, or the "
+            "current census and this repo disagree."
         )
 
 

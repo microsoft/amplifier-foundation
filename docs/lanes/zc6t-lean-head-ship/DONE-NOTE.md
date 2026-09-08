@@ -291,3 +291,13 @@ pin **per artifact**, never to a whole-head absolute · draft PR, ready on green
 Two children (`4qg2`, `va53`) additionally require their **no-op** target
 (`web_search`, `mode`) to be verified and **stated** — an unchanged file in a PR
 is noise, but a silently skipped one is a gap.
+
+## Addendum — 2026-09-08
+
+The current static census for `bundles/anchors/context/system.md` is 1,154
+chars, +12 over its recorded 1,142-char lean budget. The required `@AGENTS.md`
+rule auto-loads session-CWD `AGENTS.md`, so the budget is pinned at 1,154 rather
+than compressing unrelated prompt text. The owned-head total is now 3,392 chars
+against the unchanged 3,980-char stock: a current saving of 588 chars versus the
+original 600. Historical experimental results above are unchanged; no vendor
+cache metrics were rerun.
