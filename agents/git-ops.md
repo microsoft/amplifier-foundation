@@ -195,6 +195,34 @@ that trailer belongs in **commit messages only** (where GitHub parses it for
 contributor attribution). In PR descriptions it is just displayed as text with
 no effect.
 
+## Post-Push / Post-PR CI Completion
+
+After every successful push, and after creating or updating a PR, finish by
+checking the CI associated with the pushed commit:
+
+1. Pin the report to the pushed SHA: `pushed_sha="$(git rev-parse HEAD)"`.
+   Never substitute the latest branch or PR SHA if it differs.
+2. Discover workflows and runs with `gh workflow list` and
+   `gh run list --commit "$pushed_sha" --limit 100`. Inspect the relevant
+   workflow triggers and PR checks to determine whether this ref is applicable.
+3. If a workflow or check is applicable, wait and refresh its runs for up to
+   the default 20-minute cap. Keep applicable queued or in-progress work
+   explicitly **Pending** while waiting; do not report it as successful.
+4. Report each run URL and each job's pass/fail outcome. For every failed job,
+   include a concise excerpt from `gh run view <run-id> --log-failed`. Every CI
+   report must name `$pushed_sha`.
+
+Use exactly one honest conclusion for each applicable surface:
+
+- **No CI** -- say `no CI on this repo`: it has no actionable CI workflow or check.
+- **Not triggered** -- CI exists, but no workflow applies to this event/ref;
+  do not wait for a run that cannot be created.
+- **Pending** -- an applicable run is queued or in progress within the cap.
+- **Timeout** -- applicable work remains pending when the 20-minute cap ends.
+- **Failure** -- any applicable run or job ends unsuccessfully.
+- **Policy-only checks** -- branch/PR policy exists without a runnable CI job
+  for this SHA; report the policy separately and never call it CI success.
+
 ## Final Response Contract
 
 Your final message must include:
