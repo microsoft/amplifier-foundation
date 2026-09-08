@@ -202,26 +202,30 @@ checking the CI associated with the pushed commit:
 
 1. Pin the report to the pushed SHA: `pushed_sha="$(git rev-parse HEAD)"`.
    Never substitute the latest branch or PR SHA if it differs.
-2. Discover workflows and runs with `gh workflow list` and
-   `gh run list --commit "$pushed_sha" --limit 100`. Inspect the relevant
-   workflow triggers and PR checks to determine whether this ref is applicable.
+2. Before classifying, complete successful workflow-trigger inspection,
+   commit check-run/status inspection, and PR checks when applicable, all for
+   `$pushed_sha`. Use `gh workflow list`, `gh run list --commit "$pushed_sha" --limit 100`,
+   commit check-runs/status APIs, and applicable `gh pr checks`; inspect workflow
+   triggers to determine whether this ref is applicable. Never substitute a newer head.
 3. If a workflow or check is applicable, wait and refresh its runs for up to
-   the default 20-minute cap. Keep applicable queued or in-progress work
-   explicitly **Pending** while waiting; do not report it as successful.
+   the default 20-minute cap. A matching workflow has no run yet is **Pending**:
+   poll within that bound. Keep queued or in-progress work explicitly **Pending**;
+   do not report it as successful.
 4. Report each run URL and each job's pass/fail outcome. For every failed job,
    include a concise excerpt from `gh run view <run-id> --log-failed`. Every CI
    report must name `$pushed_sha`.
 
 Use exactly one honest conclusion for each applicable surface:
 
-- **No CI** -- say `no CI on this repo`: it has no actionable CI workflow or check.
-- **Not triggered** -- CI exists, but no workflow applies to this event/ref;
+- **No CI** -- say `no CI on this repo` only after successful discovery finds no workflows or checks.
+- **Not triggered** -- workflows exist, but none applies to this event/ref;
   do not wait for a run that cannot be created.
 - **Pending** -- an applicable run is queued or in progress within the cap.
 - **Timeout** -- applicable work remains pending when the 20-minute cap ends.
 - **Failure** -- any applicable run or job ends unsuccessfully.
-- **Policy-only checks** -- branch/PR policy exists without a runnable CI job
-  for this SHA; report the policy separately and never call it CI success.
+- **Policy-only checks** -- only CLA/policy checks exist, without a runnable test
+  CI job for this SHA; report the policy separately and never call it CI success.
+- **Unable to verify** -- Discovery/API/auth errors are unable to verify, never **No CI** or green.
 
 ## Final Response Contract
 

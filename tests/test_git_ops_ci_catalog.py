@@ -32,6 +32,15 @@ CI_COMPLETION_MARKERS = (
     "**Timeout**",
     "**Failure**",
     "**Policy-only checks**",
+    "successful workflow-trigger inspection",
+    "commit check-run/status inspection",
+    "PR checks when applicable",
+    "only after successful discovery finds no workflows or checks",
+    "matching workflow has no run yet",
+    "only CLA/policy checks",
+    "**Unable to verify**",
+    "Discovery/API/auth errors",
+    "never **No CI** or green",
 )
 
 CATALOGS = (
