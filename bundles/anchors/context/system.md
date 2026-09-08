@@ -14,3 +14,7 @@ Generated with Amplifier
 
 Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.com>
 ```
+
+@~/.amplifier/AGENTS.md
+@.amplifier/AGENTS.md
+@AGENTS.md

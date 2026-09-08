@@ -41,11 +41,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from amplifier_foundation.bundle import Bundle
+from amplifier_foundation.io.frontmatter import parse_frontmatter
 
 _prep = importlib.import_module("amplifier_foundation.bundle._prepared")
 PreparedBundle: Any = _prep.PreparedBundle
 BundleModuleResolver: Any = _prep.BundleModuleResolver
 MENTIONS_RESOLVED: str = _prep._MENTIONS_RESOLVED_EVENT
+
+REPO_ROOT = Path(__file__).parent.parent
+ANCHORS_DIR = REPO_ROOT / "bundles" / "anchors"
+ANCHORS_BUNDLE = ANCHORS_DIR / "bundle.md"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -94,6 +99,19 @@ def _make_mock_session() -> MagicMock:
     session = MagicMock()
     session.coordinator = coordinator
     return session
+
+
+def _shipped_anchors_bundle() -> Bundle:
+    """Load the shipped anchors root instruction without activating its modules."""
+    _frontmatter, instruction = parse_frontmatter(
+        ANCHORS_BUNDLE.read_text(encoding="utf-8")
+    )
+    return Bundle(
+        name="anchors",
+        instruction=instruction,
+        base_path=ANCHORS_DIR,
+        source_base_paths={"anchors": ANCHORS_DIR},
+    )
 
 
 def _write(path: Path, content: str) -> Path:
@@ -299,3 +317,70 @@ async def test_mentions_resolved_payload_semantics_unchanged(tmp_path: Path) -> 
 
     # The instruction's mention now leads the resolutions list as well.
     assert payload["resolutions"][0]["mention"] == "@ns:context/system.md"
+
+
+# ── 5. anchors: the shipped root instruction discovers standard AGENTS files ─
+
+
+@pytest.mark.asyncio
+async def test_shipped_anchors_root_loads_standard_agents_and_workspace_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shipped anchors root resolves system.md's AGENTS chain at session CWD."""
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    global_agents = _write(
+        home / ".amplifier" / "AGENTS.md", "GLOBAL AGENTS SENTINEL"
+    )
+    local_agents = _write(
+        workspace / ".amplifier" / "AGENTS.md", "LOCAL AGENTS SENTINEL"
+    )
+    workspace_agents = _write(
+        workspace / "AGENTS.md", "WORKSPACE AGENTS SENTINEL\n@SCRATCH.md"
+    )
+    scratch = _write(workspace / "SCRATCH.md", "WORKSPACE SCRATCH SENTINEL")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    bundle = _shipped_anchors_bundle()
+    factory = _make_prepared(bundle).create_system_prompt_factory(
+        _make_mock_session(), session_cwd=workspace
+    )
+    prompt = await factory()
+
+    # The actual root bundle instruction enters its namespaced system context,
+    # whose standard AGENTS mentions resolve from the supplied session CWD.
+    assert prompt.startswith(f"{bundle.instruction}\n\n---\n\n")
+    assert [block.body for block in _blocks(prompt)] == [
+        (ANCHORS_DIR / "context" / "system.md").read_text(encoding="utf-8"),
+        global_agents.read_text(encoding="utf-8"),
+        local_agents.read_text(encoding="utf-8"),
+        workspace_agents.read_text(encoding="utf-8"),
+        scratch.read_text(encoding="utf-8"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shipped_anchors_root_skips_absent_optional_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent home and .amplifier AGENTS files do not prevent workspace discovery."""
+    home = tmp_path / "empty-home"
+    workspace = tmp_path / "workspace"
+    workspace_agents = _write(
+        workspace / "AGENTS.md", "WORKSPACE AGENTS SENTINEL\n@SCRATCH.md"
+    )
+    scratch = _write(workspace / "SCRATCH.md", "WORKSPACE SCRATCH SENTINEL")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    factory = _make_prepared(_shipped_anchors_bundle()).create_system_prompt_factory(
+        _make_mock_session(), session_cwd=workspace
+    )
+    prompt = await factory()
+
+    assert [block.body for block in _blocks(prompt)] == [
+        (ANCHORS_DIR / "context" / "system.md").read_text(encoding="utf-8"),
+        workspace_agents.read_text(encoding="utf-8"),
+        scratch.read_text(encoding="utf-8"),
+    ]
