@@ -231,7 +231,11 @@ async def _list_models_cached(provider: Any, provider_name: str) -> Any:
             # cache read) still benefit from it completing in the background.
             return await asyncio.shield(task)
     except TimeoutError:
-        logger.warning(
+        # Resolution callers own user-facing diagnostics. A contended cache
+        # lookup is an implementation detail, and warning here would produce
+        # a misleading cascade even if the direct retry or later preference
+        # succeeds.
+        logger.debug(
             "Timed out after %.1fs waiting for an in-flight list_models() "
             "fetch from provider '%s'; falling through to a direct call",
             wait_timeout,
@@ -353,12 +357,20 @@ class ModelResolutionResult:
         pattern: Original pattern (None if input wasn't a pattern).
         available_models: All models available from the provider.
         matched_models: Models that matched the pattern.
+        status: Machine-readable outcome. One of ``resolved``,
+            ``provider_not_mounted``, ``catalog_unavailable``,
+            ``catalog_query_failed``, ``empty_catalog``, or
+            ``no_matching_model``.
+        provider: The runtime provider instance queried (or requested when it
+            was not mounted).
     """
 
     resolved_model: str | None
     pattern: str | None = None
     available_models: list[str] | None = None
     matched_models: list[str] | None = None
+    status: str = "resolved"
+    provider: str | None = None
 
 
 def is_glob_pattern(model_hint: str) -> bool:
@@ -377,94 +389,167 @@ async def resolve_model_pattern(
     model_hint: str,
     provider_name: str | None,
     coordinator: Any,
+    *,
+    diagnostics: list[ModelResolutionResult] | None = None,
+    fallback_default_model: str | None = None,
 ) -> ModelResolutionResult:
     """Resolve a model pattern to a concrete model name.
 
     Args:
         model_hint: Exact model name or glob pattern (e.g., "claude-haiku-*").
-        provider_name: Provider to query for available models (e.g., "anthropic").
-        coordinator: Amplifier coordinator for accessing providers.
+        provider_name: Runtime provider registry key to query (for example, a
+            selected instance ``id`` such as ``anthropic-sonnet``).
+        coordinator: Amplifier coordinator for accessing providers. May be
+            absent during a cold resume.
+        diagnostics: Optional ordered result sink. Suppresses the standalone
+            warning so a preference-chain caller can report once at the end.
+        fallback_default_model: Concrete selected-entry default allowed only
+            when the coordinator or provider registry is unavailable.
 
     Returns:
         ModelResolutionResult with resolved model and resolution metadata.
 
     Resolution strategy:
         1. If not a glob pattern, return as-is
-        2. Query provider for available models
+        2. Query the selected provider instance for available models
         3. Filter with fnmatch
         4. Sort descending (latest date/version wins)
         5. Return the best match, or a failure signal (resolved_model=None)
-           if the provider has no models, or none of them match the pattern.
+           if the provider is unavailable, its catalog cannot be queried, it
+           has no models, or none of them match the pattern.
            The raw, unresolved pattern string is never returned disguised as
            a successful resolution -- callers must check for None and treat
            it as "could not resolve", not substitute in the pattern itself.
     """
+    def finish(result: ModelResolutionResult) -> ModelResolutionResult:
+        """Record a result or emit this standalone call's one warning."""
+        if diagnostics is not None:
+            diagnostics.append(result)
+        elif result.status != "resolved":
+            logger.warning(
+                "Could not resolve model pattern for provider '%s': %s",
+                result.provider or "unspecified",
+                result.status,
+            )
+        return result
+
+    def matching_fallback_default() -> ModelResolutionResult | None:
+        """Resolve a matching persisted default without querying a catalog."""
+        if not (
+            isinstance(fallback_default_model, str)
+            and not is_glob_pattern(fallback_default_model)
+            and _model_hint_matches(fallback_default_model, model_hint)
+        ):
+            return None
+        return ModelResolutionResult(
+            resolved_model=fallback_default_model,
+            pattern=model_hint,
+            available_models=[fallback_default_model],
+            matched_models=[fallback_default_model],
+            provider=provider_name,
+        )
+
+    def catalog_unavailable() -> ModelResolutionResult:
+        """Describe a missing coordinator or provider registry."""
+        return ModelResolutionResult(
+            resolved_model=None,
+            pattern=model_hint,
+            available_models=None,
+            matched_models=None,
+            status="catalog_unavailable",
+            provider=provider_name,
+        )
+
     # Not a pattern - return as-is
     if not is_glob_pattern(model_hint):
         logger.debug("Model '%s' is not a pattern, using as-is", model_hint)
-        return ModelResolutionResult(
+        return finish(ModelResolutionResult(
             resolved_model=model_hint,
             pattern=None,
             available_models=None,
             matched_models=None,
-        )
+            provider=provider_name,
+        ))
 
     # Need provider to resolve pattern
     if not provider_name:
-        logger.warning(
-            "Model pattern '%s' specified but no provider - cannot resolve, using as-is",
-            model_hint,
-        )
-        return ModelResolutionResult(
-            resolved_model=model_hint,
+        return finish(ModelResolutionResult(
+            resolved_model=None,
             pattern=model_hint,
             available_models=None,
             matched_models=None,
-        )
+            status="provider_not_mounted",
+            provider=None,
+        ))
 
-    # Try to get available models from provider
-    available_models: list[str] = []
+    # Try to get available models from provider.
+    available_models: list[str]
+    if coordinator is None:
+        return finish(matching_fallback_default() or catalog_unavailable())
+    get_providers = getattr(coordinator, "get", None)
+    if not callable(get_providers):
+        return finish(matching_fallback_default() or catalog_unavailable())
     try:
-        providers = coordinator.get("providers")
-        if providers:
-            provider = _find_provider_instance(providers, provider_name, coordinator)
-            if provider and hasattr(provider, "list_models"):
-                models = await _list_models_cached(provider, provider_name)
-                # Handle both list of strings and list of model objects
-                available_models = [
-                    m if isinstance(m, str) else getattr(m, "id", str(m))
-                    for m in models
-                ]
-                logger.debug(
-                    "Provider '%s' has %d available models",
-                    provider_name,
-                    len(available_models),
-                )
-            else:
-                logger.debug(
-                    "Provider '%s' not found or does not support list_models()",
-                    provider_name,
-                )
-    except Exception as e:
-        logger.warning(
-            "Failed to query models from provider '%s': %s",
-            provider_name,
-            e,
-        )
+        providers = get_providers("providers")
+    except Exception:
+        return finish(ModelResolutionResult(
+            resolved_model=None,
+            pattern=model_hint,
+            available_models=None,
+            matched_models=None,
+            status="catalog_query_failed",
+            provider=provider_name,
+        ))
 
+    if not isinstance(providers, dict):
+        return finish(matching_fallback_default() or catalog_unavailable())
+
+    provider = _find_provider_instance(providers, provider_name, coordinator)
+    if provider is None:
+        return finish(ModelResolutionResult(
+            resolved_model=None,
+            pattern=model_hint,
+            available_models=None,
+            matched_models=None,
+            status="provider_not_mounted",
+            provider=provider_name,
+        ))
+    if not hasattr(provider, "list_models"):
+        return finish(ModelResolutionResult(
+            resolved_model=None,
+            pattern=model_hint,
+            available_models=None,
+            matched_models=None,
+            status="catalog_unavailable",
+            provider=provider_name,
+        ))
+
+    try:
+        models = await _list_models_cached(provider, provider_name)
+    except Exception:
+        return finish(ModelResolutionResult(
+            resolved_model=None,
+            pattern=model_hint,
+            available_models=None,
+            matched_models=None,
+            status="catalog_query_failed",
+            provider=provider_name,
+        ))
+
+    # Handle both list of strings and list of model objects.
+    available_models = [
+        m if isinstance(m, str) else getattr(m, "id", str(m))
+        for m in models
+    ]
     if not available_models:
-        logger.warning(
-            "No available models from provider '%s' for pattern '%s' - "
-            "cannot resolve (provider has no models)",
-            provider_name,
-            model_hint,
-        )
-        return ModelResolutionResult(
+        return finish(ModelResolutionResult(
             resolved_model=None,
             pattern=model_hint,
             available_models=[],
             matched_models=[],
-        )
+            status="empty_catalog",
+            provider=provider_name,
+        ))
 
     # Match pattern against available models: case-insensitive, OS-independent.
     # Raw fnmatch.filter() uses os.path.normcase, which is case-sensitive on
@@ -479,20 +564,14 @@ async def resolve_model_pattern(
     matched = [m for m in available_models if fnmatch.fnmatch(m.lower(), lowered_hint)]
 
     if not matched:
-        logger.warning(
-            "Pattern '%s' matched no models from provider '%s'. "
-            "Available: %s. Cannot resolve.",
-            model_hint,
-            provider_name,
-            ", ".join(available_models[:10])
-            + ("..." if len(available_models) > 10 else ""),
-        )
-        return ModelResolutionResult(
+        return finish(ModelResolutionResult(
             resolved_model=None,
             pattern=model_hint,
             available_models=available_models,
             matched_models=[],
-        )
+            status="no_matching_model",
+            provider=provider_name,
+        ))
 
     # Sort descending (latest date/version typically sorts last alphabetically,
     # so reverse sort puts newest first)
@@ -508,12 +587,13 @@ async def resolve_model_pattern(
         ", ".join(matched[:5]) + ("..." if len(matched) > 5 else ""),
     )
 
-    return ModelResolutionResult(
+    return finish(ModelResolutionResult(
         resolved_model=resolved,
         pattern=model_hint,
         available_models=available_models,
         matched_models=matched,
-    )
+        provider=provider_name,
+    ))
 
 
 def _get_provider_specs(coordinator: Any) -> list[dict[str, Any]]:
@@ -555,6 +635,15 @@ def _module_type_of(spec: dict[str, Any] | None) -> str | None:
     if not module:
         return None
     return module.replace("provider-", "")
+
+
+def _runtime_provider_name(spec: dict[str, Any]) -> str:
+    """Return the runtime registry key for a selected mount-plan entry."""
+    for key in ("instance_id", "id", "module"):
+        value = spec.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _find_provider_instance(
@@ -1018,6 +1107,8 @@ async def apply_provider_preferences_with_resolution(
     mount_plan: dict[str, Any],
     preferences: list[ProviderPreference],
     coordinator: Any,
+    *,
+    diagnostics: list[ModelResolutionResult] | None = None,
 ) -> dict[str, Any]:
     """Apply provider preferences with model pattern resolution.
 
@@ -1028,6 +1119,9 @@ async def apply_provider_preferences_with_resolution(
         mount_plan: The mount plan to modify.
         preferences: Ordered list of ProviderPreference objects.
         coordinator: Amplifier coordinator for querying provider models.
+        diagnostics: Optional ordered sink for every attempted preference,
+            including the terminal successful attempt. Suppresses this
+            mechanism layer's warnings so the caller can present one message.
 
     Returns:
         New mount plan with the first matching provider promoted and
@@ -1046,9 +1140,7 @@ async def apply_provider_preferences_with_resolution(
         return mount_plan
 
     providers = mount_plan.get("providers", [])
-    if not providers:
-        logger.warning("Provider preferences specified but no providers in mount plan")
-        return mount_plan
+    attempt_results = diagnostics if diagnostics is not None else []
 
     # Find first matching preference whose model actually resolves, and
     # apply it. A preference whose provider is present but whose glob
@@ -1063,34 +1155,52 @@ async def apply_provider_preferences_with_resolution(
         # comment above _provider_priority), so the model glob below is
         # resolved against the very instance that will be promoted.
         target_idx = _resolve_provider_index(providers, pref.provider, pref.model)
-        if target_idx is not None:
-            # Resolve model pattern if it's a glob
-            resolved_model = pref.model
-            if is_glob_pattern(pref.model):
-                result = await resolve_model_pattern(
-                    pref.model, pref.provider, coordinator
-                )
-                if result.resolved_model is None:
-                    logger.warning(
-                        "Preference for provider '%s' failed to resolve model "
-                        "pattern '%s' - trying next preference",
-                        pref.provider,
-                        pref.model,
-                    )
-                    continue
-                resolved_model = result.resolved_model
+        if target_idx is None:
+            attempt_results.append(ModelResolutionResult(
+                resolved_model=None,
+                pattern=pref.model if is_glob_pattern(pref.model) else None,
+                status="provider_not_mounted",
+                provider=pref.provider,
+            ))
+            continue
 
-            return _apply_single_override(
-                mount_plan, providers, target_idx, resolved_model, pref.config
+        target = providers[target_idx]
+        runtime_provider = _runtime_provider_name(target)
+        # Resolve model pattern if it's a glob.  The runtime instance comes
+        # from the same model-aware selection that chose target_idx: never
+        # query a bare alias then apply the resulting model to another mount.
+        if is_glob_pattern(pref.model):
+            default_model = (target.get("config") or {}).get("default_model")
+            result = await resolve_model_pattern(
+                pref.model,
+                runtime_provider,
+                coordinator,
+                diagnostics=attempt_results,
+                fallback_default_model=default_model,
             )
+        else:
+            result = ModelResolutionResult(
+                resolved_model=pref.model,
+                provider=runtime_provider,
+            )
+            attempt_results.append(result)
+
+        if result.resolved_model is None:
+            continue
+
+        return _apply_single_override(
+            mount_plan, providers, target_idx, result.resolved_model, pref.config
+        )
 
     # No preferences matched -- either no preference's provider was present
     # in the mount plan, or every candidate's model pattern failed to
     # resolve. Either way, leave the mount plan unmodified rather than
     # writing an unresolved pattern string into it.
-    logger.warning(
-        "No preferred providers found in mount plan. Preferences: %s, Available: %s",
-        [p.provider for p in preferences],
-        list({p.get("module", "?") for p in providers}),
-    )
+    if diagnostics is None:
+        statuses = ", ".join(sorted({result.status for result in attempt_results}))
+        logger.warning(
+            "No provider preference could be applied (%s); keeping the existing "
+            "provider selection.",
+            statuses or "no providers in mount plan",
+        )
     return mount_plan

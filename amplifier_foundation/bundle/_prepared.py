@@ -836,6 +836,17 @@ class PreparedBundle:
         # This is done before session creation so the mount plan has the right provider
         # We need to initialize a temporary session to resolve model patterns
         if provider_preferences:
+            # Preserve the complete caller-selected chain on the child config.
+            # A resumed child can then reapply its own routing intent before its
+            # parent coordinator (and therefore its live catalog) is mounted.
+            # Copy every level we expose: Bundle/agent definitions remain immutable.
+            child_mount_plan["provider_preferences"] = [
+                {
+                    **preference.to_dict(),
+                    "config": dict(preference.config),
+                }
+                for preference in provider_preferences
+            ]
             child_mount_plan = await apply_provider_preferences_with_resolution(
                 child_mount_plan,
                 provider_preferences,
