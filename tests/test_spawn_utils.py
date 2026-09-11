@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from amplifier_foundation.spawn_utils import ProviderPreference
+from amplifier_foundation.spawn_utils import ModelResolutionResult
 from amplifier_foundation.spawn_utils import _apply_single_override
 from amplifier_foundation.spawn_utils import _build_provider_lookup
 from amplifier_foundation.spawn_utils import _find_provider_index
@@ -52,6 +53,11 @@ class TestProviderPreference:
         """Test from_dict raises error when model is missing."""
         with pytest.raises(ValueError, match="requires 'model' key"):
             ProviderPreference.from_dict({"provider": "openai"})
+
+    def test_resolution_result_keeps_legacy_positional_arguments(self) -> None:
+        result = ModelResolutionResult("model", "pattern", ["model"], ["model"])
+        assert result.status == "resolved"
+        assert result.provider is None
 
 
 class TestIsGlobPattern:
@@ -216,15 +222,16 @@ class TestResolveModelPattern:
         assert result.pattern is None
 
     @pytest.mark.asyncio
-    async def test_pattern_without_provider_returns_as_is(self) -> None:
-        """Test that patterns without provider are returned as-is."""
+    async def test_pattern_without_provider_is_an_explicit_failure(self) -> None:
+        """A glob without a provider must never become a literal model name."""
         result = await resolve_model_pattern(
             "claude-haiku-*",
             None,
             MagicMock(),
         )
-        assert result.resolved_model == "claude-haiku-*"
+        assert result.resolved_model is None
         assert result.pattern == "claude-haiku-*"
+        assert result.status == "provider_not_mounted"
 
     @pytest.mark.asyncio
     async def test_pattern_resolves_to_latest(self) -> None:
@@ -706,6 +713,207 @@ class TestApplyProviderPreferencesWithResolution:
         # No unresolved glob pattern string should appear anywhere in the result.
         for p in result["providers"]:
             assert "default_model" not in p["config"]
+
+
+class TestResolutionDiagnosticsAndColdResume:
+    """No-network regressions for resolution status and warning ownership."""
+
+    @pytest.mark.asyncio
+    async def test_cold_resume_promotes_matching_persisted_default_quietly(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        plan = {
+            "providers": [
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 4, "default_model": "Claude-Sonnet-4-5"},
+                }
+            ]
+        }
+        diagnostics = []
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_foundation.spawn_utils"):
+            result = await apply_provider_preferences_with_resolution(
+                plan,
+                [ProviderPreference(provider="anthropic", model="claude-sonnet-*")],
+                coordinator=None,
+                diagnostics=diagnostics,
+            )
+
+        assert result["providers"][0]["config"]["default_model"] == "Claude-Sonnet-4-5"
+        assert [(item.status, item.provider, item.resolved_model) for item in diagnostics] == [
+            ("resolved", "sonnet", "Claude-Sonnet-4-5")
+        ]
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_cold_resume_nonmatching_default_is_catalog_unavailable(self) -> None:
+        plan = {
+            "providers": [
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet-4-5"},
+                }
+            ]
+        }
+        diagnostics = []
+
+        result = await apply_provider_preferences_with_resolution(
+            plan,
+            [ProviderPreference(provider="anthropic", model="claude-haiku-*")],
+            coordinator=None,
+            diagnostics=diagnostics,
+        )
+
+        assert result is plan
+        assert diagnostics[0].status == "catalog_unavailable"
+        assert diagnostics[0].resolved_model is None
+
+    @pytest.mark.asyncio
+    async def test_query_failure_never_uses_persisted_default_as_a_fallback(self) -> None:
+        plan = {
+            "providers": [
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet-4-5"},
+                }
+            ]
+        }
+        coordinator = MagicMock()
+        coordinator.get.side_effect = RuntimeError("network details must stay hidden")
+        diagnostics = []
+
+        result = await apply_provider_preferences_with_resolution(
+            plan,
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-*")],
+            coordinator,
+            diagnostics=diagnostics,
+        )
+
+        assert result is plan
+        assert diagnostics[0].status == "catalog_query_failed"
+        assert diagnostics[0].resolved_model is None
+
+    @pytest.mark.asyncio
+    async def test_catalog_query_failure_empty_catalog_and_no_match_stay_distinct(self) -> None:
+        async def resolve(models: Any) -> str:
+            provider = MagicMock()
+            provider.list_models = AsyncMock(
+                side_effect=models if isinstance(models, Exception) else None,
+                return_value=None if isinstance(models, Exception) else models,
+            )
+            coordinator = MagicMock()
+            coordinator.get.return_value = {"provider-anthropic": provider}
+            return (
+                await resolve_model_pattern("claude-haiku-*", "anthropic", coordinator)
+            ).status
+
+        assert await resolve(RuntimeError("not for logs")) == "catalog_query_failed"
+        assert await resolve([]) == "empty_catalog"
+        assert await resolve(["claude-sonnet-4-5"]) == "no_matching_model"
+
+    @pytest.mark.asyncio
+    async def test_selected_instance_is_the_only_catalog_queried(self) -> None:
+        opus = MagicMock()
+        opus.list_models = AsyncMock(return_value=["claude-opus-4-5"])
+        sonnet = MagicMock()
+        sonnet.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        plan = {
+            "providers": [
+                {
+                    "id": "opus",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 1, "default_model": "claude-opus-4-5"},
+                },
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 9, "default_model": "claude-sonnet-4-5"},
+                },
+            ]
+        }
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"opus": opus, "sonnet": sonnet}
+
+        result = await apply_provider_preferences_with_resolution(
+            plan,
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-*")],
+            coordinator,
+        )
+
+        assert result["providers"][1]["config"]["default_model"] == "claude-sonnet-4-5"
+        opus.list_models.assert_not_awaited()
+        sonnet.list_models.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_include_failed_attempt_and_terminal_success_without_warnings(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        openai = MagicMock()
+        openai.list_models = AsyncMock(return_value=["gpt-4o-mini"])
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"provider-openai": openai}
+        diagnostics = []
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_foundation.spawn_utils"):
+            result = await apply_provider_preferences_with_resolution(
+                {"providers": [{"module": "provider-openai", "config": {}}]},
+                [
+                    ProviderPreference(provider="anthropic", model="claude-haiku-*"),
+                    ProviderPreference(provider="openai", model="gpt-4o-*"),
+                ],
+                coordinator,
+                diagnostics=diagnostics,
+            )
+
+        assert result["providers"][0]["config"]["default_model"] == "gpt-4o-mini"
+        assert [(item.status, item.provider) for item in diagnostics] == [
+            ("provider_not_mounted", "anthropic"),
+            ("resolved", "provider-openai"),
+        ]
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_later_success_without_diagnostics_is_silent(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        openai = MagicMock()
+        openai.list_models = AsyncMock(return_value=["gpt-4o-mini"])
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"provider-openai": openai}
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_foundation.spawn_utils"):
+            result = await apply_provider_preferences_with_resolution(
+                {"providers": [{"module": "provider-openai", "config": {}}]},
+                [
+                    ProviderPreference(provider="anthropic", model="claude-haiku-*"),
+                    ProviderPreference(provider="openai", model="gpt-4o-*"),
+                ],
+                coordinator,
+            )
+
+        assert result["providers"][0]["config"]["default_model"] == "gpt-4o-mini"
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_all_failures_without_diagnostics_emit_one_final_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="amplifier_foundation.spawn_utils"):
+            await apply_provider_preferences_with_resolution(
+                {"providers": [{"module": "provider-openai", "config": {}}]},
+                [
+                    ProviderPreference(provider="anthropic", model="claude-haiku-*"),
+                    ProviderPreference(provider="openai", model="gpt-4o-*"),
+                ],
+                coordinator=None,
+            )
+
+        assert len(caplog.records) == 1
+        assert "No provider preference could be applied" in caplog.records[0].message
 
 
 class TestProviderPreferenceConfig:
@@ -1756,7 +1964,7 @@ class TestModuleNamedPreferenceWithAsyncResolution:
             return_value=["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-5"]
         )
         coordinator = MagicMock()
-        coordinator.get = MagicMock(return_value={"anthropic": provider})
+        coordinator.get = MagicMock(return_value={"fable": provider})
 
         result = await apply_provider_preferences_with_resolution(
             _measured_host(),
@@ -1767,6 +1975,7 @@ class TestModuleNamedPreferenceWithAsyncResolution:
         promoted = _promoted(result)
         assert promoted["id"] == "fable"
         assert promoted["config"]["default_model"] == "claude-sonnet-4-5"
+        provider.list_models.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_async_path_preserves_protected_config_keys(self) -> None:
