@@ -43,6 +43,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _anchor_relative_include_source(source: str, base_path: Path | None) -> str:
+    """Anchor a literal relative include ('./x' or '../x') to base_path.
+
+    Mirrors ``_resolve_relative_source`` in ``bundle/_dataclass.py`` (commit
+    b667815), which anchored relative ``session``/``providers``/``tools``/
+    ``hooks`` ``source:`` fields to the DECLARING bundle's own ``base_path``
+    instead of the app's. This is the same fix applied to ``includes:``: a
+    bundle's relative include path must resolve against ITS OWN base_path,
+    not the process cwd (a single ``Path.cwd()`` snapshot taken once at
+    ``BundleRegistry.__init__``) and not some unrelated bundle's base_path.
+
+    Only literal "./" and "../" sources are rewritten to an absolute path
+    here -- before the source reaches ``_load_single`` / the source
+    resolver's cwd-based fallback -- so caching and cycle-detection (both
+    keyed on the URI string) stay unambiguous even when two different
+    bundles happen to declare the same relative include text.
+
+    Namespace refs (already turned into file:// / git+... by
+    ``_resolve_include_source``), absolute paths, and other URIs are
+    returned untouched. If base_path is None (the bundle has no known file
+    location -- e.g. loaded from raw text or a URL without a resolved local
+    path), the source is returned untouched and falls back to the source
+    resolver's own default (process cwd) behavior.
+    """
+    if base_path and (source.startswith("./") or source.startswith("../")):
+        return str((base_path / source).resolve())
+    return source
+
+
 # ANSI color codes for terminal output
 class _Colors:
     YELLOW = "\033[93m"
@@ -726,20 +755,33 @@ class BundleRegistry:
                         if self._strict:
                             raise BundleDependencyError(
                                 f"Include resolution failed (strict mode): '{include_source}' "
+                                f"(included by {self._describe_including_bundle(bundle)}) "
                                 f"could not be resolved (unregistered namespace)"
                             )
                         logger.warning(
-                            f"Include skipped (unregistered namespace): {include_source}"
+                            f"Include skipped (unregistered namespace): {include_source} "
+                            f"(included by {self._describe_including_bundle(bundle)})"
                         )
                         continue
+                    # Anchor literal relative includes ('./x', '../x') to the
+                    # DECLARING bundle's own base_path -- not the registry's
+                    # process-cwd snapshot, and not some other bundle's
+                    # base_path. See _anchor_relative_include_source() above.
+                    resolved_source = _anchor_relative_include_source(
+                        resolved_source, bundle.base_path
+                    )
                     include_sources.append(resolved_source)
                 except BundleNotFoundError:
                     if self._strict:
                         raise BundleDependencyError(
-                            f"Include not found (strict mode): '{include_source}'"
+                            f"Include not found (strict mode): '{include_source}' "
+                            f"(included by {self._describe_including_bundle(bundle)})"
                         ) from None
                     # Includes are opportunistic - but warn so users know
-                    logger.warning(f"Include not found (skipping): {include_source}")
+                    logger.warning(
+                        f"Include not found (skipping): {include_source} "
+                        f"(included by {self._describe_including_bundle(bundle)})"
+                    )
 
         if not include_sources:
             return bundle
@@ -774,6 +816,7 @@ class BundleRegistry:
                     source_name = self._extract_bundle_name(source)
                     lines = [
                         f"Bundle: {source_name}",
+                        f"Included by: {self._describe_including_bundle(bundle)}",
                         "",
                         str(result),  # The actual error message
                     ]
@@ -1160,6 +1203,19 @@ class BundleRegistry:
             return uri.split("/")[-1].split("#")[0]
         # Fallback: last path component
         return uri.split("/")[-1].split("@")[0].split("#")[0]
+
+    def _describe_including_bundle(self, bundle: Bundle) -> str:
+        """Describe the bundle whose ``includes:`` are being processed.
+
+        Used in include-failure warnings/errors so the message names both
+        the declaring bundle and the base_path relative includes were
+        resolved against -- the two pieces of information needed to
+        actually debug a failed include, instead of only naming the
+        (possibly relative, now-ambiguous) missing target.
+        """
+        name = bundle.name or "<unnamed bundle>"
+        base_path = bundle.base_path if bundle.base_path else "<no base_path>"
+        return f"{name} @ {base_path}"
 
     # =========================================================================
     # Update Methods
