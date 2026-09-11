@@ -39,7 +39,7 @@ async def main():
 asyncio.run(main())
 ```
 
-For the complete workflow with provider selection and advanced features, see [`examples/04_full_workflow/`](examples/04_full_workflow/).
+For the complete workflow with provider selection and advanced features, see [`examples/07_full_workflow.py`](examples/07_full_workflow.py).
 
 ### Use Utilities Directly
 
