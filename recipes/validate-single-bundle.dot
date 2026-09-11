@@ -1,0 +1,42 @@
+// Validates one Amplifier bundle — traces what it actually includes, measures its size, and writes a report.
+digraph validate_single_bundle {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Bundle Check-Up\nTraces what a bundle actually includes, measures its size, and writes a report"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="b8ca8b131034d428fca53a89207dbcf831acd581bbce878bf279d5d18027557e"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done!", shape=oval, fillcolor="#e0e0e0"]
+
+    step_trace_dependencies [label="Follow the Includes\n\"What files belong to this bundle?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re import yaml from pathlib import Path  def trace_bundle_depend"]
+    step_context_analysis [label="Measure the Size\n\"Is this bundle too big?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re from pathlib import Path  # Token thresholds WARNING_TOKENS ="]
+    step_generate_report [label="Write the Report\n\"Here's what we found\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_trace_dependencies
+    step_trace_dependencies -> step_context_analysis
+    step_context_analysis -> step_generate_report
+    step_generate_report -> done
+
+    subgraph cluster_legend {
+        label="Guide\n\"What the shapes mean\""
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_bash [label="Script Step", shape=box, fillcolor="#bbdefb"]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_bash -> leg_agent -> leg_start [style=invis]
+    }
+}

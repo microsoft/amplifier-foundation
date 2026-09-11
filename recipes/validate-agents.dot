@@ -1,0 +1,87 @@
+digraph validate_agents {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Validate Agents — Validates Amplifier agent definitions in a bundle repository against:"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="b85fecca6091493e56fefd26ac3c6616ba3435a67301049994a25f37153ecf6c"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done!", shape=oval, fillcolor="#e0e0e0"]
+
+    step_environment_check [label="Environment
+Check", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import sys from pathlib import Path  results = {     'phase': 'environm"]
+    step_agent_discovery [label="Agent
+Discovery", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json from pathlib import Path  def discover_agents(repo_path: str) -> dict: "]
+    step_structural_validation [label="Structural
+Validation", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re from pathlib import Path  try:     import yaml except ImportE"]
+    step_quality_classification [label="Quality
+Classification", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  # Parse structural_results as JSON (uses true/false, not True/False) s"]
+    step_initialize_optional_outputs [label="Initialize Optional
+Outputs", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  # Initialize default values for conditional phase outputs # These will"]
+    step_set_default_approval_summary [label="Set Default
+Approval Summary", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Quick approval not performed - detailed LLM analysis was run instead._' "]
+    step_set_default_quality_results [label="Set Default
+Quality Results", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Description quality analysis not performed - all agents met quality thresholds via determinis"]
+    step_set_default_tool_analysis [label="Set Default
+Tool Analysis", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Tool access analysis not performed - all agents have explicit tool declarations._' "]
+    cond_step_quick_approval [label="quality_classification.requ...", shape=diamond, fillcolor="#fff9c4"]
+    step_quick_approval [label="Quick
+Approval", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_description_quality_check [label="quality_classification.requ...", shape=diamond, fillcolor="#fff9c4"]
+    step_description_quality_check [label="Description Quality
+Check", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_tool_access_analysis [label="quality_classification.requ...", shape=diamond, fillcolor="#fff9c4"]
+    step_tool_access_analysis [label="Tool Access
+Analysis", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_synthesize_report [label="Synthesize
+Report", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_environment_check
+    step_environment_check -> step_agent_discovery
+    step_agent_discovery -> step_structural_validation
+    step_structural_validation -> step_quality_classification
+    step_quality_classification -> step_initialize_optional_outputs
+    step_initialize_optional_outputs -> step_set_default_approval_summary
+    step_initialize_optional_outputs -> step_set_default_quality_results
+    step_initialize_optional_outputs -> step_set_default_tool_analysis
+    step_set_default_approval_summary -> cond_step_quick_approval
+    cond_step_quick_approval -> step_quick_approval [label="quality_classification.re"]
+    step_quality_classification -> cond_step_description_quality_check
+    cond_step_description_quality_check -> step_description_quality_check [label="quality_classification.re"]
+    step_description_quality_check -> cond_step_tool_access_analysis
+    cond_step_tool_access_analysis -> step_tool_access_analysis [label="quality_classification.re"]
+    step_quality_classification -> step_synthesize_report
+    step_quick_approval -> step_synthesize_report
+    step_description_quality_check -> step_synthesize_report
+    step_tool_access_analysis -> step_synthesize_report
+    step_set_default_approval_summary -> step_synthesize_report
+    step_set_default_quality_results -> step_synthesize_report
+    step_set_default_tool_analysis -> step_synthesize_report
+    cond_step_quick_approval -> step_synthesize_report [label="skip", style=dashed]
+    cond_step_description_quality_check -> step_synthesize_report [label="skip", style=dashed]
+    cond_step_tool_access_analysis -> step_synthesize_report [label="skip", style=dashed]
+    step_synthesize_report -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_bash [label="Script Step", shape=box, fillcolor="#bbdefb"]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_cond [label="Condition", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_bash -> leg_agent -> leg_cond -> leg_start [style=invis]
+    }
+}
