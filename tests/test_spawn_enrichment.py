@@ -173,6 +173,7 @@ async def test_spawn_backward_compatible_output_and_session_id():
     assert "status" in result
     assert "turn_count" in result
     assert "metadata" in result
+    assert set(result) == {"output", "session_id", "status", "turn_count", "metadata"}
 
 
 @pytest.mark.asyncio

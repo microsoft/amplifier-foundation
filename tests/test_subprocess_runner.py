@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
+from uuid import UUID
 
 import pytest
 
@@ -307,6 +308,101 @@ class TestRunChildSession:
         MockSession.assert_called_once_with(
             config=config, parent_id=parent_id, session_id=None
         )
+
+
+class TestChildExecutionInputProvenance:
+    """Tests for delegation provenance at the subprocess execute boundary."""
+
+    @pytest.mark.asyncio
+    async def test_child_binds_delegation_input_immediately_before_execute(
+        self, tmp_path: Any
+    ) -> None:
+        """A config without the optional input capability still executes safely."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config={"provider": "anthropic"},
+                prompt="Delegated task",
+                parent_id="parent-123",
+                project_path=str(tmp_path),
+            )
+        )
+        mock_instance = MagicMock()
+        mock_instance.initialize = AsyncMock()
+        mock_instance.cleanup = AsyncMock()
+        mock_instance.coordinator = MagicMock()
+        mock_instance.coordinator.mount = AsyncMock()
+        mock_instance.coordinator.get_capability = MagicMock(return_value=None)
+        mock_instance.coordinator.register_capability = MagicMock()
+        observed_inputs: list[dict[str, object]] = []
+
+        async def observe_execute(prompt: str) -> str:
+            name, value = mock_instance.coordinator.register_capability.call_args_list[
+                -1
+            ].args
+            assert name == "execution.input.v1"
+            observed_inputs.append(value)
+            return "result"
+
+        mock_instance.execute = AsyncMock(side_effect=observe_execute)
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession",
+            return_value=mock_instance,
+        ):
+            result = await _run_child_session(str(config_file))
+
+        assert result == "result"
+        assert len(observed_inputs) == 1
+        assert observed_inputs[0]["version"] == 1
+        assert observed_inputs[0]["origin"] == "delegation"
+        UUID(str(observed_inputs[0]["input_id"]))
+
+    @pytest.mark.asyncio
+    async def test_child_mints_a_fresh_input_id_for_each_execute(
+        self, tmp_path: Any
+    ) -> None:
+        """Repeated subprocess child executes do not reuse an input id."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config={"provider": "anthropic"},
+                prompt="Delegated task",
+                parent_id="parent-123",
+                project_path=str(tmp_path),
+            )
+        )
+        observed_ids: list[str] = []
+
+        def make_session() -> MagicMock:
+            session = MagicMock()
+            session.initialize = AsyncMock()
+            session.cleanup = AsyncMock()
+            session.coordinator = MagicMock()
+            session.coordinator.mount = AsyncMock()
+            session.coordinator.get_capability = MagicMock(return_value=None)
+            session.coordinator.register_capability = MagicMock()
+
+            async def observe_execute(prompt: str) -> str:
+                name, value = session.coordinator.register_capability.call_args_list[
+                    -1
+                ].args
+                assert name == "execution.input.v1"
+                observed_ids.append(value["input_id"])
+                return "result"
+
+            session.execute = AsyncMock(side_effect=observe_execute)
+            return session
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession",
+            side_effect=[make_session(), make_session()],
+        ):
+            await _run_child_session(str(config_file))
+            await _run_child_session(str(config_file))
+
+        assert len(observed_ids) == 2
+        assert observed_ids[0] != observed_ids[1]
 
 
 class TestChildBootstrapBundleContext:

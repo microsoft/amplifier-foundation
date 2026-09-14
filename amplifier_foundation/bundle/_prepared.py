@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from dataclasses import field
 from decimal import Decimal
@@ -1024,6 +1025,21 @@ class PreparedBundle:
 
         # Execute instruction and cleanup
         try:
+            # This execution is owned by Foundation's delegation boundary, not
+            # by create_session().  Session creation alone does not establish
+            # either an outer execute or a human origin.
+            register_capability = getattr(
+                child_session.coordinator, "register_capability", None
+            )
+            if callable(register_capability):
+                register_capability(
+                    "execution.input.v1",
+                    {
+                        "version": 1,
+                        "input_id": str(uuid.uuid4()),
+                        "origin": "delegation",
+                    },
+                )
             response = await child_session.execute(instruction)
             # Bridge child session cost to parent coordinator (bridge_child_cost never raises)
             if parent_session:

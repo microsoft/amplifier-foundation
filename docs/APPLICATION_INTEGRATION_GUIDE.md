@@ -848,6 +848,49 @@ async def spawn_session(config: dict) -> AmplifierSession:
 session.coordinator.register_capability("spawn", spawn_session)
 ```
 
+#### Optional execution-input provenance
+
+Bind input provenance immediately before the outer `session.execute()` that your
+application owns. Session creation does not establish an execution or imply a
+human origin. `PreparedBundle.spawn()` and Foundation's subprocess child runner
+bind delegated input themselves, so an application must not bind that same
+child execution a second time.
+
+```python
+from uuid import uuid4
+
+def bind_execution_input(session, origin: str) -> None:
+    session.coordinator.register_capability(
+        "execution.input.v1",
+        {"version": 1, "input_id": str(uuid4()), "origin": origin},
+    )
+
+# A user-facing application owns this outer execute.
+bind_execution_input(session, "human")
+response = await session.execute(user_message)
+
+# Use "delegation" only when the application owns a separate child execute.
+bind_execution_input(child_session, "delegation")
+response = await child_session.execute(delegated_instruction)
+```
+
+The capability is optional: consumers that do not recognize it continue their
+legacy behavior, and generic input does not select its own origin. Mint a new
+`input_id` for each outer execute. Reusing a session ID alone does **not**
+restore its context or make an input ID persistent.
+
+If the host has already loaded a trusted child checkpoint, it may restore that
+checkpoint through the optional host-owned API before executing. Do not create
+a new resume path or accept an untrusted payload merely because it names the
+same session.
+
+```python
+context = session.coordinator.get("context")
+restore = getattr(context, "restore_host_checkpoint", None)
+if trusted_saved_messages is not None and callable(restore):
+    await restore(trusted_saved_messages)
+```
+
 > **Resolving an Agent Overlay.** The reference spawn capability
 > (`amplifier-app-cli`'s `session_spawner.py`) builds a child session by merging
 > an agent's overlay onto the parent's resolved config with

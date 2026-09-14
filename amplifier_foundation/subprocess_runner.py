@@ -33,6 +33,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -731,6 +732,18 @@ async def _run_child_session(config_path: str) -> str:
 
     # (8) Wrap execute/cleanup in try/finally
     try:
+        # This process owns the delegated child's outer execute.  Creating the
+        # session did not establish an input origin, so bind a fresh one here.
+        register_capability = getattr(session.coordinator, "register_capability", None)
+        if callable(register_capability):
+            register_capability(
+                "execution.input.v1",
+                {
+                    "version": 1,
+                    "input_id": str(uuid.uuid4()),
+                    "origin": "delegation",
+                },
+            )
         result: str = await session.execute(prompt)
         return result
     finally:

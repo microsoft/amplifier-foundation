@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from uuid import UUID
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -229,6 +230,67 @@ class TestSpawnSelfDelegationDepth:
 
         assert result["output"] == "Done"
         assert result["session_id"] == "test-child-123"
+
+    @pytest.mark.asyncio
+    async def test_spawn_binds_delegation_input_immediately_before_execute(self):
+        """The child observes a fresh delegation capability at its execute boundary."""
+        hooks = HookRegistry()
+        child_bundle = _make_child_bundle()
+        prepared = _make_prepared_bundle()
+        mock_session = _make_mock_session(hooks)
+        observed_inputs: list[dict[str, object]] = []
+
+        async def observe_execute(instruction: str) -> str:
+            capability_calls = (
+                mock_session.coordinator.register_capability.call_args_list
+            )
+            name, value = capability_calls[-1].args
+            assert name == "execution.input.v1"
+            observed_inputs.append(value)
+            return "Done"
+
+        mock_session.execute = AsyncMock(side_effect=observe_execute)
+
+        with patch(
+            "amplifier_core.AmplifierSession",
+            return_value=mock_session,
+        ):
+            result = await prepared.spawn(child_bundle, "Do something", compose=False)
+
+        assert len(observed_inputs) == 1
+        assert observed_inputs[0]["version"] == 1
+        assert observed_inputs[0]["origin"] == "delegation"
+        UUID(str(observed_inputs[0]["input_id"]))
+        assert result == {
+            "output": "Done",
+            "session_id": "test-child-123",
+            "status": "success",
+            "turn_count": 1,
+            "metadata": {},
+        }
+
+    @pytest.mark.asyncio
+    async def test_spawn_mints_a_fresh_input_id_for_each_execute(self):
+        """Separate child executes never reuse their delegation input id."""
+        hooks = HookRegistry()
+        child_bundle = _make_child_bundle()
+        prepared = _make_prepared_bundle()
+        mock_session = _make_mock_session(hooks)
+
+        with patch(
+            "amplifier_core.AmplifierSession",
+            return_value=mock_session,
+        ):
+            await prepared.spawn(child_bundle, "First task", compose=False)
+            await prepared.spawn(child_bundle, "Second task", compose=False)
+
+        input_ids = [
+            call.args[1]["input_id"]
+            for call in mock_session.coordinator.register_capability.call_args_list
+            if call.args[0] == "execution.input.v1"
+        ]
+        assert len(input_ids) == 2
+        assert input_ids[0] != input_ids[1]
 
     @pytest.mark.asyncio
     async def test_spawn_preserves_full_preference_chain_in_child_config(self):
