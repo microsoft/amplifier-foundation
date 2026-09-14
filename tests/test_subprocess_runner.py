@@ -564,10 +564,18 @@ class TestChildBootstrapBundleContext:
             f"Expected Path('/path/to/module'), got {call_kwargs['my_module']!r}"
         )
 
-        # Verify mount was called with the resolver instance as 'module-source-resolver'
-        mock_instance.coordinator.mount.assert_called_once_with(
-            "module-source-resolver", mock_resolver_instance
-        )
+        mock_instance.coordinator.mount.assert_called_once()
+        mount_name, mounted_resolver = mock_instance.coordinator.mount.await_args.args
+        assert mount_name == "module-source-resolver"
+        # Match the production optional import without making the CLI a new
+        # dependency of Foundation's standalone test suite.
+        try:
+            from amplifier_app_cli.lib.bundle_loader import AppModuleResolver
+        except ImportError:
+            assert mounted_resolver is mock_resolver_instance
+        else:
+            assert isinstance(mounted_resolver, AppModuleResolver)
+            assert mounted_resolver._bundle is mock_resolver_instance
 
 
 class TestMainEntryPoint:

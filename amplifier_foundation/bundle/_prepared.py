@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import uuid
 from dataclasses import dataclass
@@ -26,6 +27,26 @@ from amplifier_foundation.spawn_utils import apply_provider_preferences_with_res
 from amplifier_foundation.bundle._dataclass import Bundle
 
 logger = logging.getLogger(__name__)
+
+
+def _inherited_parent_messages(parent_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy inheritable parent conversation without importing parent instructions.
+
+    Instruction records describe the parent's active assembly and must not become
+    policy in a child.  Input anchors are local structural metadata, while all
+    non-reserved message metadata remains useful conversation context.
+    """
+    inherited: list[dict[str, Any]] = []
+    for message in parent_messages:
+        copied = copy.deepcopy(message)
+        metadata = copied.get("metadata")
+        if isinstance(metadata, dict):
+            if "amplifier:instruction" in metadata:
+                continue
+            metadata.pop("amplifier:input", None)
+        inherited.append(copied)
+    return inherited
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # mentions:resolved event helpers
@@ -961,7 +982,9 @@ class PreparedBundle:
         if parent_messages and not session_id:
             child_context = child_session.coordinator.get("context")
             if child_context and hasattr(child_context, "set_messages"):
-                await child_context.set_messages(parent_messages)
+                await child_context.set_messages(
+                    _inherited_parent_messages(parent_messages)
+                )
 
         # Register system prompt factory for dynamic @mention reprocessing
         # Note: For spawned sessions, we still want dynamic system prompts so that

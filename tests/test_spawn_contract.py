@@ -17,6 +17,7 @@ from amplifier_core.hooks import HookRegistry
 
 from amplifier_foundation.bundle import Bundle, PreparedBundle
 from amplifier_foundation.spawn_utils import ProviderPreference
+from amplifier_foundation.bundle._prepared import _inherited_parent_messages
 
 # Resolve the example file relative to this test file
 _EXAMPLE_07 = (
@@ -363,3 +364,72 @@ class TestSpawnSelfDelegationDepth:
         # When orchestrator:complete doesn't fire (no turn_count in data),
         # the result should default to 1, not None
         assert result["turn_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_spawn_inherits_only_detached_nonstructural_parent_history():
+    """The actual spawn path removes parent assembly state before execute."""
+    hooks = HookRegistry()
+    child_bundle = _make_child_bundle()
+    prepared = _make_prepared_bundle()
+    child_context = MagicMock(spec=["set_messages"])
+    child_context.set_messages = AsyncMock()
+    mock_session = _make_mock_session(hooks)
+    mock_session.coordinator.get.return_value = child_context
+    parent_messages = [
+        {
+            "role": "system",
+            "content": "parent assembly",
+            "metadata": {"amplifier:instruction": {"placement": "head"}},
+        },
+        {
+            "role": "user",
+            "content": "parent request",
+            "metadata": {
+                "amplifier:input": {"input_id": "parent-input"},
+                "trace": {"keep": True},
+            },
+        },
+        {
+            "role": "tool",
+            "content": "tool data",
+            "metadata": {"tool": {"name": "read_file"}},
+        },
+    ]
+
+    with patch("amplifier_core.AmplifierSession", return_value=mock_session):
+        await prepared.spawn(
+            child_bundle,
+            "Do something",
+            compose=False,
+            parent_messages=parent_messages,
+        )
+
+    inherited = child_context.set_messages.await_args.args[0]
+    assert [message["content"] for message in inherited] == [
+        "parent request",
+        "tool data",
+    ]
+    assert inherited[0]["metadata"] == {"trace": {"keep": True}}
+    assert inherited[1]["metadata"] == {"tool": {"name": "read_file"}}
+    assert mock_session.execute.await_count == 1
+    inherited[0]["metadata"]["trace"]["keep"] = False
+    inherited[1]["metadata"]["tool"]["name"] = "mutated"
+    assert parent_messages[1]["metadata"]["amplifier:input"]["input_id"] == "parent-input"
+    assert parent_messages[1]["metadata"]["trace"] == {"keep": True}
+    assert parent_messages[2]["metadata"]["tool"] == {"name": "read_file"}
+
+
+def test_parent_history_filter_omits_instruction_records_without_rebranding() -> None:
+    """Structural instruction records never become generic child system messages."""
+    inherited = _inherited_parent_messages(
+        [
+            {
+                "role": "system",
+                "content": "parent policy",
+                "metadata": {"amplifier:instruction": {"source": "parent"}},
+            }
+        ]
+    )
+
+    assert inherited == []
