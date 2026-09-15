@@ -16,13 +16,12 @@ from amplifier_module_tool_delegate import DelegateTool
 REPO_ROOT = Path(__file__).parent.parent
 CATALOG_ROOT = Path(os.environ.get("GIT_OPS_CATALOG_ROOT", REPO_ROOT)).resolve()
 
-CI_COMPLETION_MARKERS = (
+SHARED_CI_COMPLETION_MARKERS = (
     "Post-Push / Post-PR CI Completion",
     'pushed_sha="$(git rev-parse HEAD)"',
     'gh workflow list',
     'gh run list --commit "$pushed_sha" --limit 100',
     "this ref is applicable",
-    "default 20-minute cap",
     "pass/fail outcome",
     "gh run view <run-id> --log-failed",
     "**No CI**",
@@ -42,6 +41,26 @@ CI_COMPLETION_MARKERS = (
     "Discovery/API/auth errors",
     "never **No CI** or green",
 )
+
+CATALOG_CI_MARKERS = {
+    "foundation:git-ops": ("default 20-minute cap",),
+    "anchors:git-ops": (
+        "Poll only when the caller expressly asks to wait",
+        "gives a time budget",
+        "never beyond a 20-minute cap",
+        "requested wait budget ends",
+    ),
+}
+
+CATALOG_ROUTING_MARKERS = {
+    "foundation:git-ops": (),
+    "anchors:git-ops": (
+        "Git and GitHub mutations",
+        "local read-only git status/diff/log",
+        "work/lane/highway administration",
+        "Delegate one requested Git lifecycle, not each subcommand.",
+    ),
+}
 
 CATALOGS = (
     (
@@ -125,13 +144,29 @@ async def test_prepared_catalog_uses_its_own_git_ops_body_and_ci_contract(
     assert agent["instruction"] == expected_body
     assert agent["instruction"] != other_body
     assert other_body not in agent["instruction"]
-    missing_markers = [
-        marker for marker in CI_COMPLETION_MARKERS if marker not in agent["instruction"]
+    normalized_instruction = " ".join(agent["instruction"].split())
+    missing_ci_markers = [
+        marker
+        for marker in (
+            *SHARED_CI_COMPLETION_MARKERS,
+            *CATALOG_CI_MARKERS[catalog_name],
+        )
+        if marker not in normalized_instruction
     ]
-    assert not missing_markers, f"missing CI completion markers: {missing_markers}"
+    assert not missing_ci_markers, (
+        f"missing CI completion markers: {missing_ci_markers}"
+    )
 
     description = _delegate_description(prepared.mount_plan)
     assert f"  - {catalog_name}: {expected_description}" in description
+    missing_routing_markers = [
+        marker
+        for marker in CATALOG_ROUTING_MARKERS[catalog_name]
+        if marker not in description
+    ]
+    assert not missing_routing_markers, (
+        f"missing routing markers: {missing_routing_markers}"
+    )
 
 
 @pytest.mark.asyncio
