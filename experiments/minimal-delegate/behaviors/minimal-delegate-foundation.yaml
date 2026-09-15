@@ -40,8 +40,6 @@ session:
   context:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
-    config:
-      max_tokens: 64000
 
 # ONLY meta-tools — these gate access to other capabilities.
 # CRITICAL: NO direct tools. Specifically absent:
