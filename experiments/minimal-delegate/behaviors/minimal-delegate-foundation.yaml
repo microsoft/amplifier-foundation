@@ -40,6 +40,17 @@ session:
   context:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+    config:
+      # A deliberately TIGHT budget -- this experiment is about how far a
+      # delegate-only head can get on very little context.
+      #
+      # This line existed before with the same value and never did anything:
+      # `max_tokens` used to be a fallback consulted only when a provider
+      # published no window, and the orchestrator always passes one. It is now
+      # a real cap, so the experiment finally runs at the size it asked for.
+      # Kept deliberately (nobody depends on this bundle today) so the 64k
+      # constraint can actually be measured.
+      max_tokens: 64000
 
 # ONLY meta-tools — these gate access to other capabilities.
 # CRITICAL: NO direct tools. Specifically absent:
