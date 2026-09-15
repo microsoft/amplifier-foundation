@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from amplifier_foundation.io.frontmatter import parse_frontmatter
-from amplifier_foundation.modules.activator import ModuleActivator
-from amplifier_foundation.registry import BundleRegistry
-from amplifier_module_tool_delegate import DelegateTool
+from tests.agent_catalog_support import prepare_agent_catalog, render_delegate_catalog
 
 REPO_ROOT = Path(__file__).parent.parent
 CATALOG_ROOT = Path(os.environ.get("GIT_OPS_CATALOG_ROOT", REPO_ROOT)).resolve()
@@ -87,37 +84,12 @@ def _agent_source(path: Path) -> tuple[str, str]:
 async def _prepared_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subdirectory: str
 ):
-    """Load source content through BundleRegistry and prepare its mount plan.
-
-    Module activation is outside this structural check; stubbing it leaves the
-    production loading, source resolution, metadata loading, and prepare path
-    intact without downloading any module.
-    """
+    """Load and prepare one catalog under the test-selected source root."""
     uri = CATALOG_ROOT.as_uri()
     if subdirectory != ".":
         uri = f"{uri}#subdirectory={subdirectory}"
-
-    registry = BundleRegistry(home=tmp_path / "home")
-    bundle = await registry._load_single(uri, auto_include=False)
-    bundle.load_agent_metadata()
-
-    monkeypatch.setattr(ModuleActivator, "activate_all", AsyncMock(return_value={}))
-    monkeypatch.setattr(ModuleActivator, "finalize", lambda self: None)
-    return await bundle.prepare(install_deps=False)
-
-
-def _delegate_description(mount_plan: dict) -> str:
-    """Render the actual DelegateTool catalog from a prepared mount plan."""
-    coordinator = MagicMock()
-    coordinator.session_id = "git-ops-catalog-test"
-    coordinator.config = mount_plan
-    coordinator.session_state = {}
-    coordinator._tool_dispatch_context = {}
-    coordinator.get_capability = lambda _name: None
-    coordinator.get = MagicMock(return_value=None)
-    return DelegateTool(
-        coordinator, {"features": {}, "settings": {"exclude_tools": []}}
-    ).description
+    prepared, _bundle = await prepare_agent_catalog(tmp_path, monkeypatch, uri)
+    return prepared
 
 
 @pytest.mark.asyncio
@@ -157,7 +129,9 @@ async def test_prepared_catalog_uses_its_own_git_ops_body_and_ci_contract(
         f"missing CI completion markers: {missing_ci_markers}"
     )
 
-    description = _delegate_description(prepared.mount_plan)
+    description = render_delegate_catalog(
+        prepared.mount_plan, session_id="git-ops-catalog-test"
+    )
     assert f"  - {catalog_name}: {expected_description}" in description
     missing_routing_markers = [
         marker
@@ -178,4 +152,6 @@ async def test_anchors_prepared_catalog_excludes_foundation_git_ops(
 
     assert "anchors:git-ops" in prepared.mount_plan["agents"]
     assert "foundation:git-ops" not in prepared.mount_plan["agents"]
-    assert "  - foundation:git-ops:" not in _delegate_description(prepared.mount_plan)
+    assert "  - foundation:git-ops:" not in render_delegate_catalog(
+        prepared.mount_plan, session_id="git-ops-catalog-test"
+    )

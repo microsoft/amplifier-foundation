@@ -75,3 +75,5 @@ Use exactly one honest conclusion for each applicable surface:
 - **Policy-only checks** -- only CLA/policy checks exist, without a runnable test
   CI job for this SHA; report the policy separately and never call it CI success.
 - **Unable to verify** -- Discovery/API/auth errors are unable to verify, never **No CI** or green.
+
+@anchors:context/agent-baseline.md

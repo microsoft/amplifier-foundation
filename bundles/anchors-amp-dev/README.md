@@ -31,8 +31,8 @@ includes and a two-line body:
 
 ```yaml
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ```
 
 ```
@@ -60,7 +60,7 @@ ecosystem layer second.
 | Addition | Notes |
 |---|---|
 | `context/amplifier-ecosystem.md` | Three ecosystem principles (dependency order, prove cross-repo changes in a DTU, safe push order) and how to touch session data safely. Appended to the anchors system prompt, not a replacement for it. |
-| `amplifier-dev-expert` agent | Authority for multi-repo development, push order, DTU validation, and bundle/agent authoring. Loads the three ecosystem docs from `@foundation:context/amplifier-dev/` on spawn. |
+| `amplifier-dev-expert` agent | Authority for multi-repo development, push order, DTU validation, and bundle/agent authoring. Loads the shared anchors baseline and three ecosystem docs from `@foundation:context/amplifier-dev/` on spawn; conditionally reads `foundation:docs/BUNDLE_GUIDE.md`, `foundation:docs/AGENT_AUTHORING.md`, or `foundation:context/shared/description-authoring-principles.md` for the relevant authoring change without eagerly loading full docs. |
 | `amplifier-tester` include | Cross-repo validation in a Digital Twin Universe (pulls in `digital-twin-universe` and `gitea` transitively). |
 
 The three ecosystem docs live in exactly one place — the repo root's
