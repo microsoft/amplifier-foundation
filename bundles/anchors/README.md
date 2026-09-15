@@ -51,7 +51,8 @@ for them.
 | **Orchestrator** | `loop-streaming` with extended thinking enabled. |
 | **Context** | `context-simple`, 300k window, auto-compact at 80%. |
 | **Tools** | A standard roster at the parent: filesystem, bash, web, search, todo, apply-patch, delegate, skills (discovery only), mode, recipes. |
-| **Agents** | Six thin, purposeful sub-agents -- `explorer`, `architect`, `builder`, `debugger`, `git-ops`, `researcher` -- each a tight USE-WHEN contract so delegation targets are obvious. |
+| **Agents** | Six thin, purposeful sub-agents -- `explorer`, `architect`, `builder`, `debugger`, `git-ops`, `researcher` -- each a tight USE-WHEN contract and one spawn-only shared baseline. |
+| **Shared baseline** | Spawned agents load `context/agent-baseline.md` once. It requires local-convention discovery and evidence-based, scoped, defensive conduct without copying a parent/root prompt or AGENTS/SCRATCH chain automatically. |
 | **Hooks** | Free-cost UX hooks only (`streaming-ui`, `status-context`, `redaction`, `logging`, `todo-reminder`, `todo-display`, `session-naming`) -- runtime behavior with no per-turn context cost. |
 | **Skills** | Discovery available; auto-injection (`visibility`) turned off to keep first-turn context small. |
 
@@ -92,8 +93,17 @@ anchors/
 │   ├── git-ops.md            # git / gh operations
 │   └── researcher.md         # external research
 └── context/
-    └── system.md             # the behavioral principles + operating rules
+    ├── system.md             # the behavioral principles + operating rules
+    └── agent-baseline.md     # shared, spawn-only agent conduct baseline
 ```
+
+## Spawned-agent conventions
+
+Each agent explicitly loads the same short baseline on spawn. For repository
+work, it discovers the applicable user, workspace, repository, and subdirectory
+conventions and phase-relevant verification rules. It does **not** automatically
+copy a parent/root prompt or that prompt's AGENTS/SCRATCH chain; this loading
+boundary is not permission to ignore rules that apply after discovery.
 
 ## Status
 

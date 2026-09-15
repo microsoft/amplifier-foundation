@@ -26,3 +26,5 @@ You survey code and report findings. You do not modify anything.
 - **Key files** -- `file_path:line_number` for the important locations.
 - **How it connects** -- the flow or structure you found.
 - **Open questions** -- anything ambiguous or worth a closer look.
+
+@anchors:context/agent-baseline.md
