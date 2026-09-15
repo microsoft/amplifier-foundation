@@ -19,14 +19,9 @@ Config Options:
 - features.provider_selection.enabled: Allow provider preferences (default: True)
 - settings.exclude_tools: Tools spawned agents should NOT inherit (default: ["tool-delegate"])
 - settings.exclude_hooks: Hooks spawned agents should NOT inherit (default: [])
-- settings.timeout: Maximum child-session execution time in seconds (default: 14400,
-  i.e. 4 hours); set explicitly to None/null to disable. This is a Layer 3
-  wall-clock BACKSTOP -- orchestrator-independent and intentionally generous
-  (~12x the measured healthy upper bound). It exists for the cases a per-leg
-  LLM-call budget (settings.max_llm_calls) cannot cover: an orchestrator with no
-  budget support, or a single hung call. If a real orchestrator with a call
-  budget makes this timeout fire in practice, that is a signal the budget itself
-  needs attention, not that this default is too generous. Timeouts return the
+- settings.timeout: Optional child-session deadline in seconds (default: None).
+  No deadline is installed unless a positive finite value is configured.
+  settings.max_llm_calls is also off by default. Timeouts return the
   child session ID, but callers must wait for app-layer cancellation cleanup and
   persistence before attempting to resume it.
 - settings.partial_max_chars: Cap on preserved partial text on timeout
@@ -673,7 +668,7 @@ class DelegateTool:
         # Settings
         self.exclude_tools: list[str] = settings.get("exclude_tools", ["tool-delegate"])
         self.exclude_hooks: list[str] = settings.get("exclude_hooks", [])
-        self.timeout = _validate_timeout(settings.get("timeout", 14400))
+        self.timeout = _validate_timeout(settings.get("timeout"))
         # Cap on partial text preserved when the timeout above fires. Only
         # ever consulted on the timeout path; a normal completion never
         # reads it.
@@ -1146,11 +1141,11 @@ class DelegateTool:
                 "max_llm_calls": {
                     "type": "integer",
                     "description": (
-                        "Override the LLM-call budget for this delegation (per session "
-                        "leg). Raise for known-large tasks; 0 disables the budget for "
-                        "this call (a wall-clock backstop still applies). Only takes "
-                        "effect when this session's settings.max_llm_calls is "
-                        "configured -- most deployments do not set one yet."
+                        "Optional LLM-call cap for a new child. Omit unless the user "
+                        "requests a cap; no call or time cap is enabled by default. "
+                        "A positive value overrides settings.max_llm_calls. 0 skips "
+                        "that setting but does not clear inherited orchestrator "
+                        "limits. Resume retains the child's saved limit."
                     ),
                 },
             },
@@ -1980,9 +1975,8 @@ class DelegateTool:
     ) -> int | None:
         """Resolve the per-leg LLM-call budget for a delegation.
 
-        ``None`` means "no Layer 1 budget for this delegation" -- Layer 3
-        (the delegate's own wall-clock ``settings.timeout``) still applies
-        regardless.
+        ``None`` means no additional call budget for this delegation. An explicitly
+        configured wall-clock deadline and inherited orchestrator limits still apply.
 
         Precedence (highest first):
           1. ``call_override`` -- the per-call ``max_llm_calls`` tool input,

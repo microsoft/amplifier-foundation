@@ -80,6 +80,8 @@ tools:
           enabled: true
       settings:
         exclude_tools: [tool-delegate]
+        timeout: null  # Delegation deadlines and call caps are opt-in.
+        max_llm_calls: null
 
   # Skills (user-invocable skills callable via /command + load_skill; auto-injection off to save tokens)
   - module: tool-skills
