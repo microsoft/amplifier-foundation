@@ -55,39 +55,27 @@ the downgrade is never silent. `delegate:agent_resumed` also carries
 `model_role` / `provider_preferences` now, matching `delegate:agent_spawned`
 so the two legs can be compared in telemetry.
 
-### Layered bounding: call budget (Layer 1) + wall-clock backstop (Layer 3)
+### Optional delegation limits
 
-Delegated sessions are bounded two ways, and they are meant to be read as a
-pair, not independently:
+**No model-call cap or wall-clock deadline is enabled by default.** Leave
+`settings.max_llm_calls` and `settings.timeout` absent or `null` for normal
+delegation. Do not assign an arbitrary per-call budget just because a task
+looks small; use a cap only when the user requests one.
 
-1. **Layer 1 -- per-leg LLM-call budget** (`settings.max_llm_calls`, off by
-   default). Enforced in the child's own orchestrator loop via
-   `max_iterations`; exhaustion is a normal turn ending (the child wraps up
-   with its own summary and the transcript stays complete and resumable).
-   This is the layer that should actually catch a runaway agent. See the
-   "Layer 1 call budget" section below.
-2. **Layer 2 -- provider HTTP timeouts.** Already shipped by every provider
-   in the ecosystem (120-600s). Not implemented in this module; a hung
-   single LLM call self-resolves as an `LLMError` well before Layer 3 would
-   ever fire.
-3. **Layer 3 -- wall-clock backstop** (`settings.timeout`, described below).
-   This is what this section documents. It is orchestrator-independent and
-   deliberately generous: it exists for the residual case Layer 1 cannot
-   cover -- an orchestrator with no call-budget support, or a single
-   hanging tool call with no internal timeout of its own. If this backstop
-   fires on a session that has a working Layer 1 budget, treat that as a
-   bug report about the budget, not evidence the backstop is too loose.
+The enforcement code remains available for explicit opt-in. A call budget is
+enforced by a supporting child orchestrator through `max_iterations`; a
+deadline is enforced by this delegate tool. Provider HTTP timeouts, tool
+permissions, cancellation, and recursion controls are separate and unchanged.
+Explicit limits inherited from a parent orchestrator are also preserved.
 
-#### Delegate Timeout (Layer 3)
+#### Delegate timeout
 
-Delegated spawn and resume operations time out after **14400 seconds (4
-hours)** by default. This is roughly 12x the measured healthy upper bound
-for a delegated sub-session and roughly half the duration of the worst
-observed runaway -- generous enough that it should essentially never fire
-in front of a working Layer 1 budget, while still bounding the case where
-Layer 1 does not apply. Configure `settings.timeout` with a positive finite
-number of seconds to change the limit, or set it explicitly to `null` to
-disable the delegate-level timeout.
+Configure `settings.timeout` with a positive finite number of seconds to
+enable a deadline for spawn and resume. Absent or `null` means no
+delegate-level deadline; a hanging child may then require manual cancellation.
+
+**Migration:** the former implicit four-hour deadline is no longer active.
+An operator who wants it can explicitly configure `settings.timeout: 14400`.
 
 A timeout **returns; it never raises.** That is load-bearing: delegates in a
 parallel batch are awaited under `asyncio.gather` with no `return_exceptions`,
@@ -152,7 +140,7 @@ Agent's explicit tool declarations are always honored, even when parent excludes
 | `context_turns` | integer | 5 | Number of turns when context_depth is 'recent' |
 | `context_scope` | enum | "conversation" | Which content: conversation, agents, full |
 | `provider_preferences` | array | - | Ordered provider/model preferences |
-| `max_llm_calls` | integer | - | Override the Layer 1 LLM-call budget for this delegation (per session leg). `0` disables the budget for this call. Only takes effect when `settings.max_llm_calls` is configured -- see "Layer 1 call budget" below. |
+| `max_llm_calls` | integer | - | Optional call cap for a new child, only when requested by the user. Positive values override the module setting; `0` skips it without clearing inherited orchestrator limits. Resume retains the saved child limit. |
 
 ## Configuration
 
@@ -177,7 +165,7 @@ modules:
       exclude_tools:
         - delegate  # Default: spawned agents can't further delegate
       exclude_hooks: []
-      timeout: 14400  # Layer 3 backstop default (4h); set to null to disable
+      timeout: null  # No deadline unless explicitly configured.
       max_llm_calls: null      # Layer 1 call budget (spec: 298-replacement).
                                 # None/unset (default): ships dark -- no
                                 # budget is injected into any child session;
@@ -256,20 +244,19 @@ opt-in matrix.
 
 ## Layer 1 call budget
 
-This module can bound how many main-loop LLM calls a delegated child
-session may make in one leg, as a first line of defense in front of
-`settings.timeout`'s wall-clock backstop (see spec: 298-replacement,
-"Layered Bounding for Delegated Sessions"). The enforcement mechanism is
+This module can optionally bound how many main-loop LLM calls a new child
+session may make in one leg. The enforcement mechanism is
 the child's own orchestrator `max_iterations` config (e.g.
 `amplifier-module-loop-streaming`'s streaming loop) -- this module does not
 count LLM calls itself; it only injects a value into the child's
 `orchestrator_config` at spawn time.
 
-**Ships dark.** `settings.max_llm_calls` defaults to `None`, which means no
+**Off by default.** `settings.max_llm_calls` defaults to `None`, which means no
 budget is injected at all -- every child session gets exactly the
 `orchestrator_config` its parent would have given it anyway (rank 4 below).
-Nothing about this feature is active until an operator sets
-`settings.max_llm_calls` to a positive integer.
+To opt in, an operator sets `settings.max_llm_calls` to a positive integer,
+or the caller supplies a positive `max_llm_calls` for that new child. The
+per-call input works even when the module setting is absent.
 
 ### Precedence (highest first)
 
@@ -280,10 +267,12 @@ Nothing about this feature is active until an operator sets
 | 3 | This module's setting | `settings.max_llm_calls` | Implemented (default `null`) |
 | 4 | Inherited parent `orchestrator_config` | `max_iterations` (only if 1 and 3 are both absent) | Implemented (pre-existing inheritance path, untouched) |
 
-An explicit `0` at rank 1 means "no Layer 1 budget for this delegation" --
-the wall-clock backstop (`settings.timeout`) still applies. Negative values
+An explicit `0` at rank 1 means "inject no additional call budget" -- it skips
+rank 3 but does not erase rank 4's inherited `max_iterations`. A deadline
+applies only if `settings.timeout` is explicitly configured. Negative values
 and booleans are rejected at the point they are supplied (fail loud, not a
-silent coercion).
+silent coercion). Resume uses the child's persisted orchestrator configuration;
+the per-call budget input does not replace a saved child's limit.
 
 ### Negotiated feature, not a contract requirement
 

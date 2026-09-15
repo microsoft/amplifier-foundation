@@ -111,9 +111,31 @@ def _emissions(hooks: MagicMock) -> list[tuple[str, dict]]:
     return [(args[0], args[1]) for args, _kwargs in hooks.emit.call_args_list]
 
 
-def test_timeout_defaults_only_when_key_is_absent():
-    assert _make_tool().timeout == 14400
+def test_timeout_is_opt_in():
+    assert _make_tool().timeout is None
     assert _make_tool(timeout=None).timeout is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [_ABSENT, None])
+@pytest.mark.parametrize("operation", ["spawn", "resume"])
+async def test_uncapped_operations_do_not_schedule_a_deadline(
+    timeout, operation, monkeypatch
+):
+    """Defaults and explicit null both bypass the deadline mechanism entirely."""
+    result = {"output": "done", "session_id": "child-001", "status": "success"}
+    tool = _make_tool(
+        timeout=timeout,
+        spawn_fn=AsyncMock(return_value=result),
+        resume_fn=AsyncMock(return_value=result),
+    )
+    deadline = AsyncMock(side_effect=AssertionError("unexpected deadline"))
+    monkeypatch.setattr("amplifier_module_tool_delegate.asyncio.wait", deadline)
+    response = await (
+        _spawn(tool, _hooks()) if operation == "spawn" else _resume(tool, _hooks())
+    )
+    assert response.success
+    deadline.assert_not_called()
 
 
 @pytest.mark.parametrize("timeout", [1, 0.5, 14400, 10**100])

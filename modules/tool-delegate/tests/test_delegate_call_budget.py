@@ -132,6 +132,14 @@ class TestDefaultInjection:
 
 @pytest.mark.asyncio
 class TestPerCallOverride:
+    async def test_explicit_cap_works_without_a_module_default(self) -> None:
+        tool, spawn_fn = _make_tool()
+        result = await tool.execute(
+            {"agent": "self", "instruction": "Explicit opt-in", "max_llm_calls": 7}
+        )
+        assert result.success
+        assert spawn_fn.call_args.kwargs["orchestrator_config"]["max_iterations"] == 7
+
     async def test_per_call_override_wins_over_default(self) -> None:
         """T2.2 + T2.4: input max_llm_calls=600 beats settings default 300."""
         tool, spawn_fn = _make_tool(
@@ -158,6 +166,17 @@ class TestPerCallOverride:
 
 @pytest.mark.asyncio
 class TestOptOut:
+    async def test_opt_out_preserves_explicit_parent_orchestrator_limit(self) -> None:
+        tool, spawn_fn = _make_tool(
+            settings={"max_llm_calls": 300},
+            orchestrator_value={"config": {"max_iterations": 11}},
+        )
+        result = await tool.execute(
+            {"agent": "self", "instruction": "Use inherited policy", "max_llm_calls": 0}
+        )
+        assert result.success
+        assert spawn_fn.call_args.kwargs["orchestrator_config"]["max_iterations"] == 11
+
     async def test_zero_disables_budget_for_this_call(self) -> None:
         tool, spawn_fn = _make_tool(
             settings={"exclude_tools": [], "max_llm_calls": 300}

@@ -333,17 +333,10 @@ async def test_timeout_event_carries_elapsed_and_partial_flags():
 
 
 def test_partial_max_chars_default_is_shipped_not_swept():
-    """The cap is a real shipped default; the *timeout* remains main's 14400.
-
-    37n's original asserted ``tool.timeout is None``. That assertion was
-    written against a base that predates ``14d5a52`` (Layer 3 wall-clock
-    backstop, default 14400s). Re-asserting it here would silently revert
-    that commit, so this pins only what this change actually introduces.
-    ``test_delegate_timeout.py`` still owns the timeout default.
-    """
+    """Recovery text stays bounded even though the deadline is now opt-in."""
     tool = _make_tool()
     assert tool.partial_max_chars == DEFAULT_PARTIAL_MAX_CHARS == 20000
-    assert tool.timeout == 14400
+    assert tool.timeout is None
 
 
 @pytest.mark.asyncio
