@@ -14,6 +14,7 @@ import json
 import os
 import re
 import socket
+import stat
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -113,6 +114,58 @@ def _ensure_supported() -> None:
         raise RuntimeError("SharedSessionStore writing requires a POSIX local filesystem")
 
 
+def _validate_private_directory(path: Path, *, create: bool) -> None:
+    """Create or validate one state-owned directory without following a link."""
+
+    try:
+        result = path.lstat()
+    except FileNotFoundError:
+        if not create:
+            return
+        try:
+            path.mkdir(mode=0o700, parents=True)
+        except FileExistsError:
+            pass
+        result = path.lstat()
+    except OSError as exc:
+        raise SharedStateError(f"cannot inspect state directory {path.name}") from exc
+
+    if stat.S_ISLNK(result.st_mode) or not stat.S_ISDIR(result.st_mode):
+        raise SharedStateError(f"state directory {path.name} is not a safe directory")
+    if result.st_uid != os.getuid():
+        raise SharedStateError(f"state directory {path.name} is not owned by this user")
+    if stat.S_IMODE(result.st_mode) & 0o077:
+        raise SharedStateError(f"state directory {path.name} has unsafe permissions")
+
+
+def _validate_private_file(path: Path) -> None:
+    """Reject an existing state file that is not private regular data."""
+
+    try:
+        result = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise SharedStateError(f"cannot inspect state file {path.name}") from exc
+    if stat.S_ISLNK(result.st_mode) or not stat.S_ISREG(result.st_mode):
+        raise SharedStateError(f"state file {path.name} is not a safe regular file")
+    if result.st_uid != os.getuid():
+        raise SharedStateError(f"state file {path.name} is not owned by this user")
+    if stat.S_IMODE(result.st_mode) & 0o077:
+        raise SharedStateError(f"state file {path.name} has unsafe permissions")
+
+
+def _ensure_private_state_path(root: Path, directory: Path) -> None:
+    """Create the state-root chain, validating each state-owned component."""
+
+    _validate_private_directory(root, create=True)
+    _validate_private_directory(root / "v1", create=True)
+    _validate_private_directory(root / "v1" / directory.parent.name, create=True)
+    _validate_private_directory(directory, create=True)
+    for name in ("session.lock", "owner.json", "checkpoint.json"):
+        _validate_private_file(directory / name)
+
+
 def _open_nofollow(path: Path, flags: int, mode: int = 0o600) -> int:
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     return os.open(path, flags | nofollow, mode)
@@ -188,22 +241,42 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        try:
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(directory_fd)
-        except OSError:
-            pass  # Some POSIX filesystems do not support directory fsync.
-        finally:
-            os.close(directory_fd)
+        _fsync_directory(path.parent)
     except BaseException:
         try:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
         raise
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist a directory entry where the local POSIX filesystem supports it."""
+
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        pass  # Some POSIX filesystems do not support directory fsync.
+    finally:
+        os.close(directory_fd)
+
+
+def _process_start_identity(path: Path = Path("/proc/self/stat")) -> str | None:
+    """Read Linux procfs field 22, handling process names containing spaces."""
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    closing_paren = raw.rfind(")")
+    if closing_paren < 0:
+        return None
+    fields = raw[closing_paren + 1 :].split()
+    return fields[19] if len(fields) > 19 else None
 
 
 def _owner_details(app: str, diagnostics: dict[str, Any], workspace: Path, session_id: str) -> dict[str, Any]:
@@ -215,23 +288,27 @@ def _owner_details(app: str, diagnostics: dict[str, Any], workspace: Path, sessi
             raise ValueError("diagnostic name is unsafe")
         if not isinstance(value, (str, int, float, bool, type(None))) or (isinstance(value, str) and len(value) > 1024):
             raise ValueError("diagnostics must be bounded JSON scalar values")
-    start_identity: str | None = None
     try:
-        start_identity = Path("/proc/self/stat").read_text(encoding="utf-8").split()[21]
-    except (OSError, IndexError):
-        pass
+        user = getpass.getuser()
+    except (KeyError, OSError, ImportError):
+        user = str(os.getuid())
     owner: dict[str, Any] = {
         "app": app,
         "hostname": socket.gethostname(),
-        "user": getpass.getuser(),
+        "user": user,
         "pid": os.getpid(),
-        "process_start_identity": start_identity,
+        "process_start_identity": _process_start_identity(),
         "acquired_at": datetime.now(timezone.utc).isoformat(),
         "workspace": str(workspace),
         "session_id": session_id,
         "active": True,
     }
-    owner.update(diagnostics)
+    for key, value in diagnostics.items():
+        if key in owner:
+            if type(value) is not type(owner[key]) or value != owner[key]:
+                raise ValueError(f"diagnostic {key!r} cannot override library-owned state")
+            continue
+        owner[key] = value
     return owner
 
 
@@ -322,7 +399,7 @@ class SharedSessionStore:
         """Acquire the stable OS lock and publish advisory owner diagnostics."""
         _ensure_supported()
         owner = _owner_details(app, diagnostics, self.workspace, self.session_id)
-        self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _ensure_private_state_path(self.root, self._directory)
         lock_name = str(self._lock_path)
         with _PROCESS_LOCKS_GUARD:
             if lock_name in _PROCESS_LOCKS:
@@ -434,6 +511,21 @@ class HeldSession:
             if result is None:  # pragma: no cover - replace succeeded but file vanished externally
                 raise SharedStateError("checkpoint disappeared immediately after write")
             return result
+
+    def delete_checkpoint(self) -> None:
+        """Delete only the checkpoint while retaining this session's stable lock."""
+
+        self.check()
+        with self._mutex:
+            self.check()
+            _validate_private_file(self._store.checkpoint_path)
+            try:
+                os.unlink(self._store.checkpoint_path)
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                raise SharedStateError("cannot delete checkpoint") from exc
+            _fsync_directory(self._store.checkpoint_path.parent)
 
     def release(self) -> None:
         """Release once.  It changes only advisory owner metadata, never a checkpoint."""
