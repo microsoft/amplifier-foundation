@@ -6,6 +6,7 @@ Foundation provides:
 - **Bundle System** - Load, compose, validate, and resolve bundles from local and remote sources
 - **@Mention System** - Parse and resolve `@namespace:path` references in instructions
 - **Utilities** - YAML/frontmatter I/O, dict merging, path handling, caching
+- **Shared session state** - POSIX-local atomic checkpoints with exclusive root-session locking
 - **Reference Content** - Reusable providers, agents, behaviors, and context files
 
 ## Quick Start
@@ -147,6 +148,7 @@ See [`examples/README.md`](examples/README.md) for the full catalog of 20+ examp
 | [PATTERNS.md](docs/PATTERNS.md) | Common patterns with code examples |
 | [URI_FORMATS.md](docs/URI_FORMATS.md) | Source URI quick reference |
 | [API_REFERENCE.md](docs/API_REFERENCE.md) | API index pointing to source files |
+| [SHARED_SESSION_STATE.md](docs/SHARED_SESSION_STATE.md) | Safe same-host shared-checkpoint participation |
 
 **Code is authoritative**: Each source file has comprehensive docstrings. Use `help(ClassName)` or read source directly.
 

@@ -138,6 +138,9 @@ from .capabilities import (
     set_working_dir,
 )
 
+# Portable shared root-session checkpoints (POSIX/local filesystem)
+from .shared_state import FileStamp, HeldSession, SessionBusyError, SharedSessionStore, file_stamp
+
 __all__ = [
     # Core fork operations
     "ForkResult",
@@ -187,4 +190,10 @@ __all__ = [
     "WORKING_DIR_CAPABILITY",
     "get_working_dir",
     "set_working_dir",
+    # Portable shared-state checkpoints
+    "FileStamp",
+    "file_stamp",
+    "SessionBusyError",
+    "SharedSessionStore",
+    "HeldSession",
 ]
