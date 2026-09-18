@@ -152,6 +152,33 @@ class TestBundleRepoDot:
         dot = bundle_repo_dot(tmp_path)
         assert "composes" in dot
 
+    def test_behavior_to_local_behavior_composes_edges(self, tmp_path: Path) -> None:
+        """Local behavior includes compose without inventing external edges."""
+        (tmp_path / "bundle.md").write_text(
+            "---\nbundle:\n  name: root\n"
+            "includes:\n  - bundle: fixture:behaviors/umbrella\n---\n"
+        )
+        behaviors_dir = tmp_path / "behaviors"
+        behaviors_dir.mkdir()
+        (behaviors_dir / "umbrella.yaml").write_text(
+            "bundle:\n  name: umbrella\nincludes:\n"
+            "  - bundle: fixture:behaviors/design\n"
+            "  - bundle: fixture:behaviors/logging.yaml\n"
+            "  - bundle: fixture:behaviors/missing\n"
+            "  - bundle: git+https://github.com/other/foreign@main"
+            "#subdirectory=behaviors/foreign.yaml\n"
+        )
+        (behaviors_dir / "design.yaml").write_text("bundle:\n  name: design\n")
+        (behaviors_dir / "logging.yaml").write_text("bundle:\n  name: logging\n")
+
+        dot = bundle_repo_dot(tmp_path)
+
+        assert 'root_root -> beh_umbrella [label="composes"]' in dot
+        assert 'beh_umbrella -> beh_design [label="composes"]' in dot
+        assert 'beh_umbrella -> beh_logging [label="composes"]' in dot
+        assert "beh_umbrella -> ext_" not in dot
+        assert bundle_repo_dot(tmp_path) == dot
+
     def test_external_behavior_includes_shown_dashed(self, tmp_path: Path) -> None:
         """External git+ behavior includes appear as dashed nodes."""
         (tmp_path / "bundle.md").write_text(
