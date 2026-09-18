@@ -23,113 +23,96 @@ Bundles are the primary way to share and compose AI agent configurations.
 
 ---
 
-## Foundation vs. Anchors: Which Base?
+## Behavior-first authoring
 
-This repository publishes two bundles that serve **different** purposes, and it is easy to conflate them:
+For a reusable capability, author and document its **behavior** first. A behavior
+is the portable value other hosts compose. An optional root/base bundle can offer
+a complete runnable experience. Separately, a flat repository may need an
+enclosing root manifest to anchor namespace resources for repo-level `agents/` or
+`context/`; that metadata/resource role does not make root configuration the
+primary capability artifact.
 
-- **`anchors`** is the CLI's **default runtime bundle** — the bundle a new session uses when none is specified. It is lean and self-contained: it pins all of its own module sources with full `git+https://…` URLs and does **not** inherit from `foundation`. Think of `anchors` as a bundle you *run*.
-- **`foundation`** is the **composition base you inherit from** when authoring your own bundle. Think of `foundation` as a bundle you *build on*.
+| You are delivering | Primary artifact | It owns |
+|---|---|---|
+| Reusable capability | `behaviors/my-capability.yaml` | Capability-specific tools, agents, hooks, and context |
+| Complete host | A supporting `bundle.md` | A chosen runtime composition and its own instruction |
+| Flat resource layout | An enclosing root manifest | Namespace anchoring for repo-level assets, verified by resolution |
+| Existing Foundation root | The selected legacy root | Compatibility for consumers that deliberately select it |
 
-This guide covers the second case: creating a bundle by inheriting from `foundation` (the thin bundle pattern below). Making `anchors` the default runtime bundle does **not** change how you author bundles — you still build on `foundation`.
-
----
-
-## The Thin Bundle Pattern (Recommended)
-
-**Most bundles should be thin** - inheriting from foundation and adding only their unique capabilities.
-
-### The Problem
-
-When creating bundles that include foundation, a common mistake is to **redeclare things foundation already provides**:
+### Primary deliverable: the behavior
 
 ```yaml
-# ❌ BAD: Fat bundle that duplicates foundation
-includes:
-  - bundle: foundation
+# behaviors/my-capability.yaml
+bundle:
+  name: my-capability-behavior
+  version: 1.0.0
+  description: Adds X capability
 
-session:              # ❌ Foundation already defines this!
-  orchestrator:
-    module: loop-streaming
-    source: git+https://github.com/...
-  context:
-    module: context-simple
+agents:
+  include:
+    - my-capability:my-agent
 
-tools:                # ❌ Foundation already has these!
-  - module: tool-filesystem
-    source: git+https://github.com/...
-  - module: tool-bash
-    source: git+https://github.com/...
-
-hooks:                # ❌ Foundation already has these!
-  - module: hooks-streaming-ui
-    source: git+https://github.com/...
+context:
+  include:
+    - my-capability:context/instructions.md
 ```
 
-This duplication:
-- Creates maintenance burden (update in two places)
-- Can cause version conflicts
-- Misses foundation updates automatically
+Install that capability into an existing Amplifier CLI host:
 
-### The Solution: Thin Bundles
+```bash
+amplifier bundle add 'git+https://github.com/org/my-repo@main#subdirectory=behaviors/my-capability.yaml' --app
+```
 
-A **thin bundle** only declares what it uniquely provides:
+The behavior must not include a complete root (including Anchors), select a
+provider, or declare the host's `session.orchestrator` or root instruction. Those
+choices belong to the host that composes it. Put operating rules in the agent or
+tool they govern, and keep heavy documentation in a context-sink agent; do not
+duplicate the same instruction through a body `@mention` and `context.include`.
 
-```yaml
-# ✅ GOOD: Thin bundle inherits from foundation
+### Optional supporting root: Anchors for a new complete host
+
+When a capability also needs a runnable composition, add a thin supporting root
+that composes the behavior rather than reimplementing it. For a new complete host,
+use Anchors as the supporting root:
+
+```markdown
 ---
 bundle:
   name: my-capability
   version: 1.0.0
-  description: Adds X capability
+  description: Runnable composition for my capability
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - bundle: my-capability:behaviors/my-capability    # Behavior pattern
-
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  - bundle: my-capability:behaviors/my-capability
 ---
 
-# My Capability
-
-@my-capability:context/instructions.md
-
----
-
-@foundation:context/shared/common-system-base.md
+@anchors:context/system.md
 ```
 
-**That's it.** All tools, session config, and hooks come from foundation.
+The supporting root has an instruction body, so it explicitly preserves
+`@anchors:context/system.md`. It does not repeat the behavior's context, agents,
+tools, or hooks. Register or select this complete root deliberately (for example,
+`amplifier bundle add '<root URI>' --name my-capability` followed by
+`amplifier bundle use my-capability`); `--app` is required for adding a behavior
+to an existing CLI host, not for registering or selecting a supporting root.
 
-### Exemplar: amplifier-bundle-recipes
+### Choosing the supporting root
 
-See [amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes) for the canonical example:
+Anchors is leaner than the legacy Foundation root. Its six agents are named
+`anchors:explorer`, `anchors:architect`, `anchors:builder`, `anchors:debugger`,
+`anchors:git-ops`, and `anchors:researcher`. Bare Anchors keeps skills visibility
+off; the app CLI composes its full skills behavior for its own sessions. Add
+additional behaviors explicitly when a complete host needs them. Do not infer
+other runtime semantics from a manifest field name.
 
-```yaml
-# amplifier-bundle-recipes/bundle.md - Only 14 lines of YAML!
----
-bundle:
-  name: recipes
-  version: 1.0.0
-  description: Multi-step AI agent orchestration for repeatable workflows
-
-includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - bundle: recipes:behaviors/recipes
----
-
-# Recipe System
-
-@recipes:context/recipe-instructions.md
-
----
-
-@foundation:context/shared/common-system-base.md
-```
-
-**Key observations**:
-- No `tools:`, `session:`, or `hooks:` declarations (inherited from foundation)
-- Uses behavior pattern for its unique capabilities
-- References consolidated instructions file
-- Minimal markdown body — see [What Goes Below the Frontmatter](#what-goes-below-the-frontmatter)
+Foundation library imports, `foundation:` documentation namespaces, provider
+partials, and selected legacy Foundation roots remain valid. Behavior-first does
+not ban roots: a root manifest can be needed to anchor namespace resources in a
+flat repository whose behavior references repo-level `agents/` or `context/`.
+`namespace_root` alone does not prove a rootless layout resolves. Keep an enclosing
+manifest when that layout needs it, and verify actual resolution; self-contained
+behavior layouts remain valid without a blanket root requirement.
 
 ---
 
@@ -222,11 +205,17 @@ context:
 
 ### Using Behaviors
 
-Include a behavior in your bundle:
+Add the behavior directly to an existing host; this is the normal consumption path:
+
+```bash
+amplifier bundle add 'git+https://github.com/org/bundle@main#subdirectory=behaviors/foo.yaml' --app
+```
+
+A supporting root may compose the same behavior when it deliberately provides a
+complete host:
 
 ```yaml
 includes:
-  - bundle: foundation
   - bundle: my-capability:behaviors/my-capability   # From same bundle
   - bundle: git+https://github.com/org/bundle@main#subdirectory=behaviors/foo.yaml  # External
 ```
@@ -262,7 +251,7 @@ context:
 - Adds a tool specific to this capability
 - Declares the agents this behavior provides
 - References consolidated context file
-- Can be included by foundation OR any other bundle
+- Can be included by any host bundle without selecting that host's base
 
 ### Agent Definition Patterns: Include vs Inline
 
@@ -346,32 +335,27 @@ context:
     - my-capability:context/instructions.md
 ```
 
-And from your bundle.md:
+Do not repeat that instruction from a root body. If a complete host is useful,
+its supporting root composes the behavior and preserves the Anchors instruction:
 
 ```markdown
 ---
 bundle:
   name: my-capability
 includes:
-  - bundle: foundation
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-capability:behaviors/my-capability
 ---
 
-# My Capability
-
-@my-capability:context/instructions.md
-
----
-
-@foundation:context/shared/common-system-base.md
+@anchors:context/system.md
 ```
 
 ### Exemplar: recipes instructions
 
 See [amplifier-bundle-recipes/context/recipe-instructions.md](https://github.com/microsoft/amplifier-bundle-recipes):
 - Single source of truth for recipe system instructions
-- Referenced by both `behaviors/recipes.yaml` AND `bundle.md`
-- No duplication
+- Referenced by `behaviors/recipes.yaml`, which is the reusable capability
+- A supporting root composes that behavior rather than loading the instructions again
 
 ---
 
@@ -516,9 +500,9 @@ Bundle repos follow **conventions** that enable maximum reusability and composit
 
 | Directory | Convention Name | Purpose |
 |-----------|-----------------|---------|
-| `/bundle.md` | **Root bundle** | Repo's primary entry point, establishes namespace |
+| `/behaviors/*.yaml` | **Behavior bundles** | Primary reusable capability entry points |
+| `/bundle.md` | **Supporting root** | Optional runnable composition; can establish namespace resources |
 | `/bundles/*.yaml` | **Standalone bundles** | Pre-composed, ready-to-use variants (e.g., "with-anthropic") |
-| `/behaviors/*.yaml` | **Behavior bundles** | "The value this repo provides" - compose onto YOUR bundle |
 | `/providers/*.yaml` | **Provider bundles** | Provider configurations to compose |
 | `/agents/*.md` | **Agent files** | Specialized agent definitions |
 | `/context/*.md` | **Context files** | Shared instructions, knowledge |
@@ -527,28 +511,28 @@ Bundle repos follow **conventions** that enable maximum reusability and composit
 
 ### Directory Purposes
 
-**Root bundle** (`/bundle.md`): The primary entry point for your bundle. Establishes the namespace (from `bundle.name`) and typically includes its own behavior for DRY. This is both structurally a "root bundle" and conventionally the main entry point.
+**Supporting root** (`/bundle.md`): An optional complete runnable composition. When present, it establishes the usual enclosing namespace layout and includes its own behavior. It is structurally a root bundle, but it is not the reusable capability's required entry point.
 
 **Standalone bundles** (`/bundles/*.yaml`): Pre-composed variants ready to use as-is. Typically combine the root bundle with a provider choice. Examples: `with-anthropic.yaml`, `minimal.yaml`. These are structurally "nested bundles" (loaded via `namespace:bundles/foo`) but conventionally "standalone" because they're complete and ready to use.
 
-**Behavior bundles** (`/behaviors/*.yaml`): The reusable capability this repo provides. When someone wants to add your capability to THEIR bundle, they include your behavior. Contains agents, context, and optionally tools. The root bundle should include its own behavior (DRY pattern).
+**Behavior bundles** (`/behaviors/*.yaml`): The reusable capability this repo provides. When someone wants to add your capability to their existing host, they include this behavior. It contains agents, context, and optionally capability-specific tools or hooks; it does not choose the host's root, provider, orchestrator, or root instruction.
 
 **Provider bundles** (`/providers/*.yaml`): Provider configurations that can be composed onto other bundles. Allows users to choose which provider to use without the bundle author making that decision.
 
 ### The Recommended Pattern
 
-1. **Put your main value in `/behaviors/`** — this is what others compose onto their bundles (a "partial" bundle)
-2. **The standalone bundle MUST include its own behavior** — this is the wiring path that makes the behavior's `context:`, `tools:`, and `hooks:` reachable at runtime. The behavior file is inert until included. DRY is a secondary benefit; reachability is the primary one.
-3. **`/bundles/` offers pre-composed variants** — additional standalone bundles for users who want ready-to-run combinations
+1. **Put the reusable value in `/behaviors/`** — this is the primary capability entry point.
+2. **If you offer a supporting root, it MUST include its own behavior** — this keeps the behavior's `context:`, `tools:`, and `hooks:` reachable without duplicate implementation.
+3. **`/bundles/` offers additional pre-composed variants** — complete combinations for users who deliberately want them.
 
 ```yaml
-# bundle.md (root) - thin, includes own behavior
+# bundle.md (optional supporting root) - thin, composes own behavior
 bundle:
   name: my-capability
   version: 1.0.0
 
 includes:
-  - bundle: foundation
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-capability:behaviors/my-capability  # DRY: include own behavior
 ```
 
@@ -580,13 +564,13 @@ A bundle can be classified in BOTH systems independently:
 
 ## Bundle Directory Structure
 
-### Thin Bundle (Recommended)
+### Behavior-first layout (recommended)
 
 ```
 my-bundle/
-├── bundle.md                 # Thin: includes + context refs only
 ├── behaviors/
 │   └── my-capability.yaml    # Reusable behavior
+├── bundle.md                 # Optional supporting root: Anchors + behavior
 ├── agents/                   # Agent definitions
 │   ├── agent-one.md
 │   └── agent-two.md
@@ -751,11 +735,12 @@ Editable installs use source directories and may mask packaging bugs that only a
 ### Step 1: Decide Your Pattern
 
 **Ask yourself**:
-- Does my bundle add capability to foundation? → **Use thin bundle + behavior pattern**
-- Is my bundle standalone (no foundation dependency)? → Declare everything you need
-- Do I want my capability reusable by other bundles? → **Create a behavior**
+- Do I want a reusable capability? → **Create a behavior first**
+- Do I also need a complete runnable host? → Add a supporting root that composes it
+- Do repo-level namespaced assets need an enclosing manifest? → Keep the root and
+  verify resolution; do not infer a rootless layout from `namespace_root` alone
 
-### Step 2: Create Behavior (if adding to foundation)
+### Step 2: Create the Behavior
 
 Create `behaviors/my-capability.yaml`:
 
@@ -813,7 +798,7 @@ You are a specialized agent for [specific purpose].
 [Agent-specific instructions]
 ```
 
-### Step 5: Create Thin bundle.md
+### Step 5: Add a Supporting Root (only for a complete host)
 
 ```markdown
 ---
@@ -823,24 +808,19 @@ bundle:
   description: Provides X capability
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-capability:behaviors/my-capability
 ---
 
-# My Capability
-
-@my-capability:context/instructions.md
-
----
-
-@foundation:context/shared/common-system-base.md
+@anchors:context/system.md
 ```
 
 ### Step 6: Add README and Standard Files
 
 Create README.md documenting:
 - What the bundle provides
-- The architecture (thin bundle + behavior pattern)
+- The behavior URI as the primary capability installation
+- The optional supporting-root URI and its purpose, if the repo supplies one
 - How to load/use it
 
 #### Install-Instructions Convention
@@ -861,20 +841,18 @@ amplifier bundle add "git+https://github.com/org/my-repo#subdirectory=behaviors/
 not the bare root bundle:
 
 ```bash
-# Only lead with this if THIS repo's purpose is to ship ready-to-run root
-# bundles for end users -- uncommon. Most repos provide a capability
-# others compose onto their OWN bundle, via the behavior pattern above.
-amplifier bundle add "git+https://github.com/org/my-repo" --app
+# Register a supporting root only when the user wants its complete experience.
+amplifier bundle add "git+https://github.com/org/my-repo@main#subdirectory=bundle.md" --name my-capability
+amplifier bundle use my-capability
 ```
 
 If your repo genuinely exists to produce root bundles for users, leading
 with the root-bundle install is correct -- just make it a deliberate
 choice, not the unexamined default.
 
-**Always include `--app` on install commands targeting the Amplifier
-CLI.** `--app` is what makes `amplifier bundle add <uri>` compose into an
-installed CLI's configuration; omitting it is the most common README
-defect this convention exists to catch.
+**Use `--app` when adding a behavior to the installed Amplifier CLI.**
+It composes the capability into that host. Do not prescribe `--app` for
+registering or selecting a supporting root with `--name` and `bundle use`.
 
 **Tool install commands: `uv tool install`, not `pip install`.** If your
 bundle also ships a standalone CLI (see [Bundle with Root Python
@@ -1043,25 +1021,28 @@ Use this self-referential git URL form even when the module lives in the bundle'
 
 ## Anti-Patterns to Avoid
 
-### ❌ Duplicating Foundation
+### ❌ Duplicating a Supporting Root
 
 ```yaml
-# DON'T DO THIS when you include foundation
+# DON'T DO THIS when a supporting root already provides the complete host
 includes:
-  - bundle: foundation
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 
 tools:
-  - module: tool-filesystem     # Foundation has this!
+  - module: tool-filesystem     # The supporting root has this!
     source: git+https://...
 
 session:
-  orchestrator:                 # Foundation has this!
+  orchestrator:                 # The supporting root has this!
     module: loop-streaming
 ```
 
-**Why it's bad**: Creates maintenance burden, version conflicts, misses foundation updates.
+**Why it's bad**: Creates maintenance burden, version conflicts, and a second
+complete-host implementation. A behavior must not include this root at all.
 
-**Fix**: Remove duplicated declarations. Foundation provides them.
+**Fix**: Keep the reusable capability in a behavior. If a complete host is
+useful, its supporting root composes Anchors and that behavior without
+redeclaring their runtime sections.
 
 ### ❌ Inline Instructions in bundle.md
 
@@ -1093,8 +1074,6 @@ bundle:
   name: my-capability
 
 includes:
-  - bundle: foundation
-
 agents:
   include:
     - my-capability:agent-one
@@ -1118,8 +1097,6 @@ bundle:
   version: 1.0.0
 
 includes:
-  - bundle: foundation
-
 session:
   orchestrator: ...    # Unnecessary
   context: ...         # Unnecessary
@@ -1415,14 +1392,15 @@ dependencies = []   # ✅ amplifier-core is a peer dependency
 
 ## Decision Framework
 
-### When to Include Foundation
+### What to Create and Compose
 
 | Scenario | Recommendation |
 |----------|---------------|
-| Adding capability to AI assistants | ✅ Include foundation |
-| Creating standalone tool | ❌ Don't need foundation |
-| Need base tools (filesystem, bash, web) | ✅ Include foundation |
-| Building on existing bundle | ✅ Include that bundle |
+| Adding a reusable capability | ✅ Author and share a behavior |
+| Adding it to an existing host | ✅ Compose or install that behavior with `--app` |
+| Creating a new complete host | ✅ Optionally add an Anchors supporting root |
+| Selecting a legacy complete composition | ✅ Use the chosen retained root deliberately |
+| Creating a standalone tool | ❌ A behavior or root is not automatically needed |
 
 ### When to Use Behaviors
 
@@ -1443,9 +1421,11 @@ dependencies = []   # ✅ amplifier-core is a peer dependency
 
 ---
 
-## Bundle File Structure
+## Complete Root File Structure
 
-A bundle is a markdown file with YAML frontmatter:
+Use this shape only for a complete root that deliberately owns a runtime
+composition. It is not the primary template for a reusable capability; start
+with the behavior above. A supporting root uses the smaller Anchors composition.
 
 ```markdown
 ---
@@ -1455,10 +1435,10 @@ bundle:
   description: What this bundle provides
 
 includes:
-  - bundle: foundation              # Inherit from other bundles
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-bundle:behaviors/x   # Include behaviors
 
-# Only declare tools NOT inherited from includes
+# Only declare additional tools NOT inherited from Anchors
 tools:
   - module: tool-name
     source: git+https://github.com/my-org/my-bundle@main#subdirectory=modules/tool-name
@@ -1479,18 +1459,13 @@ agents:
   include:
     - my-bundle:agent-name          # Reference agents in this bundle
 
-# Only declare hooks NOT inherited from includes
+# Only declare additional hooks NOT inherited from Anchors
 hooks:
   - module: hooks-custom
     source: git+https://github.com/...
 ---
 
-# System Instructions
-
-Your markdown instructions here. This becomes the system prompt.
-
-Reference documentation with @mentions:
-@my-bundle:docs/GUIDE.md
+@anchors:context/system.md
 ```
 
 ---
@@ -1763,9 +1738,11 @@ includes:
 
 ## Best Practices
 
-### Use the Thin Bundle Pattern
+### Start with a Behavior
 
-When including foundation, don't redeclare what it provides. Your bundle.md should be minimal.
+Put reusable capability configuration in `behaviors/`. If a complete host is also
+useful, keep its root thin: compose Anchors plus the behavior and preserve
+`@anchors:context/system.md` in its own body.
 
 ### Create Behaviors for Reusability
 
@@ -1803,11 +1780,11 @@ Bundles are configuration, not Python packages. Don't add a `pyproject.toml` at 
 
 ## Complete Example: amplifier-bundle-recipes
 
-See [amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes) for the canonical example of the thin bundle + behavior pattern:
+See [amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes) for an existing full-application example of a thin root + behavior pattern. New reusable capability guidance in this document starts from the behavior; retain such full examples as complete-host references.
 
 ```
 amplifier-bundle-recipes/
-├── bundle.md                 # THIN: 14 lines of YAML, just includes
+├── bundle.md                 # Existing complete-host entry point
 ├── behaviors/
 │   └── recipes.yaml          # Behavior: tool + agents + context
 ├── agents/
@@ -1825,7 +1802,7 @@ amplifier-bundle-recipes/
 ```
 
 **Key patterns demonstrated**:
-- **Thin bundle.md** - Only includes foundation + behavior
+- **Supporting root** - Existing complete-host composition includes its behavior
 - **Behavior pattern** - `behaviors/recipes.yaml` defines the capability
 - **Context de-duplication** - Instructions in `context/recipe-instructions.md`
 - **Local module** - `modules/tool-recipes/` with source reference
@@ -1861,7 +1838,8 @@ This fires when `mount()` returns `None` without calling `coordinator.mount()`. 
 
 ### Behavior not applying
 
-- Verify the standalone bundle's `includes:` list contains `- bundle: <name>:behaviors/<name>`. A behavior file on disk that is never included is silently inert — the most common cause of "my behavior isn't loading."
+- Verify the installed behavior URI targets `#subdirectory=behaviors/<name>.yaml`.
+- If the repository supplies a supporting root, verify its `includes:` list contains `- bundle: <name>:behaviors/<name>`. A supporting root that neither includes the behavior nor implements it has no path to the capability.
 - Verify behavior YAML syntax is correct
 - Check include path: `my-bundle:behaviors/name` (not `my-bundle:behaviors/name.yaml`)
 - Ensure behavior declares `agents:` and/or `context:` sections
@@ -1870,7 +1848,7 @@ This fires when `mount()` returns `None` without calling `coordinator.mount()`. 
 
 ## Reference
 
-- **[amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes)** - Canonical example of thin bundle + behavior pattern
+- **[amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes)** - Existing complete-host example with a behavior
 - **[URI Formats](URI_FORMATS.md)** - Complete source URI documentation
 - **[Validation](VALIDATION.md)** - Bundle validation rules
 - **[API Reference](API_REFERENCE.md)** - Programmatic bundle loading

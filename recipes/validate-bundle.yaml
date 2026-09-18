@@ -1,10 +1,23 @@
 # validate-bundle.yaml
 # Multi-Bundle Validator Recipe with Accurate Dependency Tracing
-# Validates all bundles in a repo (root + /bundles/*) with proper dependency tracing.
+# Validates all supported repo entry points (root, /bundles/*, and behaviors/*)
+# with proper dependency tracing.
 #
 # =============================================================================
 # CHANGELOG
 # =============================================================================
+#
+# v2.2.0 (2026-09-18):
+#   - NEW FEATURE: discover behavior partials as first-class validation targets:
+#     direct `behaviors/*.{yaml,yml,md}` entries and conventional one-level
+#     `behaviors/*/bundle.{md,yaml,yml}` entries are tagged `behavior`, while
+#     arbitrary Markdown documentation is not treated as a bundle entry point.
+#   - FAIL-LOUD: a real directory with no root, standalone, or behavior entry
+#     now reports `no_bundles_discovered` and exits non-zero before the empty
+#     foreach could otherwise produce a successful-looking report over nothing.
+#   - The discovery target now travels through `VALIDATE_BUNDLE_PATH`, never a
+#     Python string literal. This retains a literal Windows path rather than
+#     escape-processing it before the `Path` check runs.
 #
 # v2.1.2:
 #   - The synthesize-report prompt opened with a bare "Synthesize all bundle
@@ -76,8 +89,8 @@ name: validate-bundle
 description: |
   Validates Amplifier bundles with accurate dependency tracing.
   
-  v2.0.0 MAJOR UPDATE: 
-  - Discovers all bundles (root + /bundles/*)
+  v2.2.0:
+  - Discovers all supported entry points (root, /bundles/*, and behavior partials)
   - Traces ACTUAL `includes:` to build real dependency tree per bundle
   - Only counts context from actually-included behaviors
   - Reports results per-bundle with clear separation
@@ -85,7 +98,7 @@ description: |
   For example, if a behavior is only included by `bundles/amplifier-dev.yaml`
   and NOT by the root `bundle.md`, its context files will only be counted
   when validating `amplifier-dev`.
-version: "2.1.2"
+version: "2.2.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "context-health", "dependency-tracing"]
 
@@ -149,21 +162,23 @@ steps:
 
   # ============================================================================
   # PHASE 2: Bundle Discovery
-  # Find all bundles to validate (root + /bundles/*)
+  # Find all supported entry points to validate (root, /bundles/*, behaviors/*)
   # ============================================================================
 
   - id: "discover-bundles"
     type: "bash"
     command: |
-      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      VALIDATE_BUNDLE_PATH="{{bundle_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       from pathlib import Path
 
       def discover_bundles(bundle_path: str) -> dict:
-          """Discover all bundles to validate in the given path.
-          
-          If bundle_path is a file, validate just that file.
-          If bundle_path is a directory, find root bundle + all bundles in /bundles/.
+          """Discover supported root, standalone, and behavior entry points.
+
+          Direct behavior YAML/YML files, frontmatter-bearing behavior Markdown,
+          and one-level conventional behavior directories are loader-supported
+          entry points. Documentation files are not.
           """
           results = {
               "phase": "discovery",
@@ -171,24 +186,64 @@ steps:
               "bundles": [],
               "is_single_file": False,
               "is_repo": False,
-              "repo_root": None
+              "repo_root": None,
+              "errors": [],
+              "passed": True,
           }
-          
+
+          seen_paths = set()
+
+          def add_bundle(entry_path: Path, bundle_type: str, bundle_name: str, repo_root: Path) -> None:
+              """Record each resolved entry once, even if discovery paths overlap."""
+              resolved = entry_path.resolve()
+              if resolved in seen_paths:
+                  return
+              seen_paths.add(resolved)
+              results["bundles"].append({
+                  "bundle_path": str(resolved),
+                  "bundle_type": bundle_type,
+                  "bundle_name": bundle_name,
+                  "repo_root": str(repo_root),
+              })
+
+          def has_frontmatter(markdown_path: Path) -> bool:
+              """Markdown behavior files need a YAML header; prose does not qualify."""
+              try:
+                  content = markdown_path.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
+              except OSError:
+                  return False
+              return content.startswith("---") and "\n---" in content[3:]
+
+          def is_known_behavior_path(candidate: Path) -> bool:
+              """Classify direct and conventional behavior files in single-file mode."""
+              if candidate.parent.name == "behaviors":
+                  return candidate.suffix in {".yaml", ".yml", ".md"}
+              return (
+                  candidate.parent.parent.name == "behaviors"
+                  and candidate.name in {"bundle.md", "bundle.yaml", "bundle.yml"}
+              )
+
+          def single_file_repo_root(candidate: Path) -> Path:
+              """Preserve the enclosing repo root for known behavior partials."""
+              if candidate.parent.name == "behaviors":
+                  return candidate.parent.parent
+              if candidate.parent.parent.name == "behaviors":
+                  return candidate.parent.parent.parent
+              return candidate.parent
+
           path = Path(bundle_path).resolve()
           
           if path.is_file():
               # Single file mode
               results["is_single_file"] = True
-              results["repo_root"] = str(path.parent)
-              results["bundles"].append({
-                  "bundle_path": str(path),
-                  "bundle_type": "single_file",
-                  "bundle_name": path.stem,
-                  "repo_root": str(path.parent)
-              })
+              repo_root = single_file_repo_root(path)
+              results["repo_root"] = str(repo_root)
+              bundle_type = "behavior" if is_known_behavior_path(path) else "single_file"
+              bundle_name = path.parent.name if path.name.startswith("bundle.") else path.stem
+              add_bundle(path, bundle_type, bundle_name, repo_root)
           
           elif path.is_dir():
-              # Directory mode - find all bundles
+              # Directory mode - find all supported entry points.
               results["is_repo"] = True
               results["repo_root"] = str(path)
               
@@ -196,36 +251,73 @@ steps:
               for bundle_name in ["bundle.md", "bundle.yaml"]:
                   root_bundle = path / bundle_name
                   if root_bundle.exists():
-                      results["bundles"].append({
-                          "bundle_path": str(root_bundle),
-                          "bundle_type": "root",
-                          "bundle_name": "root",
-                          "repo_root": str(path)
-                      })
+                      add_bundle(root_bundle, "root", "root", path)
                       break
               
               # Check for standalone bundles in /bundles/
               bundles_dir = path / "bundles"
               if bundles_dir.exists() and bundles_dir.is_dir():
                   for ext in ["*.yaml", "*.yml", "*.md"]:
-                      for bundle_file in bundles_dir.glob(ext):
+                      for bundle_file in sorted(bundles_dir.glob(ext)):
                           # Skip if it's just a README or similar
                           if bundle_file.stem.lower() in ["readme", "changelog"]:
                               continue
-                          results["bundles"].append({
-                              "bundle_path": str(bundle_file),
-                              "bundle_type": "standalone",
-                              "bundle_name": bundle_file.stem,
-                              "repo_root": str(path)
-                          })
+                          add_bundle(bundle_file, "standalone", bundle_file.stem, path)
+
+              # Behaviors are independently composable entry points, not
+              # standalones: a provider and session orchestrator belong to
+              # the host that installs them.
+              behaviors_dir = path / "behaviors"
+              if behaviors_dir.exists() and behaviors_dir.is_dir():
+                  for ext in ["*.yaml", "*.yml", "*.md"]:
+                      for behavior_file in sorted(behaviors_dir.glob(ext)):
+                          if (
+                              behavior_file.suffix == ".md"
+                              and not has_frontmatter(behavior_file)
+                          ):
+                              continue
+                          add_bundle(behavior_file, "behavior", behavior_file.stem, path)
+
+                  # A behavior may package its entry point conventionally in
+                  # behaviors/<name>/bundle.{md,yaml,yml}. Select one file per
+                  # directory by normal loader precedence and then de-duplicate
+                  # the resolved artifact.
+                  for behavior_dir in sorted(behaviors_dir.iterdir()):
+                      if not behavior_dir.is_dir():
+                          continue
+                      for filename in ["bundle.md", "bundle.yaml", "bundle.yml"]:
+                          behavior_bundle = behavior_dir / filename
+                          if behavior_bundle.exists():
+                              add_bundle(
+                                  behavior_bundle,
+                                  "behavior",
+                                  behavior_dir.name,
+                                  path,
+                              )
+                              break
           
           else:
-              results["error"] = f"Path does not exist: {bundle_path}"
+              results["errors"].append({
+                  "type": "path_not_found",
+                  "message": f"Path does not exist: {bundle_path}",
+              })
           
           results["total_bundles"] = len(results["bundles"])
+          if results["total_bundles"] == 0 and not results["errors"]:
+              results["errors"].append({
+                  "type": "no_bundles_discovered",
+                  "message": (
+                      "No supported bundle entry points found. Expected a root "
+                      "bundle, /bundles/* standalone, or a direct/conventional "
+                      "behavior entry under behaviors/."
+                  ),
+              })
+          results["passed"] = not results["errors"]
           print(json.dumps(results))
+          if not results["passed"]:
+              raise SystemExit(1)
       
-      discover_bundles("{{bundle_path}}")
+      discover_bundles(os.environ["VALIDATE_BUNDLE_PATH"])
       EOF
     output: "discovery"
     parse_json: true
@@ -333,7 +425,7 @@ steps:
 
       ### Metadata
       - Validated: (current date/time)
-      - Recipe: validate-bundle v2.1.2
+      - Recipe: validate-bundle v2.2.0
       - Foundation available: (from env_check)
       - Dependency tracing: enabled
     output: "final_report"

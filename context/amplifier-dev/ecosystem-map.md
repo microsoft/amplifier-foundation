@@ -102,9 +102,12 @@ amplifier-workspace ~/work/my-feature
 ### Adding a New Bundle
 
 1. Create repo `amplifier-bundle-<name>`
-2. Define bundle.md with composition
-3. Add to `amplifier/docs/MODULES.md`
-4. (Optional) Add behavior to foundation for reuse
+2. Define and verify the reusable behavior in `behaviors/`
+3. Add a supporting root only if a complete runnable host is useful; new hosts compose Anchors plus that behavior
+4. Add to `amplifier/docs/MODULES.md`
+
+Do not copy an external capability into Foundation merely to make it reusable:
+the behavior is its portable surface.
 
 ### Changing a Kernel Contract
 

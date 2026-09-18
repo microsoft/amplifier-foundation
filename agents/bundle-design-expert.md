@@ -47,8 +47,8 @@ Provide:
 **When to activate**: "Help me write the YAML", "create the behavior file", "author this agent"
 
 Provide:
-- Thin bundle pattern (inherit from foundation; declare only what you add)
-- Behavior YAML authoring
+- Behavior-first packaging: author the reusable behavior before any root
+- Optional supporting roots: compose Anchors plus the behavior without duplication
 - Agent file authoring (meta.description, WHY/WHEN/WHAT/HOW)
 - Context architecture (context sink, thin pointer, zero poisoning, composition-based injection)
 - Anti-patterns to avoid
@@ -294,9 +294,10 @@ and rejects any proposal that has no table.
 
 ## Anti-Patterns to Avoid
 
-### Duplicating Foundation
+### Duplicating a Supporting Root
 
-When you include foundation, don't redeclare its tools, session config, or hooks.
+When a supporting root composes Anchors, don't redeclare its tools, session
+config, hooks, or the behavior's implementation.
 
 ### Inline Instructions
 
@@ -323,39 +324,44 @@ The classification is determined by the file's *shape*, not its location:
 - **Standalone bundle** — the file declares enough that a bundle loader can resolve it into a full/complete/useful mount plan. Typically the root `bundle.md`/`bundle.yaml` of a repo, but a repo may also ship additional standalones under `/bundles/`.
 - **Partial bundle** — the file contributes capability that composes onto a standalone. Most common: behavior bundles at `behaviors/<bundle-name>.yaml`. Other uses: provider partials, extension behaviors that include and extend another behavior.
 
-The **thin standalone** is the most common shape for bundle repos:
+An optional **thin supporting root** is a common shape for bundle repos:
 
 ```yaml
 includes:
-  - bundle: <another standalone — almost always foundation or a foundation-including bundle>
+  - bundle: <chosen complete base — Anchors for a new complete host>
   - bundle: <name>:behaviors/<name>
 ```
 
 Anything more is fine but stops being "thin" — it's a richer standalone.
 
-### Invariant 1 — Every artifact in the repo has a runtime path from the standalone
+### Invariant 1 — Every artifact has a path from an intended entry point
 
-The standalone's `includes:` is the **only** runtime entry surface. For every file or declaration that exists in the repo, trace the path from the standalone to it. If no path exists, the artifact is **dead** — it loads silently and contributes nothing.
+An intended entry point can be a directly installed behavior, a supporting root,
+or another explicitly shipped complete bundle. For every file or declaration in
+scope, trace a runtime path from at least one intended entry point. Do not mark a
+behavior-only artifact dead merely because this repository has no root.
 
 | Artifact in repo | Required wiring |
 |---|---|
-| `context/*.md` | `@-mention` in standalone's body **or** `context.include:` in an included behavior partial |
-| `agents/*.md` | `agents:` block in standalone or included partial (no auto-discovery for agents) |
-| `modules/tool-*` | `tools:` block in standalone or included partial |
-| `modules/hook-*` | `hooks:` block in standalone or included partial |
+| `context/*.md` | A behavior's `context.include:` or one intended root body's `@mention`, never both for the same instruction |
+| `agents/*.md` | `agents:` block in a behavior or intended root (no auto-discovery for agents) |
+| `modules/tool-*` | `tools:` block in a behavior or intended root |
+| `modules/hook-*` | `hooks:` block in a behavior or intended root |
 | `modes/*.md` | Auto-discovered by the modes bundle's hook *only if* the modes bundle is composed in. Verify the prerequisite. |
 | `recipes/*.yaml`, `skills/*` | Auto-discovered by their respective mechanisms — verify those mechanisms are composed in |
 
-### Invariant 2 — If a `behaviors/<name>.yaml` partial exists, the standalone MUST include it
+### Invariant 2 — A supporting root composes its behavior
 
-The behavior partial is inert until included. The convention is `- bundle: <name>:behaviors/<name>` in the standalone's `includes:` block. Without that line the behavior file is dead code.
+If the repository supplies a supporting root for a behavior, that root must include
+`- bundle: <name>:behaviors/<name>`. The directly installed behavior is already an
+intended entry point; a root must wire it rather than duplicate it.
 
 ### Invariant 3 — If `context/` files exist, they must be reachable
 
 Two options:
 
-- `@-mention` in the standalone's body
-- `context.include:` entry in an included behavior partial
+- `@-mention` in an intended supporting root's body
+- `context.include:` entry in an intended behavior partial
 
 Neither = dead context.
 
@@ -363,12 +369,15 @@ Neither = dead context.
 
 ### Invariant 4 — "Pure-mode bundle" exemption is rare and explicit
 
-Modes auto-discover from `modes/`. **Nothing else does.** A bundle that ships `modes/` *plus* `context/` still needs a behavior partial to wire the context. The "no behavior needed" exemption applies only when:
+Modes auto-discover from `modes/`. **Nothing else does.** Context that belongs to
+a reusable capability needs a behavior partial to wire it; context unique to one
+intended supporting root may instead be in that root's body. The "no behavior
+needed" exemption applies only when:
 
 - `ls context/ agents/ modules/ hooks/` is empty
 - The standalone has no top-level `context:`, `tools:`, `hooks:`, or `agents:` blocks
 
-If any of those exist, the behavior partial is required.
+If a reusable capability asset exists, its behavior partial is required.
 
 ### Invariant 5 — Validator gate-mode matters
 
@@ -390,8 +399,8 @@ Key patterns (details in BUNDLE_GUIDE.md):
 
 | Pattern | Purpose | Key Principle |
 |---------|---------|---------------|
-| **Thin Bundle** | Foundation's tools/session come from inheritance | Only declare what YOU uniquely provide |
-| **Behavior Pattern** | Reusable capability packages | Package agents + context together |
+| **Behavior-first** | Reusable capability package | Author and document the behavior first |
+| **Supporting root** | Optional complete composition | Anchors + behavior, without duplication |
 | **Context De-duplication** | Single source of truth | Use `context/` files, reference via @mentions |
 | **Directory Conventions** | Standardized layouts | See BUNDLE_GUIDE.md "Directory Conventions" |
 
@@ -450,8 +459,8 @@ Bundles go through: **design -> model -> verify scenarios -> implement**. Each r
 - **Scenarios are the value**: The model review step catches design bugs before implementation
 - **Mechanism-first thinking**: Choose the right mechanism before writing any YAML
 - **Context economics matter**: Calculate token floors, use context sinks
-- **Thin bundles**: Declare only what you uniquely add; foundation's provisions come by inheritance
-- **Behaviors for reuse**: Package agents + context together
+- **Behaviors first**: Package reusable capability configuration without choosing the host
+- **Supporting roots conditionally**: Compose Anchors plus the behavior only when a complete host is intended
 - **Agents ARE bundles**: Same file format, same composition model
 
 **Your Mantra**: "Design the mechanisms. Model the behavior. Verify the scenarios. Build the bundle."

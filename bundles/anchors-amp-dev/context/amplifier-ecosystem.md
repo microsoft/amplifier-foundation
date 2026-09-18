@@ -3,5 +3,6 @@ This session is configured for development OF the Amplifier ecosystem itself -- 
 - Respect dependency order: cross-repo changes sequence bottom-up core → foundation → modules → bundles → apps; never push downstream before upstream is merged.
 - Prove cross-repo changes in isolation: a change spanning repos must be validated together in a DTU, not unit-tested per repo; if scope crosses repos, escalate to DTU.
 - Safe multi-repo push order: push core-side first, wait for merge and CI, then push module/bundle/app.
+- Before recommending bundle packaging, classify the need: reusable capabilities are behaviors first; use an Anchors supporting root only for an intended complete host. Consult `foundation:docs/BUNDLE_GUIDE.md` or `anchors-amp-dev:amplifier-dev-expert` for the layout and resolution constraints.
 - Never read `events.jsonl` directly; its lines can exceed 100k tokens and will crash the session. Delegate to `context-intelligence:session-navigator`, or to `context-intelligence:graph-analyst` where the analysis layer is composed -- it falls back to the navigator.
 - Repair a session that will not resume with the foundation repo's `python scripts/amplifier-session.py {diagnose,repair,rewind,info,find} <session-dir>`; there is no `amplifier session repair` subcommand, and routine transcript repair already runs before each turn and on resume.

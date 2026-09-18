@@ -1,9 +1,30 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.15.0
+# Repository-Wide Bundle Validator Recipe v3.16.0
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.16.0 - BEHAVIORS ARE THE PRIMARY CAPABILITY SURFACE; ROOTS REMAIN
+#          EXPLICIT SUPPORTING COMPOSITIONS.
+#        - Discovery and summary language now describe an intended entry point
+#          (root, standalone, or behavior) instead of treating the absence of a
+#          root as a repository defect. Behavior-only repositories are valid.
+#        - Behavior hygiene's root-reference classifier now distinguishes known
+#          complete roots from partial behavior sources: Foundation behavior
+#          partials and nested `behaviors/*/bundle.md` entries remain allowed;
+#          bare `foundation`/`anchors`, Foundation's root, and Anchors' known
+#          root are still prohibited. The local root manifest's exact
+#          `bundle.name` and remote `bundles/**/bundle.*` roots are likewise
+#          rejected; foreign bare Git references retain the separate warning
+#          from behavior-reference-hygiene.
+#        - README installation validation parses shell commands (including
+#          continuations, quotes, and comments). The primary capability command
+#          must use a canonical behavior URI with `--app`; explicitly naming or
+#          selecting a supporting root and genuine root-product setup remain
+#          valid without `--app` only after that first behavior install. All
+#          direct and conventional loader-supported behavior URI suffixes count;
+#          the missing-host remedy recommends Anchors.
+#
 # v3.15.0 - THE DESCRIPTION RULES WERE A CONVENTION, AND A CONVENTION QUIETLY
 #          STOPS BEING TRUE.
 #          PR #341 set the no-<example> policy for description surfaces in
@@ -436,7 +457,8 @@
 #
 # PASS THRESHOLDS (explicit criteria for "passing"):
 # 1. All bundles load without errors (BundleRegistry succeeds)
-# 2. Root bundle exists (if any bundles in repo) OR has behaviors/bundles dirs
+# 2. An intended entry point exists: a root bundle, supported behavior partial,
+#    or standalone bundle
 # 3. No orphan agents (all agents referenced by some bundle)
 # 4. No broken cross-bundle references (includes resolve)
 # 5. Consistent namespace across bundles (if multiple bundles)
@@ -469,7 +491,8 @@
 # QUALITY LEVELS:
 # - good: All bundles load, no errors, no orphans, proper structure, philosophy aligned
 # - polish: All load but has warnings (missing descriptions, conventions, minor hygiene)
-# - needs_work: Orphan agents, missing root, convention issues, hygiene violations
+# - needs_work: Orphan agents, missing intended entry point, convention issues,
+#               hygiene violations
 # - critical: Any bundle fails to load OR Python package fails to build
 #
 # TOKEN ESTIMATION:
@@ -513,7 +536,7 @@ description: |
   - **NEW in v3.5.0:** Behavior name collision detection (behavior vs root bundle name)
   - **NEW in v3.6.0:** Mode description token budget validation (WARNING >500, ERROR >800 tokens)
   - **NEW in v3.6.0:** Mode advertising-rule enforcement (unadvertised modes must not be named in agent-readable files)
-  - **NEW in v3.10.0:** README install-instructions convention (behavior-over-root recommendation, `--app` flag, `uv tool install`/`uv pip install` over bare `pip install`, git+https availability for shipped CLIs)
+  - **README install-instructions convention:** behavior-first capability installation, `--app` for behavior installation, explicit supporting-root selection, `uv tool install`/`uv pip install` over bare `pip install`, and git+https availability for shipped CLIs
   - **NEW in v3.11.0:** Module dependency resolvability (detects bare-name/uv.sources-only references from a module to a sibling in-repo distribution that break `amplifier update`'s per-module `--no-sources` refresh)
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
@@ -558,7 +581,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.15.0"
+version: "3.16.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -1435,7 +1458,7 @@ steps:
                           results["bundle_details"][str(item)] = get_bundle_details(item)
                       elif item.is_dir():
                           # Check for bundle inside subdirectory
-                          for sub_name in ["bundle.md", "bundle.yaml"]:
+                          for sub_name in ["bundle.md", "bundle.yaml", "bundle.yml"]:
                               sub_bundle = item / sub_name
                               if sub_bundle.exists():
                                   results["bundles_found"][category].append(str(sub_bundle))
@@ -1931,30 +1954,88 @@ steps:
               return {"error": str(e)}
 
       def is_root_bundle_reference(include_ref: str, repo_path: Path) -> bool:
-          """Check if an include reference points to a root bundle."""
-          # Known root bundles patterns
-          root_patterns = [
-              r'^foundation$',  # Just "foundation"
-              r'amplifier-foundation(@|$)',  # GitHub reference to foundation
-              r'bundle\.md$',  # Direct reference to bundle.md
-              r'bundle\.yaml$',  # Direct reference to bundle.yaml
-              r'^file://.*bundle\.(md|yaml)$',  # File URI to root bundle
-          ]
-          
-          for pattern in root_patterns:
-              if re.search(pattern, include_ref):
+          """Return true only for a known complete-root reference.
+
+          A source repository name is not enough: Foundation also publishes
+          behavior partials. Likewise, `bundle.md` is not inherently a root
+          when it sits at behaviors/<name>/bundle.md. Unknown partials stay
+          visible to the separate cross-repo reference check rather than being
+          guessed into a false root finding.
+          """
+          if not isinstance(include_ref, str):
+              return False
+
+          ref = include_ref.strip().strip('"').strip("'")
+          bare_name = ref.lstrip("@")
+          if bare_name in {"foundation", "anchors"}:
+              return True
+
+          # A repo may choose a domain-specific root name. Match its declared
+          # root `bundle.name` exactly, not a name-shaped guess from the repo
+          # folder. This preserves the local namespace-root safeguard without
+          # treating arbitrary behavior names as roots.
+          root_bundle_names = set()
+          for root_filename in ("bundle.md", "bundle.yaml", "bundle.yml"):
+              root_file = repo_path / root_filename
+              if root_file.exists():
+                  root_data = parse_yaml_bundle(root_file)
+                  root_meta = root_data.get("bundle", {})
+                  if isinstance(root_meta, dict) and root_meta.get("name"):
+                      root_bundle_names.add(str(root_meta["name"]).strip())
+          local_name = bare_name.removeprefix("bundle:").strip()
+          if local_name in root_bundle_names:
+              return True
+
+          # Direct local roots are unambiguous. A nested behavior bundle.md is
+          # a partial by its conventional path and must remain composable.
+          if ref in {"bundle.md", "bundle.yaml", "bundle.yml",
+                     "./bundle.md", "./bundle.yaml", "./bundle.yml"}:
+              return True
+          if ref.startswith("file://"):
+              local_path = Path(ref[len("file://"):])
+              if "behaviors" in local_path.parts:
+                  return False
+              return local_path.name in {"bundle.md", "bundle.yaml", "bundle.yml"}
+
+          if not ref.startswith(("git+https://", "git+http://")):
+              return False
+
+          source, separator, fragment = ref.partition("#subdirectory=")
+          has_subdirectory = bool(separator)
+          subdirectory = fragment.strip("/") if has_subdirectory else ""
+          is_foundation_source = bool(re.search(
+              r"/amplifier-foundation(?:\.git)?(?:@|$)", source
+          ))
+
+          # Foundation's repository root is a full host, but its behavior
+          # partials (direct and nested) are the intended composable surface.
+          if is_foundation_source:
+              if not has_subdirectory:
                   return True
-          
-          # Check if it's a reference to repo's own root bundle
-          if 'bundle:' in include_ref:
-              # Extract bundle name
-              bundle_name = include_ref.replace('bundle:', '').strip()
-              # Check if this resolves to repo root
-              for ext in ['.md', '.yaml']:
-                  if (repo_path / f"bundle{ext}").exists():
-                      return bundle_name == '' or bundle_name == repo_path.name
-          
-          return False
+              if subdirectory in {"bundle.md", "bundle.yaml", "bundle.yml"}:
+                  return True
+              return subdirectory in {
+                  "bundles/anchors",
+                  "bundles/anchors/bundle.md",
+                  "bundles/anchors/bundle.yaml",
+                  "bundles/anchors/bundle.yml",
+              } or bool(re.fullmatch(
+                  r"bundles/.+/bundle\.(?:md|yaml|yml)",
+                  subdirectory,
+              ))
+
+          # A remote repo-root bundle.md and the conventional standalone root
+          # layout `bundles/<name>/bundle.*` are complete roots. A path under
+          # `behaviors/` remains a partial, and unfamiliar layouts are not
+          # guessed to be roots.
+          if not has_subdirectory or subdirectory.startswith("behaviors/"):
+              return False
+          if subdirectory in {"bundle.md", "bundle.yaml", "bundle.yml"}:
+              return True
+          return bool(re.fullmatch(
+              r"bundles/.+/bundle\.(?:md|yaml|yml)",
+              subdirectory,
+          ))
 
       def validate_behaviors(repo_path: str) -> dict:
           """Validate all behaviors against hygiene rules."""
@@ -1983,14 +2064,14 @@ steps:
               if item.is_file() and item.suffix in [".md", ".yaml", ".yml"]:
                   behavior_files.append(item)
               elif item.is_dir():
-                  for sub_name in ["bundle.md", "bundle.yaml"]:
+                  for sub_name in ["bundle.md", "bundle.yaml", "bundle.yml"]:
                       sub_bundle = item / sub_name
                       if sub_bundle.exists():
                           behavior_files.append(sub_bundle)
 
           for behavior_path in behavior_files:
               results["behaviors_checked"] += 1
-              behavior_name = behavior_path.stem if behavior_path.name not in ["bundle.md", "bundle.yaml"] else behavior_path.parent.name
+              behavior_name = behavior_path.stem if behavior_path.name not in ["bundle.md", "bundle.yaml", "bundle.yml"] else behavior_path.parent.name
               
               detail = {
                   "path": str(behavior_path),
@@ -2367,7 +2448,7 @@ steps:
           if item.is_file() and item.suffix in (".md", ".yaml", ".yml"):
               behavior_files.append(item)
           elif item.is_dir():
-              for sub_name in ("bundle.md", "bundle.yaml"):
+              for sub_name in ("bundle.md", "bundle.yaml", "bundle.yml"):
                   sub_file = item / sub_name
                   if sub_file.exists():
                       behavior_files.append(sub_file)
@@ -2376,7 +2457,7 @@ steps:
           results["behaviors_checked"] += 1
           behavior_name = (
               behavior_path.stem
-              if behavior_path.name not in ("bundle.md", "bundle.yaml")
+              if behavior_path.name not in ("bundle.md", "bundle.yaml", "bundle.yml")
               else behavior_path.parent.name
           )
 
@@ -2665,7 +2746,12 @@ steps:
                           "type": "missing_session_config",
                           "message": "Standalone bundle missing both orchestrator and context",
                           "severity": "ERROR",
-                          "fix": "Add session configuration or include foundation/another complete bundle"
+                          "fix": (
+                              "Add session configuration or compose the Anchors supporting base "
+                              "(git+https://github.com/microsoft/amplifier-foundation@main"
+                              "#subdirectory=bundles/anchors/bundle.md) or another intentionally "
+                              "selected complete host."
+                          )
                       })
                   
                   # Note about provider (WARNING, not ERROR - intentional flexibility)
@@ -2887,7 +2973,7 @@ steps:
       if not root_bundles:
           results["skipped"] = True
           results["passed"] = True
-          results["reason"] = "No root bundle found"
+          results["reason"] = "No root bundle found; context-sink validation applies only to root bundles"
           print(json.dumps(results))
           sys.exit(0)
 
@@ -5120,11 +5206,12 @@ steps:
   # Scans the ROOT README.md for two conventions:
   #
   # Check A -- readme_install_recommendation:
-  #   The PRIMARY `amplifier bundle add` command should target a behavior
-  #   (`#subdirectory=behaviors/<name>.yaml`), not the bare root bundle --
-  #   UNLESS this repo's own purpose is to produce root bundles for users
-  #   (uncommon; set context var root_bundle_repo: "true" to suppress).
-  #   Every `amplifier bundle add` command should include --app.
+  #   The primary CAPABILITY installation command should target the canonical
+  #   behavior URI (`#subdirectory=behaviors/<name>.yaml`) and include --app.
+  #   A root that is deliberately registered (`--name`) or selected by a later
+  #   `amplifier bundle use` command is a supporting composition, not a
+  #   capability installation. root_bundle_repo: "true" retains the genuine
+  #   full-host product exception.
   #   Findings: readme_recommends_root_bundle, readme_missing_app_flag
   #   (both severity needs_work).
   #
@@ -5150,6 +5237,7 @@ steps:
       import json
       import os
       import re
+      import shlex
       from pathlib import Path
 
       # The repo path arrives through the ENVIRONMENT, never interpolated into
@@ -5190,48 +5278,141 @@ steps:
                   "severity": "INFO"
               })
 
-      # `amplifier bundle add <uri> [flags]` -- capture the URI and the rest
-      # of the line (where --app would appear).
-      bundle_add_pattern = re.compile(
-          r'amplifier\s+bundle\s+add\s+["\']?([^\s"\'`]+)["\']?([^\n]*)',
-          re.IGNORECASE
-      )
-      bundle_add_matches = list(bundle_add_pattern.finditer(readme_text)) if readme_text else []
+      def shell_bundle_commands(markdown: str) -> list[dict]:
+          """Parse actual bundle add/use commands, ignoring comments and prose.
 
-      if readme_text and not bundle_add_matches:
+          `shlex` handles quoted URIs and shell comments. Lines ending in a
+          backslash are joined before parsing, so `--app` on a continuation is
+          still part of the command. Markdown comments are removed before the
+          scan, preventing a commented behavior URI from satisfying the check.
+          """
+          commands = []
+          current = None
+          without_html_comments = re.sub(r"<!--.*?-->", "", markdown, flags=re.DOTALL)
+
+          for raw_line in without_html_comments.splitlines():
+              stripped = raw_line.strip()
+              if current is None:
+                  if not stripped or stripped.startswith(("#", "//")):
+                      continue
+                  match = re.search(r"\bamplifier\s+bundle\s+(?:add|use)\b", stripped)
+                  if not match:
+                      continue
+                  current = stripped[match.start():]
+              else:
+                  current = f"{current} {stripped}"
+
+              if current.rstrip().endswith("\\"):
+                  current = current.rstrip()[:-1].rstrip()
+                  continue
+
+              current = current.strip().strip("`")
+              # In shell syntax, a `#` begins a comment only at the start of a
+              # token. Keep the `#subdirectory=` fragment within an unquoted
+              # URI intact while dropping a true trailing comment.
+              current = re.sub(r"(?<!\S)#.*$", "", current).rstrip()
+              try:
+                  argv = shlex.split(current, comments=False, posix=True)
+              except ValueError:
+                  current = None
+                  continue
+
+              for index in range(len(argv) - 2):
+                  if argv[index:index + 2] != ["amplifier", "bundle"]:
+                      continue
+                  action = argv[index + 2]
+                  if action not in {"add", "use"}:
+                      continue
+                  commands.append({
+                      "action": action,
+                      "uri": bundle_add_uri(argv[index + 3:]) if action == "add" else "",
+                      "argv": argv[index + 3:],
+                  })
+                  break
+              current = None
+          return commands
+
+      def bundle_add_uri(argv: list[str]) -> str:
+          """Return the add command's URI operand after known pre-URI options."""
+          index = 0
+          while index < len(argv):
+              arg = argv[index]
+              if arg == "--app":
+                  index += 1
+              elif arg in {"--name", "-n"}:
+                  index += 2
+              elif arg.startswith("--name="):
+                  index += 1
+              elif arg.startswith("-"):
+                  index += 1
+              else:
+                  return arg
+          return ""
+
+      def is_canonical_behavior_uri(uri: str) -> bool:
+          """Recognize direct and conventional loader-supported behavior URIs."""
+          _source, marker, subdirectory = uri.partition("#subdirectory=")
+          if not marker:
+              return False
+          return bool(re.fullmatch(
+              r"behaviors/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:yaml|yml|md)"
+              r"|behaviors/[A-Za-z0-9][A-Za-z0-9._-]*/bundle\.(?:md|yaml|yml)",
+              subdirectory.strip("/"),
+          ))
+
+      bundle_commands = shell_bundle_commands(readme_text) if readme_text else []
+      bundle_add_commands = [command for command in bundle_commands if command["action"] == "add"]
+
+      for command in bundle_add_commands:
+          argv = command["argv"]
+          command["has_app"] = "--app" in argv
+          command["is_behavior"] = is_canonical_behavior_uri(command["uri"])
+
+      if readme_text and not bundle_add_commands:
           results["info"].append({
               "type": "no_bundle_add_commands",
               "message": "README.md has no `amplifier bundle add` commands -- nothing to evaluate for the install-recommendation check.",
               "severity": "INFO"
           })
-      elif bundle_add_matches:
-          first_uri, first_rest = bundle_add_matches[0].group(1), bundle_add_matches[0].group(2)
-          recommends_root = (
-              "#subdirectory=behaviors/" not in first_uri
-              and "#subdirectory=behaviors/" not in first_rest
-          )
-          if recommends_root and not root_bundle_repo:
+      elif bundle_add_commands:
+          primary_capability = bundle_add_commands[0]
+          if (
+              not primary_capability["is_behavior"]
+              and not root_bundle_repo
+          ):
               results["warnings"].append({
                   "type": "readme_recommends_root_bundle",
                   "severity": "needs_work",
                   "message": (
-                      "README.md's primary `amplifier bundle add` command installs "
-                      "the root bundle, not a behavior. Most repos are capability "
-                      "providers -- lead with `amplifier bundle add "
-                      "\"<repo>#subdirectory=behaviors/<name>.yaml\" --app` instead, "
-                      "unless this repo's own purpose IS to produce root bundles for "
-                      "users."
+                      "README.md's primary capability `amplifier bundle add` command "
+                      "does not install a canonical behavior URI. Most repos are "
+                      "capability providers -- lead with `amplifier bundle add "
+                      "\"<repo>#subdirectory=behaviors/<name>.yaml\" --app`. For a "
+                      "new complete host, register/select the Anchors supporting "
+                      "base explicitly instead of presenting a root as a capability."
                   ),
-                  "fix": "Recommend a behaviors/<name>.yaml install as the primary path, or set context var root_bundle_repo: \"true\" if this repo genuinely ships root bundles for users."
+                  "fix": (
+                      "Recommend `amplifier bundle add "
+                      "\"<repo>#subdirectory=behaviors/<name>.yaml\" --app` as the "
+                      "primary capability path. If a complete host is needed, use "
+                      "the Anchors supporting base "
+                      "`git+https://github.com/microsoft/amplifier-foundation@main"
+                      "#subdirectory=bundles/anchors/bundle.md` with explicit "
+                      "registration/selection, or set root_bundle_repo: \"true\" "
+                      "for a genuine root-product repository."
+                  )
               })
 
-          missing_app = [m.group(0) for m in bundle_add_matches if "--app" not in m.group(2)]
+          missing_app = [
+              command for command in bundle_add_commands
+              if command["is_behavior"] and not command["has_app"]
+          ]
           if missing_app:
               results["warnings"].append({
                   "type": "readme_missing_app_flag",
                   "severity": "needs_work",
-                  "message": f"{len(missing_app)}/{len(bundle_add_matches)} `amplifier bundle add` command(s) in README.md are missing the --app flag.",
-                  "fix": "Add --app to every `amplifier bundle add` command shown in README.md."
+                  "message": f"{len(missing_app)} behavior `amplifier bundle add` command(s) in README.md are missing the required --app flag.",
+                  "fix": "Add --app to every behavior installation command. Supporting-root registration/selection and genuine root products do not require it."
               })
 
       if readme_text:
@@ -5282,7 +5463,10 @@ steps:
 
       results["passed"] = len(results["errors"]) == 0
       results["summary"] = {
-          "bundle_add_commands_found": len(bundle_add_matches),
+          "bundle_add_commands_found": len(bundle_add_commands),
+          "behavior_install_commands_found": sum(
+              command["is_behavior"] for command in bundle_add_commands
+          ),
           "warnings": len(results["warnings"]),
           "errors": len(results["errors"]),
           "info": len(results["info"])
@@ -5713,7 +5897,11 @@ steps:
           if not has_root and not has_behaviors and not has_standalone:
               results["structural_issues"].append({
                   "type": "no_entry_point",
-                  "message": "No root bundle, behaviors/, or bundles/ directory found",
+                  "message": (
+                      "No intended bundle entry point found: add a root bundle, "
+                      "a supported behavior partial under behaviors/, or a "
+                      "standalone bundle under bundles/."
+                  ),
                   "severity": "needs_work"
               })
           
@@ -6832,7 +7020,8 @@ steps:
       {{bundle_head_cost_results}}
       ```
 
-      **README Install-Instructions Convention Check (v3.10.0):**
+      **README Install-Instructions Convention Check (v3.16.0):
+      behavior-first capability installation and explicit supporting roots**
       ```json
       {{readme_install_convention_results}}
       ```
@@ -7075,15 +7264,15 @@ steps:
         - [WARNING] the message verbatim, then the comparison: the two bundles
           engineered for head cost measure 2,483 and 1,760 chars.
 
-      ### README Install-Instructions Convention Check (v3.10.0)
+      ### README Install-Instructions Convention Check (v3.16.0)
       Use readme_install_convention_results to report:
       - If skipped == true: "README install-instructions convention check: skipped (<reason from info>)"
       - For each finding of type readme_recommends_root_bundle:
-        - [NEEDS WORK] the finding's message (README's primary install recommends the root bundle, not a behavior)
-        - The fix: lead with `amplifier bundle add "<repo>#subdirectory=behaviors/<name>.yaml" --app`, or set context var root_bundle_repo: "true" if this repo genuinely ships root bundles for users
+        - [NEEDS WORK] the finding's message (README's primary capability install is not a canonical behavior URI)
+        - The fix: lead with `amplifier bundle add "<repo>#subdirectory=behaviors/<name>.yaml" --app`. A new complete host can explicitly register/select the Anchors supporting base (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md`); root_bundle_repo: "true" remains for a genuine root-product repo.
       - For each finding of type readme_missing_app_flag:
-        - [NEEDS WORK] the finding's message (N/M bundle-add commands missing --app)
-        - The fix: add --app to every `amplifier bundle add` command in README.md
+        - [NEEDS WORK] the finding's message (behavior installation commands missing --app)
+        - The fix: add --app to each behavior `amplifier bundle add` command. Do not add it merely to register/select a supporting root.
       - For each finding of type readme_pip_install:
         - [NEEDS WORK] the finding's message (README shows bare `pip install`)
         - The fix: `uv tool install git+https://...` for CLI tools, `uv pip install` for libraries
@@ -7198,7 +7387,7 @@ steps:
 
       ## Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v3.10.0
+      - Recipe: validate-bundle-repo v3.16.0
       - Validation Mode: [mode from env_check]
       - Foundation: [version or "not available"]
       - Quality Thresholds:

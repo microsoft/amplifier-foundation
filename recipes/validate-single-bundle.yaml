@@ -9,6 +9,15 @@
 # CHANGELOG
 # =============================================================================
 #
+# v2.4.0 (2026-09-18):
+#   - NEW FEATURE: accepts `bundle_type: "behavior"` from validate-bundle and
+#     reports it as a composable partial. Behavior validation assesses
+#     declaration, dependency trace, and context hygiene; it must not demand a
+#     provider or standalone session/orchestrator from the host-owned surface.
+#   - Guidance now recommends Anchors as the default supporting base for a new
+#     complete host while preserving the schema-v2 Foundation dependency
+#     manifest that makes this validator portable.
+#
 # v2.3.1:
 #   - Honor the injected AMPLIFIER_PYTHON interpreter in all 4 python heredocs
 #     (was bare `python3`, which lacks amplifier_foundation and made the
@@ -91,14 +100,18 @@ description: |
   
   For example, if a behavior is not in this bundle's includes chain,
   its context files won't be counted.
-version: "2.3.1"
+
+  Behavior partials are valid targets: assess their composability and hygiene,
+  not standalone session completeness. New complete hosts should normally use
+  Anchors as their supporting base and compose capabilities explicitly.
+version: "2.4.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "single", "dependency-tracing", "yaml-lint"]
 
 context:
   bundle_path: ""     # Required: Path to bundle file
   bundle_name: ""     # Required: Bundle name for reporting
-  bundle_type: ""     # Required: "root" or "standalone"
+  bundle_type: ""     # Required: "root", "standalone", "behavior", or single-file type
   repo_root: ""       # Required: Repository root directory
 
 steps:
@@ -840,6 +853,18 @@ steps:
       **IMPORTANT: If structure_lint.passed == false, the verdict MUST be FAIL.**
       Structure lint errors indicate silently-dropped includes — the bundle will not
       work as intended. These are the highest priority issues to fix.
+
+      **Classify by bundle type before judging completeness:**
+      - If `{{bundle_type}}` is `behavior`, this is a composable partial. Judge its
+        declaration, includes, and context contribution. Do NOT require a provider,
+        `session.orchestrator`, or full session configuration: those belong to the
+        installing host. A behavior should remain independently composable.
+      - If it is `standalone` or `root`, report whether its declared composition
+        supplies the appropriate runnable session surface. For a newly authored
+        complete host, recommend the Anchors supporting base
+        (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md`)
+        and explicit capability behaviors; keep intentionally selected legacy roots
+        as reported configuration, not an automatic failure.
 
       **YAML Structure Lint:**
       If structure_lint has errors, list them FIRST and PROMINENTLY:

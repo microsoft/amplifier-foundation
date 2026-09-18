@@ -21,12 +21,18 @@ import asyncio
 from amplifier_foundation import load_bundle
 
 async def main():
-    # Load foundation bundle and a provider
-    foundation = await load_bundle("git+https://github.com/microsoft/amplifier-foundation@main")
-    provider = await load_bundle("./providers/anthropic.yaml")
+    # Load Anchors as the complete-host base and a Foundation provider partial.
+    anchors = await load_bundle(
+        "git+https://github.com/microsoft/amplifier-foundation@main"
+        "#subdirectory=bundles/anchors/bundle.md"
+    )
+    provider = await load_bundle(
+        "git+https://github.com/microsoft/amplifier-foundation@main"
+        "#subdirectory=providers/anthropic-sonnet.yaml"
+    )
 
     # Compose bundles (later overrides earlier)
-    composed = foundation.compose(provider)
+    composed = anchors.compose(provider)
 
     # Prepare: resolves module sources, downloads if needed
     prepared = await composed.prepare()
@@ -39,7 +45,8 @@ async def main():
 asyncio.run(main())
 ```
 
-For the complete workflow with provider selection and advanced features, see [`examples/04_full_workflow/`](examples/04_full_workflow/).
+For the complete workflow with provider selection and advanced features, see
+[`examples/07_full_workflow.py`](examples/07_full_workflow.py).
 
 ### Use Utilities Directly
 
@@ -108,10 +115,11 @@ This repo also contains reference bundle content for common configurations:
 
 | Path | Content |
 |------|---------|
-| `bundle.md` | **Main foundation bundle** - provider-agnostic base with streaming, tools, behaviors |
+| `behaviors/` | Reusable capability behaviors — the primary authoring and sharing surface |
+| `bundle.md` | Legacy selected Foundation root, retained for compatible complete compositions |
+| `bundles/anchors/` | Recommended supporting root for a new complete host |
 | `providers/` | Provider configurations (anthropic, openai, azure-openai, gemini, ollama) |
 | `agents/` | Reusable agent definitions |
-| `behaviors/` | Behavioral configurations (logging, redaction, status, etc.) |
 | `context/` | Shared context files |
 | `bundles/` | Complete bundle examples |
 
@@ -146,9 +154,9 @@ See [`examples/README.md`](examples/README.md) for the full catalog of 20+ examp
 
 This README covers the Python library API. **For bundle authoring guidance:**
 
-- **[BUNDLE_GUIDE.md](docs/BUNDLE_GUIDE.md)** - Complete authoring guide (thin bundle pattern, behaviors, composition)
+- **[BUNDLE_GUIDE.md](docs/BUNDLE_GUIDE.md)** - Behavior-first authoring, optional supporting roots, and composition
 - **[AGENT_AUTHORING.md](docs/AGENT_AUTHORING.md)** - Agent creation and the context sink pattern
-- **`foundation:foundation-expert`** - Expert agent for guidance when building bundles
+- **`foundation:bundle-design-expert`** - Expert agent for behavior-first bundle guidance
 - **Canonical example**: [amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes) - demonstrates proper structure
 
 ## Philosophy
