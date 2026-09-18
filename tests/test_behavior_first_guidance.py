@@ -152,3 +152,19 @@ def test_api_reference_composition_example_loads_anchors_as_its_base() -> None:
     assert "from amplifier_foundation import load_bundle" in source
     assert ANCHORS_URI in normalized
     assert 'load_bundle("foundation")' not in source
+
+
+def test_bundle_awareness_routes_to_an_agent_its_behavior_supplies() -> None:
+    behavior = yaml.safe_load(
+        (REPO_ROOT / "behaviors" / "foundation-expert.yaml").read_text(encoding="utf-8")
+    )
+    awareness = (REPO_ROOT / "context" / "bundle-awareness.md").read_text(
+        encoding="utf-8"
+    )
+    targets = set(re.findall(r"`(foundation:[\w-]+)`", awareness))
+
+    assert targets, "The awareness pointer must name its navigator"
+    assert targets <= set(behavior["agents"]["include"])
+    for target in targets:
+        agent_name = target.split(":", 1)[1]
+        assert (REPO_ROOT / "agents" / f"{agent_name}.md").is_file()

@@ -20,9 +20,9 @@ Bundle, behavior, and module work requires specialized knowledge about:
 - Behavior-first capability packaging and optional supporting roots
 
 **BEFORE any bundle/behavior/module work or a packaging recommendation**, delegate
-to `foundation:bundle-design-expert`.
+to `foundation:foundation-expert`.
 
-The bundle-design expert has authoritative access to:
+The foundation expert has authoritative access to:
 - `foundation:docs/BUNDLE_GUIDE.md` - Complete authoring guide
 - `foundation:docs/URI_FORMATS.md` - Source URI syntax
 - `core:docs/contracts/` - Protocol specifications
@@ -46,7 +46,7 @@ Working without expert consultation results in preventable errors:
 | Canonical example | `amplifier-bundle-recipes` on GitHub |
 | Tool contract | `core:docs/contracts/TOOL_CONTRACT.md` |
 
-For anything beyond a quick lookup, delegate to `foundation:bundle-design-expert`.
+For anything beyond a quick lookup, delegate to `foundation:foundation-expert`.
 
 ---
 

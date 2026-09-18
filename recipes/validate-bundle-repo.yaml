@@ -22,7 +22,7 @@
 #          must use a canonical behavior URI with `--app`; explicitly naming or
 #          selecting a supporting root and genuine root-product setup remain
 #          valid without `--app` only after that first behavior install. All
-#          direct and conventional loader-supported behavior URI suffixes count;
+#          direct and conventional explicit-file behavior URI suffixes count;
 #          the missing-host remedy recommends Anchors.
 #
 # v3.15.0 - THE DESCRIPTION RULES WERE A CONVENTION, AND A CONVENTION QUIETLY
@@ -1993,7 +1993,7 @@ steps:
               return True
           if ref.startswith("file://"):
               local_path = Path(ref[len("file://"):])
-              if "behaviors" in local_path.parts:
+              if {"behaviors", "providers"} & set(local_path.parts):
                   return False
               return local_path.name in {"bundle.md", "bundle.yaml", "bundle.yml"}
 
@@ -2012,30 +2012,20 @@ steps:
           if is_foundation_source:
               if not has_subdirectory:
                   return True
+              if subdirectory.startswith("behaviors/"):
+                  return False
               if subdirectory in {"bundle.md", "bundle.yaml", "bundle.yml"}:
                   return True
-              return subdirectory in {
-                  "bundles/anchors",
-                  "bundles/anchors/bundle.md",
-                  "bundles/anchors/bundle.yaml",
-                  "bundles/anchors/bundle.yml",
-              } or bool(re.fullmatch(
-                  r"bundles/.+/bundle\.(?:md|yaml|yml)",
-                  subdirectory,
-              ))
+              return subdirectory.startswith("bundles/")
 
-          # A remote repo-root bundle.md and the conventional standalone root
-          # layout `bundles/<name>/bundle.*` are complete roots. A path under
-          # `behaviors/` remains a partial, and unfamiliar layouts are not
-          # guessed to be roots.
+          # A remote repo-root bundle.md and every conventional `bundles/`
+          # surface are complete roots. A path under `behaviors/` remains a
+          # partial; provider and unfamiliar partial layouts are not guessed.
           if not has_subdirectory or subdirectory.startswith("behaviors/"):
               return False
           if subdirectory in {"bundle.md", "bundle.yaml", "bundle.yml"}:
               return True
-          return bool(re.fullmatch(
-              r"bundles/.+/bundle\.(?:md|yaml|yml)",
-              subdirectory,
-          ))
+          return subdirectory.startswith("bundles/")
 
       def validate_behaviors(repo_path: str) -> dict:
           """Validate all behaviors against hygiene rules."""
@@ -5281,9 +5271,10 @@ steps:
       def shell_bundle_commands(markdown: str) -> list[dict]:
           """Parse actual bundle add/use commands, ignoring comments and prose.
 
-          `shlex` handles quoted URIs and shell comments. Lines ending in a
-          backslash are joined before parsing, so `--app` on a continuation is
-          still part of the command. Markdown comments are removed before the
+          A command in inline Markdown code ends at its closing backtick, so
+          later prose cannot add an apparent flag. Lines ending in a backslash
+          are joined before parsing, so `--app` on a continuation is still part
+          of the command. Markdown and shell comments are removed before the
           scan, preventing a commented behavior URI from satisfying the check.
           """
           commands = []
@@ -5298,7 +5289,17 @@ steps:
                   match = re.search(r"\bamplifier\s+bundle\s+(?:add|use)\b", stripped)
                   if not match:
                       continue
-                  current = stripped[match.start():]
+                  prefix = stripped[:match.start()]
+                  inline_start = prefix.rfind("`")
+                  if inline_start != -1 and prefix.count("`") % 2:
+                      inline_end = stripped.find("`", match.end())
+                      current = (
+                          stripped[match.start():inline_end]
+                          if inline_end != -1
+                          else stripped[match.start():]
+                      )
+                  else:
+                      current = stripped[match.start():]
               else:
                   current = f"{current} {stripped}"
 
@@ -5306,7 +5307,7 @@ steps:
                   current = current.rstrip()[:-1].rstrip()
                   continue
 
-              current = current.strip().strip("`")
+              current = current.strip()
               # In shell syntax, a `#` begins a comment only at the start of a
               # token. Keep the `#subdirectory=` fragment within an unquoted
               # URI intact while dropping a true trailing comment.

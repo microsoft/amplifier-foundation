@@ -152,6 +152,27 @@ def test_behavior_hygiene_rejects_a_foundation_conventional_nested_root(tmp_path
 @pytest.mark.parametrize(
     "include",
     [
+        f"{FOUNDATION}#subdirectory=bundles/anchors-amp-dev",
+        "git+https://github.com/example/foreign@main#subdirectory=bundles/complete-host",
+        f"{FOUNDATION}#subdirectory=bundles/with-anthropic.yaml",
+    ],
+)
+def test_behavior_hygiene_rejects_all_conventional_bundles_surfaces(
+    tmp_path: Path, include: str
+) -> None:
+    """Every documented `bundles/` full-host surface is forbidden inside a behavior."""
+    repo = tmp_path / "conventional-bundle-surface"
+    _write(repo / "behaviors" / "invalid.yaml", _behavior_with(include))
+
+    payload = _run_step("behavior-hygiene-validation", repo)
+
+    assert payload["passed"] is False
+    assert "includes_root_bundle" in _error_types(payload)
+
+
+@pytest.mark.parametrize(
+    "include",
+    [
         "foundation",
         "anchors",
         FOUNDATION,
@@ -271,12 +292,39 @@ def test_readme_accepts_an_unquoted_behavior_fragment_as_the_uri(tmp_path: Path)
     assert payload["summary"]["behavior_install_commands_found"] == 1
 
 
+def test_readme_bounds_inline_code_before_following_prose(tmp_path: Path) -> None:
+    """A valid inline command retains its in-code --app without parsing later prose."""
+    repo = tmp_path / "inline-code"
+    _write(
+        repo / "README.md",
+        f'Run `amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml" --app` first.\n',
+    )
+
+    payload = _run_step("readme-install-convention-check", repo)
+
+    assert payload["warnings"] == []
+    assert payload["summary"]["behavior_install_commands_found"] == 1
+
+
 def test_readme_flags_behavior_install_missing_app(tmp_path: Path) -> None:
     """A behavior installation is incomplete without --app."""
     repo = tmp_path / "missing-app"
     _write(
         repo / "README.md",
         f'amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml"\n',
+    )
+
+    payload = _run_step("readme-install-convention-check", repo)
+
+    assert _warning_types(payload) == {"readme_missing_app_flag"}
+
+
+def test_readme_does_not_accept_prose_app_flag_after_inline_command(tmp_path: Path) -> None:
+    """Only --app inside the command span satisfies a behavior installation."""
+    repo = tmp_path / "inline-code-missing-app"
+    _write(
+        repo / "README.md",
+        f'Run `amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml"` with --app later.\n',
     )
 
     payload = _run_step("readme-install-convention-check", repo)

@@ -7,11 +7,17 @@ the YAML recipe drifts.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+
+from amplifier_foundation.exceptions import BundleLoadError
+from amplifier_foundation.registry import BundleRegistry
 
 REPO_ROOT = Path(__file__).parent.parent
 MULTI_RECIPE = REPO_ROOT / "recipes" / "validate-bundle.yaml"
@@ -110,8 +116,8 @@ def test_behavior_only_repo_discovers_direct_behavior_entries_not_docs(tmp_path:
     assert "reference.md" not in discovered
 
 
-def test_discovery_supports_conventional_nested_behavior_entries_and_dedupes(tmp_path: Path) -> None:
-    """One-level behavior bundles are targets; duplicate names select one entry per directory."""
+def test_discovery_reports_each_explicit_conventional_behavior_file(tmp_path: Path) -> None:
+    """One-level behavior files are validation targets without directory-alias precedence."""
     repo = tmp_path / "nested-behaviors"
     _write(repo / "behaviors" / "markdown" / "bundle.md", "---\n" + _behavior("markdown") + "---\n")
     _write(repo / "behaviors" / "yaml" / "bundle.yaml", _behavior("yaml"))
@@ -130,9 +136,28 @@ def test_discovery_supports_conventional_nested_behavior_entries_and_dedupes(tmp
         "behaviors/yaml/bundle.yaml",
         "behaviors/yml/bundle.yml",
         "behaviors/precedence/bundle.md",
+        "behaviors/precedence/bundle.yaml",
     }
     assert payload["total_bundles"] == len(paths)
     assert {entry["bundle_type"] for entry in payload["bundles"]} == {"behavior"}
+
+
+def test_registry_accepts_explicit_yml_file_but_not_a_yml_only_directory(tmp_path: Path) -> None:
+    """The validator reports `.yml` file targets without claiming directory shorthand works."""
+    behavior = tmp_path / "repo" / "behaviors" / "only-yml" / "bundle.yml"
+    _write(behavior, _behavior("only-yml"))
+
+    loaded = asyncio.run(
+        BundleRegistry(home=tmp_path / "registry-file")._load_from_path(behavior)
+    )
+    assert loaded.name == "only-yml"
+
+    with pytest.raises(BundleLoadError, match="missing bundle.md or bundle.yaml"):
+        asyncio.run(
+            BundleRegistry(home=tmp_path / "registry-directory")._load_from_path(
+                behavior.parent
+            )
+        )
 
 
 def test_discovery_keeps_root_standalone_and_behavior_categories_distinct(tmp_path: Path) -> None:

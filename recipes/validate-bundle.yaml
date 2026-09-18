@@ -9,9 +9,11 @@
 #
 # v2.2.0 (2026-09-18):
 #   - NEW FEATURE: discover behavior partials as first-class validation targets:
-#     direct `behaviors/*.{yaml,yml,md}` entries and conventional one-level
-#     `behaviors/*/bundle.{md,yaml,yml}` entries are tagged `behavior`, while
+#     direct `behaviors/*.{yaml,yml,md}` entries and explicit one-level
+#     `behaviors/*/bundle.{md,yaml,yml}` files are tagged `behavior`, while
 #     arbitrary Markdown documentation is not treated as a bundle entry point.
+#     `.yml` targets are passed as explicit files: the loader accepts that file
+#     format, but its directory shorthand resolves only `bundle.md`/`.yaml`.
 #   - FAIL-LOUD: a real directory with no root, standalone, or behavior entry
 #     now reports `no_bundles_discovered` and exits non-zero before the empty
 #     foreach could otherwise produce a successful-looking report over nothing.
@@ -177,8 +179,10 @@ steps:
           """Discover supported root, standalone, and behavior entry points.
 
           Direct behavior YAML/YML files, frontmatter-bearing behavior Markdown,
-          and one-level conventional behavior directories are loader-supported
-          entry points. Documentation files are not.
+          and explicit one-level conventional behavior files are validation
+          targets. The validator passes each discovered file directly; it does
+          not claim that a behavior directory containing only bundle.yml can be
+          loaded through directory shorthand. Documentation files are not.
           """
           results = {
               "phase": "discovery",
@@ -278,10 +282,10 @@ steps:
                               continue
                           add_bundle(behavior_file, "behavior", behavior_file.stem, path)
 
-                  # A behavior may package its entry point conventionally in
-                  # behaviors/<name>/bundle.{md,yaml,yml}. Select one file per
-                  # directory by normal loader precedence and then de-duplicate
-                  # the resolved artifact.
+                  # Treat every conventional file as an explicit validation
+                  # target. This does not rely on directory shorthand or claim
+                  # a universal loader precedence: a bundle.yml-only directory
+                  # is valid when addressed as that explicit file.
                   for behavior_dir in sorted(behaviors_dir.iterdir()):
                       if not behavior_dir.is_dir():
                           continue
@@ -294,7 +298,6 @@ steps:
                                   behavior_dir.name,
                                   path,
                               )
-                              break
           
           else:
               results["errors"].append({
