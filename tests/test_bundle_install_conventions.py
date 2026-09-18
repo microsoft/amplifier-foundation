@@ -430,6 +430,55 @@ amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml" --app
     assert payload["summary"]["behavior_install_commands_found"] == 1
 
 
+def test_readme_scans_later_same_line_command_after_a_bare_inline_mention(
+    tmp_path: Path,
+) -> None:
+    """The exact DTU fixture: bare single-backtick prose then valid double-backtick add."""
+    repo = tmp_path / "same-line-bare-then-valid"
+    _write(
+        repo / "README.md",
+        f'Install with `amplifier bundle add` then run ``amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/review.yaml" --app``.\n',
+    )
+
+    payload = _run_step("readme-install-convention-check", repo)
+
+    assert payload["warnings"] == []
+    assert payload["summary"]["bundle_add_commands_found"] == 1
+    assert payload["summary"]["behavior_install_commands_found"] == 1
+
+
+def test_readme_same_line_bare_then_missing_app_ignores_later_prose_flag(
+    tmp_path: Path,
+) -> None:
+    """A following prose `--app` cannot repair an inline command that lacks it."""
+    repo = tmp_path / "same-line-bare-then-missing-app"
+    _write(
+        repo / "README.md",
+        f'Install with `amplifier bundle add` then run ``amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/review.yaml"`` with --app later.\n',
+    )
+
+    payload = _run_step("readme-install-convention-check", repo)
+
+    assert _warning_types(payload) == {"readme_missing_app_flag"}
+    assert payload["summary"]["bundle_add_commands_found"] == 1
+    assert payload["summary"]["behavior_install_commands_found"] == 1
+
+
+def test_readme_same_line_root_before_behavior_keeps_root_as_primary(tmp_path: Path) -> None:
+    """Text order remains decisive when two real commands share one Markdown line."""
+    repo = tmp_path / "same-line-root-then-behavior"
+    _write(
+        repo / "README.md",
+        f'Run `amplifier bundle add "{ANCHORS}"` then `amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/review.yaml" --app`.\n',
+    )
+
+    payload = _run_step("readme-install-convention-check", repo)
+
+    assert "readme_recommends_root_bundle" in _warning_types(payload)
+    assert payload["summary"]["bundle_add_commands_found"] == 2
+    assert payload["summary"]["behavior_install_commands_found"] == 1
+
+
 @pytest.mark.parametrize("with_app", [True, False])
 def test_readme_accepts_conventional_behavior_directory_and_requires_app(
     tmp_path: Path, with_app: bool

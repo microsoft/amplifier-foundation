@@ -5292,64 +5292,83 @@ steps:
           commands = []
           current = None
           without_html_comments = re.sub(r"<!--.*?-->", "", markdown, flags=re.DOTALL)
+          command_pattern = re.compile(r"\bamplifier\s+bundle\s+(?:add|use)\b")
 
-          for raw_line in without_html_comments.splitlines():
-              stripped = raw_line.strip()
-              if current is None:
-                  if not stripped or stripped.startswith(("#", "//")):
-                      continue
-                  match = re.search(r"\bamplifier\s+bundle\s+(?:add|use)\b", stripped)
-                  if not match:
-                      continue
-                  prefix = stripped[:match.start()]
-                  inline_open = re.search(r"(?<!`)`{1,2}$", prefix)
-                  if inline_open:
-                      delimiter = inline_open.group(0)
-                      inline_end = stripped.find(delimiter, match.end())
-                      current = (
-                          stripped[match.start():inline_end]
-                          if inline_end != -1
-                          else stripped[match.start():]
-                      )
-                  else:
-                      current = stripped[match.start():]
-              else:
-                  current = f"{current} {stripped}"
-
-              if current.rstrip().endswith("\\"):
-                  current = current.rstrip()[:-1].rstrip()
-                  continue
-
-              current = current.strip()
+          def append_command(command_text: str) -> None:
+              """Parse one already-bounded command occurrence."""
+              command_text = command_text.strip()
               # In shell syntax, a `#` begins a comment only at the start of a
               # token. Keep the `#subdirectory=` fragment within an unquoted
               # URI intact while dropping a true trailing comment.
-              current = re.sub(r"(?<!\S)#.*$", "", current).rstrip()
+              command_text = re.sub(r"(?<!\S)#.*$", "", command_text).rstrip()
               try:
-                  argv = shlex.split(current, comments=False, posix=True)
+                  argv = shlex.split(command_text, comments=False, posix=True)
               except ValueError:
-                  current = None
-                  continue
+                  return
 
               for index in range(len(argv) - 2):
                   if argv[index:index + 2] != ["amplifier", "bundle"]:
                       continue
                   action = argv[index + 2]
                   if action not in {"add", "use"}:
-                      continue
+                      return
                   uri = bundle_add_uri(argv[index + 3:]) if action == "add" else ""
                   if action == "add" and not uri:
-                      # `amplifier bundle add` mentioned without an operand is
-                      # prose, not an installation recommendation. In
-                      # particular, it must not outrank a later real command.
-                      break
+                      # A bare phrase such as `amplifier bundle add` is prose,
+                      # not an installation recommendation. The caller keeps
+                      # scanning later occurrences on this same line.
+                      return
                   commands.append({
                       "action": action,
                       "uri": uri,
                       "argv": argv[index + 3:],
                   })
-                  break
-              current = None
+                  return
+
+          for raw_line in without_html_comments.splitlines():
+              stripped = raw_line.strip()
+              if current is not None:
+                  current = f"{current} {stripped}"
+                  if current.rstrip().endswith("\\"):
+                      current = current.rstrip()[:-1].rstrip()
+                      continue
+                  append_command(current)
+                  current = None
+                  continue
+
+              if not stripped or stripped.startswith(("#", "//")):
+                  continue
+
+              cursor = 0
+              while True:
+                  match = command_pattern.search(stripped, cursor)
+                  if not match:
+                      break
+                  prefix = stripped[:match.start()]
+                  inline_open = re.search(r"(?<!`)`{1,2}$", prefix)
+                  next_match = command_pattern.search(stripped, match.end())
+                  if inline_open:
+                      delimiter = inline_open.group(0)
+                      inline_end = stripped.find(delimiter, match.end())
+                      if inline_end != -1:
+                          command_text = stripped[match.start():inline_end]
+                          cursor = inline_end + len(delimiter)
+                      else:
+                          command_text = stripped[match.start():]
+                          cursor = len(stripped)
+                  elif next_match:
+                      # A later command starts a new occurrence; its flags
+                      # cannot satisfy this one's behavior installation.
+                      command_text = stripped[match.start():next_match.start()]
+                      cursor = next_match.start()
+                  else:
+                      command_text = stripped[match.start():]
+                      cursor = len(stripped)
+
+                  if command_text.rstrip().endswith("\\"):
+                      current = command_text.rstrip()[:-1].rstrip()
+                      break
+                  append_command(command_text)
           return commands
 
       def bundle_add_uri(argv: list[str]) -> str:
