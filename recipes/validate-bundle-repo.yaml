@@ -1970,6 +1970,17 @@ steps:
           if bare_name in {"foundation", "anchors"}:
               return True
 
+          # Namespaced references use the same conventional layout meaning as
+          # their git equivalents. `namespace:behaviors/...` and
+          # `namespace:providers/...` are partials; `namespace:bundles/...`
+          # is a complete-host surface.
+          if ":" in bare_name and "://" not in bare_name:
+              _namespace, _, namespaced_path = bare_name.partition(":")
+              if namespaced_path.startswith(("behaviors/", "providers/")):
+                  return False
+              if namespaced_path.startswith("bundles/"):
+                  return True
+
           # A repo may choose a domain-specific root name. Match its declared
           # root `bundle.name` exactly, not a name-shaped guess from the repo
           # folder. This preserves the local namespace-root safeguard without
@@ -5271,11 +5282,12 @@ steps:
       def shell_bundle_commands(markdown: str) -> list[dict]:
           """Parse actual bundle add/use commands, ignoring comments and prose.
 
-          A command in inline Markdown code ends at its closing backtick, so
-          later prose cannot add an apparent flag. Lines ending in a backslash
-          are joined before parsing, so `--app` on a continuation is still part
-          of the command. Markdown and shell comments are removed before the
-          scan, preventing a commented behavior URI from satisfying the check.
+          A one- or two-backtick inline Markdown command ends at its matching
+          closing delimiter, so later prose cannot add an apparent flag.
+          Lines ending in a backslash are joined before parsing, so `--app` on
+          a continuation is still part of the command. Markdown and shell
+          comments are removed before the scan, preventing a commented behavior
+          URI from satisfying the check.
           """
           commands = []
           current = None
@@ -5290,9 +5302,10 @@ steps:
                   if not match:
                       continue
                   prefix = stripped[:match.start()]
-                  inline_start = prefix.rfind("`")
-                  if inline_start != -1 and prefix.count("`") % 2:
-                      inline_end = stripped.find("`", match.end())
+                  inline_open = re.search(r"(?<!`)`{1,2}$", prefix)
+                  if inline_open:
+                      delimiter = inline_open.group(0)
+                      inline_end = stripped.find(delimiter, match.end())
                       current = (
                           stripped[match.start():inline_end]
                           if inline_end != -1
@@ -5324,9 +5337,15 @@ steps:
                   action = argv[index + 2]
                   if action not in {"add", "use"}:
                       continue
+                  uri = bundle_add_uri(argv[index + 3:]) if action == "add" else ""
+                  if action == "add" and not uri:
+                      # `amplifier bundle add` mentioned without an operand is
+                      # prose, not an installation recommendation. In
+                      # particular, it must not outrank a later real command.
+                      break
                   commands.append({
                       "action": action,
-                      "uri": bundle_add_uri(argv[index + 3:]) if action == "add" else "",
+                      "uri": uri,
                       "argv": argv[index + 3:],
                   })
                   break
@@ -5351,12 +5370,13 @@ steps:
           return ""
 
       def is_canonical_behavior_uri(uri: str) -> bool:
-          """Recognize direct and conventional loader-supported behavior URIs."""
+          """Recognize direct files plus conventional behavior directories."""
           _source, marker, subdirectory = uri.partition("#subdirectory=")
           if not marker:
               return False
           return bool(re.fullmatch(
-              r"behaviors/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:yaml|yml|md)"
+              r"behaviors/[A-Za-z0-9][A-Za-z0-9._-]*"
+              r"|behaviors/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:yaml|yml|md)"
               r"|behaviors/[A-Za-z0-9][A-Za-z0-9._-]*/bundle\.(?:md|yaml|yml)",
               subdirectory.strip("/"),
           ))

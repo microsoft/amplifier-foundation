@@ -173,6 +173,46 @@ def test_behavior_hygiene_rejects_all_conventional_bundles_surfaces(
 @pytest.mark.parametrize(
     "include",
     [
+        "foundation:bundles/anchors/bundle.md",
+        "custom:bundles/with-anthropic.yaml",
+    ],
+)
+def test_behavior_hygiene_rejects_namespaced_conventional_root_surfaces(
+    tmp_path: Path, include: str
+) -> None:
+    """Namespaced `bundles/` forms are complete-host references too."""
+    repo = tmp_path / "namespaced-bundle-surface"
+    _write(repo / "behaviors" / "invalid.yaml", _behavior_with(include))
+
+    payload = _run_step("behavior-hygiene-validation", repo)
+
+    assert payload["passed"] is False
+    assert "includes_root_bundle" in _error_types(payload)
+
+
+@pytest.mark.parametrize(
+    "include",
+    [
+        "foundation:behaviors/redaction.yaml",
+        "foundation:providers/anthropic.yaml",
+    ],
+)
+def test_behavior_hygiene_allows_namespaced_partial_surfaces(
+    tmp_path: Path, include: str
+) -> None:
+    """Behavior and provider namespace paths remain composable partials."""
+    repo = tmp_path / "namespaced-partial"
+    _write(repo / "behaviors" / "valid.yaml", _behavior_with(include))
+
+    payload = _run_step("behavior-hygiene-validation", repo)
+
+    assert payload["passed"] is True
+    assert payload["errors"] == []
+
+
+@pytest.mark.parametrize(
+    "include",
+    [
         "foundation",
         "anchors",
         FOUNDATION,
@@ -292,12 +332,15 @@ def test_readme_accepts_an_unquoted_behavior_fragment_as_the_uri(tmp_path: Path)
     assert payload["summary"]["behavior_install_commands_found"] == 1
 
 
-def test_readme_bounds_inline_code_before_following_prose(tmp_path: Path) -> None:
+@pytest.mark.parametrize("delimiter", ["`", "``"])
+def test_readme_bounds_inline_code_before_following_prose(
+    tmp_path: Path, delimiter: str
+) -> None:
     """A valid inline command retains its in-code --app without parsing later prose."""
     repo = tmp_path / "inline-code"
     _write(
         repo / "README.md",
-        f'Run `amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml" --app` first.\n',
+        f'Run {delimiter}amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml" --app{delimiter} first.\n',
     )
 
     payload = _run_step("readme-install-convention-check", repo)
@@ -319,12 +362,15 @@ def test_readme_flags_behavior_install_missing_app(tmp_path: Path) -> None:
     assert _warning_types(payload) == {"readme_missing_app_flag"}
 
 
-def test_readme_does_not_accept_prose_app_flag_after_inline_command(tmp_path: Path) -> None:
+@pytest.mark.parametrize("delimiter", ["`", "``"])
+def test_readme_does_not_accept_prose_app_flag_after_inline_command(
+    tmp_path: Path, delimiter: str
+) -> None:
     """Only --app inside the command span satisfies a behavior installation."""
     repo = tmp_path / "inline-code-missing-app"
     _write(
         repo / "README.md",
-        f'Run `amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml"` with --app later.\n',
+        f'Run {delimiter}amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml"{delimiter} with --app later.\n',
     )
 
     payload = _run_step("readme-install-convention-check", repo)
@@ -358,9 +404,50 @@ amplifier bundle add --app # "{REDACTION}"
 
     payload = _run_step("readme-install-convention-check", repo)
 
-    assert payload["summary"]["bundle_add_commands_found"] == 1
+    assert payload["summary"]["bundle_add_commands_found"] == 0
     assert payload["summary"]["behavior_install_commands_found"] == 0
-    assert "readme_recommends_root_bundle" in _warning_types(payload)
+    assert payload["warnings"] == []
+    assert [info["type"] for info in payload["info"]] == ["no_bundle_add_commands"]
+
+
+def test_readme_ignores_empty_inline_add_before_a_real_behavior_install(tmp_path: Path) -> None:
+    """An operand-less inline mention cannot displace the first actual add command."""
+    repo = tmp_path / "empty-inline-add"
+    _write(
+        repo / "README.md",
+        f"""\
+Install with `amplifier bundle add`:
+```bash
+amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability.yaml" --app
+```
+""",
+    )
+
+    payload = _run_step("readme-install-convention-check", repo)
+
+    assert payload["warnings"] == []
+    assert payload["summary"]["bundle_add_commands_found"] == 1
+    assert payload["summary"]["behavior_install_commands_found"] == 1
+
+
+@pytest.mark.parametrize("with_app", [True, False])
+def test_readme_accepts_conventional_behavior_directory_and_requires_app(
+    tmp_path: Path, with_app: bool
+) -> None:
+    """Directory form resolves via bundle.md/yaml and follows the same --app rule."""
+    repo = tmp_path / "behavior-directory"
+    app_flag = " --app" if with_app else ""
+    _write(
+        repo / "README.md",
+        f'amplifier bundle add "{FOUNDATION}#subdirectory=behaviors/capability"{app_flag}\n',
+    )
+
+    payload = _run_step("readme-install-convention-check", repo)
+
+    if with_app:
+        assert payload["warnings"] == []
+    else:
+        assert _warning_types(payload) == {"readme_missing_app_flag"}
 
 
 def test_readme_first_named_anchors_root_before_behavior_is_still_a_warning(tmp_path: Path) -> None:
