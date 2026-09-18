@@ -6,6 +6,7 @@ Foundation provides:
 - **Bundle System** - Load, compose, validate, and resolve bundles from local and remote sources
 - **@Mention System** - Parse and resolve `@namespace:path` references in instructions
 - **Utilities** - YAML/frontmatter I/O, dict merging, path handling, caching
+- **Shared session state** - POSIX-local atomic checkpoints with exclusive root-session locking
 - **Reference Content** - Reusable providers, agents, behaviors, and context files
 
 ## Quick Start

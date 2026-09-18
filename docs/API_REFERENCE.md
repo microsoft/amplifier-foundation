@@ -106,6 +106,19 @@ from amplifier_foundation import Bundle, BundleRegistry, load_bundle
 | `set_working_dir` | `session/capabilities.py` | Update session working directory dynamically |
 | `WORKING_DIR_CAPABILITY` | `session/capabilities.py` | Capability name constant (`"session.working_dir"`) |
 
+## Shared Session State
+
+Portable same-host checkpoints live in `session/shared_state.py`. They are supported for POSIX local filesystems and coordinate one writer per canonical workspace and session ID.
+
+| Export | Source | Purpose |
+|--------|--------|---------|
+| `FileStamp`, `file_stamp(path)` | `session/shared_state.py` | Metadata-only checkpoint change detection; never reads JSON. |
+| `SharedSessionStore` | `session/shared_state.py` | Addresses a checkpoint; `acquire(app=...)` returns the exclusive writer capability. |
+| `HeldSession` | `session/shared_state.py` | Process-bound, non-copyable writer; atomically writes messages, portable bundle reference, and credential-safe metadata. |
+| `SessionBusyError` | `session/shared_state.py` | Contention error with advisory, bounded owner diagnostics. |
+
+Import these names from `amplifier_foundation.session`. Store construction, `read`, `stamp`, and `list_ids` never create state directories. `acquire` alone creates the private directory and stable `session.lock`; `release` never rewrites the authoritative checkpoint.
+
 ## Spawn Utilities
 
 Utilities for spawning sub-sessions with provider/model preferences.
