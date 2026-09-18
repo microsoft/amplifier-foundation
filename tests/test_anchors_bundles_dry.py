@@ -887,6 +887,83 @@ class TestDiscoveryScopeParity:
             "modes/notes.md": "no_frontmatter"
         }
 
+    def test_mode_advertising_ignores_path_components_and_longer_mode_names(
+        self,
+    ) -> None:
+        """Only slash-command tokens, not path syntax, advertise an internal mode."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "fixture"
+            (repo / "modes").mkdir(parents=True)
+            (repo / "modes" / "internal.md").write_text(
+                "---\nmode:\n  name: context-intelligence\n"
+                '  description: "Internal context."\n  advertised: false\n---\n',
+                encoding="utf-8",
+            )
+            (repo / "context").mkdir()
+            (repo / "context" / "path-syntax.md").write_text(
+                "Glob: docs/*/context-intelligence\n"
+                "Glob directory: docs/*/context-intelligence/\n"
+                "Character class: docs/[ab]/context-intelligence\n"
+                "Template: docs/{identifier}/context-intelligence\n"
+                "Template directory: docs/{identifier}/context-intelligence/\n"
+                "Component: prefix/context-intelligence\n"
+                "Longer mode: /context-intelligence-preview\n",
+                encoding="utf-8",
+            )
+
+            payload = _run_repo_recipe_step("mode-validation", repo)
+
+        assert payload["passed"] is True, (
+            "path components and longer mode names must not advertise an "
+            f"internal mode: {payload['errors']}"
+        )
+        assert payload["errors"] == []
+
+    def test_mode_advertising_still_detects_supported_command_forms(self) -> None:
+        """Standalone, quoted, fenced, punctuated, and API calls remain references."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "fixture"
+            (repo / "modes").mkdir(parents=True)
+            (repo / "modes" / "internal.md").write_text(
+                "---\nmode:\n  name: context-intelligence\n"
+                '  description: "Internal context."\n  advertised: false\n---\n',
+                encoding="utf-8",
+            )
+            (repo / "context").mkdir()
+            (repo / "context" / "standalone.md").write_text(
+                "/context-intelligence,\n", encoding="utf-8"
+            )
+            (repo / "context" / "quoted.md").write_text(
+                '"/context-intelligence".\n', encoding="utf-8"
+            )
+            (repo / "context" / "fenced.md").write_text(
+                "`/context-intelligence`.\n", encoding="utf-8"
+            )
+            (repo / "context" / "api-call.md").write_text(
+                "mode(operation='set', name='context-intelligence')\n",
+                encoding="utf-8",
+            )
+
+            payload = _run_repo_recipe_step("mode-validation", repo)
+
+        assert payload["passed"] is False
+        assert len(payload["errors"]) == 1
+        error = payload["errors"][0]
+        assert error["type"] == "unadvertised_but_referenced"
+        assert error["mode"] == "context-intelligence"
+        assert error["file"] == "modes/internal.md"
+        assert error["severity"] == "ERROR"
+        assert set(error["references_found_in"]) == {
+            "context/api-call.md",
+            "context/fenced.md",
+            "context/quoted.md",
+            "context/standalone.md",
+        }
+
     def test_no_validate_bundle_repo_step_interpolates_the_repo_path_into_source(
         self,
     ) -> None:
