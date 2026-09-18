@@ -1,9 +1,16 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.16.0
+# Repository-Wide Bundle Validator Recipe v3.16.1
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.16.1 - MODE COMMAND DETECTION MUST NOT PROMOTE PATH TOKENS.
+#        - The slash-command matcher treated a mode name after a glob or
+#          template component (`*/<mode>` / `}/<mode>`) as an invocation, and
+#          treated a hyphenated longer name as the shorter mode. Reject those
+#          lexical path/name continuations while retaining standalone, quoted,
+#          fenced, and punctuation-adjacent slash commands.
+#
 # v3.16.0 - BEHAVIORS ARE THE PRIMARY CAPABILITY SURFACE; ROOTS REMAIN
 #          EXPLICIT SUPPORTING COMPOSITIONS.
 #        - Discovery and summary language now describe an intended entry point
@@ -581,7 +588,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.16.0"
+version: "3.16.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -3610,12 +3617,15 @@ steps:
           (modes/evaluation.md, /evaluations/ as a directory segment).
           """
           mentions = []
-          # /mode-name must NOT be preceded by an alphanumeric char or slash
-          # (that would make it a path component, not a slash command), and
-          # must NOT be followed by an alphanumeric char, dot, or slash
-          # (which would make it part of a larger word or path).
+          # /mode-name must NOT be preceded by an alphanumeric char, slash,
+          # glob/template component terminator, or glob character (that would
+          # make it a path component, not a slash command), and must NOT be
+          # followed by an alphanumeric char, dot, slash, or hyphen (which
+          # would make it part of a larger word or path). Other punctuation
+          # remains a valid command boundary: `"/mode"`, `/mode,`, and fenced
+          # slash commands are deliberate supported forms.
           slash_pat = re.compile(
-              r'(?<![\w/])`?/' + re.escape(mode_name) + r'`?(?![\w./])'
+              r'(?<![\w/*}\]])`?/' + re.escape(mode_name) + r'`?(?![\w./-])'
           )
           name_pat  = re.compile(r'name=["\']' + re.escape(mode_name) + r'["\']')
           own_resolved = Path(own_file_path).resolve()
@@ -7427,7 +7437,7 @@ steps:
 
       ## Metadata
       - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v3.16.0
+      - Recipe: validate-bundle-repo v3.16.1
       - Validation Mode: [mode from env_check]
       - Foundation: [version or "not available"]
       - Quality Thresholds:
