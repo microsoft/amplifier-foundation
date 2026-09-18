@@ -137,9 +137,10 @@ For bundle structure, composition patterns, and the context sink pattern, consul
 
 **Key steps:**
 1. Create the bundle repo on GitHub (`microsoft/amplifier-bundle-newbundle`)
-2. Clone and create directory structure: `behaviors/`, `agents/`, `context/`, `docs/`
-3. Create `bundle.md` following the thin bundle pattern
-4. Add to `amplifier/docs/MODULES.md`
+2. Create the capability structure: `behaviors/`, `agents/`, `context/`, `docs/`
+3. Author and verify the behavior as the reusable entry point
+4. Add a thin Anchors supporting root only if shipping a complete host is useful
+5. Add to `amplifier/docs/MODULES.md`
 
 **Canonical example:** [amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes) - demonstrates proper structure, thin bundle pattern, behavior composition, and context sink agents.
 

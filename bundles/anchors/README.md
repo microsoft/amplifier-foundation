@@ -1,8 +1,10 @@
 # Anchors Bundle
 
-A lean experimental bundle that shapes the agent's conduct with a short, explicit
-set of **behavioral principles** placed at the very top of the system prompt --
-rather than encoding behavior across large rule documents.
+The CLI's current default runtime bundle and the recommended supporting root for a
+new complete host. It remains a lean experimental bundle that shapes the agent's
+conduct with a short, explicit set of **behavioral principles** placed at the very
+top of the system prompt -- rather than encoding behavior across large rule
+documents.
 
 The bet: a handful of sharp, well-chosen principles -- which the model re-reads on
 every turn -- steer conduct more cheaply and more reliably than verbose policy
@@ -51,10 +53,10 @@ for them.
 | **Orchestrator** | `loop-streaming` with extended thinking enabled. |
 | **Context** | `context-simple`, 300k window, auto-compact at 80%. |
 | **Tools** | A standard roster at the parent: filesystem, bash, web, search, todo, apply-patch, delegate, skills (discovery only), mode, recipes. |
-| **Agents** | Six thin, purposeful sub-agents -- `explorer`, `architect`, `builder`, `debugger`, `git-ops`, `researcher` -- each a tight USE-WHEN contract and one spawn-only shared baseline. |
+| **Agents** | Six thin, purposeful sub-agents -- `anchors:explorer`, `anchors:architect`, `anchors:builder`, `anchors:debugger`, `anchors:git-ops`, `anchors:researcher` -- each a tight USE-WHEN contract and one spawn-only shared baseline. |
 | **Shared baseline** | Spawned agents load `context/agent-baseline.md` once. It requires local-convention discovery and evidence-based, scoped, defensive conduct without copying a parent/root prompt or AGENTS/SCRATCH chain automatically. |
 | **Hooks** | Free-cost UX hooks only (`streaming-ui`, `status-context`, `redaction`, `logging`, `todo-reminder`, `todo-display`, `session-naming`) -- runtime behavior with no per-turn context cost. |
-| **Skills** | Discovery available; auto-injection (`visibility`) turned off to keep first-turn context small. |
+| **Skills** | Bare Anchors keeps auto-injection (`visibility`) off to keep first-turn context small. The app CLI composes the full skills behavior for its sessions. |
 
 ## Design philosophy
 

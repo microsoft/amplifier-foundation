@@ -134,6 +134,15 @@ Care should be taken with orchestrator changes (different orchestrators may hand
 
 Three approaches, each with different tradeoffs.
 
+> **Scope:** These are complete-application compositions. When publishing a
+> reusable capability for another host, follow the behavior-first guide: publish
+> its behavior without selecting a root, provider, or orchestrator. Add a
+> supporting root when you intentionally ship a complete host. A flat repository
+> may separately need an enclosing root manifest to anchor namespace resources;
+> that metadata/resource role does not make root configuration the primary
+> capability artifact. See
+> [BUNDLE_GUIDE.md](BUNDLE_GUIDE.md).
+
 ### Declarative (YAML Includes Chain)
 
 Everything lives in `bundle.md`. Good for stable configurations that rarely change at runtime.
@@ -145,13 +154,11 @@ bundle:
   version: 1.0.0
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - behavior: my-app:behaviors/domain-expert
-
-session:
-  orchestrator: {module: loop-streaming}
-  context: {module: context-simple}
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  - bundle: my-app:behaviors/domain-expert
 ---
+
+@anchors:context/system.md
 
 You are a helpful domain expert.
 ```
@@ -357,12 +364,12 @@ unreg = session.coordinator.hooks.register(
 Hooks declared in the **bundle** propagate to spawned sub-sessions automatically. When a spawn capability calls `prepared.spawn(child_bundle, instruction, compose=True)` — and `compose=True` is the default — the parent bundle is composed with the child before the child session is created. Everything the parent declares (hook modules, providers, tools) is therefore inherited by the child. Compose one observability or logging hook into the parent and *every* descendant session is instrumented, with no per-child wiring:
 
 ```python
-# Generic observability hook composed into the PARENT bundle once...
+# Generic observability hook composed into an Anchors-based parent once...
 observability = Bundle(
     name="observability-behavior",
     hooks=[{"module": "hooks-observability", "source": "<your-hook-source>", "config": {...}}],
 )
-composed = foundation.compose(provider).compose(observability)
+composed = anchors.compose(provider).compose(observability)
 prepared = await composed.prepare()
 
 # ...is inherited by children spawned with compose=True (the default).

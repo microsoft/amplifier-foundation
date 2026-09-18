@@ -158,7 +158,10 @@ mount_plan = bundle.to_mount_plan()
 ```python
 from amplifier_foundation import load_bundle
 
-base = await load_bundle("foundation")
+base = await load_bundle(
+    "git+https://github.com/microsoft/amplifier-foundation@main"
+    "#subdirectory=bundles/anchors/bundle.md"
+)
 overlay = await load_bundle("./local-overlay.md")
 composed = base.compose(overlay)
 ```

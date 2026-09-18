@@ -192,12 +192,13 @@ class TestVersionAndChangelog:
         extracted from 8rug: `<namespace>:<path>` includes were charged a
         flat 500 instead of being read), then 3.14.0 -> 3.15.0 by the
         description-alignment checks (lane pwmy: char-based length cap,
-        skill descriptions, awareness redundancy, bundle head cost). The
+        skill descriptions, awareness redundancy, bundle head cost), then
+        3.15.0 -> 3.16.0 by behavior-first discovery and install guidance. The
         v3.11.0 changelog entry below is unaffected -- changelog entries
         accumulate.
         """
         data, _ = recipe_data
-        assert data["version"] == "3.15.0"
+        assert data["version"] == "3.16.0"
 
     def test_changelog_has_v3_11_0_entry(self, recipe_data):
         _, content = recipe_data
