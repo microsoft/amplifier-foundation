@@ -1487,14 +1487,14 @@ Bundles support multiple source formats for modules:
 
 ## Composition with includes:
 
-Bundles can inherit from other bundles:
+Compose reusable behaviors into the current host. A supporting runnable root
+can also select Anchors as its base:
 
 ```yaml
 includes:
-  - bundle: foundation                    # Well-known bundle name
-  - bundle: git+https://github.com/...    # Git URL
-  - bundle: ./bundles/variant.yaml        # Local file
-  - bundle: my-bundle:behaviors/foo       # Behavior within same bundle
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md  # Supporting root only
+  - bundle: git+https://github.com/org/capability@main#subdirectory=behaviors/feature.yaml
+  - bundle: my-bundle:behaviors/foo       # Behavior within the same repository
 ```
 
 **Merge rules**:
