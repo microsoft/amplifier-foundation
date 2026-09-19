@@ -368,7 +368,7 @@ def test_diagnostics_cannot_override_owner_fields_and_user_falls_back_to_uid(
         store.acquire(app="test", active=False)
 
     monkeypatch.setattr(shared_state.getpass, "getuser", lambda: (_ for _ in ()).throw(KeyError()))
-    owner = shared_state._owner_details("test", {}, store.workspace, store.session_id)
+    owner = shared_state._owner_details("test", {}, store.workspace, store.session_id, store.root)
     assert owner["user"] == str(os.getuid())
 
 

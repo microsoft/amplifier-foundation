@@ -17,6 +17,7 @@ import socket
 import stat
 import tempfile
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -279,7 +280,7 @@ def _process_start_identity(path: Path = Path("/proc/self/stat")) -> str | None:
     return fields[19] if len(fields) > 19 else None
 
 
-def _owner_details(app: str, diagnostics: dict[str, Any], workspace: Path, session_id: str) -> dict[str, Any]:
+def _owner_details(app: str, diagnostics: dict[str, Any], workspace: Path, session_id: str, root: Path) -> dict[str, Any]:
     if not isinstance(app, str) or not app or len(app) > 256:
         raise ValueError("app must be a non-empty string up to 256 characters")
     forbidden = ("argv", "env", "secret", "token", "credential", "prompt", "password")
@@ -302,6 +303,8 @@ def _owner_details(app: str, diagnostics: dict[str, Any], workspace: Path, sessi
         "workspace": str(workspace),
         "session_id": session_id,
         "active": True,
+        "acquisition_id": uuid.uuid4().hex,
+        "coordination_root": str(root.resolve()),
     }
     for key, value in diagnostics.items():
         if key in owner:
@@ -398,7 +401,7 @@ class SharedSessionStore:
     def acquire(self, *, app: str, **diagnostics: Any) -> "HeldSession":
         """Acquire the stable OS lock and publish advisory owner diagnostics."""
         _ensure_supported()
-        owner = _owner_details(app, diagnostics, self.workspace, self.session_id)
+        owner = _owner_details(app, diagnostics, self.workspace, self.session_id, self.root)
         _ensure_private_state_path(self.root, self._directory)
         lock_name = str(self._lock_path)
         with _PROCESS_LOCKS_GUARD:
@@ -457,6 +460,13 @@ class HeldSession:
         self._pid = os.getpid()
         self._active = True
         self._mutex = threading.RLock()
+        self._release_registration = None
+        self._release_requests: dict[str, Any] = {}
+
+    @property
+    def owner(self) -> dict[str, Any]:
+        """A detached view of this acquisition's advisory identity."""
+        return copy.deepcopy(self._owner)
 
     def __copy__(self) -> "HeldSession":
         raise TypeError("HeldSession capabilities cannot be copied")
@@ -535,6 +545,8 @@ class HeldSession:
         with self._mutex:
             if not self._active:
                 return
+            if self._release_registration is not None:
+                self._release_registration._deactivate()
             self._active = False
             released = dict(self._owner)
             released["active"] = False

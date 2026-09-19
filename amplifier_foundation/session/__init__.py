@@ -158,8 +158,19 @@ from .shared_state import (
     SharedSessionStore,
     file_stamp,
 )
+from .handoff import (
+    CannotRelease,
+    ReadyToRelease,
+    ReleaseRegistration,
+    ReleaseRequest,
+    ReleaseResult,
+    register_release_handler,
+    request_release,
+)
 
 __all__ = [
+    "CannotRelease", "ReadyToRelease", "ReleaseRegistration", "ReleaseRequest",
+    "ReleaseResult", "register_release_handler", "request_release",
     # Core fork operations
     "ForkResult",
     "fork_session",
