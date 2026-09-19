@@ -471,7 +471,7 @@ def test_block_form_tool_ids_and_message_ids():
     ]
     actual = associate_events(messages, events)
     assert [a.message_indices for a in actual] == [(1,), (2,), (1,)]
-    assert all(a.turn_index == 0 for a in actual)
+    assert all(a.turn_index == 0 and a.turn_message_index == 0 for a in actual)
 
 
 def test_reused_tool_ids_are_not_guessed():
@@ -493,6 +493,9 @@ def test_repeated_prompts_preserved_when_full_sequences_agree():
     actual = associate_events(messages, events)
     assert [a.message_indices for a in actual] == [(0,), (2,)]
     assert [a.turn_index for a in actual] == [0, 1]
+    assert [a.turn_message_index for a in actual] == [
+        a.message_indices[0] for a in actual
+    ]
 
 
 def test_partial_repeated_prompt_sequence_is_ambiguous():
@@ -544,6 +547,9 @@ def test_persisted_reminders_do_not_shift_human_turn_indices():
     )
     assert [a.message_indices for a in actual] == [(0,), (4,)]
     assert [a.turn_index for a in actual] == [0, 1]
+    assert [a.turn_message_index for a in actual] == [
+        a.message_indices[0] for a in actual
+    ]
 
 
 def test_invalid_existing_metadata_prevents_any_paired_write(store):
@@ -555,3 +561,64 @@ def test_invalid_existing_metadata_prevents_any_paired_write(store):
     assert {
         path.name: path.read_bytes() for path in store.session_dir.iterdir()
     } == before
+
+
+def test_scan_limit_counts_invalid_blank_and_other_session_lines(store):
+    write_events(store, [event("other", session_id="child"), event("wanted")])
+    store.events_path.write_bytes(b"INVALID\n\n" + store.events_path.read_bytes())
+    assert list(store.iter_events(max_lines=3)) == []
+    assert [(d.code, d.line) for d in store.diagnostics] == [
+        ("invalid_event", 1),
+        ("scan_limit", 4),
+    ]
+    assert [row["event"] for row in store.iter_events()] == ["wanted"]
+
+
+def test_exact_scan_limit_at_end_does_not_report_incomplete_history(store):
+    write_events(store, [event("first"), event("second")])
+    assert len(list(store.iter_events(max_lines=2))) == 2
+    assert not store.diagnostics
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, "2"])
+def test_invalid_scan_limit_is_rejected_without_reading(store, limit):
+    with pytest.raises(ValueError, match="max_lines"):
+        list(store.iter_events(max_lines=limit))
+    assert not store.session_dir.exists()
+
+
+def test_byte_limit_never_parses_an_oversized_row(store, monkeypatch):
+    write_events(store, [event("first")])
+    first_bytes = store.events_path.stat().st_size
+    with store.events_path.open("ab") as stream:
+        stream.write(b'{"event":"huge","data":{"raw":"' + b"x" * 100_000 + b'"}}\n')
+    original = history_module._decode
+    parsed_sizes = []
+
+    def bounded_decode(raw):
+        parsed_sizes.append(len(raw))
+        return original(raw)
+
+    monkeypatch.setattr(history_module, "_decode", bounded_decode)
+    actual = list(store.iter_events(max_bytes=first_bytes + 200))
+    assert [row["event"] for row in actual] == ["first"]
+    assert parsed_sizes == [first_bytes]
+    assert [(d.code, d.line) for d in store.diagnostics] == [("scan_limit", 2)]
+
+
+def test_exact_byte_limit_at_end_is_not_truncated(store):
+    write_events(store, [event("first")])
+    assert len(list(store.iter_events(max_bytes=store.events_path.stat().st_size))) == 1
+    assert not store.diagnostics
+
+
+def test_byte_limit_counts_skipped_rows(store):
+    write_events(store, [event("other", session_id="child"), event("wanted")])
+    assert list(store.iter_events(max_bytes=2)) == []
+    assert [(d.code, d.line) for d in store.diagnostics] == [("scan_limit", 1)]
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, "2"])
+def test_invalid_byte_limit_is_rejected(store, limit):
+    with pytest.raises(ValueError, match="max_bytes"):
+        list(store.iter_events(max_bytes=limit))

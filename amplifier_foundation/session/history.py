@@ -54,6 +54,7 @@ class EventAssociation:
     turn_index: int | None = None
     method: str | None = None
     auxiliary: bool = False
+    turn_message_index: int | None = None
 
 
 @dataclass
@@ -235,18 +236,31 @@ class SessionHistoryStore:
             associations=associate_events(messages, events),
         )
 
-    def iter_events(self) -> Iterator[dict[str, Any]]:
+    def iter_events(
+        self, *, max_lines: int | None = None, max_bytes: int | None = None
+    ) -> Iterator[dict[str, Any]]:
         """Stream scoped CI events, recording bad/truncated rows in diagnostics.
 
         An absent optional log is normal. Native ``data`` and extra envelope
         fields are retained. ``event``, ``timestamp``, ``session_id``, and ``line``
         are normalized; unidentified session rows are retained but diagnosed.
         This is tolerant activity reading, never a resume-message source.
+        Optional ``max_lines`` bounds physical rows scanned, including blank,
+        invalid, and other-session rows. If more input remains, ``scan_limit`` is
+        diagnosed. The host chooses this display policy; it is unlimited by
+        default. Optional ``max_bytes`` also bounds total raw input bytes; a row
+        crossing that budget is not parsed or yielded and reports ``scan_limit``.
+        At most one extra byte is consumed to establish that the budget was hit.
         """
+        for name, limit in (("max_lines", max_lines), ("max_bytes", max_bytes)):
+            if limit is not None and (type(limit) is not int or limit < 1):
+                raise ValueError(f"{name} must be a positive integer or None")
         self.diagnostics = []
-        yield from self._iter_events()
+        yield from self._iter_events(max_lines=max_lines, max_bytes=max_bytes)
 
-    def _iter_events(self) -> Iterator[dict[str, Any]]:
+    def _iter_events(
+        self, *, max_lines: int | None = None, max_bytes: int | None = None
+    ) -> Iterator[dict[str, Any]]:
         try:
             stream = self.events_path.open("rb")
         except FileNotFoundError:
@@ -256,7 +270,31 @@ class SessionHistoryStore:
             return
         try:
             with stream:
-                for line_number, raw in enumerate(stream, 1):
+                line_number = consumed_bytes = 0
+                while max_lines is None or line_number < max_lines:
+                    remaining = (
+                        max_bytes - consumed_bytes if max_bytes is not None else None
+                    )
+                    if remaining == 0:
+                        if stream.peek(1):
+                            self.diagnostics.append(
+                                HistoryDiagnostic(
+                                    "scan_limit", "events", line_number + 1
+                                )
+                            )
+                        return
+                    raw = stream.readline(
+                        remaining + 1 if remaining is not None else -1
+                    )
+                    if not raw:
+                        return
+                    line_number += 1
+                    if remaining is not None and len(raw) > remaining:
+                        self.diagnostics.append(
+                            HistoryDiagnostic("scan_limit", "events", line_number)
+                        )
+                        return
+                    consumed_bytes += len(raw)
                     if not raw.strip():
                         continue
                     try:
@@ -321,6 +359,12 @@ class SessionHistoryStore:
                         "session_id": identity,
                         "line": line_number,
                     }
+                # Peek at buffered bytes rather than reading/parsing an extra
+                # potentially large JSON row just to establish truncation.
+                if stream.peek(1):
+                    self.diagnostics.append(
+                        HistoryDiagnostic("scan_limit", "events", line_number + 1)
+                    )
         except OSError:
             self.diagnostics.append(HistoryDiagnostic("unreadable_file", "events"))
 
@@ -487,6 +531,7 @@ def associate_events(
     results: dict[str, set[int]] = defaultdict(set)
     message_ids: dict[str, set[int]] = defaultdict(set)
     turns: dict[int, int | None] = {}
+    turn_anchors: dict[int, int] = {}
     human: list[tuple[int, str]] = []
     turn: int | None = None
     for index, message in enumerate(messages):
@@ -499,6 +544,7 @@ def associate_events(
             and not _tool_ids(message, results=True)
         ):
             turn = 0 if turn is None else turn + 1
+            turn_anchors[turn] = index
             if isinstance(message.get("content"), str):
                 human.append((index, message["content"]))
         turns[index] = turn
@@ -569,15 +615,19 @@ def associate_events(
             if not positions and index in prompt_matches:
                 positions, method = (prompt_matches[index],), "prompt_match"
         matching_turns = {turns[position] for position in positions}
+        associated_turn = (
+            next(iter(matching_turns)) if len(matching_turns) == 1 else None
+        )
         associations.append(
             EventAssociation(
                 event_index=index,
                 message_indices=positions,
-                turn_index=next(iter(matching_turns))
-                if len(matching_turns) == 1
-                else None,
+                turn_index=associated_turn,
                 method=method,
                 auxiliary=index in auxiliary,
+                turn_message_index=turn_anchors.get(associated_turn)
+                if associated_turn is not None
+                else None,
             )
         )
     return associations

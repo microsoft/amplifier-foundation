@@ -103,7 +103,9 @@ does not change transcript order. Reused IDs remain ambiguous. Exact prompt text
 can associate uniquely; repeated prompts associate only when the complete prompt
 sequences agree. Auxiliary naming/summarization observations are marked and not
 assigned to conversation messages. Timestamps alone are never enough to attach
-an event to a turn. All message and turn indices are zero-based.
+an event to a turn. All message and turn indices are zero-based. Each associated
+turn also exposes `turn_message_index`, its exact human-message anchor in the
+transcript, so hosts do not need to recreate reminder/tool-result filtering.
 
 For relocated Context Intelligence logs, pass the actual configured path and,
 when necessary, a session identity different from the directory name:
@@ -117,7 +119,13 @@ There is no fallback to the legacy root `events.jsonl`; it may belong to an
 entirely different logger. Missing CI logs are normal and do not prevent resume.
 Malformed, truncated, or unreadable activity records are diagnosed separately
 from transcript corruption. `iter_events()` streams large logs without eagerly
-building the combined view. `load(include_events=False)` does not read or stat
+building the combined view. Hosts can use `iter_events(max_lines=5000)` to bound
+physical rows scanned, including malformed and other-session records. If more
+input remains, `scan_limit` is reported. An additional `max_bytes=16 * 1024 * 1024`
+bounds total raw input, including a single oversized provider payload. A row
+crossing that budget is not parsed or yielded; at most one extra byte establishes
+that input remains. Both limits default to unlimited.
+`load(include_events=False)` does not read or stat
 the events file at all.
 
 ## Fork, edit, and repair
