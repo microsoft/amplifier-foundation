@@ -1,12 +1,13 @@
 """Scope merging and cooperating writers are host-independent."""
 
+import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import yaml
 
-from amplifier_foundation.settings import read_settings, update_settings
+from amplifier_foundation.settings import atomic_write, read_settings, update_settings
 
 
 def test_order_provider_instances_empty_files_and_unknown_keys(tmp_path):
@@ -81,6 +82,7 @@ def test_simultaneous_updates_preserve_other_fields_and_permissions(tmp_path):
     path = tmp_path / "settings.yaml"
     path.write_text("unknown: retained\n")
     path.chmod(0o640)
+    existing_mode = stat.S_IMODE(path.stat().st_mode)
 
     def update(index):
         update_settings(path, lambda value: {**value, f"field_{index}": index})
@@ -89,4 +91,12 @@ def test_simultaneous_updates_preserve_other_fields_and_permissions(tmp_path):
         list(pool.map(update, range(15)))
     value = read_settings([path])
     assert value == {"unknown": "retained", **{f"field_{i}": i for i in range(15)}}
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert stat.S_IMODE(path.stat().st_mode) == existing_mode
+
+
+def test_atomic_write_without_descriptor_chmod(tmp_path, monkeypatch):
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    path = tmp_path / "settings.yaml"
+    atomic_write(path, "voice: test\n")
+    assert path.read_text() == "voice: test\n"
+    assert list(tmp_path.iterdir()) == [path]

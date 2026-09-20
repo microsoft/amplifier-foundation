@@ -74,7 +74,11 @@ def atomic_write(path, contents, *, private=False):
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), mode)
+            else:
+                # Windows exposes chmod's read-only flag, but not fchmod.
+                os.chmod(temporary, mode)
             stream.write(contents)
             stream.flush()
             os.fsync(stream.fileno())

@@ -86,7 +86,8 @@ merge rules and is not changed by this API.
 An empty settings file is intentional. Malformed YAML or a non-mapping root is
 an error. Reads never rewrite files. Writers lock `<settings-file>.lock`, reread,
 apply only the requested mutation, and atomically replace the file. Existing
-permissions are preserved and new files are private. Credential values must not
+permission bits are preserved where supported and new files use mode 0600 on
+POSIX. Windows uses the containing directory's ACL policy. Credential values must not
 be expanded into exported or portable session settings.
 
 This moves shared file mechanisms into Foundation. It does not make host-specific
