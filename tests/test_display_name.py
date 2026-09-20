@@ -52,10 +52,10 @@ async def test_registry_alias_composition_persistence_and_source_change(tmp_path
     child.write_text("bundle:\n  name: child\n  display_name: Child label\n")
     root = tmp_path / "bundle.yaml"
     root.write_text(
-        f"bundle:\n  name: root\n  display_name: Root label\nincludes:\n  - bundle: {child}\n"
+        f"bundle:\n  name: root\n  display_name: Root label\nincludes:\n  - bundle: {child.as_uri()}\n"
     )
     registry = BundleRegistry(home=tmp_path / "home")
-    registry.register({"alias": str(root)})
+    registry.register({"alias": root.as_uri()})
     loaded = await registry.load("alias")
     assert loaded.name == "root" and loaded.display_name == "Root label"
     registry.save()
@@ -63,7 +63,7 @@ async def test_registry_alias_composition_persistence_and_source_change(tmp_path
     assert restored._registry["alias"].display_name == "Root label"
     assert restored._registry["root"].display_name == "Root label"
     assert restored._registry["child"].display_name == "Child label"
-    restored.register({"alias": str(child)})
+    restored.register({"alias": child.as_uri()})
     assert restored._registry["alias"].display_name is None
     assert restored._registry["alias"].local_path is None
     assert (await restored.load("alias")).display_name == "Child label"
