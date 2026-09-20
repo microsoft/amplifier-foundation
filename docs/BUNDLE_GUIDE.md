@@ -140,6 +140,16 @@ Below the frontmatter, write **only**:
 
 Do **not** write a description of the bundle. That is what the frontmatter `description:` field is for — it is manifest metadata and is never sent to the model.
 
+Use optional `bundle.display_name` for a human-readable label, such as
+`display_name: My Research Bundle`. It must be a non-empty string when supplied.
+`bundle.name` remains the stable identifier for registration, namespaces, includes,
+and saved configuration. Hosts can show `display_name or name` and sort by that
+label. Display names need not be unique and do not appear in the mount plan or
+model instructions. Registry and disk caches preserve the label; older bundles
+and registry entries without it remain valid. During composition, the label
+follows the last named bundle, including an omitted label: an unlabeled root
+does not inherit an included behavior's display name.
+
 ### The test
 
 Read the body aloud as though you are the model receiving it. Instruction addresses the model:

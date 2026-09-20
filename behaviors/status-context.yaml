@@ -1,5 +1,6 @@
 bundle:
   name: behavior-status-context
+  display_name: Status context
   version: 1.0.0
   description: Inject environment and git status into agent context
 

@@ -1,6 +1,7 @@
 ---
 bundle:
   name: exp-lean-amplifier-dev
+  display_name: Experimental · Lean Amplifier development
   version: 0.1.0
   description: |
     EXPERIMENTAL lean amplifier-dev bundle -- minimal token footprint with dev tooling.

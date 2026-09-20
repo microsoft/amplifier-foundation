@@ -8,6 +8,7 @@ bundle:
   #   source_base_paths['minimal-delegate'] = experiments/minimal-delegate/
   # rather than the default (this file's own behaviors/ directory).
   name: minimal-delegate
+  display_name: Minimal delegation
   version: 0.2.0
   namespace_root: ..
   description: |

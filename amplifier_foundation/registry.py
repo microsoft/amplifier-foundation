@@ -91,6 +91,7 @@ class BundleState:
         False  # True if user explicitly requested (bundle use/add)
     )
     app_bundle: bool = False  # True if this is an app bundle (always composed)
+    display_name: str | None = None  # Optional display label, never an identity
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -106,6 +107,8 @@ class BundleState:
             "app_bundle": self.app_bundle,
         }
         # Only include optional fields if they have data
+        if self.display_name:
+            result["display_name"] = self.display_name
         if self.includes:
             result["includes"] = self.includes
         if self.included_by:
@@ -121,6 +124,7 @@ class BundleState:
             uri=data["uri"],
             name=name,
             version=data.get("version"),
+            display_name=data.get("display_name"),
             loaded_at=datetime.fromisoformat(data["loaded_at"])
             if data.get("loaded_at")
             else None,
@@ -242,6 +246,11 @@ class BundleRegistry:
             existing = self._registry.get(name)
             if existing:
                 # Preserve existing state, update URI
+                if existing.uri != uri:
+                    existing.display_name = None
+                    existing.local_path = None
+                    existing.loaded_at = None
+                    existing.version = None
                 existing.uri = uri
             else:
                 self._registry[name] = BundleState(uri=uri, name=name)
@@ -484,6 +493,7 @@ class BundleRegistry:
                             uri=root_uri,
                             name=root_bundle.name,
                             version=root_bundle.version,
+                            display_name=root_bundle.display_name,
                             loaded_at=datetime.now(),
                             local_path=str(
                                 root_bundle_path.parent
@@ -541,6 +551,7 @@ class BundleRegistry:
                     uri=uri,
                     name=bundle.name,
                     version=bundle.version,
+                    display_name=bundle.display_name,
                     loaded_at=datetime.now(),
                     local_path=str(local_path),
                     is_root=is_root_bundle,
@@ -564,7 +575,7 @@ class BundleRegistry:
                 # The root URI is authoritative for update tracking (it represents
                 # the git repo boundary). The behavior's tools/hooks/context still
                 # load through the include chain, independent of the registry.
-                if state.is_root and "#subdirectory=" in uri:
+                if state.is_root and "#subdirectory=" in uri and state.uri != uri:
                     logger.debug(
                         f"Skipping registry update for '{update_name}': "
                         f"root entry preserved over subdirectory load"
@@ -576,6 +587,7 @@ class BundleRegistry:
                         )
                         state.uri = uri
                     state.version = bundle.version
+                    state.display_name = bundle.display_name
                     state.loaded_at = datetime.now()
                     state.local_path = str(local_path)
                     # Sticky update: never downgrade explicitly_requested from True→False.

@@ -1,5 +1,6 @@
 bundle:
   name: behavior-tasks
+  display_name: Tasks
   version: 1.0.0
   description: |
     Legacy task tool behavior for backwards compatibility.

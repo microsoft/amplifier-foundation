@@ -1,5 +1,6 @@
 bundle:
   name: foundation-minimal
+  display_name: Foundation · Minimal
   version: 1.0.0
   description: Minimal foundation bundle - basic tools only
 

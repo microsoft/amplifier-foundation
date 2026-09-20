@@ -1,6 +1,7 @@
 ---
 bundle:
   name: lean-foundation-behavior
+  display_name: Lean Foundation
   version: 1.0.0
   description: |
     Minimal Amplifier infrastructure: session config, core tools, essential UX hooks,

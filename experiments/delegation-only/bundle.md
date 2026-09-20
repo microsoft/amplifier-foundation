@@ -1,6 +1,7 @@
 ---
 bundle:
   name: exp-delegation
+  display_name: Experimental · Delegation only
   version: 1.0.0
   description: Experimental bundle that has NO direct tool access - must delegate ALL work to specialized agents
 
