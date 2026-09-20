@@ -16,6 +16,7 @@ from typing import Any
 
 from ..io.files import _write_atomic, write_with_backup
 from .messages import is_real_user_message
+from .metadata import checkpoint_metadata, metadata_lock
 from .shared_state import FileStamp, file_stamp
 from .store import METADATA_FILENAME, TRANSCRIPT_FILENAME
 
@@ -444,6 +445,7 @@ class SessionHistoryStore:
         *,
         preserve_system: bool = False,
         sanitizer: Callable[[Any], dict[str, Any]] | None = None,
+        merge_metadata: bool = False,
     ) -> None:
         """Validate both payloads, then replace native files with CLI backups.
 
@@ -454,19 +456,22 @@ class SessionHistoryStore:
         transcript_content = self._messages_content(
             messages, preserve_system, sanitizer
         )
-        metadata_content = self._metadata_content(metadata)
-        preserve_transcript_backup = self._prepare_write(
-            self.transcript_path, _read_messages
-        )
-        preserve_metadata_backup = self._prepare_write(
-            self.metadata_path, _read_metadata
-        )
-        self._write_prepared(
-            self.transcript_path, transcript_content, preserve_transcript_backup
-        )
-        self._write_prepared(
-            self.metadata_path, metadata_content, preserve_metadata_backup
-        )
+        with metadata_lock(self.session_dir):
+            if merge_metadata:
+                metadata = checkpoint_metadata(self.load_metadata(), metadata)
+            metadata_content = self._metadata_content(metadata)
+            preserve_transcript_backup = self._prepare_write(
+                self.transcript_path, _read_messages
+            )
+            preserve_metadata_backup = self._prepare_write(
+                self.metadata_path, _read_metadata
+            )
+            self._write_prepared(
+                self.transcript_path, transcript_content, preserve_transcript_backup
+            )
+            self._write_prepared(
+                self.metadata_path, metadata_content, preserve_metadata_backup
+            )
 
     def save_messages(
         self,
@@ -480,8 +485,21 @@ class SessionHistoryStore:
         preserve_backup = self._prepare_write(self.transcript_path, _read_messages)
         self._write_prepared(self.transcript_path, content, preserve_backup)
 
-    def save_metadata(self, metadata: dict[str, Any]) -> None:
-        """Replace only metadata.json, for naming and other host metadata changes."""
+    def save_metadata(
+        self, metadata: dict[str, Any], *, merge_metadata: bool = False
+    ) -> None:
+        """Replace metadata, or merge a checkpoint preserving canonical naming.
+
+        All cooperating metadata writes use the short metadata lock. Transcript
+        writers still need the separate session execution ownership lock.
+        """
+        with metadata_lock(self.session_dir):
+            if merge_metadata:
+                metadata = checkpoint_metadata(self.load_metadata(), metadata)
+            self._save_metadata_unlocked(metadata)
+
+    def _save_metadata_unlocked(self, metadata: dict[str, Any]) -> None:
+        """Internal primitive; caller must hold metadata_lock."""
         content = self._metadata_content(metadata)
         preserve_backup = self._prepare_write(self.metadata_path, _read_metadata)
         self._write_prepared(self.metadata_path, content, preserve_backup)

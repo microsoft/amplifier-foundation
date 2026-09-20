@@ -212,7 +212,9 @@ class SessionNamingHook:
         # So we add 1 to get the actual current turn number
         stored_turn_count = metadata.get("turn_count", 0)
         current_turn = stored_turn_count + 1
-        has_name = metadata.get("name") is not None
+        from amplifier_foundation.session.metadata import has_generated_or_manual_name
+
+        has_name = has_generated_or_manual_name(metadata)
 
         # Initial naming: turn >= initial_trigger and no name yet
         if current_turn >= self.config.initial_trigger_turn and not has_name:
@@ -290,17 +292,25 @@ class SessionNamingHook:
                 logger.warning(f"Failed to load metadata: {e}")
         return {}
 
-    def _save_metadata(self, session_dir: Path, metadata: dict) -> None:
-        """Save session metadata atomically."""
-        metadata_path = session_dir / "metadata.json"
-        temp_path = session_dir / "metadata.json.tmp"
-        try:
-            temp_path.write_text(json.dumps(metadata, indent=2))
-            temp_path.replace(metadata_path)
-        except OSError as e:
-            logger.error(f"Failed to save metadata: {e}")
-            if temp_path.exists():
-                temp_path.unlink()
+    def _save_metadata(self, session_dir: Path, metadata: dict) -> dict:
+        """Patch naming fields without restoring a pre-generation snapshot."""
+        from amplifier_foundation.session.metadata import SessionMetadataStore
+
+        store = SessionMetadataStore(session_dir)
+        if metadata.get("name"):
+            return store.set_name(
+                metadata["name"],
+                source="generated",
+                description=metadata.get("description"),
+                expected_revision=metadata.get("name_revision", 0),
+            )
+        return store.update(
+            {
+                key: metadata[key]
+                for key in ("description", "description_updated_at")
+                if key in metadata
+            }
+        )
 
     async def _generate_name(
         self, session_id: str, session_dir: Path, is_update: bool
@@ -390,7 +400,7 @@ class SessionNamingHook:
                     if is_update:
                         logger.debug("Session %s description updated", session_id[:8])
 
-                self._save_metadata(session_dir, metadata)
+                metadata = self._save_metadata(session_dir, metadata) or metadata
                 # Clear defer count on success
                 self._defer_counts.pop(session_id, None)
                 await self.coordinator.hooks.emit(
@@ -398,6 +408,7 @@ class SessionNamingHook:
                     {
                         "session_id": session_id,
                         "name": metadata.get("name"),
+                        "name_revision": metadata.get("name_revision"),
                         "description": metadata.get("description"),
                         "is_update": is_update,
                     },

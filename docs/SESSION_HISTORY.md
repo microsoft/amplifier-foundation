@@ -28,7 +28,7 @@ await context.set_messages(history.messages)
 
 # Later, while holding the application's session ownership lock:
 messages = await context.get_messages()
-store.save(messages, history.metadata)
+store.save(messages, history.metadata, merge_metadata=True)
 ```
 
 The default save policy excludes `system` and `developer` messages, matching CLI.
@@ -37,20 +37,23 @@ fields are preserved, including provider-specific continuation state. A host
 that already sanitizes messages can pass `sanitizer=its_sanitize_message`.
 Redaction and choosing which data to persist are application policy.
 
-`save` **replaces** metadata. Merge any host updates with the loaded dictionary to
-preserve fields written by another host. `save_messages` and `save_metadata` are
-available for incremental conversation persistence and session renaming.
+`save` defaults to replacing metadata. Runtime checkpoints should opt into
+`merge_metadata=True` to preserve current naming and unknown fields.
+`save_messages` and `save_metadata` support incremental persistence; explicit
+renames use the field-oriented metadata API below.
 
 ```python
-metadata = store.load_metadata()
-store.save_metadata({**metadata, "name": "Updated name"})
+from amplifier_foundation.session.metadata import SessionMetadataStore
+SessionMetadataStore(session_dir).set_name("Updated name")
 ```
 
 Each write uses the existing CLI atomic-replace and `.backup` convention. Both
 new payloads and the readability of existing files are checked before a paired
 save starts. A damaged primary never replaces its readable backup. Each file is
 atomic individually; this is not a multi-file transaction or a power-loss
-persistence guarantee. Hosts must serialize writers using their ownership lock.
+persistence guarantee. Transcript writers must hold execution ownership. Metadata writes also use a
+short cooperating lock; see [shared metadata and settings](SESSION_METADATA.md)
+for field updates and checkpoint merging that preserve newer names.
 
 Applications already using `SharedSessionStore` can retain its acquire/check/
 release ownership mechanism. They should read and write native files through

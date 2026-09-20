@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Filename constants
@@ -153,10 +154,9 @@ def write_metadata(session_dir: Path, metadata: dict[str, Any]) -> None:
         session_dir: Path to the session directory.
         metadata: Metadata dict to write.
     """
-    (session_dir / METADATA_FILENAME).write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    from .history import SessionHistoryStore
+
+    SessionHistoryStore(session_dir).save_metadata(metadata)
 
 
 def backup(filepath: Path, label: str) -> Path | None:
@@ -174,7 +174,7 @@ def backup(filepath: Path, label: str) -> Path | None:
     """
     if not filepath.exists():
         return None
-    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now(tz=UTC).strftime("%Y%m%d%H%M%S")
     backup_path = filepath.parent / f"{filepath.name}.bak-{label}-{timestamp}"
     shutil.copy2(filepath, backup_path)
     return backup_path

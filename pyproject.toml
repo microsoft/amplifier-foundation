@@ -20,6 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "filelock>=3.16",
     "pyyaml>=6.0.3",
     "amplifier-core>=1.0.10",
 ]

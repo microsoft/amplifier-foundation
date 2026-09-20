@@ -35,6 +35,36 @@ def _make_mock_provider() -> MagicMock:
     return provider
 
 
+@pytest.mark.asyncio
+async def test_late_generation_preserves_a_manual_rename_and_runtime_metadata(tmp_path):
+    from amplifier_foundation.session.metadata import SessionMetadataStore
+
+    names = SessionMetadataStore(tmp_path)
+    names.set_name("First prompt", source="fallback")
+    provider = _make_mock_provider()
+    response = provider.complete.return_value
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return response
+
+    provider.complete.side_effect = delayed
+    hook = _make_hook(providers={"provider-1": provider})
+    hook._get_conversation_context = AsyncMock(return_value="conversation context")
+    task = asyncio.create_task(hook._generate_name("session", tmp_path, is_update=False))
+    await asyncio.wait_for(started.wait(), 2)
+    names.set_name("User chose this")
+    names.update({"turn_count": 7, "other_host": {"keep": True}})
+    release.set()
+    await task
+    current = names.read()
+    assert current["name"] == "User chose this" and current["name_source"] == "manual"
+    assert current["turn_count"] == 7 and current["other_host"] == {"keep": True}
+    assert hook.coordinator.hooks.emit.await_args.args[1]["name"] == "User chose this"
+
+
 def _make_vendor_provider(vendor: str, *, priority: int | None = None) -> MagicMock:
     """A mock provider that answers the kernel's ``get_info().id`` contract.
 
@@ -327,7 +357,8 @@ class TestProviderTimeout:
         metadata = {"turn_count": 5 if is_update else 1}
         if is_update:
             metadata.update(name="Existing Name", description="Existing description")
-        hook._save_metadata(tmp_path, metadata)
+        from amplifier_foundation.session.history import SessionHistoryStore
+        SessionHistoryStore(tmp_path).save_metadata(metadata)
         metadata_path = tmp_path / "metadata.json"
         original_metadata = metadata_path.read_bytes()
         timeouts = []
