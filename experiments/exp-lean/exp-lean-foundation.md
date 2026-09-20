@@ -1,6 +1,7 @@
 ---
 bundle:
   name: exp-lean-foundation
+  display_name: Experimental · Lean Foundation
   version: 0.1.0
   description: |
     EXPERIMENTAL lean foundation bundle -- minimal token footprint.

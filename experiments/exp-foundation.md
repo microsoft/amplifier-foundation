@@ -1,6 +1,7 @@
 ---
 bundle:
   name: exp-foundation
+  display_name: Experimental · Foundation
   version: 0.1.0
   description: |
     EXPERIMENTAL foundation bundle with NEW delegate tool.

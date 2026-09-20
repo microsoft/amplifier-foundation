@@ -1,5 +1,6 @@
 bundle:
   name: provider-anthropic-opus
+  display_name: Anthropic Claude Opus
   version: 1.0.0
   description: Anthropic Claude Opus provider
 

@@ -1,6 +1,7 @@
 ---
 bundle:
   name: anchors-amp-dev
+  display_name: Anchors · Amplifier development
   version: 0.2.0
   description: |
     The anchors bundle plus Amplifier-ecosystem knowledge.

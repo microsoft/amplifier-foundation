@@ -1,5 +1,6 @@
 bundle:
   name: behavior-logging
+  display_name: Logging
   version: 1.0.0
   description: Session logging to JSONL files
 

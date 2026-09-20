@@ -1,5 +1,6 @@
 bundle:
   name: provider-openai-gpt-codex
+  display_name: OpenAI GPT Codex
   version: 1.0.0
   description: OpenAI GPT Codex provider (optimized for code)
 

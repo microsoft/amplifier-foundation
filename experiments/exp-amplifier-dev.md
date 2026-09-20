@@ -1,6 +1,7 @@
 ---
 bundle:
   name: exp-amplifier-dev
+  display_name: Experimental · Amplifier development
   version: 0.1.0
   description: |
     EXPERIMENTAL amplifier-dev bundle with NEW delegate tool.

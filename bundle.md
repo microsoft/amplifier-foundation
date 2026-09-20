@@ -1,6 +1,7 @@
 ---
 bundle:
   name: foundation
+  display_name: Foundation
   version: 2.1.2
   description: |
     The standard Amplifier foundation with the enhanced delegate tool for

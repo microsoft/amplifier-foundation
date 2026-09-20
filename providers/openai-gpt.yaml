@@ -1,5 +1,6 @@
 bundle:
   name: provider-openai-gpt
+  display_name: OpenAI GPT
   version: 1.0.0
   description: OpenAI GPT provider
 

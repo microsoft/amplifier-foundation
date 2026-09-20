@@ -1,6 +1,7 @@
 ---
 bundle:
   name: anchors
+  display_name: Anchors
   version: 0.2.0
   description: |
     Lean bundle driven by a small set of behavioral principles.

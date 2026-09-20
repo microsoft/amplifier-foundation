@@ -43,6 +43,7 @@ class Bundle:
         name: Bundle name (namespace for @mentions).
         version: Bundle version string.
         description: Optional description.
+        display_name: Optional human-readable label; does not change identity.
         includes: List of bundle URIs to include.
         namespace_root: Optional path (relative to the bundle file's own directory)
             that points to where this namespace's agents/ and context/ sub-directories
@@ -99,6 +100,8 @@ class Bundle:
     description: str = ""
     includes: list[str] = field(default_factory=list)
     namespace_root: str | None = None
+    # Display-only metadata; keyword-only preserves existing positional callers.
+    display_name: str | None = field(default=None, kw_only=True)
 
     # Mount plan sections
     session: dict[str, Any] = field(default_factory=dict)
@@ -134,6 +137,10 @@ class Bundle:
         default_factory. Without this guard, 'x in self.context' raises
         TypeError: argument of type 'NoneType' is not iterable.
         """
+        if self.display_name is not None and (
+            not isinstance(self.display_name, str) or not self.display_name.strip()
+        ):
+            raise BundleValidationError("bundle.display_name must be a non-empty string")
         if self.context is None:
             self.context = {}
         if self.source_base_paths is None:
@@ -189,6 +196,7 @@ class Bundle:
             name=self.name,
             version=self.version,
             description=self.description,
+            display_name=self.display_name,
             includes=list(self.includes),
             namespace_root=self.namespace_root,
             session=dict(self.session),
@@ -230,6 +238,10 @@ class Bundle:
                     result.source_base_paths[other.name] = other.base_path
 
             # Metadata: later wins
+            # A label belongs to its bundle identity. Never inherit an included
+            # bundle's label when the new named bundle omits its own label.
+            if other.name or other.display_name is not None:
+                result.display_name = other.display_name
             result.name = other.name or result.name
             result.version = other.version or result.version
             if other.description:
@@ -811,6 +823,7 @@ class Bundle:
             name=bundle_name,
             version=bundle_meta.get("version", "1.0.0"),
             description=bundle_meta.get("description", ""),
+            display_name=bundle_meta.get("display_name"),
             includes=data.get("includes", []),
             namespace_root=namespace_root,
             session=data.get("session", {}),

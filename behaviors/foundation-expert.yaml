@@ -1,5 +1,6 @@
 bundle:
   name: foundation-expert-behavior
+  display_name: Foundation expert
   version: 1.0.0
   description: Navigator for the Amplifier Foundation ecosystem -- knows what exists and helps users find the right resources, examples, and documentation
 

@@ -1,5 +1,6 @@
 bundle:
   name: behavior-redaction
+  display_name: Redaction
   version: 1.0.0
   description: Redact secrets and PII from logs
 

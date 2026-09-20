@@ -1,5 +1,6 @@
 bundle:
   name: provider-anthropic-sonnet
+  display_name: Anthropic Claude Sonnet
   version: 1.0.0
   description: Anthropic Claude Sonnet provider
 

@@ -1,5 +1,6 @@
 bundle:
   name: behavior-sessions
+  display_name: Sessions
   version: 1.0.0
   description: Session management - naming, logging, analysis, and debugging
 

@@ -1,5 +1,6 @@
 bundle:
   name: behavior-progress-monitor
+  display_name: Progress monitor
   version: 1.0.0
   description: Detects analysis paralysis patterns and injects corrective prompts
 
