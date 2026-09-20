@@ -15,6 +15,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from filelock import AsyncFileLock
+
 from amplifier_foundation.exceptions import BundleNotFoundError
 from amplifier_foundation.paths.resolution import (
     ParsedURI,
@@ -673,6 +675,18 @@ class GitSourceHandler:
         Raises:
             BundleNotFoundError: If clone fails or ref not found.
         """
+        cache_path = self._get_cache_path(parsed, cache_dir)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # Workers share this cache across processes. Check integrity only after
+        # acquiring the lock: another worker's unfinished clone is not corrupt.
+        # A sibling lock survives cache cleanup and coordinates forced refreshes.
+        async with AsyncFileLock(cache_path.with_name(f".{cache_path.name}.lock")):
+            return await self._resolve_locked(parsed, cache_dir)
+
+    async def _resolve_locked(
+        self, parsed: ParsedURI, cache_dir: Path
+    ) -> ResolvedSource:
+        """Inspect or populate one cache entry while holding its writer lock."""
         # GAP-007, local-clone case. A git+file:// source carries a real
         # filesystem path, so it is subject to the same foreign-OS mismatch
         # the file and zip handlers already guard against: a config written
@@ -890,10 +904,9 @@ class GitSourceHandler:
             BundleNotFoundError: If clone fails.
         """
         cache_path = self._get_cache_path(parsed, cache_dir)
-
-        # Remove existing cache
-        if cache_path.exists():
-            rmtree_robust(cache_path)
-
-        # Re-resolve (will clone fresh)
-        return await self.resolve(parsed, cache_dir)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        async with AsyncFileLock(cache_path.with_name(f".{cache_path.name}.lock")):
+            if cache_path.exists():
+                rmtree_robust(cache_path)
+            # Avoid reacquiring the same lock through the public resolve method.
+            return await self._resolve_locked(parsed, cache_dir)
