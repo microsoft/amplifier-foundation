@@ -53,6 +53,16 @@ def test_fallback_generated_then_explicit_name_and_late_result(tmp_path):
     )
 
 
+def test_first_prompt_can_replace_placeholder_but_not_an_intentional_name(tmp_path):
+    names = SessionMetadataStore(tmp_path, create=True)
+    names.set_name("New conversation", source="fallback")
+    assert names.set_name("First prompt", source="fallback")["name"] == "First prompt"
+    names.set_name("User title")
+    assert (
+        names.set_name("Stale first prompt", source="fallback")["name"] == "User title"
+    )
+
+
 def test_legacy_name_is_not_overridden_and_updates_preserve_other_fields(tmp_path):
     history = SessionHistoryStore(tmp_path)
     history.save_metadata({"name": "Legacy CLI choice", "custom": [1, 2]})

@@ -108,7 +108,11 @@ class SessionMetadataStore:
             revision = revision if type(revision) is int and revision >= 0 else 0
             has_name = bool(current.get("name"))
             allowed = not (only_if_missing and has_name)
-            if source == "fallback" and has_name:
+            if (
+                source == "fallback"
+                and has_name
+                and current.get("name_source") != "fallback"
+            ):
                 allowed = False
             if source == "generated":
                 allowed = allowed and (
