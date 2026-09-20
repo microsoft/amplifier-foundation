@@ -327,7 +327,8 @@ class TestProviderTimeout:
         metadata = {"turn_count": 5 if is_update else 1}
         if is_update:
             metadata.update(name="Existing Name", description="Existing description")
-        hook._save_metadata(tmp_path, metadata)
+        from amplifier_foundation.session.history import SessionHistoryStore
+        SessionHistoryStore(tmp_path).save_metadata(metadata)
         metadata_path = tmp_path / "metadata.json"
         original_metadata = metadata_path.read_bytes()
         timeouts = []
