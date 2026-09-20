@@ -91,6 +91,10 @@ POSIX coordination, not distributed locking or protection from arbitrary writers
   are not ownership. Resume the last valid saved state and reconcile uncertain
   tool outcomes; never replay operations merely because a result is absent.
 - A hung process can still hold the lock. A failed health check is not an unlock.
+- Forked children close inherited listener descriptors without running the
+  parent's server/selector cleanup or unlinking its endpoint. Their inherited
+  registrations and ownership handles cannot authorize work. Verify a complete
+  post-fork exchange, not merely that the endpoint file still exists.
 
 Use task-captured activation guards around asynchronous writes. A callback from
 an old acquisition must not borrow a newer handle. Foundation cannot intercept

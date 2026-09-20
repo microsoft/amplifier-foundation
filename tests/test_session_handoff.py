@@ -67,6 +67,41 @@ async def test_safe_release_and_new_generation(paths):
     await registration.close()
 
 
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+async def test_fork_closes_only_child_listener_without_unlinking_or_disarming_parent(paths):
+    store = address(paths)
+    held = store.acquire(app="fork-owner")
+
+    async def prepare(request):
+        return ReadyToRelease()
+
+    registration = await register_release_handler(
+        held, prepare_release=prepare, runtime_dir=paths[1]
+    )
+    child = os.fork()
+    if child == 0:
+        # Never return into the inherited pytest/event loop in the child.
+        clean = (not held.active and not registration.active
+                 and registration.listener.fileno() == -1 and registration.server is None)
+        os._exit(0 if clean else 1)
+    try:
+        _, status = await asyncio.to_thread(os.waitpid, child, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert registration.path.is_socket()
+        assert held.active and registration.active
+        # Existence alone misses a child unregistering the parent's shared epoll
+        # reader. Require a successful, authenticated exchange after the fork.
+        result = await request_release(
+            store, expected_owner=held.owner, request_id="after-fork",
+            requester_app="successor", timeout=2,
+        )
+        assert result.status == "released"
+        store.acquire(app="successor").release()
+    finally:
+        await registration.close()
+        held.release()
+
+
 async def test_failure_duplicates_and_changed_content_do_not_release(paths):
     store = address(paths)
     held = store.acquire(app="first")
