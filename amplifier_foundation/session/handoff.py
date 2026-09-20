@@ -131,6 +131,7 @@ class ReleaseRegistration:
         self.directory = directory
         self.path = directory / "control.sock"
         self.server: asyncio.Server | None = None
+        self.listener: socket.socket | None = None
         self.active = True
         self.pid = os.getpid()
         self.loop = asyncio.get_running_loop()
@@ -142,11 +143,20 @@ class ReleaseRegistration:
         # Called synchronously before the OS lock is released. Existing reply
         # streams may finish; no new request may reach the host callback.
         self.active = False
-        if self.server:
-            if self.pid != os.getpid() or self.loop.is_closed():
+        if self.pid != os.getpid():
+            # A fork shares the parent's kernel selector. Server.close() would
+            # unregister its reader there and, on Python 3.13+, unlink its Unix
+            # endpoint. Close only our copy of the underlying descriptor instead.
+            if self.listener:
+                self.listener.close()
+            self.server = None
+        elif self.server:
+            if self.loop.is_closed():
                 self.server.close()
             else:
                 self.loop.call_soon_threadsafe(self.server.close)
+        elif self.listener:
+            self.listener.close()
         _REGISTRATIONS.discard(self)
         if os.getpid() == self.pid:
             self.path.unlink(missing_ok=True)
@@ -361,13 +371,18 @@ async def register_release_handler(
             raise ValueError(
                 "control endpoint path is too long; supply a shorter private runtime_dir"
             )
+        # Retain the actual socket for descriptor-only cleanup after fork. The
+        # server still owns its normal lifecycle; no private asyncio API is used.
+        registration.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        registration.listener.bind(str(registration.path))
+        registration.listener.setblocking(False)
+        os.chmod(registration.path, 0o600)
         registration.server = await asyncio.start_unix_server(
             registration._serve,
-            str(registration.path),
+            sock=registration.listener,
             limit=_MAX_FRAME,
             start_serving=False,
         )
-        os.chmod(registration.path, 0o600)
         await registration.server.start_serving()
         with held._mutex:
             held.check()
