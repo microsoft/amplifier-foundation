@@ -1487,11 +1487,14 @@ Bundles support multiple source formats for modules:
 | Format | Example | Use Case |
 |--------|---------|----------|
 | Git URL | `git+https://github.com/org/repo@main` | External modules |
+| Git pinned to commit | `git+https://github.com/org/repo@32d4052dad46016f91ce698646580473e4121344` | Explicit immutable snapshots (evaluation evidence, CI) |
 | Git with subpath | `git+https://github.com/org/repo@main#subdirectory=modules/foo` | Module within larger bundle repo (including the bundle's own modules) |
 
 **For modules that live in the bundle's own repo, use a self-referential git URL with `#subdirectory=`** — the same form used for every module in this repo (see `bundle.md`, `behaviors/*.yaml`). It is the one canonical form: it names the module the same way no matter which file in the bundle declares it.
 
 **Avoid bare relative paths** (`source: ./modules/foo`). They're still technically accepted, but they resolve relative to whichever bundle file is active when the module is activated — not necessarily the file that declares it. That makes them position-sensitive: they work from a root `bundle.md`/`bundle.yaml`, but silently resolve to the wrong directory (and fail with "File not found") when the same `source:` line lives in a file loaded via `includes:`, such as `behaviors/*.yaml`. The self-referential git URL form above has no such position-dependence.
+
+**Source tracking**: Use a maintained branch such as `@main` for bundles and modules that should receive updates. A full commit reference is an explicit immutable snapshot: 40 hexadecimal characters for SHA-1 repositories or 64 for SHA-256 repositories. Keep immutable generation/evaluation receipts separate from branch-tracking source declarations. Pinned sources are automatically skipped by `amplifier update` (a pinned ref can never have updates). Abbreviated SHAs are not recognized as commit pins; they take the branch/tag path and normally fail because no branch or tag has that name. Note that a typo'd but valid-looking SHA fails only after a full-history clone fallback: the fast single-commit fetch fails, git falls back to a full clone, and checkout then fails with a clear error (a failed pinned resolve can leave a cache entry behind, and a subsequent resolve of the same URI may serve it — clear the cache entry if a pin fails).
 
 ---
 

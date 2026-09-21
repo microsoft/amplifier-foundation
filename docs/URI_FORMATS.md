@@ -10,7 +10,16 @@ Quick reference for source URIs. For complete details, see `parse_uri()` docstri
 | **Local directory** | `/path/to/bundle/` (finds `bundle.md` inside) |
 | **Git HTTPS** | `git+https://github.com/org/repo@main` |
 | **Git SSH** | `git+ssh://git@github.com/org/repo@main` |
+| **Git pinned to commit** | `git+https://github.com/org/repo@32d4052dad46016f91ce698646580473e4121344` |
 | **Subdirectory** | `git+https://github.com/org/repo@main#subdirectory=path/to/bundle` |
+
+### Pinning to a Commit SHA
+
+Use a maintained branch such as `@main` for sources that should receive updates. A full commit ref is an explicit immutable snapshot: 40 hexadecimal characters for SHA-1 repositories or 64 for SHA-256 repositories. Use snapshots for reproducible evaluation evidence or generation receipts, while keeping normal update source declarations branch-based.
+
+- Pinned sources are automatically **skipped by `amplifier update`** — a pinned ref can never have updates.
+- Abbreviated SHAs are not recognized as commit pins. They take the branch/tag path and normally fail unless a branch or tag has that exact name; use the complete 40- or 64-character hash for a snapshot.
+- A typo'd but valid-looking SHA is expensive: the fast single-commit fetch fails, git falls back to a **full-history clone**, and checkout then fails with a clear error (a failed pinned resolve can leave a cache entry behind, and a subsequent resolve of the same URI may serve it — clear the cache entry if a pin fails). A wrong SHA costs a full-history download before it errors.
 
 ## Common Examples
 

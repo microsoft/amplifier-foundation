@@ -43,12 +43,9 @@ CACHE_METADATA_FILE = ".amplifier_cache_meta.json"
 # error). Nothing between 41 and 63 characters, or above 64, is a commit SHA
 # in any object format git currently has.
 #
-# Known, deliberate divergence: SourceStatus.is_pinned (sources/protocol.py)
-# still recognises only the 40-hex form, so a 64-hex ref resolves correctly
-# here but is not reported as pinned by get_status(). Widening is_pinned is a
-# one-line change in a different file, deliberately left to a follow-up rather
-# than smuggled in here; the effect until then is a needless ls-remote on
-# status, never a wrong resolve.
+# SourceStatus.is_pinned (sources/protocol.py) recognizes the same full SHA
+# forms; predicate-agreement tests cover both object formats. Version tags
+# remain an intentional additional pinned-ref classification there.
 _FULL_COMMIT_SHA_PATTERN = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 
 
