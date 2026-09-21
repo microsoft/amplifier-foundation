@@ -63,6 +63,10 @@ def repository(path, name, dependencies=()):
     return path
 
 
+def environment_python(venv):
+    return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
 def snapshot(python, env):
     return json.loads(
         run(
@@ -158,9 +162,9 @@ def test_new_generation_refreshes_same_version_direct_and_transitive_sources(tmp
     active_env, staged_env = tmp_path / "active-env", tmp_path / "staged-env"
     for venv in (active_env, staged_env):
         run(UV, "venv", "--python", sys.executable, venv, env=env)
-        activate(venv / "bin/python", active_root, venv / "cache", override, env)
-    before = snapshot(active_env / "bin/python", env)
-    assert snapshot(staged_env / "bin/python", env) == before
+        activate(environment_python(venv), active_root, venv / "cache", override, env)
+    before = snapshot(environment_python(active_env), env)
+    assert snapshot(environment_python(staged_env), env) == before
     active_state = (active_env / "cache/install-state.json").read_bytes()
     active_commit = run("git", "rev-parse", "HEAD", cwd=active_root)
 
@@ -179,19 +183,19 @@ def test_new_generation_refreshes_same_version_direct_and_transitive_sources(tmp
 
     # Negative control: ordinary preparation retains the installed old graph.
     activate(
-        staged_env / "bin/python", staged_root, staged_env / "cache", override, env
+        environment_python(staged_env), staged_root, staged_env / "cache", override, env
     )
-    assert snapshot(staged_env / "bin/python", env) == before
+    assert snapshot(environment_python(staged_env), env) == before
 
     activate(
-        staged_env / "bin/python",
+        environment_python(staged_env),
         staged_root,
         staged_env / "cache",
         override,
         env,
         refresh=True,
     )
-    after = snapshot(staged_env / "bin/python", env)
+    after = snapshot(environment_python(staged_env), env)
     for name in ("refresh-root", "refresh-middle", "refresh-leaf"):
         assert after[name]["version"] == before[name]["version"] == "1.0.0"
         assert before[name]["value"] == "old" and after[name]["value"] == "new"
@@ -207,7 +211,7 @@ def test_new_generation_refreshes_same_version_direct_and_transitive_sources(tmp
         "dir_info": {"editable": True},
     }
     assert after["qualified-native"] == before["qualified-native"]
-    assert snapshot(active_env / "bin/python", env) == before
+    assert snapshot(environment_python(active_env), env) == before
     assert (active_env / "cache/install-state.json").read_bytes() == active_state
     assert run("git", "rev-parse", "HEAD", cwd=active_root) == active_commit
     assert override.read_text() == f"qualified-native @ {(wheels / wheel).as_uri()}\n"
