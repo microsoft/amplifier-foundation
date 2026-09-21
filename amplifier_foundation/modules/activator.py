@@ -162,6 +162,9 @@ class ModuleActivator:
         strict: bool = False,
         install_python: str | None = None,
         install_constraints: Path | None = None,
+        *,
+        refresh_dependencies: bool = False,
+        install_overrides: Path | None = None,
     ) -> None:
         """Initialize module activator.
 
@@ -179,6 +182,14 @@ class ModuleActivator:
                 Defaults to the current interpreter.
             install_constraints: Optional uv constraints file passed to dependency
                 installs.
+            refresh_dependencies: Resolve the declared dependencies afresh, including
+                Git refs, instead of reusing distribution-presence/install-state
+                shortcuts or generating installed-version overrides. For preparing
+                a NEW isolated environment, not resuming a recorded generation.
+                This does not update source checkouts; the caller owns that policy.
+            install_overrides: Explicit uv overrides file, replacing automatic
+                installed-version overrides. A host can use this to retain its
+                qualified native wheels while refreshing other dependencies.
         """
         self.cache_dir = cache_dir or get_amplifier_home() / "cache"
         self.install_deps = install_deps
@@ -187,6 +198,8 @@ class ModuleActivator:
             install_python if install_python is not None else sys.executable
         )
         self.install_constraints = install_constraints
+        self.refresh_dependencies = refresh_dependencies
+        self.install_overrides = install_overrides
         self._resolver = SimpleSourceResolver(
             cache_dir=self.cache_dir, base_path=base_path
         )
@@ -394,7 +407,11 @@ class ModuleActivator:
         # Detection keys on the distribution name (importlib.metadata), NOT a guessed
         # import name. See _distribution_installed() and issue #326.
         pkg_name = pyproject_data.get("project", {}).get("name", "")
-        if pkg_name and _distribution_installed(pkg_name):
+        if (
+            not self.refresh_dependencies
+            and pkg_name
+            and _distribution_installed(pkg_name)
+        ):
             logger.debug(
                 f"Package '{pkg_name}' already installed, "
                 f"skipping editable install from {bundle_path}"
@@ -560,7 +577,7 @@ class ModuleActivator:
     ) -> None:
         """Install Python dependencies for a module.
 
-        Uses uv to install into the current Python environment. The --python flag
+        Uses uv to install into the selected Python environment. The --python flag
         ensures installation targets the correct environment even when run via
         `uv tool install` where there's no active virtualenv.
 
@@ -577,6 +594,11 @@ class ModuleActivator:
                 on update). When False (default), packages already importable from the
                 current environment are never editable-installed from source.
 
+        With ``refresh_dependencies``, neither an installed version nor an old
+        fingerprint proves that the selected sources are installed. Always ask uv
+        to resolve the declared graph, including transitive Git dependencies. No
+        constraints are inferred from installed versions in this mode.
+
         Raises:
             subprocess.CalledProcessError: If installation fails.
         """
@@ -585,6 +607,7 @@ class ModuleActivator:
         if not self._needs_python_install(module_path):
             return
 
+        force = force or self.refresh_dependencies
         if not force:
             # Skip packages that are already importable in the current environment.
             # This prevents editable-installing packages (like amplifier-core) that were
@@ -655,7 +678,11 @@ class ModuleActivator:
             # Build overrides for git URL dependencies that are already installed.
             # This prevents uv from fetching/building packages from git when a
             # prebuilt wheel is already available (e.g. amplifier-core from PyPI).
-            overrides = self._build_git_dep_overrides(pyproject)
+            overrides = (
+                self._build_git_dep_overrides(pyproject)
+                if not self.refresh_dependencies and self.install_overrides is None
+                else []
+            )
             overrides_file = None
             try:
                 cmd = [
@@ -677,6 +704,16 @@ class ModuleActivator:
                 ]
                 if self.install_constraints is not None:
                     cmd.extend(["--constraints", str(self.install_constraints)])
+                cmd.extend(self._dependency_install_flags())
+                if self.refresh_dependencies:
+                    import tomllib
+
+                    with pyproject.open("rb") as f:
+                        package = tomllib.load(f).get("project", {}).get("name")
+                    if package:
+                        # Same version and metadata can still describe a different
+                        # selected checkout. Rebuild this editable package too.
+                        cmd.extend(["--reinstall-package", package])
                 if overrides:
                     import tempfile
 
@@ -728,6 +765,7 @@ class ModuleActivator:
                 ]
                 if self.install_constraints is not None:
                     cmd.extend(["--constraints", str(self.install_constraints)])
+                cmd.extend(self._dependency_install_flags())
                 subprocess.run(
                     cmd,
                     check=True,
@@ -752,6 +790,12 @@ class ModuleActivator:
                     "uv is not installed. Please install uv: https://docs.astral.sh/uv/getting-started/installation/"
                 )
                 raise
+
+    def _dependency_install_flags(self) -> list[str]:
+        flags = ["--upgrade", "--refresh"] if self.refresh_dependencies else []
+        if self.install_overrides is not None:
+            flags.extend(["--overrides", str(self.install_overrides)])
+        return flags
 
     def finalize(self) -> None:
         """Save any pending state changes.
