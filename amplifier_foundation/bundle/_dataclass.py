@@ -333,6 +333,8 @@ class Bundle:
         strict: bool = False,
         *,
         cache_dir: Path | None = None,
+        refresh_dependencies: bool = False,
+        install_overrides: Path | None = None,
     ) -> PreparedBundle:
         """Prepare bundle for execution by activating all modules.
 
@@ -361,6 +363,15 @@ class Bundle:
                 agent-specific, and lazy module activation through the prepared
                 resolver. Defaults to the shared Amplifier cache; choosing a
                 cache does not change AMPLIFIER_HOME or session storage.
+            refresh_dependencies: Resolve module and bundle-package dependencies
+                afresh (including transitive Git refs), bypassing installed-version
+                shortcuts. Opt in only while preparing a NEW isolated generation,
+                before recording its resolved graph; never on an ordinary resume
+                or rollback. Source checkout refresh remains the caller's policy.
+                Applies to agent/lazy activation through this prepared resolver too.
+            install_overrides: Explicit uv overrides file for host-qualified
+                dependencies such as native wheels. Replaces automatic overrides
+                based on installed versions; the file is never modified.
 
         Returns:
             PreparedBundle with mount_plan and create_session() helper.
@@ -400,6 +411,8 @@ class Bundle:
             install_deps=install_deps,
             base_path=self.base_path,
             strict=strict,
+            refresh_dependencies=refresh_dependencies,
+            install_overrides=install_overrides,
         )
 
         # Collect all modules that need activation
