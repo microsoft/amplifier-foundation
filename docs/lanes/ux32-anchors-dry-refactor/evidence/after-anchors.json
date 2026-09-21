@@ -1,0 +1,236 @@
+{
+  "agents": [
+    "anchors:architect",
+    "anchors:builder",
+    "anchors:debugger",
+    "anchors:explorer",
+    "anchors:git-ops",
+    "anchors:researcher",
+    "context-intelligence:session-navigator"
+  ],
+  "context_keys": [],
+  "description": "Lean bundle driven by a small set of behavioral principles.\nA minimal system prompt, thin purposeful agents, and a standard tool roster.\nExplores how far concise behavior-shaping -- principles loaded once at the\nhead of the system prompt -- can carry an Amplifier session at a fraction of\nthe usual context cost.",
+  "hooks": [
+    {
+      "config": {
+        "ui": {
+          "show_thinking_stream": true,
+          "show_token_usage": true,
+          "show_tool_lines": 5,
+          "stream_tokens": true
+        }
+      },
+      "module": "hooks-streaming-ui",
+      "source": "git+https://github.com/microsoft/amplifier-module-hooks-streaming-ui@main"
+    },
+    {
+      "module": "hooks-status-context",
+      "source": "git+https://github.com/microsoft/amplifier-module-hooks-status-context@main"
+    },
+    {
+      "module": "hook-redaction",
+      "source": "git+https://github.com/microsoft/amplifier-bundle-redaction@main#subdirectory=modules/hook-redaction"
+    },
+    {
+      "config": {
+        "bundle_name": "hooks-redaction",
+        "message": "hooks-redaction is retired; use the redaction hook in amplifier-bundle-redaction.",
+        "replacement": "amplifier-bundle-redaction",
+        "require_evidence": true,
+        "sunset_date": "2026-10-01"
+      },
+      "module": "hooks-deprecation",
+      "source": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-deprecation"
+    },
+    {
+      "config": {
+        "mode": "session-only",
+        "session_log_template": "~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl"
+      },
+      "module": "hooks-logging",
+      "source": "git+https://github.com/microsoft/amplifier-module-hooks-logging@main"
+    },
+    {
+      "config": {
+        "additional_events": [
+          "delegate:agent_spawned",
+          "delegate:agent_resumed",
+          "delegate:agent_completed",
+          "delegate:agent_cancelled",
+          "delegate:error"
+        ],
+        "base_path": "${AMPLIFIER_CONTEXT_INTELLIGENCE_BASE_PATH:}",
+        "context_intelligence_api_key": "${AMPLIFIER_CONTEXT_INTELLIGENCE_API_KEY:}",
+        "context_intelligence_server_url": "${AMPLIFIER_CONTEXT_INTELLIGENCE_SERVER_URL:}",
+        "dispatch_backoff_initial": "${AMPLIFIER_CONTEXT_INTELLIGENCE_DISPATCH_BACKOFF_INITIAL:1.0}",
+        "dispatch_backoff_jitter": "${AMPLIFIER_CONTEXT_INTELLIGENCE_DISPATCH_BACKOFF_JITTER:true}",
+        "dispatch_backoff_max": "${AMPLIFIER_CONTEXT_INTELLIGENCE_DISPATCH_BACKOFF_MAX:30.0}",
+        "dispatch_failure_threshold": "${AMPLIFIER_CONTEXT_INTELLIGENCE_DISPATCH_FAILURE_THRESHOLD:3}",
+        "dispatch_read_timeout": "${AMPLIFIER_CONTEXT_INTELLIGENCE_DISPATCH_READ_TIMEOUT:10.0}",
+        "dispatch_timeout": "${AMPLIFIER_CONTEXT_INTELLIGENCE_DISPATCH_TIMEOUT:30}",
+        "log_level": "${AMPLIFIER_CONTEXT_INTELLIGENCE_LOG_LEVEL:INFO}",
+        "workspace": "${AMPLIFIER_CONTEXT_INTELLIGENCE_WORKSPACE:}"
+      },
+      "module": "hook-context-intelligence",
+      "source": "git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=modules/hook-context-intelligence"
+    },
+    {
+      "config": {
+        "inject_role": "user",
+        "priority": 10
+      },
+      "module": "hooks-todo-reminder",
+      "source": "git+https://github.com/microsoft/amplifier-module-hooks-todo-reminder@main"
+    },
+    {
+      "config": {
+        "show_border": true,
+        "show_progress_bar": true
+      },
+      "module": "hooks-todo-display",
+      "source": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-todo-display"
+    },
+    {
+      "config": {
+        "initial_trigger_turn": 2,
+        "update_interval_turns": 5
+      },
+      "module": "hooks-session-naming",
+      "source": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/hooks-session-naming"
+    },
+    {
+      "config": {
+        "search_paths": []
+      },
+      "module": "hooks-mode",
+      "source": "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=modules/hooks-mode"
+    },
+    {
+      "config": {
+        "default_action": "continue",
+        "policy_driven_only": true,
+        "rules": []
+      },
+      "module": "hooks-approval",
+      "source": "git+https://github.com/microsoft/amplifier-module-hooks-approval"
+    }
+  ],
+  "includes": [],
+  "instruction": "@anchors:context/system.md",
+  "name": "anchors",
+  "namespaces": [
+    "anchors",
+    "behavior-logging",
+    "behavior-redaction",
+    "behavior-status-context",
+    "behavior-streaming-ui",
+    "context-intelligence",
+    "context-intelligence-logging-behavior",
+    "context-intelligence-navigation-behavior",
+    "foundation",
+    "redaction",
+    "redaction-behavior"
+  ],
+  "providers": [],
+  "session": {
+    "context": {
+      "config": {
+        "auto_compact": true,
+        "compact_threshold": 0.8,
+        "max_tokens": 300000
+      },
+      "module": "context-simple",
+      "source": "git+https://github.com/microsoft/amplifier-module-context-simple@main"
+    },
+    "orchestrator": {
+      "config": {
+        "extended_thinking": true
+      },
+      "module": "loop-streaming",
+      "source": "git+https://github.com/microsoft/amplifier-module-loop-streaming@main"
+    },
+    "raw": true
+  },
+  "tools": [
+    {
+      "config": {
+        "features": {
+          "context_inheritance": {
+            "enabled": true,
+            "max_turns": 10
+          },
+          "provider_selection": {
+            "enabled": true
+          },
+          "self_delegation": {
+            "enabled": true
+          },
+          "session_resume": {
+            "enabled": true
+          }
+        },
+        "settings": {
+          "exclude_tools": [
+            "tool-delegate"
+          ]
+        }
+      },
+      "module": "tool-delegate",
+      "source": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=modules/tool-delegate"
+    },
+    {
+      "config": {
+        "skills": [
+          "git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=skills/context-intelligence-session-navigation",
+          "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills",
+          "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=skills"
+        ],
+        "visibility": {
+          "enabled": false
+        }
+      },
+      "module": "tool-skills",
+      "source": "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills"
+    },
+    {
+      "module": "tool-filesystem",
+      "source": "git+https://github.com/microsoft/amplifier-module-tool-filesystem@main"
+    },
+    {
+      "module": "tool-bash",
+      "source": "git+https://github.com/microsoft/amplifier-module-tool-bash@main"
+    },
+    {
+      "module": "tool-web",
+      "source": "git+https://github.com/microsoft/amplifier-module-tool-web@main"
+    },
+    {
+      "module": "tool-search",
+      "source": "git+https://github.com/microsoft/amplifier-module-tool-search@main"
+    },
+    {
+      "module": "tool-todo",
+      "source": "git+https://github.com/microsoft/amplifier-module-tool-todo@main"
+    },
+    {
+      "module": "tool-apply-patch",
+      "source": "git+https://github.com/microsoft/amplifier-bundle-filesystem@main#subdirectory=modules/tool-apply-patch"
+    },
+    {
+      "config": {
+        "gate_policy": "warn"
+      },
+      "module": "tool-mode",
+      "source": "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=modules/tool-mode"
+    },
+    {
+      "config": {
+        "auto_cleanup_days": 7,
+        "session_dir": "~/.amplifier/projects/{project}/recipe-sessions"
+      },
+      "module": "tool-recipes",
+      "source": "git+https://github.com/microsoft/amplifier-bundle-recipes@main#subdirectory=modules/tool-recipes"
+    }
+  ],
+  "version": "0.2.0"
+}

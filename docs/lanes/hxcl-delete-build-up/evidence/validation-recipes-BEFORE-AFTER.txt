@@ -1,0 +1,95 @@
+########################################################################
+# validate-agents  (recipe v1.7.0)  --  deterministic replay, $0.00
+#   driver: docs/lanes/39z0-agent-classifier-scope/replay_deterministic_phases.py
+#   Phases 0-2 + quality-classification are pure bash/python. The verdict is
+#   decided by quality_classification.quality_level BEFORE any LLM step runs.
+########################################################################
+
+===== BEFORE (git worktree at origin/main = aaa5c47) =====
+recipe version        : 1.7.0 (working tree)
+candidates scanned    : 32
+agents discovered     : 28
+locations             : 5 {'agents/': 16, 'bundles/anchors-amp-dev/agents/': 1, 'bundles/anchors/agents/': 6, 'examples/agents/': 1, 'experiments/build-up/agents/': 4}
+classified non-agents : 4
+    - context/agents/delegation-instructions.md  (no_frontmatter)
+    - context/agents/multi-agent-patterns.md  (no_frontmatter)
+    - context/agents/session-repair-knowledge.md  (no_frontmatter)
+    - context/agents/session-storage-knowledge.md  (no_frontmatter)
+structural errors     : 0
+structural warnings   : 1
+quality breakdown     : {'total': 28, 'good': 27, 'polish': 0, 'needs_work': 1, 'critical': 0}
+quality_level         : needs_work
+requires_llm_analysis : True
+VERDICT               : PASS WITH WARNINGS
+
+===== AFTER (branch lane/hxcl-delete-build-up) =====
+recipe version        : 1.7.0 (working tree)
+candidates scanned    : 28
+agents discovered     : 24
+locations             : 4 {'agents/': 16, 'bundles/anchors-amp-dev/agents/': 1, 'bundles/anchors/agents/': 6, 'examples/agents/': 1}
+classified non-agents : 4
+    - context/agents/delegation-instructions.md  (no_frontmatter)
+    - context/agents/multi-agent-patterns.md  (no_frontmatter)
+    - context/agents/session-repair-knowledge.md  (no_frontmatter)
+    - context/agents/session-storage-knowledge.md  (no_frontmatter)
+structural errors     : 0
+structural warnings   : 1
+quality breakdown     : {'total': 24, 'good': 23, 'polish': 0, 'needs_work': 1, 'critical': 0}
+quality_level         : needs_work
+requires_llm_analysis : True
+VERDICT               : PASS WITH WARNINGS
+
+########################################################################
+# validate-bundle-repo  (recipe v3.13.0)  --  deterministic chain, $0.00
+#   root_bundle_repo=true, as the deliverable requires
+#   driver: docs/lanes/hxcl-delete-build-up/replay_validate_bundle_repo.py
+#   Runs environment-check .. quality-classification verbatim. Deliberately
+#   STOPS before bundle-overview-regen-write (6phe F1: it rewrites bundle.dot
+#   unconditionally).
+########################################################################
+
+===== BEFORE (origin/main = aaa5c47) =====
+recipe version              : 3.13.0
+repo_path                   : /tmp/hxcl-baseline
+root_bundle_repo            : true
+steps executed              : 20
+steps skipped               : 2
+    - set-default-build-check (condition false)
+    - validate-recipes (type=recipe, not deterministic)
+bundles discovered          : {'root': 1, 'behaviors': 12, 'standalone': 6, 'experiments': 3, 'providers': 5, 'agents': 16, 'other': 0}
+  agent_description_validation_results   errors=0 warnings=0
+  behavior_hygiene_results               errors=0 warnings=2
+  behavior_reference_hygiene_results     errors=0 warnings=0
+  body_instruction_check_results         errors=None warnings=1
+  context_sink_results                   errors=None warnings=0
+  experiments_validation_results         errors=0 warnings=1
+  module_dep_resolvability_check         errors=0 warnings=0
+  readme_install_convention_results      errors=0 warnings=0
+  standalone_completeness_results        errors=0 warnings=4
+  tool_placement_results                 errors=None warnings=0
+quality summary             : {"total": 43, "good": 43, "polish": 0, "needs_work": 0, "critical": 0}
+quality_level               : polish
+VERDICT                     : PASS WITH SUGGESTIONS
+
+===== AFTER (branch lane/hxcl-delete-build-up) =====
+recipe version              : 3.13.0
+repo_path                   : /home/bkrabach/dev/hw-model-performance/lanes/hxcl-delete-build-up/amplifier-foundation
+root_bundle_repo            : true
+steps executed              : 20
+steps skipped               : 2
+    - set-default-build-check (condition false)
+    - validate-recipes (type=recipe, not deterministic)
+bundles discovered          : {'root': 1, 'behaviors': 12, 'standalone': 6, 'experiments': 3, 'providers': 5, 'agents': 16, 'other': 0}
+  agent_description_validation_results   errors=0 warnings=0
+  behavior_hygiene_results               errors=0 warnings=2
+  behavior_reference_hygiene_results     errors=0 warnings=0
+  body_instruction_check_results         errors=None warnings=1
+  context_sink_results                   errors=None warnings=0
+  experiments_validation_results         errors=0 warnings=1
+  module_dep_resolvability_check         errors=0 warnings=0
+  readme_install_convention_results      errors=0 warnings=0
+  standalone_completeness_results        errors=0 warnings=4
+  tool_placement_results                 errors=None warnings=0
+quality summary             : {"total": 43, "good": 43, "polish": 0, "needs_work": 0, "critical": 0}
+quality_level               : polish
+VERDICT                     : PASS WITH SUGGESTIONS

@@ -19,26 +19,6 @@ bundle:
   name: my-bundle        # Establishes namespace for @mentions
   version: 1.0.0
 
-includes:
-  - bundle: foundation   # Inherit from other bundles
-
-session:
-  orchestrator: {module: loop-streaming, source: git+https://...}
-  context: {module: context-simple, source: git+https://...}
-
-providers:
-  - module: provider-anthropic
-    source: git+https://...
-    config: {default_model: claude-sonnet-4-5}
-
-tools:
-  - module: tool-filesystem
-    source: git+https://...
-
-hooks:
-  - module: hooks-logging
-    source: git+https://...
-
 agents:
   include:
     - my-bundle:agent-name
@@ -65,20 +45,32 @@ sections have different merge rules:
 
 Includes are loaded in parallel with circular dependency detection.
 
-### The "Thin Bundle" Pattern
+### Behavior-first and supporting-root patterns
 
-Most bundles inherit from foundation and only declare unique additions:
+A reusable capability is a behavior partial. It contributes only the capability;
+the host chooses its root, provider, orchestrator, and instruction:
 
 ```yaml
 bundle:
-  name: recipes
+  name: recipes-behavior
   version: 1.0.0
+agents:
+  include:
+    - recipes:recipe-author
+```
+
+A complete host may offer a thin supporting root that composes the behavior. New
+complete hosts can compose Anchors:
+
+```yaml
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: recipes:behaviors/recipes
 ```
 
-No `tools:`, `session:`, or `hooks:` needed -- all inherited from foundation.
+The root preserves `@anchors:context/system.md` when it has its own instruction
+body. Existing selected legacy roots remain valid. A root can also anchor
+repo-level namespaced resources, so behavior-first is not a root ban.
 
 ### Behaviors
 

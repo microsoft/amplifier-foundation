@@ -13,18 +13,133 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import platform
 import site
 import subprocess
 import sys
-from importlib.util import find_spec
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable
 
+from amplifier_foundation.exceptions import BundleError
 from amplifier_foundation.modules.install_state import InstallStateManager
-from amplifier_foundation.paths.resolution import get_amplifier_home
+from amplifier_foundation.paths.resolution import get_amplifier_home, parse_uri
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
 
 logger = logging.getLogger(__name__)
+
+
+def _distribution_installed(pkg_name: str) -> bool:
+    """Return True if a distribution named ``pkg_name`` is installed.
+
+    Keys on the distribution name via ``importlib.metadata`` rather than guessing
+    an import name from ``pkg_name.replace("-", "_")``. Both editable and wheel
+    installs register a queryable ``.dist-info``, and ``uv sync`` removing an
+    editable install also removes that metadata. This correctly answers "is it
+    installed?" for bundles whose import package differs from their distribution
+    name (e.g. ``amplifier-bundle-evaluation`` -> ``amplifier_evaluation``) or
+    that ship no import package at all (``packages=[]``), both of which the old
+    import-name guess mis-detected as "not installed" and rebuilt on every
+    process. See issue #326.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        distribution(pkg_name)
+        return True
+    except PackageNotFoundError:
+        return False
+
+
+class BundlePackageInstallError(BundleError):
+    """A bundle's own root Python package could not be installed.
+
+    Raised by :meth:`ModuleActivator.activate_bundle_package` so the failure names
+    the bundle that OWNS the offending ``pyproject.toml`` -- not whichever bundle
+    happened to be preparing when the install ran. Without this attribution the
+    user sees ``Failed to load bundle 'foundation'`` for a package that belongs to
+    an unrelated ``--app`` bundle they added an hour ago.
+    """
+
+    def __init__(self, bundle_path: Path, package: str, reason: str) -> None:
+        self.bundle_path = bundle_path
+        self.package = package
+        self.reason = reason
+        super().__init__(
+            f"Could not install the root Python package '{package or bundle_path.name}' "
+            f"of bundle at {bundle_path}: {reason}\n"
+            f"That package is installed only because a module declared by the bundle "
+            f"resolves inside that directory. If this bundle was added with "
+            f"`amplifier bundle add`, `amplifier bundle remove <name>` restores sessions."
+        )
+
+
+def bundle_root_declares_module(
+    bundle_path: Path, module_sources: Iterable[str]
+) -> bool:
+    """Does at least one declared module ``source`` resolve INSIDE ``bundle_path``?
+
+    This is the question :meth:`ModuleActivator.activate_bundle_package` exists to
+    serve -- "modules that import from their parent bundle's package" -- asked of
+    the modules actually declared, rather than inferred from the mere presence of a
+    ``pyproject.toml`` with a ``[project]`` table. A skills-only behavior shipped
+    from a Python *application* repo has a ``[project]`` table (the application) but
+    declares no module that lives there; installing the application into the
+    Amplifier environment is never what its author meant, and when the package
+    cannot install (``requires-python`` above the running interpreter) every session
+    on the machine fails at bundle preparation.
+
+    Two source shapes count as "inside":
+
+    * Local paths. Relative ``./`` and ``../`` sources are rewritten to absolute
+      paths at load time (``_dataclass._resolve_relative_sources``), so a plain
+      ``Path(source).resolve().is_relative_to(bundle_path)`` is exact.
+    * ``git+`` sources whose repo AND ref hash to the same cache directory as
+      ``bundle_path`` -- the same pure computation the git handler uses to place
+      clones (``GitSourceHandler._get_cache_path``), evaluated against the cache
+      directory the bundle itself was fetched into (``bundle_path.parent``). A
+      ``#subdirectory=modules/x`` module of the same repo therefore matches; a
+      module fetched from any other repo does not.
+
+    Anything unparseable is treated as "not inside" -- the conservative answer,
+    because the cost of a false positive here is a machine-wide outage while the
+    cost of a false negative is one module failing to import, loudly, by name.
+    """
+    try:
+        root = bundle_path.resolve()
+    except OSError:
+        return False
+    git_handler = None
+    for source in module_sources:
+        if not isinstance(source, str) or not source:
+            continue
+        try:
+            parsed = parse_uri(source)
+        except Exception as exc:  # noqa: BLE001
+            # An unparseable source is simply "not ours" -- the conservative answer.
+            logger.debug(f"Ignoring unparseable module source {source!r}: {exc}")
+            continue
+        if parsed.is_git:
+            if git_handler is None:
+                from amplifier_foundation.sources.git import GitSourceHandler
+
+                git_handler = GitSourceHandler()
+            try:
+                if git_handler._get_cache_path(parsed, root.parent).resolve() == root:
+                    return True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    f"Could not place git source {source!r} in the cache: {exc}"
+                )
+            continue
+        if parsed.is_file:
+            raw = source.removeprefix("file://")
+            try:
+                candidate = Path(raw).expanduser().resolve()
+            except (OSError, RuntimeError):
+                continue
+            if candidate == root or candidate.is_relative_to(root):
+                return True
+    return False
 
 
 class ModuleActivator:
@@ -44,6 +159,12 @@ class ModuleActivator:
         cache_dir: Path | None = None,
         install_deps: bool = True,
         base_path: Path | None = None,
+        strict: bool = False,
+        install_python: str | None = None,
+        install_constraints: Path | None = None,
+        *,
+        refresh_dependencies: bool = False,
+        install_overrides: Path | None = None,
     ) -> None:
         """Initialize module activator.
 
@@ -54,9 +175,31 @@ class ModuleActivator:
                        For bundles loaded from git, this should be the cloned
                        bundle's base_path so relative paths like ./modules/foo
                        resolve correctly.
+            strict: If True, activation failures in activate_all() raise
+                    ModuleActivationError instead of being logged and skipped.
+                    Mirrors BundleRegistry(strict=...) for include failures.
+            install_python: Python interpreter targeted by dependency installs.
+                Defaults to the current interpreter.
+            install_constraints: Optional uv constraints file passed to dependency
+                installs.
+            refresh_dependencies: Resolve the declared dependencies afresh, including
+                Git refs, instead of reusing distribution-presence/install-state
+                shortcuts or generating installed-version overrides. For preparing
+                a NEW isolated environment, not resuming a recorded generation.
+                This does not update source checkouts; the caller owns that policy.
+            install_overrides: Explicit uv overrides file, replacing automatic
+                installed-version overrides. A host can use this to retain its
+                qualified native wheels while refreshing other dependencies.
         """
         self.cache_dir = cache_dir or get_amplifier_home() / "cache"
         self.install_deps = install_deps
+        self.strict = strict
+        self.install_python = (
+            install_python if install_python is not None else sys.executable
+        )
+        self.install_constraints = install_constraints
+        self.refresh_dependencies = refresh_dependencies
+        self.install_overrides = install_overrides
         self._resolver = SimpleSourceResolver(
             cache_dir=self.cache_dir, base_path=base_path
         )
@@ -136,6 +279,11 @@ class ModuleActivator:
 
         Returns:
             Dict mapping module names to their local paths.
+
+        Raises:
+            ModuleActivationError: If strict=True and any module fails to
+                activate. All failures are reported together, not just the
+                first one.
         """
         # Phase 1: Resolve all sources and check install state
         to_activate = []
@@ -155,11 +303,21 @@ class ModuleActivator:
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             activated = {}
+            failures: list[tuple[str, BaseException]] = []
             for (name, _), result in zip(to_activate, results):
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
+                    failures.append((name, result))
                     logger.error(f"Failed to activate {name}: {result}")
                 else:
                     activated[name] = result
+
+            if failures and self.strict:
+                detail = "\n".join(f"  - {name}: {err}" for name, err in failures)
+                raise ModuleActivationError(
+                    f"{len(failures)} of {len(to_activate)} modules failed to "
+                    f"activate (strict mode):\n{detail}"
+                ) from failures[0][1]
+
             return activated
 
         return {}
@@ -168,6 +326,8 @@ class ModuleActivator:
         self,
         bundle_path: Path,
         progress_callback: Callable[[str, str], None] | None = None,
+        *,
+        module_sources: Iterable[str] | None = None,
     ) -> None:
         """Install a bundle's own Python package to enable internal imports.
 
@@ -182,6 +342,18 @@ class ModuleActivator:
 
         Args:
             bundle_path: Path to bundle root directory containing pyproject.toml.
+            module_sources: The ``source`` strings of every module the bundle
+                declares. When given, the package is installed ONLY if at least
+                one of them resolves inside ``bundle_path`` (see
+                :func:`bundle_root_declares_module`) -- a root ``pyproject.toml``
+                alone is not evidence that any module imports from it. ``None``
+                preserves the historical behavior (install whenever the pyproject
+                declares a package) for callers that cannot supply the list.
+
+        Raises:
+            BundlePackageInstallError: the package's ``requires-python`` excludes
+                the running interpreter, or the install itself failed. Either way
+                the error names THIS bundle root and package.
 
         Note:
             This is a no-op if the bundle has no pyproject.toml.
@@ -212,27 +384,82 @@ class ModuleActivator:
             )
             return
 
-        # Skip packages that are already importable in the current environment.
+        # A [project] table proves the repo ships a Python package. It does not
+        # prove any module in this bundle imports from it -- an application repo
+        # that ships a skills-only behavior has a [project] table for the
+        # application. Only install when a declared module actually lives here.
+        if module_sources is not None and not bundle_root_declares_module(
+            bundle_path, module_sources
+        ):
+            logger.info(
+                f"Skipping root package install for bundle at {bundle_path}: none of the "
+                f"bundle's declared modules resolve inside it, so its pyproject describes "
+                f"an application, not a module dependency."
+            )
+            return
+
+        # Skip packages that are already installed in the current environment.
         # This prevents editable-installing packages (like amplifier-core) that were
         # already installed from PyPI as prebuilt wheels. Without this check, a repo
         # cloned into the cache for its YAML/context files (via bundle includes) would
         # trigger a source build that may require native toolchains (Rust, protobuf, etc).
+        #
+        # Detection keys on the distribution name (importlib.metadata), NOT a guessed
+        # import name. See _distribution_installed() and issue #326.
         pkg_name = pyproject_data.get("project", {}).get("name", "")
-        if pkg_name:
-            import importlib.util
+        if (
+            not self.refresh_dependencies
+            and pkg_name
+            and _distribution_installed(pkg_name)
+        ):
+            logger.debug(
+                f"Package '{pkg_name}' already installed, "
+                f"skipping editable install from {bundle_path}"
+            )
+            return
 
-            normalized = pkg_name.replace("-", "_")
-            if importlib.util.find_spec(normalized) is not None:
-                logger.debug(
-                    f"Package '{pkg_name}' already installed, "
-                    f"skipping editable install from {bundle_path}"
-                )
-                return
+        # Fail with a sentence, not a resolver transcript: if the package's own
+        # requires-python excludes the interpreter Amplifier runs on, uv will refuse
+        # anyway -- say so first, naming the bundle, before spawning it.
+        requires_python = str(
+            pyproject_data.get("project", {}).get("requires-python", "")
+        ).strip()
+        if requires_python:
+            try:
+                from packaging.specifiers import SpecifierSet
+            except ImportError:
+                # `packaging` is not a declared dependency; without it the check is
+                # skipped and uv's own resolver error is surfaced (attributed) below.
+                SpecifierSet = None  # type: ignore[assignment]
+            if SpecifierSet is not None:
+                running = platform.python_version()
+                if not SpecifierSet(requires_python).contains(
+                    running, prereleases=True
+                ):
+                    raise BundlePackageInstallError(
+                        bundle_path,
+                        pkg_name,
+                        f"it requires Python {requires_python} but this Amplifier "
+                        f"environment runs Python {running}",
+                    )
 
         if progress_callback:
             progress_callback("installing_package", pkg_name or bundle_path.name)
         logger.debug(f"Installing bundle package from {bundle_path}")
-        await self._install_dependencies(bundle_path)
+        try:
+            await self._install_dependencies(bundle_path)
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or "").strip()
+            raise BundlePackageInstallError(
+                bundle_path,
+                pkg_name,
+                f"`uv pip install -e` exited {e.returncode}"
+                + (f"\n{detail}" if detail else ""),
+            ) from e
+        except FileNotFoundError as e:
+            raise BundlePackageInstallError(
+                bundle_path, pkg_name, "uv is not installed"
+            ) from e
 
         # CRITICAL: Also add bundle's src/ directory to sys.path explicitly.
         # Editable installs (uv pip install -e) create .pth files or importlib finders,
@@ -274,7 +501,6 @@ class ModuleActivator:
         Returns a list of ``"name==version"`` strings suitable for a uv overrides file.
         """
         import importlib.metadata
-
         import tomllib
 
         try:
@@ -351,7 +577,7 @@ class ModuleActivator:
     ) -> None:
         """Install Python dependencies for a module.
 
-        Uses uv to install into the current Python environment. The --python flag
+        Uses uv to install into the selected Python environment. The --python flag
         ensures installation targets the correct environment even when run via
         `uv tool install` where there's no active virtualenv.
 
@@ -368,6 +594,11 @@ class ModuleActivator:
                 on update). When False (default), packages already importable from the
                 current environment are never editable-installed from source.
 
+        With ``refresh_dependencies``, neither an installed version nor an old
+        fingerprint proves that the selected sources are installed. Always ask uv
+        to resolve the declared graph, including transitive Git dependencies. No
+        constraints are inferred from installed versions in this mode.
+
         Raises:
             subprocess.CalledProcessError: If installation fails.
         """
@@ -376,6 +607,7 @@ class ModuleActivator:
         if not self._needs_python_install(module_path):
             return
 
+        force = force or self.refresh_dependencies
         if not force:
             # Skip packages that are already importable in the current environment.
             # This prevents editable-installing packages (like amplifier-core) that were
@@ -395,14 +627,12 @@ class ModuleActivator:
                     with open(pyproject, "rb") as f:
                         data = tomllib.load(f)
                     pkg_name = data.get("project", {}).get("name", "")
-                    if pkg_name:
-                        normalized = pkg_name.replace("-", "_")
-                        if find_spec(normalized) is not None:
-                            logger.debug(
-                                f"Package '{pkg_name}' already installed from wheels, "
-                                f"skipping editable install from {module_path}"
-                            )
-                            return
+                    if pkg_name and _distribution_installed(pkg_name):
+                        logger.debug(
+                            f"Package '{pkg_name}' already installed from wheels, "
+                            f"skipping editable install from {module_path}"
+                        )
+                        return
                 except Exception:
                     pass  # If we can't check, proceed with install
 
@@ -421,16 +651,14 @@ class ModuleActivator:
                     with open(_pyproject, "rb") as f:
                         _data = tomllib.load(f)
                     _pkg_name = _data.get("project", {}).get("name", "")
-                    if _pkg_name:
-                        _normalized = _pkg_name.replace("-", "_")
-                        if find_spec(_normalized) is None:
-                            logger.debug(
-                                f"Package '{_pkg_name}' no longer importable "
-                                f"(removed by uv sync?), invalidating cache "
-                                f"for {module_path.name}"
-                            )
-                            self._install_state.invalidate(module_path)
-                            _stale = True
+                    if _pkg_name and not _distribution_installed(_pkg_name):
+                        logger.debug(
+                            f"Package '{_pkg_name}' no longer installed "
+                            f"(removed by uv sync?), invalidating cache "
+                            f"for {module_path.name}"
+                        )
+                        self._install_state.invalidate(module_path)
+                        _stale = True
                 except Exception:
                     pass
             if not _stale:
@@ -450,7 +678,11 @@ class ModuleActivator:
             # Build overrides for git URL dependencies that are already installed.
             # This prevents uv from fetching/building packages from git when a
             # prebuilt wheel is already available (e.g. amplifier-core from PyPI).
-            overrides = self._build_git_dep_overrides(pyproject)
+            overrides = (
+                self._build_git_dep_overrides(pyproject)
+                if not self.refresh_dependencies and self.install_overrides is None
+                else []
+            )
             overrides_file = None
             try:
                 cmd = [
@@ -460,7 +692,7 @@ class ModuleActivator:
                     "-e",
                     str(module_path),
                     "--python",
-                    sys.executable,
+                    self.install_python,
                     "--quiet",
                     # Ignore [tool.uv.sources] in the package's pyproject.toml.
                     # Modules use this section for dev convenience (pointing
@@ -470,6 +702,18 @@ class ModuleActivator:
                     # native toolchains (Rust, protobuf) that users don't have.
                     "--no-sources",
                 ]
+                if self.install_constraints is not None:
+                    cmd.extend(["--constraints", str(self.install_constraints)])
+                cmd.extend(self._dependency_install_flags())
+                if self.refresh_dependencies:
+                    import tomllib
+
+                    with pyproject.open("rb") as f:
+                        package = tomllib.load(f).get("project", {}).get("name")
+                    if package:
+                        # Same version and metadata can still describe a different
+                        # selected checkout. Rebuild this editable package too.
+                        cmd.extend(["--reinstall-package", package])
                 if overrides:
                     import tempfile
 
@@ -509,17 +753,21 @@ class ModuleActivator:
                     Path(overrides_file.name).unlink(missing_ok=True)
         elif requirements.exists():
             try:
+                cmd = [
+                    "uv",
+                    "pip",
+                    "install",
+                    "-r",
+                    str(requirements),
+                    "--python",
+                    self.install_python,
+                    "--quiet",
+                ]
+                if self.install_constraints is not None:
+                    cmd.extend(["--constraints", str(self.install_constraints)])
+                cmd.extend(self._dependency_install_flags())
                 subprocess.run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "-r",
-                        str(requirements),
-                        "--python",
-                        sys.executable,
-                        "--quiet",
-                    ],
+                    cmd,
                     check=True,
                     capture_output=True,
                     text=True,
@@ -543,6 +791,12 @@ class ModuleActivator:
                 )
                 raise
 
+    def _dependency_install_flags(self) -> list[str]:
+        flags = ["--upgrade", "--refresh"] if self.refresh_dependencies else []
+        if self.install_overrides is not None:
+            flags.extend(["--overrides", str(self.install_overrides)])
+        return flags
+
     def finalize(self) -> None:
         """Save any pending state changes.
 
@@ -552,7 +806,10 @@ class ModuleActivator:
         self._install_state.save()
 
 
-class ModuleActivationError(Exception):
-    """Raised when module activation fails."""
+class ModuleActivationError(BundleError):
+    """Raised when module activation fails.
 
-    pass
+    Subclasses BundleError so that callers already handling bundle
+    preparation failures render this cleanly instead of letting it
+    escape as an unhandled traceback.
+    """

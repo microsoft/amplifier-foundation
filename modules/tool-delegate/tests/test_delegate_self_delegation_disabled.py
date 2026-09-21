@@ -165,17 +165,24 @@ class TestExecuteWithSelfWhenEnabled:
 
 
 class TestDescriptionFeatureLineConditional:
-    """The conditional feature-listing line in the description (`-
-    agent="self": Spawn yourself as a sub-agent`) must be present iff the
-    flag is True. The generic "no agents currently registered. Use
-    agent='self' or a bundle path." fallback is intentionally NOT gated
-    here — that's tool-level boilerplate left generic across all bundles.
-    Bundle-specific guidance (e.g. "self-delegation is disabled in this
-    bundle, use a named specialist") belongs in the bundle's own context
-    file (e.g. delegation-mechanics.md in the build-up bundle), not in
-    the tool's generic description."""
+    """The self-delegation affordance must be advertised iff the flag is True.
 
-    FEATURE_LINE = '- agent="self": Spawn yourself as a sub-agent'
+    The lean head (model_performance-zc6t) folded `agent="self"` from its own
+    dedicated line into the single `- agent:` bullet, so the literal below
+    changed. The INVARIANT did not: the description advertises `"self"` when
+    the feature is enabled and does not when it is disabled. Both directions
+    are still asserted, and `test_description_never_advertises_self_when_disabled`
+    below now pins the invariant against the whole preamble rather than one
+    literal, so a future rewording cannot quietly re-open the gap.
+
+    The generic "no agents currently registered. Use agent='self' or a bundle
+    path." fallback is intentionally NOT gated here — that's tool-level
+    boilerplate left generic across all bundles. Bundle-specific guidance (e.g.
+    "self-delegation is disabled in this bundle, use a named specialist")
+    belongs in the bundle's own context file (e.g. delegation-mechanics.md in
+    the build-up bundle), not in the tool's generic description."""
+
+    FEATURE_LINE = 'or "self" to spawn yourself (maximum token conservation).'
 
     def test_description_omits_feature_line_when_disabled(self):
         tool = _make_tool(self_delegation_enabled=False)
@@ -193,6 +200,27 @@ class TestDescriptionFeatureLineConditional:
         assert self.FEATURE_LINE in description, (
             "Description must advertise the self-delegation feature line"
             f" when enabled. Got:\n{description}"
+        )
+
+    def test_description_never_advertises_self_when_disabled(self):
+        """Literal-independent: no `"self"` anywhere in the disabled preamble.
+
+        The literal above is a wording, and a wording can be rewritten. This
+        asserts the property instead: with the feature off, the preamble the
+        model reads must not contain the token `"self"` at all, so a future
+        rewrite cannot re-advertise a call the runtime will reject.
+
+        Scoped to the preamble because the dynamic agent catalog and the
+        no-agents fallback are deliberately generic (see the class docstring).
+        """
+        description = _make_tool(self_delegation_enabled=False).description
+        preamble = description.split("\n\nAvailable agents:\n")[0].split(
+            "\n\nNo agents currently registered"
+        )[0]
+
+        assert '"self"' not in preamble, (
+            "The disabled-state preamble still advertises agent=\"self\", which "
+            f"the runtime rejects. Got:\n{preamble}"
         )
 
 

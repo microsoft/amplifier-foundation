@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import json
 import os
-import selectors
+import threading
 import signal
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
@@ -293,8 +292,19 @@ def _spawn_adapter(
 def _read_first_line(proc: subprocess.Popen[bytes], timeout: float = 15.0) -> str:
     """Read the first newline-terminated line from *proc* stdout.
 
-    Uses ``selectors`` to avoid blocking indefinitely when the adapter
-    fails to start (guards against test hangs).
+    Reads on a daemon thread and waits on it with a timeout, so a subprocess
+    that never prints cannot hang the suite.
+
+    This used to use ``selectors``, which does not work here on Windows:
+    ``selectors.DefaultSelector`` is ``SelectSelector`` there, and Windows'
+    ``select()`` accepts ONLY sockets. Registering a subprocess pipe raised
+    ``OSError: [WinError 10038] An operation was attempted on something that is
+    not a socket``, failing all 10 tests in this file before the adapter under
+    test was ever exercised.
+
+    A thread doing a blocking ``readline()`` has the same timeout guarantee and
+    no platform-specific descriptor requirements, so one code path now serves
+    every platform rather than POSIX working and Windows erroring out.
 
     Args:
         proc: Running subprocess with ``stdout=PIPE``.
@@ -307,40 +317,25 @@ def _read_first_line(proc: subprocess.Popen[bytes], timeout: float = 15.0) -> st
         TimeoutError: If no newline arrives within *timeout* seconds.
     """
     assert proc.stdout is not None
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ)
+    stdout = proc.stdout
+    result: list[bytes] = []
 
-    line = b""
-    deadline = time.monotonic() + timeout
+    def _reader() -> None:
+        try:
+            result.append(stdout.readline())
+        except Exception:  # pragma: no cover - pipe closed under us
+            result.append(b"")
 
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"No line received within {timeout}s (buffer: {line!r})"
-                )
+    # daemon=True so a wedged read can never keep the interpreter alive; the
+    # TimeoutError below is what the caller sees in that case.
+    thread = threading.Thread(target=_reader, daemon=True)
+    thread.start()
+    thread.join(timeout)
 
-            ready = sel.select(timeout=remaining)
-            if not ready:
-                raise TimeoutError(
-                    f"No line received within {timeout}s (buffer: {line!r})"
-                )
+    if thread.is_alive():
+        raise TimeoutError(f"No line received within {timeout}s")
 
-            # read1() reads whatever is immediately available in the BufferedReader's
-            # internal buffer (or the OS buffer) without blocking for more data.
-            # Using read(1) instead would drain one byte then stall the next
-            # sel.select() because the BufferedReader already consumed the OS data.
-            chunk = proc.stdout.read1(4096)  # type: ignore[attr-defined]
-            if not chunk:
-                # EOF — return whatever we have
-                break
-            line += chunk
-            if b"\n" in line:
-                break
-    finally:
-        sel.close()
-
+    line = result[0] if result else b""
     return line.split(b"\n")[0].decode("utf-8").strip()
 
 

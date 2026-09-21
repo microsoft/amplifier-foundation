@@ -1,0 +1,4 @@
+=== AFTER: with the fix applied ===
+$ uv run pytest tests/test_partial_guidance_kind_yiy.py -q
+...................                                                      [100%]
+19 passed in 0.26s

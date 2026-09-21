@@ -1,0 +1,16 @@
+### chars/4 (len(content)//4) calibrated against real tokenizers -- tiktoken 0.12.0
+
+A) The two files the defect was hiding (behaviors/agents.yaml + tasks.yaml include BOTH):
+  context/agents/delegation-instructions.md: bytes=16897 chars/4=4224 o200k_base=3628 cl100k_base=3664
+  context/agents/multi-agent-patterns.md: bytes=8210 chars/4=2052 o200k_base=1774 cl100k_base=1802
+  TOTAL chars/4=6276  o200k_base=5402 (chars/4 error +16.2%)  cl100k_base=5466 (chars/4 error +14.8%)
+  UNFIXED ESTIMATOR REPORTED 1000  ->  understatement 6.28x vs chars/4, 5.40x vs o200k_base
+
+B) The test fixture -- context/agents/session-storage-knowledge.md (a REAL file from the same directory):
+  bytes=9961  chars/4=2490
+  o200k_base=2648   chars/4 error = -6.0%   flat-500 error = -81.1%
+  cl100k_base=2635   chars/4 error = -5.5%   flat-500 error = -81.0%
+
+C) Spread of chars/4 across this repo's context markdown (>=1500 bytes), vs o200k_base:
+  n=31 files   min=0.940 (context/agents/session-storage-knowledge.md)   median=1.128   max=1.312 (context/MODULAR_DESIGN_PHILOSOPHY.md)
+  chars/4 runs HIGH on prose markdown -- conservative for a budget gate (fires early, never late).

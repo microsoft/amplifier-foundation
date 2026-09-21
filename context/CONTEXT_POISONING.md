@@ -154,12 +154,16 @@ Use --local flag to override provider per project.
 
 **Rule**: Each concept lives in exactly ONE place.
 
+> Applied to description fields (agent `meta.description`, skill/mode
+> `description`, tool descriptions) specifically: see
+> `context/shared/description-authoring-principles.md`.
+
 **Good organization**:
 - ✅ Command syntax → `docs/USER_ONBOARDING.md#quick-reference`
 - ✅ Architecture → `docs/ARCHITECTURE.md`
 - ✅ API reference → `docs/API.md`
 
-**Cross-reference, don't duplicate**:
+**Cross-reference the canonical source**:
 ```markdown
 For command syntax, see [USER_ONBOARDING.md#quick-reference](...)
 
@@ -170,7 +174,7 @@ NOT: Duplicating all command syntax inline
 
 When you find duplication:
 1. Identify which doc is canonical
-2. **Delete** the duplicate entirely (don't update it)
+2. **Delete** the duplicate entirely (deletion, not an update)
 3. Update cross-references to canonical source
 
 **Why delete vs. update?**
@@ -178,7 +182,7 @@ When you find duplication:
 - If it exists, it will drift
 - Deletion is permanent elimination
 
-### 3. Retcon, Don't Evolve
+### 3. Retcon: Write as Always-True
 
 **BAD** (creates poison):
 ```markdown
@@ -407,7 +411,7 @@ Before committing any documentation:
 
 **Core rules**:
 1. Each concept in ONE place only
-2. Delete duplicates (don't update)
+2. Delete duplicates (deletion, not an update)
 3. Use retcon (not evolution)
 4. Consistent terminology everywhere
 5. Test all examples work

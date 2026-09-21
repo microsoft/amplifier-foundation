@@ -8,7 +8,7 @@ This document captures core principles for systematic problem-solving that apply
 
 ### 1. **Investigation Before Action**
 
-**Never start coding until you understand the complete picture.**
+**Start coding only once you understand the complete picture.**
 
 - Use specialized agents to gather information
 - Trace the actual code paths involved

@@ -2,6 +2,12 @@
 
 Progressive examples demonstrating how to use Amplifier Foundation, organized by learning progression.
 
+> **Scope:** These executable examples demonstrate Foundation library APIs and
+> complete application compositions. Some intentionally load the retained
+> Foundation root. They are not behavior-first bundle-authoring recommendations;
+> use [`docs/BUNDLE_GUIDE.md`](../docs/BUNDLE_GUIDE.md) when publishing a
+> reusable capability or an optional supporting root.
+
 ## Quick Start
 
 ```bash
@@ -51,8 +57,8 @@ See application architecture patterns: configuration management, logging, error 
 **[09_multi_agent_system.py](./09_multi_agent_system.py)** - Coordinate specialized agents
 Create specialized agents (Architect, Implementer, Reviewer) with different tools and instructions. See sequential workflows and context passing between agents.
 
-**[23_spawn_with_bundle_refs.py](./23_spawn_with_bundle_refs.py)** - Spawn sub-sessions safely
-Wire the `session.spawn` capability for agent delegation. Handle both agent-config shapes (inline config vs lazy `{"bundle": "<uri>"}` bundle-ref) so bundle-ref agents don't crash on an empty child. Shows that a generic observability hook composed into the parent bundle is inherited by every spawned child via `compose=True`.
+**[23_spawn_with_agents.py](./23_spawn_with_agents.py)** - Spawn sub-sessions with named agents
+Wire the `session.spawn` capability for agent delegation using the two sanctioned agent-config shapes: inline overlays (partial mount-plan dicts) and agent `.md` files (resolved via `load_bundle()`). Shows that a generic observability hook composed into the parent bundle is inherited by every spawned child via `compose=True` — no per-child wiring required.
 
 ### 🌍 Tier 4: Real-World Applications (10-21)
 **Goal:** Practical use cases and advanced patterns

@@ -99,12 +99,50 @@ response = await session.execute("Hello, what can you help with?")
 | **Create** | Yes | Produces the AmplifierSession |
 | **Mount** | No | For tools not declared in the bundle (runtime-dependent tools) |
 | **Hook** | No | For app-specific event handling (WebSocket streaming, etc.) |
-| **Register spawn** | No | For agent / sub-session delegation. Register the `session.spawn` capability **after `create_session` and before `execute`**. Register it too early (no session yet) or too late (after the loop starts) and the orchestrator silently falls back to a no-tools backend — delegation never gets full sub-sessions. See [Example 23](../examples/23_spawn_with_bundle_refs.py). |
+| **Register spawn** | No | For agent / sub-session delegation. Register the `session.spawn` capability **after `create_session` and before `execute`**. Register it too early (no session yet) or too late (after the loop starts) and the orchestrator silently falls back to a no-tools backend — delegation never gets full sub-sessions. |
 | **Execute** | Yes | Runs the agent loop |
 
 ### Key Opinions
 
 **PreparedBundle is your singleton; sessions are ephemeral.** `prepare()` is expensive — it downloads modules, resolves dependencies, and activates everything. Do it once at application startup. `create_session()` is cheap. Do it per-request, per-conversation, or per-user as your pattern requires.
+
+**An update generation can explicitly refresh Python dependencies.** Ordinary
+preparation preserves installed packages for fast startup and native-wheel reuse.
+That is not proof that a Git dependency such as `some-module @ git+...@main` is
+current: two commits can have the same package version. In a **new, isolated
+generation's interpreter**, use:
+
+```python
+prepared = await bundle.prepare(
+    strict=True,
+    cache_dir=staged_module_cache,
+    refresh_dependencies=True,
+    install_overrides=qualified_overrides_path,  # Optional, host-owned uv file
+)
+```
+
+This bypasses installed-package and fingerprint shortcuts, disables automatic
+Git-to-installed-version overrides, and asks uv to upgrade and refresh the
+declared dependency graph, including transitive Git references. Each explicitly
+selected editable package is rebuilt even if its version has not changed. The
+policy reaches bundle root packages, agent modules, and later lazy activation
+through this prepared resolver. `install_deps=False` still disables installation.
+
+The host must select/refresh source checkouts separately, supply any deliberate
+overrides (for example a qualified Core native wheel), verify the resulting
+versions **and source revisions**, and record the complete graph before
+activation. The override file is passed through unchanged; Foundation does not
+infer a new generation's policy from whatever happens to be installed. Direct
+local source overrides remain local. `[tool.uv.sources]` development overrides
+are still ignored during installation.
+
+Do not opt in on ordinary resumed turns, an active generation, or an existing
+pending/rollback generation. Do not reuse the refresh-enabled prepared resolver
+after freezing a generation: its lazy activations also refresh. Recreate it with
+the normal policy against the recorded environment. `ModuleActivator` exposes
+the same `refresh_dependencies` and `install_overrides` options, alongside its
+existing `install_python` and `install_constraints` arguments for hosts that
+manage activation directly. Neither API updates generation pointers or locks.
 
 **`session_cwd` is critical for non-CLI apps.** Without it, file-system tools see the server's working directory, not the user's project or workspace. Always pass it explicitly when creating sessions for web or API applications.
 
@@ -134,6 +172,15 @@ Care should be taken with orchestrator changes (different orchestrators may hand
 
 Three approaches, each with different tradeoffs.
 
+> **Scope:** These are complete-application compositions. When publishing a
+> reusable capability for another host, follow the behavior-first guide: publish
+> its behavior without selecting a root, provider, or orchestrator. Add a
+> supporting root when you intentionally ship a complete host. A flat repository
+> may separately need an enclosing root manifest to anchor namespace resources;
+> that metadata/resource role does not make root configuration the primary
+> capability artifact. See
+> [BUNDLE_GUIDE.md](BUNDLE_GUIDE.md).
+
 ### Declarative (YAML Includes Chain)
 
 Everything lives in `bundle.md`. Good for stable configurations that rarely change at runtime.
@@ -145,13 +192,11 @@ bundle:
   version: 1.0.0
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - behavior: my-app:behaviors/domain-expert
-
-session:
-  orchestrator: {module: loop-streaming}
-  context: {module: context-simple}
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  - bundle: my-app:behaviors/domain-expert
 ---
+
+@anchors:context/system.md
 
 You are a helpful domain expert.
 ```
@@ -357,12 +402,12 @@ unreg = session.coordinator.hooks.register(
 Hooks declared in the **bundle** propagate to spawned sub-sessions automatically. When a spawn capability calls `prepared.spawn(child_bundle, instruction, compose=True)` — and `compose=True` is the default — the parent bundle is composed with the child before the child session is created. Everything the parent declares (hook modules, providers, tools) is therefore inherited by the child. Compose one observability or logging hook into the parent and *every* descendant session is instrumented, with no per-child wiring:
 
 ```python
-# Generic observability hook composed into the PARENT bundle once...
+# Generic observability hook composed into an Anchors-based parent once...
 observability = Bundle(
     name="observability-behavior",
     hooks=[{"module": "hooks-observability", "source": "<your-hook-source>", "config": {...}}],
 )
-composed = foundation.compose(provider).compose(observability)
+composed = anchors.compose(provider).compose(observability)
 prepared = await composed.prepare()
 
 # ...is inherited by children spawned with compose=True (the default).
@@ -373,8 +418,6 @@ Two caveats:
 
 - **Bundle hooks propagate; ephemeral hooks do not.** A hook registered directly on a session's coordinator (`session.coordinator.hooks.register(...)`) lives only on that session — it is *not* part of any bundle, so spawned children never see it. If you need a hook in children, put it in the (parent) bundle.
 - **Register concrete event names, not `"*"`.** A hook module's `mount()` should subscribe to specific events from `amplifier_core` `ALL_EVENTS` (e.g. `session:start`, `provider:request`, `tool:pre`, `tool:post`). There is no wildcard subscription at the module-mount layer.
-
-See [Example 23](../examples/23_spawn_with_bundle_refs.py) for a runnable end-to-end demonstration.
 
 ---
 
@@ -850,40 +893,49 @@ async def spawn_session(config: dict) -> AmplifierSession:
 session.coordinator.register_capability("spawn", spawn_session)
 ```
 
-> **⚠️ Bundle-Ref Agent Resolution.** An agent entry handed to a spawn capability
-> comes in one of two shapes, and they must be handled differently:
+> **Resolving an Agent Overlay.** The reference spawn capability
+> (`amplifier-app-cli`'s `session_spawner.py`) builds a child session by merging
+> an agent's overlay onto the parent's resolved config with
+> `merge_configs(parent_config, agent_overlay)`. The child inherits the parent's
+> orchestrator, context manager, providers, and tools, then applies the agent's
+> own fields on top. There are two sanctioned ways to define a spawnable agent:
 >
-> 1. **Inline config** — a dict of bundle fields
->    (`{"instruction": ..., "tools": [...], "providers": [...]}`). Build the child
->    `Bundle(...)` directly from those fields.
-> 2. **Lazy bundle-ref** — a single-key dict `{"bundle": "<uri>"}` that points at a
->    bundle to load. You **must** `load_bundle(...)` it first.
+> 1. **Inline overlay** — `agents.<name>` is a partial mount plan declaring only
+>    the fields that differ from the parent:
 >
-> A spawn capability that always does
-> `Bundle(session=config.get("session", {}), tools=config.get("tools", []), ...)`
-> works for shape 1 but is a **latent crash** for shape 2: a bundle-ref has no
-> inline fields, so every `.get(...)` returns empty and you get a structurally
-> empty child (no orchestrator, no provider, no tools). It inherits the parent's
-> orchestrator via compose and lands on a no-tools / unconfigured backend —
-> surfacing as an `ImportError` or a silent fallback at runtime. Branch on the
-> shape:
+>    ```yaml
+>    agents:
+>      planner:
+>        session:
+>          orchestrator: { module: loop-streaming }
+>        providers:
+>          - module: provider-anthropic
+>        tools:
+>          - module: tool-filesystem
+>        system:
+>          instruction: You are a planning specialist. Produce a step-by-step plan.
+>    ```
 >
-> ```python
-> if "bundle" in config and len(config) == 1:
->     child_bundle = await load_bundle(config["bundle"])  # bundle-ref
-> else:
->     child_bundle = Bundle(                               # inline config
->         name=agent_name,
->         session=config.get("session", {}),
->         providers=config.get("providers", []),
->         tools=config.get("tools", []),
->         hooks=config.get("hooks", []),
->         instruction=config.get("instruction")
->         or config.get("system", {}).get("instruction"),
->     )
-> ```
+>    The spawn capability merges this dict onto the parent config — unset fields
+>    (orchestrator, context, providers, tools) are inherited unchanged.
 >
-> See [Example 23](../examples/23_spawn_with_bundle_refs.py) for a runnable end-to-end demonstration.
+> 2. **Agent file** — `agents.include: [<name>]` references an agent `.md` file
+>    (YAML frontmatter + instruction body) in the bundle's `agents/` directory:
+>
+>    ```yaml
+>    agents:
+>      include:
+>        - planner
+>    ```
+>
+>    Foundation loads `agents/planner.md` as a `Bundle` during composition and
+>    exposes its overlay under the agent name, so the spawn capability merges it
+>    exactly like an inline overlay.
+>
+> Both shapes converge on the same `merge_configs` merge, so the child is always
+> fully configured: parent infrastructure plus the agent's overrides.
+>
+> See [Example 23](../examples/23_spawn_with_agents.py) for a runnable end-to-end demonstration.
 
 ### What Crosses the Boundary Correctly
 
@@ -893,7 +945,7 @@ session.coordinator.register_capability("spawn", spawn_session)
 | Amplifier → App | Approval request | `approval_system.request_approval("Send email to Sarah?", {...})` |
 | Amplifier → App | Display content | `display_system.display("Here are 3 restaurant options...")` |
 | Amplifier → App | Session events | `streaming_hook.on_tool_start("life_graph", {...})` |
-| Amplifier → App | Spawn request | `spawn_capability({"bundle": "planner", ...})` |
+| Amplifier → App | Spawn request | `spawn_capability("planner", "Plan the trip", ...)` |
 | App → Amplifier | Approval decision | `approval_system.resolve(request_id, True)` |
 | App → Amplifier | Session config | `create_session(session_id=..., session_cwd=...)` |
 

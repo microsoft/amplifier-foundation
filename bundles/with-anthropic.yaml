@@ -1,5 +1,6 @@
 bundle:
   name: foundation-anthropic
+  display_name: Foundation · Anthropic
   version: 1.0.0
   description: Foundation bundle with Anthropic Claude Opus provider
 

@@ -1,0 +1,35 @@
+{
+  "session": "d841a881-d4bb-4e4f-ac22-c1230d70bc0d",
+  "head_260": "@anchors:context/system.md\n\n---\n\n<context_file paths=\"@anchors:context/system.md \u2192 /root/.amplifier/cache/amplifier-foundation-26df61cccf7c4703/bundles/anchors/context/system.md\">\n# System\n\nYou are Amplifier, an AI-powered Microsoft CLI tool that helps users a",
+  "system_chars": 36184,
+  "tools_json_chars": 32970,
+  "off_You_are_Amplifier": 190,
+  "off_Behavioral_Principles": 278,
+  "off_configured_for_development_OF": -1,
+  "off_Amplifier_Ecosystem_Principles": -1,
+  "off_Notify_Bundle": -1,
+  "p3_short_form": true,
+  "p4_delegate_present": false,
+  "roster": [
+    "anchors:architect",
+    "anchors:builder",
+    "anchors:debugger",
+    "anchors:explorer",
+    "anchors:git-ops",
+    "anchors:researcher",
+    "app-cli:cli-expert",
+    "context-intelligence:session-navigator"
+  ],
+  "roster_count": 8,
+  "has_session_analyst": false,
+  "delegate_desc_chars": 6874,
+  "delegate_desc_example_tags": 4,
+  "resolved_context_files": [
+    "@anchors:context/system.md \u2192 /root/.amplifier/cache/amplifier-foundation-26df61cccf7c4703/bundles/anchors/context/system.md",
+    "modes:context/modes-instructions.md \u2192 /root/.amplifier/cache/amplifier-bundle-modes-85a0e90c360a77e3/context/modes-instructions.md",
+    "app-cli:context/cli-awareness.md \u2192 /root/.local/share/uv/tools/amplifier/lib/python3.12/site-packages/amplifier_app_cli/_bundle/context/cli-awareness.md",
+    "skills:context/skills-instructions.md \u2192 /root/.amplifier/cache/amplifier-bundle-skills-5105b7c75992a85a/context/skills-instructions.md",
+    "wayfinder:context/wayfinder-voice.md \u2192 /root/.amplifier/cache/amplifier-bundle-wayfinder-4d453695317b3e38/context/wayfinder-voice.md",
+    "wayfinder:context/propose-and-ack.md \u2192 /root/.amplifier/cache/amplifier-bundle-wayfinder-4d453695317b3e38/context/propose-and-ack.md"
+  ]
+}

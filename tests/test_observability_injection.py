@@ -253,7 +253,7 @@ class TestCreateSessionInjectsFoundationEvents:
 
     @pytest.mark.asyncio
     async def test_create_session_calls_inject_with_foundation_events(self):
-        """create_session() calls inject_additional_events(self.mount_plan, FOUNDATION_OBSERVABILITY_EVENTS)."""
+        """create_session() injects foundation events into the session's own plan."""
         from amplifier_foundation.bundle._prepared import PreparedBundle  # noqa: PLC0415
         from amplifier_foundation.bundle._observability import (
             FOUNDATION_OBSERVABILITY_EVENTS,
@@ -307,9 +307,10 @@ class TestCreateSessionInjectsFoundationEvents:
         )
         # Verify called with the right mount_plan and events
         mp_used, events_used = call_record[0]
-        assert mp_used is mount_plan, (
-            "inject_additional_events was not called with self.mount_plan"
-        )
+        assert mp_used is not mount_plan
+        assert MockSession.call_args.args[0] is mp_used
+        assert mount_plan["hooks"][0]["config"] == {}
+        assert "session:config" in mp_used["hooks"][0]["config"]["additional_events"]
         for ev in FOUNDATION_OBSERVABILITY_EVENTS:
             assert ev in events_used, f"{ev!r} not passed to inject_additional_events"
 

@@ -171,6 +171,43 @@ test_bundle = Bundle(
 )
 ```
 
+### Priority-Based Provider Resolution
+
+When resolving a caller-supplied provider/module name against a collection of
+mounted instances, do **not** return on the first structural match. If 2+
+instances of the same module can share an id/type match (e.g. a bare type
+name like `"anthropic"` matching multiple `provider-anthropic` instances that
+each have a distinct `id:`), first-match-wins silently serves whichever
+instance happens to be first in list order -- not the one the caller
+actually wanted. This exact anti-pattern was independently found and fixed
+four times in one week: `_find_provider_instance()`
+(amplifier-foundation PR #267), `find_provider_by_type()`
+(amplifier-bundle-routing-matrix PR #31), and
+`get_provider_config()`/`_get_provider_config()`/`_find_provider_entry()`
+(amplifier-app-cli PR #214/#215).
+
+The accepted fix: collect **all** structural matches, then resolve
+deterministically to the highest-priority (lowest `priority` number,
+defaulting to 100 when absent) instance instead of the first one found:
+
+```python
+matches = [p for p in providers if _matches(p, name)]
+if not matches:
+    return None
+
+
+def _priority(p):
+    return p.get("config", {}).get("priority", 100)
+
+
+return min(matches, key=_priority)
+```
+
+A CI tripwire (`scripts/ci_checks/resolver_priority_tripwire.py`) detects
+new instances of this pattern via AST analysis -- see its module docstring
+for the exact detection rules, and `.pre-commit-hooks.yaml` for the
+`resolver-priority-tripwire` hook id.
+
 ## Session Patterns
 
 ### Basic Session

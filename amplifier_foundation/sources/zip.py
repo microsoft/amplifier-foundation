@@ -12,6 +12,8 @@ from urllib.request import urlopen
 from amplifier_foundation.exceptions import BundleNotFoundError
 from amplifier_foundation.paths.resolution import ParsedURI
 from amplifier_foundation.paths.resolution import ResolvedSource
+from amplifier_foundation.paths.resolution import describe_cross_platform_path_mismatch
+from amplifier_foundation.paths.resolution import strip_uri_drive_prefix
 
 
 class ZipSourceHandler:
@@ -42,8 +44,28 @@ class ZipSourceHandler:
         inner_scheme = parsed.scheme.replace("zip+", "")
 
         if inner_scheme == "file":
+            # Same cross-OS hazard FileSourceHandler.resolve() guards against
+            # (GAP-007): Path() silently accepts a foreign-OS absolute path and
+            # coerces it into a nonsense local one, so a POSIX-authored
+            # `zip+file:///home/x/a.zip` resolved on Windows becomes
+            # `C:\home\x\a.zip` and fails below with a bare "Zip file not
+            # found" -- sending the user hunting for a file that was never
+            # expected to exist on this machine. Fail loud with the real reason
+            # instead. Checked before Path() so the message names the path the
+            # user actually wrote.
+            mismatch = describe_cross_platform_path_mismatch(parsed.path)
+            if mismatch:
+                raise BundleNotFoundError(mismatch)
+
+            # A `zip+file:///C:/a.zip` URI parses to the path "/C:/a.zip":
+            # the leading slash is the URI's authority separator, not a
+            # filesystem root. Left in place, Path() reads it as rooted-but-
+            # driveless and resolves it against whatever the *current* drive
+            # happens to be rather than the drive the user named.
+            local_zip_path = strip_uri_drive_prefix(parsed.path)
+
             # Local zip file
-            zip_path = Path(parsed.path)
+            zip_path = Path(local_zip_path)
             source_uri = str(zip_path)
         else:
             # Remote zip (https, http)

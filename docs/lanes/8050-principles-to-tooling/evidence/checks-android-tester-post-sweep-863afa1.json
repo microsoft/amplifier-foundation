@@ -1,0 +1,35 @@
+{
+  "label": "android-tester-post-sweep-863afa1",
+  "repo_path": "/tmp/at-post",
+  "agents": {
+    "checked": 3,
+    "errors": 0,
+    "warnings": 0,
+    "error_types": [],
+    "warning_types": []
+  },
+  "skills": {
+    "checked": 1,
+    "errors": 0,
+    "warnings": 0,
+    "error_types": [],
+    "warning_types": []
+  },
+  "awareness": {
+    "files": 1,
+    "best_coverage_max": 0.043,
+    "warnings": 0,
+    "warning_types": []
+  },
+  "head_cost": {
+    "bundles": 2,
+    "warnings": 0,
+    "largest_head_chars": 3791,
+    "threshold_chars": 4000
+  },
+  "validate_agents_structural": {
+    "agents": 3,
+    "errors": 0,
+    "warnings": 3
+  }
+}

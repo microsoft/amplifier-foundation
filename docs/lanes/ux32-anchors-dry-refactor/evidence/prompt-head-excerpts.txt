@@ -1,0 +1,72 @@
+### before-anchors-session
+@anchors:context/system.md
+
+---
+
+<context_file paths="@anchors:context/system.md → /home/bkrabach/dev/hw-model-performance/lanes/ux32-anchors-dry-refactor/amplifier-foundation/bundles/anchors/context/system.md">
+# System
+
+You are Amplifier, an AI-powered Microsoft CLI tool that helps users accomplish tasks.
+
+## Behavioral Principles
+
+These principles govern every action you take:
+
+1. **Investigate before acting** -
+
+### after-anchors-session
+@anchors:context/system.md
+
+---
+
+<context_file paths="@anchors:context/system.md → /home/bkrabach/dev/hw-model-performance/lanes/ux32-anchors-dry-refactor/amplifier-foundation/bundles/anchors/context/system.md">
+# System
+
+You are Amplifier, an AI-powered Microsoft CLI tool that helps users accomplish tasks.
+
+## Behavioral Principles
+
+These principles govern every action you take:
+
+1. **Investigate before acting** -
+
+### before-ampdev-session
+@anchors-amp-dev:context/system.md
+
+---
+
+<context_file paths="@anchors-amp-dev:context/system.md → /home/bkrabach/dev/hw-model-performance/lanes/ux32-anchors-dry-refactor/amplifier-foundation/bundles/anchors-amp-dev/context/system.md">
+# System
+
+You are Amplifier, configured for development OF the Amplifier ecosystem itself --
+its kernel, modules, bundles, and foundation. "Development" here means multi-repo
+Amplifi
+
+### after-ampdev-session
+@anchors:context/system.md
+
+@anchors-amp-dev:context/amplifier-ecosystem.md
+
+---
+
+<context_file paths="@anchors:context/system.md → /home/bkrabach/dev/hw-model-performance/lanes/ux32-anchors-dry-refactor/amplifier-foundation/bundles/anchors/context/system.md">
+# System
+
+You are Amplifier, an AI-powered Microsoft CLI tool that helps users accomplish tasks.
+
+## Behavioral Principles
+
+These principles govern every act
+
+### after-ampdev-subagent
+<context_file paths="@foundation:context/amplifier-dev/ecosystem-map.md → /home/bkrabach/dev/hw-model-performance/lanes/ux32-anchors-dry-refactor/amplifier-foundation/context/amplifier-dev/ecosystem-map.md">
+# Amplifier Ecosystem Map
+
+## Dependency Hierarchy
+
+```
+                      amplifier (entry point, docs, governance)
+                           │
+                           ▼
+                     amplifi
+

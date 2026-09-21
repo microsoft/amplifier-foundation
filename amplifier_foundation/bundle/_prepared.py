@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
 from decimal import Decimal
@@ -220,13 +221,14 @@ class BundleModuleResolver:
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         _hint = profile_hint if profile_hint is not None else source_hint  # noqa: F841
-        if module_id not in self._paths:
+        path = self._paths.get(module_id)
+        if path is None or not path.exists():
             raise CoreModuleNotFoundError(
-                f"Module '{module_id}' not found in prepared bundle. "
+                f"Module '{module_id}' has no available path in prepared bundle. "
                 f"Available modules: {list(self._paths.keys())}. "
                 f"Use async_resolve() for lazy activation support."
             )
-        return BundleModuleSource(self._paths[module_id])
+        return BundleModuleSource(path)
 
     async def async_resolve(
         self, module_id: str, source_hint: Any = None, profile_hint: Any = None
@@ -247,9 +249,12 @@ class BundleModuleResolver:
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         hint = profile_hint if profile_hint is not None else source_hint
-        # Fast path: already activated
-        if module_id in self._paths:
-            return BundleModuleSource(self._paths[module_id])
+        # Prepared bundles can outlive a cache checkout (for example when a
+        # child is spawned after cache eviction). Reuse only a present path;
+        # let the activator recover a missing checkout from the declared source.
+        path = self._paths.get(module_id)
+        if path is not None and path.exists():
+            return BundleModuleSource(path)
 
         # Lazy activation path
         if not self._activator:
@@ -267,8 +272,9 @@ class BundleModuleResolver:
         # Thread-safe activation
         async with self._activation_lock:
             # Double-check after acquiring lock (another task may have activated)
-            if module_id in self._paths:
-                return BundleModuleSource(self._paths[module_id])
+            path = self._paths.get(module_id)
+            if path is not None and path.exists():
+                return BundleModuleSource(path)
 
             logger.info(f"Lazy activating module '{module_id}' from '{hint}'")
             try:
@@ -412,10 +418,33 @@ class PreparedBundle:
             deduplicator = ContentDeduplicator()
 
             # Build mention_to_path map for context block attribution
-            # This includes BOTH bundle context files AND @mentions from instruction
+            # This includes BOTH @mentions from instruction AND bundle context files
             mention_to_path: dict[str, Path] = {}
 
-            # 1. Bundle context files (from context: section)
+            # ORDER IS LOAD-BEARING. Both the deduplicator and mention_to_path are
+            # insertion-ordered dicts, and format_context_block emits in that order
+            # (get_unique_files iterates _content_by_hash). The instruction's own
+            # @mentions are the bundle author's primary voice, so they are resolved
+            # FIRST and therefore lead the context block; composed bundles' context:
+            # includes (peripheral awareness files) follow. Resolving them the other
+            # way round buried a root bundle's system.md behind every composed
+            # bundle's includes -- 73% into a 99 KB prompt in the reported case.
+
+            # 1. Resolve @mentions from main instruction (re-loads files each call)
+            mention_results = await load_mentions(
+                main_instruction,
+                resolver=resolver,
+                deduplicator=deduplicator,
+            )
+
+            # Add @mention results to mention_to_path for attribution.
+            # Done before the context: includes below so that a file referenced both
+            # ways leads its paths= label with the author's explicit @mention.
+            for mr in mention_results:
+                if mr.resolved_path:
+                    mention_to_path[mr.mention] = mr.resolved_path
+
+            # 2. Bundle context files (from context: section)
             # Add to deduplicator and mention_to_path for unified formatting
             for context_name, context_path in captured_bundle.context.items():
                 if context_path.exists():
@@ -425,19 +454,7 @@ class PreparedBundle:
                     # Add to mention_to_path for attribution (context_name → path)
                     mention_to_path[context_name] = context_path
 
-            # 2. Resolve @mentions from main instruction (re-loads files each call)
-            mention_results = await load_mentions(
-                main_instruction,
-                resolver=resolver,
-                deduplicator=deduplicator,
-            )
-
-            # Add @mention results to mention_to_path for attribution
-            for mr in mention_results:
-                if mr.resolved_path:
-                    mention_to_path[mr.mention] = mr.resolved_path
-
-            # 3. Format ALL context as XML blocks (bundle context + @mentions)
+            # 3. Format ALL context as XML blocks (@mentions + bundle context)
             # format_context_block uses deduplicator for unique content and
             # mention_to_path for attribution (showing name → resolved path)
             all_context = format_context_block(deduplicator, mention_to_path)
@@ -496,6 +513,31 @@ class PreparedBundle:
 
         return factory
 
+    def create_system_prompt_factory(
+        self,
+        session: Any,
+        *,
+        session_cwd: Path | None = None,
+    ) -> "Callable[[], Awaitable[str]]":
+        """Create this prepared bundle's system-prompt factory for ``session``.
+
+        The returned factory is deliberately bound to the target session.  In
+        particular, mention-resolution events are emitted through that
+        session's coordinator, not through a session that happened to create
+        the factory.
+
+        Args:
+            session: Target session that owns factory event emission.
+            session_cwd: Working directory for local @-mentions.  Defaults to
+                the prepared bundle's base path.
+
+        Returns:
+            Async callable that returns this bundle's system prompt.
+        """
+        return self._create_system_prompt_factory(
+            self.bundle, session, session_cwd=session_cwd
+        )
+
     async def create_session(
         self,
         session_id: str | None = None,
@@ -544,12 +586,15 @@ class PreparedBundle:
             inject_additional_events,
         )
 
-        inject_additional_events(self.mount_plan, FOUNDATION_OBSERVABILITY_EVENTS)
+        # A prepared bundle can create sessions with different runtime defaults.
+        # Event injection and module mounts must only mutate this session's plan.
+        mount_plan = deepcopy(self.mount_plan)
+        inject_additional_events(mount_plan, FOUNDATION_OBSERVABILITY_EVENTS)
 
         from amplifier_core import AmplifierSession
 
         session = AmplifierSession(
-            self.mount_plan,
+            mount_plan,
             session_id=session_id,
             parent_id=parent_id,
             approval_system=approval_system,
@@ -575,6 +620,41 @@ class PreparedBundle:
         effective_working_dir = session_cwd or self.bundle.base_path or Path.cwd()
         session.coordinator.register_capability(
             "session.working_dir", str(effective_working_dir.resolve())
+        )
+
+        # Register the mention resolver (and deduplicator) capabilities BEFORE
+        # initialize() so modules mounted during session.initialize() can resolve
+        # @namespace:... sources eagerly at mount time via
+        # get_capability("mention_resolver") instead of getting None.
+        #
+        # ROOT FIX (late skill-source resolution): previously this registration
+        # happened AFTER session.initialize() (guarded by "does the bundle have
+        # instruction/context content"), so any module mounted during initialize()
+        # -- e.g. tool-skills resolving an @namespace:skills source -- saw no
+        # resolver and had to defer resolution to the first provider:request.
+        # Anything that snapshots module state between mount and first prompt
+        # (e.g. a CLI slash-command registry) would then see an incomplete catalog.
+        #
+        # Registration is unconditional (cheap to construct) because bundle
+        # namespace resolution (_build_bundles_for_resolver) depends only on
+        # self.bundle.source_base_paths / self.bundle.name -- both already fully
+        # populated by bundle load/compose time, well before create_session() runs
+        # -- and does NOT depend on whether the bundle has inline instruction or
+        # context content.
+        from amplifier_foundation.mentions import BaseMentionResolver
+        from amplifier_foundation.mentions import ContentDeduplicator
+
+        bundles_for_resolver = self._build_bundles_for_resolver(self.bundle)
+        # Use session_cwd for local @-mentions, fall back to bundle.base_path
+        resolver_base = session_cwd or self.bundle.base_path or Path.cwd()
+        initial_resolver = BaseMentionResolver(
+            bundles=bundles_for_resolver,
+            base_path=resolver_base,
+        )
+        initial_deduplicator = ContentDeduplicator()
+        session.coordinator.register_capability("mention_resolver", initial_resolver)
+        session.coordinator.register_capability(
+            "mention_deduplicator", initial_deduplicator
         )
 
         # Initialize the session (loads all modules)
@@ -630,27 +710,15 @@ class PreparedBundle:
                 lambda: [_MENTIONS_RESOLVED_EVENT],
             )
 
-            from amplifier_foundation.mentions import BaseMentionResolver
-            from amplifier_foundation.mentions import ContentDeduplicator
-
-            # Register resolver and deduplicator as capabilities for tools to use
-            # (e.g., filesystem tool's read_file can resolve @mention paths)
-            # Note: These are created once for capability registration, but the factory
-            # creates fresh instances each call for accurate file re-reading
-            bundles_for_resolver = self._build_bundles_for_resolver(self.bundle)
-            # Use session_cwd for local @-mentions, fall back to bundle.base_path
-            resolver_base = session_cwd or self.bundle.base_path or Path.cwd()
-            initial_resolver = BaseMentionResolver(
-                bundles=bundles_for_resolver,
-                base_path=resolver_base,
-            )
-            initial_deduplicator = ContentDeduplicator()
-            session.coordinator.register_capability(
-                "mention_resolver", initial_resolver
-            )
-            session.coordinator.register_capability(
-                "mention_deduplicator", initial_deduplicator
-            )
+            # NOTE: The "mention_resolver" / "mention_deduplicator" capabilities
+            # are already registered above, BEFORE session.initialize() (see the
+            # eager-resolver block earlier in this method). They are reused here
+            # rather than rebuilt -- a single source of truth for the capability,
+            # no duplicate BaseMentionResolver/ContentDeduplicator construction,
+            # and no extra register_capability() replace() churn. The system
+            # prompt factory below builds its own fresh resolver/deduplicator
+            # instances per-call regardless (files may change mid-session), so
+            # nothing here depends on the registered instances directly.
 
             # Create and register the system prompt factory
             factory = self._create_system_prompt_factory(
@@ -777,6 +845,17 @@ class PreparedBundle:
         # This is done before session creation so the mount plan has the right provider
         # We need to initialize a temporary session to resolve model patterns
         if provider_preferences:
+            # Preserve the complete caller-selected chain on the child config.
+            # A resumed child can then reapply its own routing intent before its
+            # parent coordinator (and therefore its live catalog) is mounted.
+            # Copy every level we expose: Bundle/agent definitions remain immutable.
+            child_mount_plan["provider_preferences"] = [
+                {
+                    **preference.to_dict(),
+                    "config": dict(preference.config),
+                }
+                for preference in provider_preferences
+            ]
             child_mount_plan = await apply_provider_preferences_with_resolution(
                 child_mount_plan,
                 provider_preferences,
@@ -834,6 +913,35 @@ class PreparedBundle:
             effective_child_cwd = self.bundle.base_path or Path.cwd()
         child_session.coordinator.register_capability(
             "session.working_dir", str(effective_child_cwd.resolve())
+        )
+
+        # Register the mention resolver (and deduplicator) capabilities BEFORE
+        # initialize() -- same root fix as create_session(): modules mounted
+        # during child_session.initialize() (e.g. tool-skills resolving an
+        # @namespace:skills source) need a real resolver at mount time, not None.
+        #
+        # Evidence this was previously missing entirely (worse than merely late):
+        # unlike create_session(), spawn() never registered "mention_resolver" /
+        # "mention_deduplicator" on the child coordinator at any point -- before
+        # or after initialize(). Child sessions do not inherit capabilities from
+        # the parent coordinator automatically (only session.working_dir is
+        # explicitly copied above), so this was a real gap for spawned children,
+        # not just a timing issue.
+        from amplifier_foundation.mentions import BaseMentionResolver
+        from amplifier_foundation.mentions import ContentDeduplicator
+
+        child_bundles_for_resolver = self._build_bundles_for_resolver(
+            effective_bundle
+        )
+        child_session.coordinator.register_capability(
+            "mention_resolver",
+            BaseMentionResolver(
+                bundles=child_bundles_for_resolver,
+                base_path=effective_child_cwd,
+            ),
+        )
+        child_session.coordinator.register_capability(
+            "mention_deduplicator", ContentDeduplicator()
         )
 
         await child_session.initialize()

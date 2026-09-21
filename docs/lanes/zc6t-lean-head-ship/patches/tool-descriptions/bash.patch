@@ -1,0 +1,49 @@
+--- a/bash.description
++++ b/bash.description
+@@ -1,39 +1,11 @@
++Low-level shell execution, a fallback primitive: prefer a specialized capability when one exists (better error handling, structured output, safety guardrails); bash returns raw text with no retry logic.
+ 
+-Low-level shell command execution. This is a fallback primitive - before using bash directly,
+-consider whether specialized capabilities exist for your task. Specialized options typically offer
+-better error handling, structured output, domain expertise, and safety guardrails.
++Use for: builds and tests (pytest, npm test, cargo build, make), package management (pip, npm, cargo, brew), version control (git status, git diff, git commit), containers (docker, podman, kubectl), GitHub CLI (gh pr create, gh issue list), and system utilities when no specialized option exists.
+ 
+-WHEN TO USE BASH:
+-- Build and test commands (pytest, npm test, cargo build, make)
+-- Package management (pip, npm, cargo, brew)
+-- Version control operations (git status, git diff, git commit)
+-- Container operations (docker, podman, kubectl)
+-- GitHub CLI (gh pr create, gh issue list)
+-- System utilities when no specialized option exists
++Output: long output is truncated to prevent context overflow - you get first lines, "[...truncated...]", last lines, and byte counts. WARNING: truncation may break parsing of JSON, XML or similar structured data; for large structured output, redirect to a file (command > output.json) and read portions of that file instead.
+ 
+-INTRINSIC LIMITATIONS (why specialized options are often better):
+-- Raw text output requiring manual parsing
+-- No domain-specific context or best practices built in
+-- No built-in retry logic or intelligent error recovery
+-- No semantic understanding of your intent
+-
+-OUTPUT LIMITS:
+-- Long outputs are automatically truncated to prevent context overflow
+-- When truncated, you'll see: first lines, "[...truncated...]", last lines, and byte counts
+-- WARNING: If output contains JSON, XML, or similar structured data, truncation may break parsing
+-- WORKAROUND: For large structured output, redirect to a file (command > output.json) and use
+-  file reading capabilities to inspect portions of the file as needed
+-
+-COMMAND GUIDELINES:
+-- Quote paths containing spaces: cd "/path/with spaces"
+-- Prefer absolute paths to maintain working directory context
+-- Chain dependent commands with && (mkdir foo && cd foo)
+-- Commands time out after 30 seconds by default. Pass `timeout` to increase for long-running
+-  commands (builds, tests, monitoring). Use `run_in_background` for truly indefinite processes.
+-- Use `run_in_background` for long-running processes (dev servers, watchers)
+-- Interactive commands (-i flags, editors requiring input) are not supported
+-
+-SAFETY:
+-- Destructive commands (rm -rf /, sudo rm, etc.) are blocked
+-- Commands requiring interactive input will fail
+-                   +Constraints:
++- Commands time out after 30 seconds by default; pass `timeout` to increase it for builds, tests, or monitoring, and `run_in_background` for indefinite processes (dev servers, watchers).
++- Interactive commands (-i flags, editors requiring input) are not supported and will fail.
++- Destructive commands (rm -rf /, sudo rm, etc.) are blocked.
++- Quote paths containing spaces (cd "/path/with spaces"), prefer absolute paths, chain dependent commands with && (mkdir foo && cd foo).

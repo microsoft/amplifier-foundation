@@ -25,9 +25,10 @@ Module layers:
   operating on ``list[dict]`` with zero I/O.  All inputs and outputs are plain
   Python data structures.
 
-- **Level 2 — JSONL Store** (``store``): Knows file formats and session file
+- **Level 2 — JSONL Store** (``store``, ``history``): Knows file formats and session file
   naming conventions; performs file I/O but has no knowledge of where sessions
-  live on disk.
+  live on disk. ``SessionHistoryStore`` adds strict CLI-compatible recovery and
+  optional, in-memory Context Intelligence activity enrichment.
 
 - **Level 3 — Session Operations** (``fork``, ``events``): Combines Levels 1
   and 2 to provide end-to-end session fork, slice, and event operations.
@@ -138,7 +139,38 @@ from .capabilities import (
     set_working_dir,
 )
 
+# Native history with optional Context Intelligence activity enrichment
+from .history import (
+    CI_EVENTS_PATH,
+    EventAssociation,
+    HistoryDiagnostic,
+    SessionHistory,
+    SessionHistoryError,
+    SessionHistoryStore,
+    associate_events,
+)
+
+# Portable shared root-session locks and legacy checkpoints (POSIX/local filesystem)
+from .shared_state import (
+    FileStamp,
+    HeldSession,
+    SessionBusyError,
+    SharedSessionStore,
+    file_stamp,
+)
+from .handoff import (
+    CannotRelease,
+    ReadyToRelease,
+    ReleaseRegistration,
+    ReleaseRequest,
+    ReleaseResult,
+    register_release_handler,
+    request_release,
+)
+
 __all__ = [
+    "CannotRelease", "ReadyToRelease", "ReleaseRegistration", "ReleaseRequest",
+    "ReleaseResult", "register_release_handler", "request_release",
     # Core fork operations
     "ForkResult",
     "fork_session",
@@ -187,4 +219,18 @@ __all__ = [
     "WORKING_DIR_CAPABILITY",
     "get_working_dir",
     "set_working_dir",
+    # Native shared session history
+    "CI_EVENTS_PATH",
+    "EventAssociation",
+    "HistoryDiagnostic",
+    "SessionHistory",
+    "SessionHistoryError",
+    "SessionHistoryStore",
+    "associate_events",
+    # Portable shared-state locks and legacy checkpoints
+    "FileStamp",
+    "file_stamp",
+    "SessionBusyError",
+    "SharedSessionStore",
+    "HeldSession",
 ]

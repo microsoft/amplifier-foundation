@@ -71,6 +71,14 @@ async def test_spawn_calls_bridge_child_cost_with_parent():
     bundle.base_path = None
     bundle.instruction = None
     bundle.context = None
+    # Root fix (eager mention_resolver registration): spawn() now calls
+    # _build_bundles_for_resolver(effective_bundle) unconditionally, before
+    # child_session.initialize(). That helper reads bundle.source_base_paths
+    # (dict) and bundle.name (str) -- give this minimal bundle mock real
+    # values for both so it behaves like a real Bundle instead of tripping
+    # dataclasses.replace() on a MagicMock.
+    bundle.source_base_paths = {}
+    bundle.name = "test-bundle"
 
     from amplifier_foundation.bundle._prepared import PreparedBundle
 
@@ -135,6 +143,14 @@ async def test_spawn_does_not_call_bridge_without_parent():
     bundle.base_path = None
     bundle.instruction = None
     bundle.context = None
+    # Root fix (eager mention_resolver registration): spawn() now calls
+    # _build_bundles_for_resolver(effective_bundle) unconditionally, before
+    # child_session.initialize(). That helper reads bundle.source_base_paths
+    # (dict) and bundle.name (str) -- give this minimal bundle mock real
+    # values for both so it behaves like a real Bundle instead of tripping
+    # dataclasses.replace() on a MagicMock.
+    bundle.source_base_paths = {}
+    bundle.name = "test-bundle"
 
     from amplifier_foundation.bundle._prepared import PreparedBundle
 

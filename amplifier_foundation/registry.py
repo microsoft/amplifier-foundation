@@ -91,6 +91,7 @@ class BundleState:
         False  # True if user explicitly requested (bundle use/add)
     )
     app_bundle: bool = False  # True if this is an app bundle (always composed)
+    display_name: str | None = None  # Optional display label, never an identity
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -106,6 +107,8 @@ class BundleState:
             "app_bundle": self.app_bundle,
         }
         # Only include optional fields if they have data
+        if self.display_name:
+            result["display_name"] = self.display_name
         if self.includes:
             result["includes"] = self.includes
         if self.included_by:
@@ -121,6 +124,7 @@ class BundleState:
             uri=data["uri"],
             name=name,
             version=data.get("version"),
+            display_name=data.get("display_name"),
             loaded_at=datetime.fromisoformat(data["loaded_at"])
             if data.get("loaded_at")
             else None,
@@ -151,6 +155,15 @@ class UpdateInfo:
     current_version: str | None
     available_version: str
     uri: str
+
+
+@dataclass(frozen=True)
+class _NamespaceSource:
+    """A namespace owned by the source currently being loaded, not the registry."""
+
+    uri: str
+    base_path: Path
+    source_root: Path
 
 
 class BundleRegistry:
@@ -242,6 +255,11 @@ class BundleRegistry:
             existing = self._registry.get(name)
             if existing:
                 # Preserve existing state, update URI
+                if existing.uri != uri:
+                    existing.display_name = None
+                    existing.local_path = None
+                    existing.loaded_at = None
+                    existing.version = None
                 existing.uri = uri
             else:
                 self._registry[name] = BundleState(uri=uri, name=name)
@@ -484,6 +502,7 @@ class BundleRegistry:
                             uri=root_uri,
                             name=root_bundle.name,
                             version=root_bundle.version,
+                            display_name=root_bundle.display_name,
                             loaded_at=datetime.now(),
                             local_path=str(
                                 root_bundle_path.parent
@@ -532,6 +551,20 @@ class BundleRegistry:
                 is_root_bundle = False
                 root_bundle_name = root_bundle.name
 
+            # Self and containing-root includes belong to this source even when
+            # another registered bundle declares the same namespace. Keep these
+            # bindings local: includes and independent roots load concurrently.
+            namespace_sources: dict[str, _NamespaceSource] = {}
+            for owner in (root_bundle, bundle):
+                if owner is not None and owner.name and owner.base_path:
+                    namespace_sources[owner.name] = _NamespaceSource(
+                        uri=uri,
+                        base_path=(
+                            owner.base_path / (owner.namespace_root or ".")
+                        ).resolve(),
+                        source_root=(resolved.source_root or bundle_dir).resolve(),
+                    )
+
             # Register bundle for namespace resolution before processing includes.
             # This is needed even when auto_register=False because the bundle's
             # own includes may reference its namespace (self-referencing includes
@@ -541,6 +574,7 @@ class BundleRegistry:
                     uri=uri,
                     name=bundle.name,
                     version=bundle.version,
+                    display_name=bundle.display_name,
                     loaded_at=datetime.now(),
                     local_path=str(local_path),
                     is_root=is_root_bundle,
@@ -560,14 +594,13 @@ class BundleRegistry:
             )
             if update_name:
                 state = self._registry[update_name]
-                # Don't let a subdirectory bundle overwrite its own root's entry.
-                # The root URI is authoritative for update tracking (it represents
-                # the git repo boundary). The behavior's tools/hooks/context still
-                # load through the include chain, independent of the registry.
-                if state.is_root and "#subdirectory=" in uri:
+                # A URI load must not retarget a registered root just because
+                # its manifest has the same name. Explicit named loads retain
+                # their registration; nested-entry refresh semantics are unchanged.
+                if state.is_root and state.uri != uri and registered_name is None:
                     logger.debug(
                         f"Skipping registry update for '{update_name}': "
-                        f"root entry preserved over subdirectory load"
+                        f"root entry preserved over another source load"
                     )
                 else:
                     if state.uri != uri:
@@ -576,6 +609,7 @@ class BundleRegistry:
                         )
                         state.uri = uri
                     state.version = bundle.version
+                    state.display_name = bundle.display_name
                     state.loaded_at = datetime.now()
                     state.local_path = str(local_path)
                     # Sticky update: never downgrade explicitly_requested from True→False.
@@ -590,7 +624,14 @@ class BundleRegistry:
             # Load includes and compose (pass the chain for per-chain cycle detection)
             if auto_include and bundle.includes:
                 bundle = await self._compose_includes(
-                    bundle, parent_name=bundle.name, _loading_chain=new_chain
+                    bundle,
+                    parent_name=(
+                        update_name
+                        if update_name and self._registry[update_name].uri == uri
+                        else None
+                    ),
+                    _loading_chain=new_chain,
+                    namespace_sources=namespace_sources,
                 )
                 # Tag the composed bundle as a container for its sub-bundle items.
                 # This builds the provenance chain:
@@ -622,10 +663,17 @@ class BundleRegistry:
             future.set_result(bundle)
             return bundle
 
-        except Exception:
-            # Cancel the future to avoid "Future exception was never retrieved" warning
-            # Any concurrent waiters will get CancelledError and can retry
-            future.cancel()
+        except Exception as exc:
+            # Propagate the REAL error to concurrent waiters (step 3 above awaits
+            # this future for the diamond-dependency case). Cancelling instead
+            # would hand every waiter a bare CancelledError, hiding the actual
+            # cause and turning one root failure into several misleading ones.
+            if not future.done():
+                future.set_exception(exc)
+                # The exception may have no waiter (the only consumer can be the
+                # owner, which re-raises below). Retrieve it via callback so
+                # asyncio does not emit "Future exception was never retrieved".
+                future.add_done_callback(lambda f: f.exception())
             raise
         finally:
             # Clean up pending load tracker
@@ -684,6 +732,7 @@ class BundleRegistry:
         bundle: Bundle,
         parent_name: str | None = None,
         _loading_chain: frozenset[str] | None = None,
+        namespace_sources: dict[str, _NamespaceSource] | None = None,
     ) -> Bundle:
         """Load and compose included bundles with parallelization.
 
@@ -691,22 +740,55 @@ class BundleRegistry:
             bundle: The bundle to compose includes for.
             parent_name: Name of the parent bundle (for tracking relationships).
             _loading_chain: Internal parameter for per-chain cycle detection.
+            namespace_sources: Source-local self and containing-root namespaces.
         """
         if not bundle.includes:
             return bundle
 
-        # Pre-load any namespace bundles referenced in includes (sequential - has ordering deps)
-        # This ensures local_path is populated before we try to resolve namespace:path syntax
-        await self._preload_namespace_bundles(bundle.includes, _loading_chain)
+        sources = [
+            source
+            for include in bundle.includes
+            if (source := self._parse_include(include))
+        ]
+        # Explicit application overrides win before any namespace preloading.
+        # Resolve each callback once; a stale global registration must not be
+        # fetched when the caller has supplied a replacement source.
+        overrides: dict[str, str | BundleNotFoundError] = {}
+        if self._include_source_resolver:
+            for source in sources:
+                try:
+                    override = self._include_source_resolver(source)
+                except BundleNotFoundError as error:
+                    # Preserve the strict/non-strict handling below without
+                    # preloading the source the callback could not resolve.
+                    overrides[source] = error
+                    continue
+                if override is not None:
+                    overrides[source] = override
+        await self._preload_namespace_bundles(
+            [source for source in sources if source not in overrides],
+            _loading_chain,
+            namespace_sources=namespace_sources,
+        )
 
         # Phase 1: Parse and resolve all include sources first
         include_sources: list[str] = []
-        for include in bundle.includes:
-            include_source = self._parse_include(include)
+        for include_source in sources:
             if include_source:
                 try:
                     # Resolve namespace:path syntax before loading
-                    resolved_source = self._resolve_include_source(include_source)
+                    override = overrides.get(include_source)
+                    if isinstance(override, BundleNotFoundError):
+                        raise override
+                    resolved_source = (
+                        override
+                        if override is not None
+                        else self._resolve_include_source(
+                            include_source,
+                            namespace_sources=namespace_sources,
+                            apply_override=False,
+                        )
+                    )
                     if resolved_source is None:
                         # Distinguish: namespace exists but path not found (error) vs namespace not registered (optional)
                         if ":" in include_source and "://" not in include_source:
@@ -857,6 +939,7 @@ class BundleRegistry:
         self,
         includes: list,
         _loading_chain: frozenset[str] | None = None,
+        namespace_sources: dict[str, _NamespaceSource] | None = None,
     ) -> None:
         """Pre-load namespace bundles to ensure local_path is populated.
 
@@ -867,6 +950,7 @@ class BundleRegistry:
         Args:
             includes: List of include specifications from bundle config.
             _loading_chain: Internal parameter for per-chain cycle detection.
+            namespace_sources: Names already bound to the currently loaded source.
         """
         namespaces_to_load: set[str] = set()
 
@@ -878,6 +962,8 @@ class BundleRegistry:
             # Check for namespace:path syntax (but not URIs like git+https://)
             if ":" in include_source and "://" not in include_source:
                 namespace = include_source.split(":")[0]
+                if namespace_sources and namespace in namespace_sources:
+                    continue
                 state = self._registry.get(namespace)
 
                 # If namespace is registered but not loaded (no local_path), queue it
@@ -920,13 +1006,21 @@ class BundleRegistry:
                     f"Original error: {e}"
                 ) from e
 
-    def _resolve_include_source(self, source: str) -> str | None:
+    def _resolve_include_source(
+        self,
+        source: str,
+        *,
+        namespace_sources: dict[str, _NamespaceSource] | None = None,
+        apply_override: bool = True,
+    ) -> str | None:
         """Resolve include source to a loadable URI.
 
         Resolution priority:
+        0. Explicit include_source_resolver callback, when apply_override is True.
         1. URIs: git+, http://, https://, file:// → Return as-is
         2. namespace:path syntax (e.g., foundation:behaviors/streaming-ui)
-           → Look up namespace's original URI, construct git URI with #subdirectory=
+           → Prefer this load's source binding, otherwise the registered namespace
+           → Preserve the selected Git URI/ref with #subdirectory=
            → Falls back to file:// only for non-git sources
         3. Plain names → Return as-is (let _load_single handle registry lookup)
 
@@ -937,7 +1031,7 @@ class BundleRegistry:
             URI string, or None if namespace:path cannot be resolved.
         """
         # 0. Check include source resolver callback - allows caller to override any source
-        if self._include_source_resolver:
+        if apply_override and self._include_source_resolver:
             override = self._include_source_resolver(source)
             if override is not None:
                 logger.debug(f"Include source overridden: {source} -> {override}")
@@ -950,6 +1044,18 @@ class BundleRegistry:
         # 2. Check for namespace:path syntax
         if ":" in source:
             namespace, rel_path = source.split(":", 1)
+
+            bound = (namespace_sources or {}).get(namespace)
+            if bound is not None:
+                path = self._find_resource_path(bound.base_path / rel_path)
+                if path is None:
+                    return None
+                if bound.uri.startswith("git+"):
+                    # Keep the selected repository/ref and the path within its
+                    # checkout, including nested namespace_root declarations.
+                    relative = path.relative_to(bound.source_root).as_posix()
+                    return f"{bound.uri.split('#')[0]}#subdirectory={relative}"
+                return path.as_uri()
 
             # Look up the namespace in the registry
             state = self._registry.get(namespace)

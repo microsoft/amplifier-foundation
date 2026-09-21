@@ -1,0 +1,115 @@
+{
+  "phase": "behavior_hygiene",
+  "behaviors_checked": 12,
+  "errors": [],
+  "warnings": [
+    {
+      "behavior": "agents",
+      "type": "context_tokens_high",
+      "message": "context.include totals ~1000 tokens (>500 WARNING threshold)",
+      "severity": "WARNING",
+      "fix": "Justify universal relevance, or move to a context-sink mechanism (agent body, mode contribution, skill). The 500-token bar is for awareness pointers only."
+    },
+    {
+      "behavior": "tasks",
+      "type": "context_tokens_high",
+      "message": "context.include totals ~1000 tokens (>500 WARNING threshold)",
+      "severity": "WARNING",
+      "fix": "Justify universal relevance, or move to a context-sink mechanism (agent body, mode contribution, skill). The 500-token bar is for awareness pointers only."
+    }
+  ],
+  "info": [],
+  "behavior_details": [
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/redaction.yaml",
+      "name": "redaction",
+      "issues": [],
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/bundle-design.yaml",
+      "name": "bundle-design",
+      "issues": [],
+      "context_include_count": 1,
+      "context_total_tokens": 500,
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/foundation-expert.yaml",
+      "name": "foundation-expert",
+      "issues": [],
+      "context_include_count": 1,
+      "context_total_tokens": 500,
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/todo-reminder.yaml",
+      "name": "todo-reminder",
+      "issues": [],
+      "tool_count": 1
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/logging.yaml",
+      "name": "logging",
+      "issues": [],
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/progress-monitor.yaml",
+      "name": "progress-monitor",
+      "issues": [],
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/streaming-ui.yaml",
+      "name": "streaming-ui",
+      "issues": [],
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/amplifier-dev.yaml",
+      "name": "amplifier-dev",
+      "issues": [],
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/sessions.yaml",
+      "name": "sessions",
+      "issues": [],
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/status-context.yaml",
+      "name": "status-context",
+      "issues": [],
+      "tool_count": 0
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/agents.yaml",
+      "name": "agents",
+      "issues": [
+        "context_tokens_high"
+      ],
+      "context_include_count": 2,
+      "context_total_tokens": 1000,
+      "tool_count": 2
+    },
+    {
+      "path": "/home/bkrabach/dev/hw-model-performance/lanes/j05m-estimator-salvage/amplifier-foundation/behaviors/tasks.yaml",
+      "name": "tasks",
+      "issues": [
+        "context_tokens_high"
+      ],
+      "context_include_count": 2,
+      "context_total_tokens": 1000,
+      "tool_count": 1
+    }
+  ],
+  "passed": true,
+  "summary": {
+    "behaviors_checked": 12,
+    "errors": 0,
+    "warnings": 2,
+    "clean_behaviors": 12
+  }
+}

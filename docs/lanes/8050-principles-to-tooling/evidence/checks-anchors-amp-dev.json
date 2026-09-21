@@ -1,0 +1,35 @@
+{
+  "label": "anchors-amp-dev",
+  "repo_path": "/home/bkrabach/dev/hw-model-performance/lanes/8050-principles-to-tooling/amplifier-foundation/bundles/anchors-amp-dev",
+  "agents": {
+    "checked": 1,
+    "errors": 0,
+    "warnings": 0,
+    "error_types": [],
+    "warning_types": []
+  },
+  "skills": {
+    "checked": 0,
+    "errors": 0,
+    "warnings": 0,
+    "error_types": [],
+    "warning_types": []
+  },
+  "awareness": {
+    "files": 1,
+    "best_coverage_max": 0,
+    "warnings": 0,
+    "warning_types": []
+  },
+  "head_cost": {
+    "bundles": 1,
+    "warnings": 0,
+    "largest_head_chars": 1760,
+    "threshold_chars": 4000
+  },
+  "validate_agents_structural": {
+    "agents": 1,
+    "errors": 0,
+    "warnings": 0
+  }
+}

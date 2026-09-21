@@ -1,5 +1,6 @@
 bundle:
   name: amplifier-dev
+  display_name: Amplifier development
   version: 2.1.0
   description: |
     Bundle for developing ON the Amplifier ecosystem.

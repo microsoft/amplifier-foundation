@@ -1,0 +1,22 @@
+FF.F                                                                     [100%]
+=================================== FAILURES ===================================
+E   AssertionError: assert '# Gitea Environments' == 'You are Ampl...ystem itself.'
+      
+      - You are Amplifier, configured for development OF the ecosystem itself.
+      + # Gitea Environments
+/home/bkrabach/dev/hw-model-performance/lanes/mikb-instruction-mentions-lead/amplifier-foundation/tests/test_instruction_mentions_lead_context.py:140: AssertionError: assert '# Gitea Environments' == 'You are Ampl...ystem itself.'
+E   AssertionError: assert False
+     +  where False = <built-in method startswith of str object at 0xf12cabd33ab0>('@ns:context/system.md')
+     +    where <built-in method startswith of str object at 0xf12cabd33ab0> = 'ns:context/system.md → /tmp/pytest-of-bkrabach/pytest-5621/test_double_referenced_file_em0/context/system.md'.startswith
+     +      where 'ns:context/system.md → /tmp/pytest-of-bkrabach/pytest-5621/test_double_referenced_file_em0/context/system.md' = Block(paths='ns:context/system.md → /tmp/pytest-of-bkrabach/pytest-5621/test_double_referenced_file_em0/context/system... /tmp/pytest-of-bkrabach/pytest-5621/test_double_referenced_file_em0/context/system.md', body='SHARED PRINCIPLES BODY').first_attribution
+/home/bkrabach/dev/hw-model-performance/lanes/mikb-instruction-mentions-lead/amplifier-foundation/tests/test_instruction_mentions_lead_context.py:188: AssertionError: assert False
+E   AssertionError: assert 'aware:ctx.md' == '@ns:context/system.md'
+      
+      - @ns:context/system.md
+      + aware:ctx.md
+/home/bkrabach/dev/hw-model-performance/lanes/mikb-instruction-mentions-lead/amplifier-foundation/tests/test_instruction_mentions_lead_context.py:275: AssertionError: assert 'aware:ctx.md' == '@ns:context/system.md'
+=========================== short test summary info ============================
+FAILED tests/test_instruction_mentions_lead_context.py::test_instruction_mention_is_the_first_context_block
+FAILED tests/test_instruction_mentions_lead_context.py::test_double_referenced_file_emitted_once_mention_leads
+FAILED tests/test_instruction_mentions_lead_context.py::test_mentions_resolved_payload_semantics_unchanged
+3 failed, 1 passed in 0.04s

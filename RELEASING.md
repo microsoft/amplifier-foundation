@@ -4,7 +4,9 @@
 
 Releases are fully automated via OIDC trusted publishing — no API tokens or secrets are
 needed after one-time setup. The workflow (`.github/workflows/publish.yml`) fires when a
-`v<version>` git tag is pushed to `main` and publishes both the sdist and wheel to PyPI.
+`v<version>` git tag is pushed and publishes both the sdist and wheel to PyPI. The
+tag must identify a commit already merged into `main`, and its version must match
+`pyproject.toml`. Merging this workflow does not publish a package.
 
 ## Release steps (per release)
 
@@ -25,9 +27,14 @@ git push origin vX.Y.Z
 ```
 
 Pushing the tag triggers `.github/workflows/publish.yml`, which:
-1. Verifies the tag version matches `pyproject.toml`.
+1. Verifies this is a version tag matching `pyproject.toml` and its commit is in `main`.
 2. Runs `uv build` to produce the sdist and wheel (pure-Python, `py3-none-any`).
 3. Publishes both artifacts to PyPI via `pypa/gh-action-pypi-publish` using OIDC.
+
+For a manual retry, select the existing `v<version>` tag in **Run workflow**.
+Selecting a branch fails before building or publishing. PyPI does not allow
+overwriting an already published version; investigate any partial publication
+before retrying.
 
 ## One-time setup: PyPI trusted publisher
 
@@ -50,11 +57,13 @@ This only needs to be done once.
    just scopes the OIDC token exchange. Adding a required reviewer is optional but
    recommended for production releases.
 
-3. Push a test tag (e.g. `v0.0.1.dev0`) against the pending publisher to confirm the
-   handshake works end-to-end. Delete the test release on PyPI afterward if desired.
+3. Confirm both configurations before the first intended release, then follow the
+   release steps above. Do not use disposable production tags as a handshake test:
+   publishing to PyPI creates a real package version.
 
 > **Note:** The OIDC trusted-publisher handshake can only be proven by a real tag-triggered
-> run after PyPI-side configuration. No local test can verify this step.
+> run after PyPI-side configuration. No local test can verify this step. The presence
+> of this workflow alone does not establish that either service is configured.
 
 ## Pre-release versions
 
@@ -76,5 +85,5 @@ After the workflow completes:
 ```bash
 pip install --dry-run amplifier-foundation==X.Y.Z  # confirm on PyPI
 pip install amplifier-foundation==X.Y.Z
-python -c "import amplifier_foundation; print(amplifier_foundation.__version__)"
+python -c "from importlib.metadata import version; print(version('amplifier-foundation'))"
 ```

@@ -1,0 +1,39 @@
+{
+  "label": "foundation-main",
+  "repo_path": "/home/bkrabach/dev/hw-model-performance/lanes/8050-principles-to-tooling/amplifier-foundation",
+  "agents": {
+    "checked": 24,
+    "errors": 0,
+    "warnings": 5,
+    "error_types": [],
+    "warning_types": [
+      "agent_description_high"
+    ]
+  },
+  "skills": {
+    "checked": 3,
+    "errors": 0,
+    "warnings": 1,
+    "error_types": [],
+    "warning_types": [
+      "skill_description_high"
+    ]
+  },
+  "awareness": {
+    "files": 7,
+    "best_coverage_max": 0.111,
+    "warnings": 0,
+    "warning_types": []
+  },
+  "head_cost": {
+    "bundles": 19,
+    "warnings": 3,
+    "largest_head_chars": 26368,
+    "threshold_chars": 4000
+  },
+  "validate_agents_structural": {
+    "agents": 24,
+    "errors": 0,
+    "warnings": 6
+  }
+}

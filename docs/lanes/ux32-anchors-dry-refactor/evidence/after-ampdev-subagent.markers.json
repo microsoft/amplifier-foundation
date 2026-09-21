@@ -1,0 +1,14 @@
+{
+  "sub_session": "0000000000000000-2a662477180947ff_anchors-amp-dev-amplifier-dev-expert",
+  "len_chars": 44169,
+  "has_ecosystem_map_h1": true,
+  "has_dev_workflows_h1": true,
+  "has_testing_patterns_h1": true,
+  "mentions_common_agent_base": false,
+  "emoji_commit_footer_present": false,
+  "resolved_context_files": [
+    "@foundation:context/amplifier-dev/ecosystem-map.md \u2192 /home/bkrabach/dev/hw-model-performance/lanes/ux32-anchors-dry-refactor/amplifier-foundation/context/amplifier-dev/ecosystem-map.md",
+    "@foundation:context/amplifier-dev/dev-workflows.md \u2192 /home/bkrabach/dev/hw-model-performance/lanes/ux32-anchors-dry-refactor/amplifier-foundation/context/amplifier-dev/dev-workflows.md",
+    "@foundation:context/amplifier-dev/testing-patterns.md \u2192 /home/bkrabach/dev/hw-model-performance/lanes/ux32-anchors-dry-refactor/amplifier-foundation/context/amplifier-dev/testing-patterns.md"
+  ]
+}

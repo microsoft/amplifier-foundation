@@ -1,0 +1,105 @@
+Using CPython 3.13.11
+Creating virtual environment at: .venv
+   Building amplifier-foundation @ file:///home/bkrabach/dev/hw-model-performance/lanes/6phe-experiments-example-sweep/amplifier-foundation
+      Built amplifier-foundation @ file:///home/bkrabach/dev/hw-model-performance/lanes/6phe-experiments-example-sweep/amplifier-foundation
+Installed 107 packages in 77ms
+============================= test session starts ==============================
+platform linux -- Python 3.13.11, pytest-9.0.3, pluggy-1.6.0 -- /home/bkrabach/dev/hw-model-performance/lanes/6phe-experiments-example-sweep/amplifier-foundation/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/bkrabach/dev/hw-model-performance/lanes/6phe-experiments-example-sweep/amplifier-foundation
+configfile: pyproject.toml
+plugins: anyio-4.12.0, timeout-2.4.0, amplifier-core-1.3.0, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collecting ... collected 6 items
+
+tests/test_anchors_bundles_dry.py::TestAmpDevIsAThinVariant::test_declares_no_session_tools_or_hooks PASSED [ 16%]
+tests/test_anchors_bundles_dry.py::TestAmpDevIsAThinVariant::test_includes_anchors_by_full_url PASSED [ 33%]
+tests/test_anchors_bundles_dry.py::TestNoParallelCopies::test_no_same_path_file_in_both_bundles PASSED [ 50%]
+tests/test_anchors_bundles_dry.py::TestNoParallelCopies::test_exactly_one_copy_of_each_ecosystem_doc PASSED [ 66%]
+tests/test_anchors_bundles_dry.py::TestNoParallelCopies::test_exactly_one_copy_of_each_ecosystem_doc_repo_wide FAILED [ 83%]
+tests/test_anchors_bundles_dry.py::TestAgentDescriptionsCarryNoExampleBlocks::test_no_example_or_commentary_in_any_agent_description FAILED [100%]
+
+=================================== FAILURES ===================================
+__ TestNoParallelCopies.test_exactly_one_copy_of_each_ecosystem_doc_repo_wide __
+
+self = <tests.test_anchors_bundles_dry.TestNoParallelCopies object at 0xf4cede959480>
+
+    def test_exactly_one_copy_of_each_ecosystem_doc_repo_wide(self) -> None:
+        """Guard d': one copy repo-wide, `experiments/` included.
+    
+        The guard above excludes `experiments/` and merely *names* the copies
+        it finds there. That exclusion is precisely why a third copy of every
+        ecosystem doc survived the ux32 refactor: `experiments/behavioral-
+        anchor-amplifier-dev/context/amplifier-dev/` still carried the
+        pre-#341 text, including the deleted "Always delegate" line, and the
+        guard reported it as an excluded footnote rather than a failure.
+    
+        "Frozen" is not a safety property. A stale copy is still the second
+        answer a `grep` returns and the second file a reader may edit. Git
+        history preserves the original; the working tree does not need to.
+        """
+        for name in ECOSYSTEM_DOCS:
+            found = sorted(
+                p.relative_to(REPO_ROOT).as_posix()
+                for p in REPO_ROOT.rglob(name)
+                if ".git" not in p.relative_to(REPO_ROOT).parts
+            )
+>           assert len(found) == 1, (
+                f"Expected exactly one copy of {name} anywhere in the repo, "
+                f"found {len(found)}: {found}. The canonical location is "
+                "context/amplifier-dev/. A copy under experiments/ counts: "
+                "frozen text still drifts and still answers a grep."
+            )
+E           AssertionError: Expected exactly one copy of ecosystem-map.md anywhere in the repo, found 2: ['context/amplifier-dev/ecosystem-map.md', 'experiments/behavioral-anchor-amplifier-dev/context/amplifier-dev/ecosystem-map.md']. The canonical location is context/amplifier-dev/. A copy under experiments/ counts: frozen text still drifts and still answers a grep.
+E           assert 2 == 1
+E            +  where 2 = len(['context/amplifier-dev/ecosystem-map.md', 'experiments/behavioral-anchor-amplifier-dev/context/amplifier-dev/ecosystem-map.md'])
+
+tests/test_anchors_bundles_dry.py:218: AssertionError
+_ TestAgentDescriptionsCarryNoExampleBlocks.test_no_example_or_commentary_in_any_agent_description _
+
+self = <tests.test_anchors_bundles_dry.TestAgentDescriptionsCarryNoExampleBlocks object at 0xf4cedea425d0>
+
+    def test_no_example_or_commentary_in_any_agent_description(self) -> None:
+        """Extends #341's sweep, which covered the repo-root `agents/` only.
+    
+        `description-authoring-principles.md` V3 is 'no `<example>` blocks --
+        not "at most 2", zero'. #341 (1b16a7d) applied that to the 16 root
+        agents; ux32 (200dfe6) added `bundles/**/agents`; neither reached
+        `experiments/`, where 11 violators sat until
+        `validate-bundle-repo.yaml` -- which discovers 45 agents where
+        `validate-agents.yaml` discovers 23 -- raised `example_block_present`
+        on them.
+    
+        The scope is now the validator's own (see `_agent_files`), not a
+        hand-listed set of directories, so a new `*/agents/` tree anywhere in
+        the repo is covered the day it is created rather than the day someone
+        remembers to add it here.
+        """
+        offenders: list[str] = []
+        for agent_file in _agent_files():
+            description = (_frontmatter(agent_file).get("meta") or {}).get(
+                "description", ""
+            )
+            if not isinstance(description, str):
+                continue
+            tags = [
+                tag
+                for tag in ("<example>", "<commentary>")
+                if tag in description.lower()
+            ]
+            if tags:
+                rel = agent_file.relative_to(REPO_ROOT).as_posix()
+                offenders.append(f"{rel} ({', '.join(tags)})")
+>       assert not offenders, (
+            "Agent descriptions must contain no <example>/<commentary> blocks "
+            "(description-authoring-principles.md V3, #340). Offenders: "
+            + "; ".join(offenders)
+        )
+E       AssertionError: Agent descriptions must contain no <example>/<commentary> blocks (description-authoring-principles.md V3, #340). Offenders: experiments/behavioral-anchor-amplifier-dev/agents/amplifier-dev-expert.md (<example>); experiments/behavioral-anchor-amplifier-dev/agents/architect.md (<example>); experiments/behavioral-anchor-amplifier-dev/agents/builder.md (<example>); experiments/behavioral-anchor-amplifier-dev/agents/debugger.md (<example>); experiments/behavioral-anchor-amplifier-dev/agents/explorer.md (<example>); experiments/behavioral-anchor-amplifier-dev/agents/git-ops.md (<example>); experiments/behavioral-anchor-amplifier-dev/agents/researcher.md (<example>); experiments/build-up/agents/coder.md (<example>); experiments/build-up/agents/explorer.md (<example>); experiments/build-up/agents/planner.md (<example>); experiments/build-up/agents/tester.md (<example>)
+E       assert not ['experiments/behavioral-anchor-amplifier-dev/agents/amplifier-dev-expert.md (<example>)', 'experiments/behavioral-anchor-amplifier-dev/agents/architect.md (<example>)', 'experiments/behavioral-anchor-amplifier-dev/agents/builder.md (<example>)', 'experiments/behavioral-anchor-amplifier-dev/agents/debugger.md (<example>)', 'experiments/behavioral-anchor-amplifier-dev/agents/explorer.md (<example>)', 'experiments/behavioral-anchor-amplifier-dev/agents/git-ops.md (<example>)', ...]
+
+tests/test_anchors_bundles_dry.py:260: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_anchors_bundles_dry.py::TestNoParallelCopies::test_exactly_one_copy_of_each_ecosystem_doc_repo_wide
+FAILED tests/test_anchors_bundles_dry.py::TestAgentDescriptionsCarryNoExampleBlocks::test_no_example_or_commentary_in_any_agent_description
+========================= 2 failed, 4 passed in 0.16s ==========================

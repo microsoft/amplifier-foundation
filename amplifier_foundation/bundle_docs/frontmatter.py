@@ -24,10 +24,15 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, Any], str]:
     For ``.md`` files the ``---`` delimited frontmatter is parsed and
     everything after the closing ``---`` is returned as the body.
 
+    Read with ``utf-8-sig`` so a leading UTF-8 BOM is stripped. Editors on
+    Windows write UTF-8 *with* a BOM by default; decoding as plain ``utf-8``
+    leaves a U+FEFF at position 0, which defeats the ``startswith("---")``
+    check below and silently discards the frontmatter.
+
     Returns:
         ``(frontmatter_dict, body_str)``
     """
-    content = path.read_text(encoding="utf-8")
+    content = path.read_text(encoding="utf-8-sig")
 
     if path.suffix in (".yaml", ".yml"):
         data = yaml.safe_load(content) or {}

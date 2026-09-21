@@ -1,0 +1,5 @@
+PASS-AFTER -- whole guard module against validate-agents v1.6.0 (widened discovery)
+command: python -m pytest tests/test_anchors_bundles_dry.py -q
+
+........                                                                 [100%]
+8 passed in 0.13s

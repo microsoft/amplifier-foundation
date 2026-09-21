@@ -1,5 +1,6 @@
 bundle:
   name: behavior-agents
+  display_name: Agents
   version: 2.0.0
   description: |
     Agent orchestration capability with enhanced delegate tool.
@@ -31,6 +32,8 @@ tools:
       settings:
         exclude_tools: [tool-delegate]  # Spawned agents can't further delegate by default
         exclude_hooks: []
+        timeout: null  # Delegation deadlines and call caps are opt-in.
+        max_llm_calls: null
 
   # Register foundation's own skills directory for discovery
   - module: tool-skills

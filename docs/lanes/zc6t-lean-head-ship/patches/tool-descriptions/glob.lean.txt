@@ -1,0 +1,5 @@
+Fast file pattern matching at any codebase size: finds files by name pattern ("**/*.js", "src/**/*.ts"), returns matching paths sorted by modification time plus `total_files` to tell whether results were capped.
+
+Run several globs in parallel in one response when useful. For an open-ended search needing multiple rounds of globbing and grepping, delegate to an agent (e.g. foundation:explorer) instead.
+
+Limits: node_modules, .venv, .git, __pycache__ and build dirs are excluded unless `include_ignored: true`; results are limited to 500 files by default to prevent context overflow.

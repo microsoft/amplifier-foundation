@@ -1,0 +1,48 @@
+=== BEFORE anchors-amp-dev (installed foundation == origin/main e681764) ===
+session_dir: /home/bkrabach/.amplifier/projects/-tmp-mikb-realsession/sessions/b90ff95e-3182-4c23-97ab-b418d1c50291
+raw.system_chars=96898
+head_120=@anchors-amp-dev:context/system.md\n\n---\n\n<context_file paths="gitea:context/gitea-awareness.md → /home/bkrabach/.amplifi
+context_file_blocks=23
+first_block_paths=gitea:context/gitea-awareness.md → /home/bkrabach/.amplifier/cache/amplifier-bundle-gitea-c559d851424c1857/context/gitea-awareness.md
+offset_of_You_are_Amplifier=72491
+offset_of_dev_marker=72510
+notify_readme_present=false
+mentions_resolved: resolutions=23 failed=0 dedup=0
+first_resolution_mention: gitea:context/gitea-awareness.md
+
+=== AFTER anchors-amp-dev (PYTHONPATH override == branch ed2ba00) ===
+session_dir: /home/bkrabach/.amplifier/projects/-tmp-mikb-realsession/sessions/9233a121-c46c-406e-b717-d7c4d9f61477
+raw.system_chars=96898
+head_120=@anchors-amp-dev:context/system.md\n\n---\n\n<context_file paths="@anchors-amp-dev:context/system.md → /home/bkrabach/.ampli
+context_file_blocks=23
+first_block_paths=@anchors-amp-dev:context/system.md → /home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/bundles/anchors-amp-dev/context/system.md
+offset_of_You_are_Amplifier=225
+offset_of_dev_marker=244
+notify_readme_present=false
+mentions_resolved: resolutions=23 failed=0 dedup=0
+first_resolution_mention: @anchors-amp-dev:context/system.md
+
+=== BEFORE anchors (installed foundation) ===
+session_dir: /home/bkrabach/.amplifier/projects/-tmp-mikb-realsession/sessions/d0da3cdf-ef6b-4421-a401-7268c067e186
+raw.system_chars=96344
+head_120=@anchors:context/system.md\n\n---\n\n<context_file paths="modes:context/modes-instructions.md → /home/bkrabach/.amplifier/ca
+context_file_blocks=23
+first_block_paths=modes:context/modes-instructions.md → /home/bkrabach/.amplifier/cache/amplifier-bundle-modes-85a0e90c360a77e3/context/modes-instructions.md
+offset_of_You_are_Amplifier=72467
+offset_of_dev_marker=-1
+notify_readme_present=false
+mentions_resolved: resolutions=23 failed=0 dedup=0
+first_resolution_mention: modes:context/modes-instructions.md
+
+=== AFTER anchors (PYTHONPATH override) ===
+session_dir: /home/bkrabach/.amplifier/projects/-tmp-mikb-realsession/sessions/cbc965c3-20ba-4fcc-a815-01bf850fa8fe
+raw.system_chars=96344
+head_120=@anchors:context/system.md\n\n---\n\n<context_file paths="@anchors:context/system.md → /home/bkrabach/.amplifier/cache/ampli
+context_file_blocks=23
+first_block_paths=@anchors:context/system.md → /home/bkrabach/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/bundles/anchors/context/system.md
+offset_of_You_are_Amplifier=201
+offset_of_dev_marker=-1
+notify_readme_present=false
+mentions_resolved: resolutions=23 failed=0 dedup=0
+first_resolution_mention: @anchors:context/system.md
+

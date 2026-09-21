@@ -1,5 +1,6 @@
 bundle:
   name: behavior-streaming-ui
+  display_name: Streaming UI
   version: 1.3.0
   description: Streaming UI display for thinking blocks, tool calls, and token usage
 

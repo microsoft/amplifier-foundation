@@ -97,6 +97,7 @@ class DiskCache:
                 "name": bundle.name,
                 "version": bundle.version,
                 "description": bundle.description,
+                "display_name": bundle.display_name,
             },
             "includes": bundle.includes,
             "session": bundle.session,

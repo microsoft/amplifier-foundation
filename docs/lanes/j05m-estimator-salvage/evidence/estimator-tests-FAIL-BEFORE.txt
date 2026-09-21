@@ -1,0 +1,41 @@
+### FAIL-BEFORE -- recipes/validate-bundle-repo.yaml restored to origin/main (v3.13.0); tests/test_context_include_estimator.py unchanged
+
+    def test_two_such_includes_now_trip_the_error_gate(fixture_repo: Path, fixture_tokens: int) -> None:
+        """2 x flat-500 = exactly 1000, one token under the `> 1000` ERROR. Measured, it is not."""
+        second = fixture_repo / "context" / "agents" / "second.md"
+        shutil.copyfile(FIXTURE_SOURCE, second)
+        (fixture_repo / "behaviors" / "known-tokens.yaml").write_text(
+            "name: known-tokens\n"
+            "description: fixture behavior with two namespace-qualified includes\n"
+            "context:\n"
+            "  include:\n"
+            f"    - foundation:context/agents/{FIXTURE_SOURCE.name}\n"
+            "    - foundation:context/agents/second.md\n",
+            encoding="utf-8",
+        )
+        result = _run_step(fixture_repo)
+        detail = _detail(result, "known-tokens")
+>       assert detail["context_total_tokens"] == 2 * fixture_tokens
+E       assert 1000 == (2 * 2490)
+
+tests/test_context_include_estimator.py:204: AssertionError
+____________________ test_recipe_declares_the_estimator_fix ____________________
+
+    def test_recipe_declares_the_estimator_fix() -> None:
+        recipe = RECIPE.read_text(encoding="utf-8")
+>       assert "_candidate_relpaths" in recipe, (
+            "validate-bundle-repo must resolve `<namespace>:<path>` includes; without it a "
+            "6,276-token behavior is reported as 1000 and graded WARNING."
+        )
+E       AssertionError: validate-bundle-repo must resolve `<namespace>:<path>` includes; without it a 6,276-token behavior is reported as 1000 and graded WARNING.
+E       assert '_candidate_relpaths' in '# validate-bundle-repo.yaml\n# Repository-Wide Bundle Validator Recipe v3.13.0\n# Validates an entire bundle reposito...efault-repo-conventions", "set-default-recipe-validation", "bundle-doc-regen-detail", "bundle-overview-regen-write"]\n'
+
+tests/test_context_include_estimator.py:240: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_context_include_estimator.py::test_namespace_qualified_include_is_measured_not_guessed
+FAILED tests/test_context_include_estimator.py::test_at_prefixed_namespace_include_is_also_measured
+FAILED tests/test_context_include_estimator.py::test_unresolvable_include_keeps_the_flat_fallback_and_says_so
+FAILED tests/test_context_include_estimator.py::test_url_style_refs_are_not_split_on_their_scheme_colon
+FAILED tests/test_context_include_estimator.py::test_two_such_includes_now_trip_the_error_gate
+FAILED tests/test_context_include_estimator.py::test_recipe_declares_the_estimator_fix
+6 failed, 2 passed in 0.43s

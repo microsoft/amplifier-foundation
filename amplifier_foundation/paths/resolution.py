@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,123 @@ from urllib.parse import urlparse
 # - 'path' group: repository path (everything before @)
 # - 'ref' group: optional branch/tag/commit (everything after @, can contain slashes)
 _GIT_PATH_PATTERN = re.compile(r"^(?P<path>[^@]+)(?:@(?P<ref>.+))?$")
+
+# Native Windows drive-letter absolute path: "C:\..." or "C:/...".
+# A single ASCII letter followed by ":" is unambiguous here -- every real URI
+# scheme this parser recognizes is multi-character (http, https, git+https,
+# file, zip+https, ...), so this can never collide with a scheme prefix.
+_WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
+
+# RFC 8089 ("file" URI scheme) drive-letter form: the path component of a
+# `file:///C:/Users/x` URI is "/C:/Users/x" -- a Windows drive path carrying a
+# leading slash left over from the URI's authority separator. This is the
+# spelling Python's own ``Path.as_uri()`` emits on Windows, so it arrives in
+# real user configs; it is a *Windows* path despite starting with "/".
+_RFC8089_DRIVE_PATH_PATTERN = re.compile(r"^/[A-Za-z]:[\\/]")
+
+
+def _is_windows_absolute_path(uri: str) -> bool:
+    """True for a native Windows absolute path: drive-letter or UNC form.
+
+    Covers both separator styles Windows accepts for a drive-letter path
+    (``C:\\Users\\x`` and ``C:/Users/x``) plus backslash UNC paths
+    (``\\\\server\\share``).
+
+    Deliberately NOT matched: forward-slash UNC (``//server/share``). That
+    spelling is syntactically identical to a protocol-relative URL, which
+    this resolver has no other support for, so it is left unhandled rather
+    than guessed at.
+    """
+    return bool(_WINDOWS_DRIVE_PATH_PATTERN.match(uri)) or uri.startswith("\\\\")
+
+
+def _is_posix_style_absolute_path(path: str) -> bool:
+    """True for a path spelled as a POSIX absolute path (``/home/x``, ``/etc``).
+
+    Deliberately NOT matched: forward-slash UNC (``//server/share``) -- same
+    reasoning as the exclusion in ``_is_windows_absolute_path``: that
+    spelling is ambiguous with a protocol-relative URL and is left unhandled
+    here rather than guessed at.
+
+    Also NOT matched: the RFC 8089 drive-letter form (``/C:/Users/x``). It
+    starts with "/" but is a *Windows* path -- the leading slash is the
+    residue of a ``file://`` URI's authority separator, not a POSIX root.
+    Treating it as POSIX-shaped made ``file:///C:/Users/x`` -- precisely what
+    ``Path.as_uri()`` emits on Windows -- get rejected on Windows with a
+    message telling the user to convert it to a Windows path it already was.
+    """
+    if _RFC8089_DRIVE_PATH_PATTERN.match(path):
+        return False
+    return path.startswith("/") and not path.startswith("//")
+
+
+def strip_uri_drive_prefix(path: str) -> str:
+    """Normalize an RFC 8089 ``file://`` path component into a native path.
+
+    ``file:///C:/Users/x`` parses to the path component ``/C:/Users/x``. That
+    leading slash is URI syntax, not part of the filesystem path: passing it
+    to ``Path()`` on Windows yields a rooted-but-driveless path that resolves
+    against the *current* drive rather than the drive the user named. Strip it
+    so the drive letter leads, as Windows expects.
+
+    Every other shape (POSIX absolute, relative, native Windows, UNC) is
+    returned unchanged.
+    """
+    if _RFC8089_DRIVE_PATH_PATTERN.match(path):
+        return path[1:]
+    return path
+
+
+def describe_cross_platform_path_mismatch(path_str: str) -> str | None:
+    """Return an explanation if `path_str` is an absolute path shaped for a
+    *different* OS than the one currently running, else return None.
+
+    GAP-007: naive resolution (``pathlib.Path(path_str).resolve()``) does not
+    fail on a foreign-OS absolute path -- it silently coerces it into a
+    nonsense local one. On Windows, ``Path("/home/bkrabach/dev/x").resolve()``
+    prepends the current drive letter, producing ``C:\\home\\bkrabach\\dev\\x``,
+    which then fails with a generic "File not found" that sends the user
+    hunting for a file that was never expected to exist on this machine. The
+    mirror case exists on POSIX: a Windows drive-letter path like
+    ``C:\\Users\\x`` is not absolute by POSIX rules, so it silently resolves
+    relative to the current working directory instead of failing clearly.
+
+    This function lets callers (source handlers) catch either case *before*
+    attempting resolution and raise a message that names the actual problem
+    -- a config written for another OS's filesystem -- instead of a
+    misleading "file not found".
+
+    Args:
+        path_str: The raw path string as parsed from the source URI (i.e.
+            ``ParsedURI.path``), before any OS-specific resolution.
+
+    Returns:
+        A human-readable explanation of the mismatch, or None if `path_str`
+        is not a foreign-OS absolute path (including: it's a relative path,
+        or it's already native to the current OS).
+    """
+    running_on_windows = os.name == "nt"
+
+    if running_on_windows and _is_posix_style_absolute_path(path_str):
+        return (
+            f"'{path_str}' is a POSIX-style absolute path (Linux/macOS-shaped), "
+            "which cannot exist on Windows. This bundle source refers to "
+            "another OS's filesystem, not a missing file on this machine -- "
+            "update the source in settings.yaml to a Windows path, or copy/"
+            "re-clone the referenced content locally on this machine."
+        )
+
+    if not running_on_windows and _is_windows_absolute_path(path_str):
+        return (
+            f"'{path_str}' is a Windows-style absolute path (drive-letter or "
+            f"UNC), which cannot exist on {platform.system()}. This bundle "
+            "source refers to another OS's filesystem, not a missing file "
+            "on this machine -- update the source in settings.yaml to a "
+            "POSIX path, or copy/re-clone the referenced content locally on "
+            "this machine."
+        )
+
+    return None
 
 
 def get_amplifier_home() -> Path:
@@ -52,7 +170,21 @@ class ParsedURI:
     @property
     def is_file(self) -> bool:
         """True if this is a file URI or local path."""
-        return self.scheme == "file" or (self.scheme == "" and "/" in self.path)
+        if self.scheme == "file":
+            return True
+        if self.scheme != "":
+            return False
+        # Empty scheme: treat as a local path if it looks like one under
+        # either separator convention -- POSIX ("/" present) or native
+        # Windows (backslash, or a bare drive-letter/UNC path). parse_uri()
+        # already assigns scheme="file" for the Windows forms it recognizes,
+        # so this branch is defense-in-depth for ParsedURI values built by
+        # other means, not the primary path for real Windows URIs.
+        return (
+            "/" in self.path
+            or "\\" in self.path
+            or _is_windows_absolute_path(self.path)
+        )
 
     @property
     def is_http(self) -> bool:
@@ -128,8 +260,15 @@ def parse_uri(uri: str) -> ParsedURI:
         path, subpath = _extract_fragment_subpath(uri[7:])
         return ParsedURI(scheme="file", host="", path=path, ref="", subpath=subpath)
 
-    # Handle absolute paths
+    # Handle absolute paths (POSIX)
     if uri.startswith("/"):
+        return ParsedURI(scheme="file", host="", path=uri, ref="", subpath="")
+
+    # Handle native Windows absolute paths (drive-letter or backslash UNC).
+    # Must run before the "package/subpath" fallback below: a forward-slash
+    # Windows path like "C:/Users/x" contains a "/" and would otherwise be
+    # misparsed there as package="C:", subpath="Users/x".
+    if _is_windows_absolute_path(uri):
         return ParsedURI(scheme="file", host="", path=uri, ref="", subpath="")
 
     # Handle relative paths

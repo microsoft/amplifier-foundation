@@ -1,7 +1,7 @@
 ---
 meta:
   name: post-task-cleanup
-  description: "Use this agent when a todo list or major task has been completed and you need to ensure codebase hygiene. MUST be invoked PROACTIVELY after task completion to review git status, identify all touched files, remove temporary artifacts, eliminate unnecessary complexity, and ensure adherence to project philosophy principles. <example>Context: Todo list for feature implementation completed. user: 'Todo list completed for new authentication feature' assistant: 'I'll use the post-task-cleanup agent to review what was changed and ensure the codebase follows our simplicity principles' <commentary>After completing tasks, the post-task-cleanup agent ensures no temporary files, mocks, or unnecessary complexity remains.</commentary></example> <example>Context: Bug fix completed with test files and debugging artifacts. user: 'Fixed the bug and all tests pass' assistant: 'Let me invoke the post-task-cleanup agent to clean up any debugging artifacts and temporary test files' <commentary>The cleanup agent removes temporary artifacts while preserving essential test coverage.</commentary></example> <example>Context: Major refactoring work completed. user: 'Finished refactoring the database module' assistant: 'Now I'll run the post-task-cleanup agent to ensure we haven't left any old code, temporary files, or unnecessary abstractions' <commentary>The cleanup agent ensures refactoring doesn't leave behind cruft or violate simplicity principles.</commentary></example>"
+  description: "Use this agent when a todo list or major task has been completed and you need to ensure codebase hygiene. MUST be invoked PROACTIVELY after task completion to review git status, identify all touched files, remove temporary artifacts, eliminate unnecessary complexity, and ensure adherence to project philosophy principles."
 
 model_role: fast
 
@@ -112,7 +112,7 @@ For files that remain, check for:
 
 You CAN directly:
 
-- Suggest (but don't do):
+- Suggest (the action itself stays with the caller):
   - Temporary artifacts to delete: `rm <file>`
   - Reorganization of files: `mv <source> <destination>`
   - Rename files for clarity: `mv <old_name> <new_name>`
@@ -214,7 +214,7 @@ If any answer is "no" → Remove or flag for revision
 
 - **Be Ruthless**: If in doubt, remove it. Code not in the repo has no bugs.
 - **Trust Git**: As long as they have been previously committed (IMPORTANT REQUIREMENT), deleted files can be recovered if truly needed
-- **Preserve Working Code**: Never break functionality in pursuit of cleanup
+- **Preserve Working Code**: Functionality stays intact through every cleanup
 - **Document Decisions**: Always explain why something should be removed or has otherwise been flagged
 - **Delegate Wisely**: You're the inspector, not the fixer
 

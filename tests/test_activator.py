@@ -1,35 +1,111 @@
 """Tests for ModuleActivator._install_dependencies guard.
 
-Specifically tests the find_spec guard that prevents editable source builds
-for packages already installed from PyPI wheels (e.g. amplifier-core).
+Specifically tests the _distribution_installed guard that prevents editable
+source builds for packages already installed (e.g. amplifier-core), and the
+regression coverage for issue #326 (name-guessing via find_spec produced
+false "not installed" results for bundles whose distribution name differs
+from their import name, or that ship no import package at all).
 """
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from amplifier_foundation.modules.activator import ModuleActivator
+from amplifier_foundation.exceptions import BundleError
+from amplifier_foundation.modules.activator import (
+    ModuleActivationError,
+    ModuleActivator,
+    _distribution_installed,
+)
+
+
+class TestInstallTarget:
+    """Tests for routing module installs to the caller's selected environment."""
+
+    @pytest.mark.asyncio
+    async def test_default_install_target_is_current_interpreter(self) -> None:
+        """The default command remains byte-for-byte compatible with the legacy path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir)
+            (module_path / "pyproject.toml").write_text(
+                '[project]\nname = "default-target-pkg"\nversion = "1.0.0"\n'
+            )
+            activator = ModuleActivator(cache_dir=module_path / "cache")
+
+            with patch("subprocess.run") as mock_subprocess:
+                await activator._install_dependencies(module_path, force=True)
+
+            assert mock_subprocess.call_args.args[0] == [
+                "uv",
+                "pip",
+                "install",
+                "-e",
+                str(module_path),
+                "--python",
+                sys.executable,
+                "--quiet",
+                "--no-sources",
+            ]
+
+    @pytest.mark.asyncio
+    async def test_explicit_install_target_and_constraints_are_passed_to_uv(self) -> None:
+        """Callers can direct an editable install away from the current interpreter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir)
+            (module_path / "pyproject.toml").write_text(
+                '[project]\nname = "explicit-target-pkg"\nversion = "1.0.0"\n'
+            )
+            target_python = "/isolated/home/env/bin/python"
+            constraints = module_path / "constraints.txt"
+            constraints.write_text("example-dependency==1.2.3\n")
+            activator = ModuleActivator(
+                cache_dir=module_path / "cache",
+                install_python=target_python,
+                install_constraints=constraints,
+            )
+
+            with patch("subprocess.run") as mock_subprocess:
+                await activator._install_dependencies(module_path, force=True)
+
+            assert mock_subprocess.call_args.args[0] == [
+                "uv",
+                "pip",
+                "install",
+                "-e",
+                str(module_path),
+                "--python",
+                target_python,
+                "--quiet",
+                "--no-sources",
+                "--constraints",
+                str(constraints),
+            ]
 
 
 class TestInstallDependenciesWheelGuard:
-    """Tests for the 'already installed from wheels' guard in _install_dependencies.
+    """Tests for the 'already installed' guard in _install_dependencies.
 
     The guard prevents uv pip install -e (editable source build) for packages
-    that are already importable in the current environment.  This matters because
+    that are already installed in the current environment.  This matters because
     bundles like amplifier-core use maturin/Rust as their build backend, so an
     editable install would trigger a multi-minute Rust compilation even though
     the pre-built PyPI wheel is already present.
+
+    Detection is keyed on the distribution name via
+    ``amplifier_foundation.modules.activator._distribution_installed``
+    (importlib.metadata), not a guessed import name. See issue #326.
     """
 
     @pytest.mark.asyncio
     async def test_skips_install_when_package_already_importable(self) -> None:
-        """_install_dependencies returns early if the package is already importable.
+        """_install_dependencies returns early if the distribution is already installed.
 
-        When importlib.util.find_spec returns a non-None result for the package
-        named in pyproject.toml, uv pip install must NOT be called.
+        When _distribution_installed returns True for the package named in
+        pyproject.toml, uv pip install must NOT be called.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             module_path = Path(tmpdir)
@@ -38,27 +114,25 @@ class TestInstallDependenciesWheelGuard:
 
             activator = ModuleActivator(cache_dir=module_path / "cache")
 
-            # Pretend the package is already importable (wheel is installed).
-            fake_spec = MagicMock()
+            # Pretend the package is already installed (wheel or editable install present).
             with (
                 patch(
-                    "amplifier_foundation.modules.activator.find_spec",
-                    return_value=fake_spec,
-                ) as mock_find_spec,
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=True,
+                ) as mock_dist_installed,
                 patch("subprocess.run") as mock_subprocess,
             ):
                 await activator._install_dependencies(module_path)
 
-                # find_spec was called with the normalised package name
-                mock_find_spec.assert_called_once_with("my_test_pkg")
+                mock_dist_installed.assert_called_once()
                 # subprocess.run (i.e. uv pip install) must NOT have been called
                 mock_subprocess.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_proceeds_when_package_not_importable(self) -> None:
-        """_install_dependencies runs uv pip install when find_spec returns None.
+        """_install_dependencies runs uv pip install when the distribution isn't installed.
 
-        If the package is not yet importable (fresh environment, first install),
+        If the package is not yet installed (fresh environment, first install),
         the editable install should proceed as normal.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -71,8 +145,8 @@ class TestInstallDependenciesWheelGuard:
             mock_completed = MagicMock(returncode=0)
             with (
                 patch(
-                    "amplifier_foundation.modules.activator.find_spec",
-                    return_value=None,  # package NOT importable yet
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=False,  # distribution NOT installed yet
                 ),
                 patch("subprocess.run", return_value=mock_completed) as mock_subprocess,
             ):
@@ -87,9 +161,9 @@ class TestInstallDependenciesWheelGuard:
 
     @pytest.mark.asyncio
     async def test_force_bypasses_wheel_guard(self) -> None:
-        """force=True skips the find_spec check and always runs uv pip install.
+        """force=True skips the distribution check and always runs uv pip install.
 
-        Even when the package is already importable, force=True should trigger
+        Even when the package is already installed, force=True should trigger
         a reinstall from source — e.g. to pick up local dev changes.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -99,27 +173,32 @@ class TestInstallDependenciesWheelGuard:
 
             activator = ModuleActivator(cache_dir=module_path / "cache")
 
-            fake_spec = MagicMock()
             mock_completed = MagicMock(returncode=0)
             with (
                 patch(
-                    "amplifier_foundation.modules.activator.find_spec",
-                    return_value=fake_spec,  # package IS importable ...
-                ) as mock_find_spec,
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=True,  # package IS installed ...
+                ) as mock_dist_installed,
                 patch("subprocess.run", return_value=mock_completed) as mock_subprocess,
             ):
                 await activator._install_dependencies(module_path, force=True)
 
-                # find_spec should NOT have been consulted (guard bypassed)
-                mock_find_spec.assert_not_called()
+                # _distribution_installed should NOT have been consulted (guard bypassed)
+                mock_dist_installed.assert_not_called()
                 # uv pip install should still have been called
                 mock_subprocess.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_hyphen_to_underscore_normalisation(self) -> None:
-        """Package names with hyphens are normalised to underscores for find_spec.
+    async def test_guard_uses_raw_distribution_name(self) -> None:
+        """The guard checks the RAW distribution name — no import-name guessing.
 
-        PyPI name 'amplifier-core' → importable as 'amplifier_core'.
+        Prior to issue #326's fix, the guard normalised the name via
+        ``pkg_name.replace("-", "_")`` and called ``importlib.util.find_spec``,
+        which mis-detected bundles whose distribution name differs from their
+        import name (e.g. ``amplifier-bundle-evaluation`` -> ``amplifier_evaluation``)
+        as "not installed". The fix keys on the distribution name directly via
+        ``importlib.metadata``, so the guard must receive the hyphenated name
+        unmodified.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             module_path = Path(tmpdir)
@@ -130,18 +209,17 @@ class TestInstallDependenciesWheelGuard:
 
             activator = ModuleActivator(cache_dir=module_path / "cache")
 
-            fake_spec = MagicMock()
             with (
                 patch(
-                    "amplifier_foundation.modules.activator.find_spec",
-                    return_value=fake_spec,
-                ) as mock_find_spec,
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=True,
+                ) as mock_dist_installed,
                 patch("subprocess.run") as mock_subprocess,
             ):
                 await activator._install_dependencies(module_path)
 
-                # Must use underscore form when calling find_spec
-                mock_find_spec.assert_called_once_with("amplifier_core")
+                # Must use the RAW hyphenated name — no name-guessing.
+                mock_dist_installed.assert_called_once_with("amplifier-core")
                 mock_subprocess.assert_not_called()
 
     @pytest.mark.asyncio
@@ -161,15 +239,15 @@ class TestInstallDependenciesWheelGuard:
             mock_completed = MagicMock(returncode=0)
             with (
                 patch(
-                    "amplifier_foundation.modules.activator.find_spec",
-                    return_value=MagicMock(),  # would skip if name were found
-                ) as mock_find_spec,
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=True,  # would skip if name were found
+                ) as mock_dist_installed,
                 patch("subprocess.run", return_value=mock_completed) as mock_subprocess,
             ):
                 await activator._install_dependencies(module_path)
 
-                # find_spec should NOT have been called (no package name to check)
-                mock_find_spec.assert_not_called()
+                # _distribution_installed should NOT have been called (no package name to check)
+                mock_dist_installed.assert_not_called()
                 # install should proceed (requirements/pyproject still processed)
                 mock_subprocess.assert_called_once()
 
@@ -187,14 +265,14 @@ class TestInstallDependenciesWheelGuard:
             mock_completed = MagicMock(returncode=0)
             with (
                 patch(
-                    "amplifier_foundation.modules.activator.find_spec",
-                    return_value=MagicMock(),
-                ) as mock_find_spec,
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=True,
+                ) as mock_dist_installed,
                 patch("subprocess.run", return_value=mock_completed) as mock_subprocess,
             ):
                 await activator._install_dependencies(module_path)
 
-                mock_find_spec.assert_not_called()
+                mock_dist_installed.assert_not_called()
                 mock_subprocess.assert_called_once()
 
 
@@ -256,8 +334,8 @@ class TestPolyglotTransportSkip:
             mock_completed = MagicMock(returncode=0)
             with (
                 patch(
-                    "amplifier_foundation.modules.activator.find_spec",
-                    return_value=None,  # package not yet importable
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=False,  # distribution not yet installed
                 ),
                 patch("subprocess.run", return_value=mock_completed) as mock_subprocess,
             ):
@@ -285,11 +363,273 @@ class TestPolyglotTransportSkip:
             mock_completed = MagicMock(returncode=0)
             with (
                 patch(
-                    "amplifier_foundation.modules.activator.find_spec",
-                    return_value=None,  # package not yet importable
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=False,  # distribution not yet installed
                 ),
                 patch("subprocess.run", return_value=mock_completed) as mock_subprocess,
             ):
                 await activator._install_dependencies(module_path)
 
                 mock_subprocess.assert_called_once()
+
+
+class TestDistributionGuard326:
+    """Regression tests for issue #326.
+
+    #326: three guard sites guessed a package's import name via
+    ``pkg_name.replace("-", "_")`` and called ``importlib.util.find_spec(...)``.
+    When the distribution name and import name differ (e.g. dist
+    ``amplifier-bundle-evaluation`` -> import ``amplifier_evaluation``) or the
+    bundle ships no import package (``packages=[]``), the guess never resolved,
+    so a valid install was treated as missing and reinstalled on every process.
+
+    The fix replaces the guess with ``_distribution_installed()``, which keys
+    on the distribution name via ``importlib.metadata`` — the same metadata
+    that ``uv sync`` removes when it uninstalls an editable install, which is
+    what keeps the pre-existing #147 stale-cache cross-check correct.
+    """
+
+    def test_distribution_installed_true_for_real_dist(self) -> None:
+        """_distribution_installed reflects real importlib.metadata state.
+
+        Direct unit test of the helper — no mocking. ``pytest`` is guaranteed
+        to be installed in the test environment; a nonsense distribution name
+        is guaranteed not to be.
+        """
+        assert _distribution_installed("pytest") is True
+        assert _distribution_installed("no-such-distribution-xyz") is False
+
+    @pytest.mark.asyncio
+    async def test_name_mismatch_bundle_skips_reinstall(self) -> None:
+        """A bundle whose import name differs from its distribution name is not reinstalled.
+
+        Core #326 scenario: pyproject declares ``amplifier-bundle-evaluation``,
+        whose import package would be guessed as ``amplifier_evaluation`` — a
+        name that never matches what's actually importable. With the fix,
+        the guard keys on the distribution name directly, so an installed
+        distribution is correctly detected and the reinstall is skipped.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir)
+            pyproject = module_path / "pyproject.toml"
+            pyproject.write_text(
+                '[project]\nname = "amplifier-bundle-evaluation"\nversion = "1.0.0"\n'
+            )
+
+            activator = ModuleActivator(cache_dir=module_path / "cache")
+
+            with (
+                patch(
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=True,
+                ),
+                patch("subprocess.run") as mock_subprocess,
+            ):
+                await activator._install_dependencies(module_path)
+
+                mock_subprocess.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_packageless_bundle_skips_reinstall(self) -> None:
+        """A bundle that ships no import package (packages=[]) is not reinstalled.
+
+        Same #326 mechanic as the name-mismatch case: a bundle with
+        ``packages=[]`` has no importable module at all, so the old
+        find_spec-based guess could never succeed. The distribution-based
+        guard correctly detects the install regardless.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir)
+            pyproject = module_path / "pyproject.toml"
+            pyproject.write_text(
+                '[project]\nname = "amplifier-bundle-attractor"\nversion = "1.0.0"\n'
+            )
+
+            activator = ModuleActivator(cache_dir=module_path / "cache")
+
+            with (
+                patch(
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=True,
+                ),
+                patch("subprocess.run") as mock_subprocess,
+            ):
+                await activator._install_dependencies(module_path)
+
+                mock_subprocess.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_147_not_regressed_stale_state_triggers_reinstall(self) -> None:
+        """Stale install-state cache (issue #147) still triggers a reinstall.
+
+        Simulates ``uv sync`` removing an editable install without touching the
+        install-state fingerprint: ``is_installed()`` reports True (the cache
+        believes it's installed) but ``_distribution_installed()`` reports
+        False (the distribution metadata is actually gone). The stale-state
+        cross-check in ``_install_dependencies`` must invalidate the cache
+        entry and proceed with the reinstall — the #326 fix must not regress
+        this #147 behavior.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir)
+            pyproject = module_path / "pyproject.toml"
+            pyproject.write_text(
+                '[project]\nname = "amplifier-bundle-evaluation"\nversion = "1.0.0"\n'
+            )
+
+            activator = ModuleActivator(cache_dir=module_path / "cache")
+
+            mock_completed = MagicMock(returncode=0)
+            with (
+                patch.object(
+                    activator._install_state, "is_installed", return_value=True
+                ),
+                patch.object(activator._install_state, "invalidate") as mock_invalidate,
+                patch(
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=False,
+                ),
+                patch("subprocess.run", return_value=mock_completed) as mock_subprocess,
+            ):
+                await activator._install_dependencies(module_path)
+
+                mock_invalidate.assert_called_once_with(module_path)
+                mock_subprocess.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_147_healthy_state_skips(self) -> None:
+        """A healthy cached install state, confirmed by real metadata, is not invalidated.
+
+        ``is_installed()`` reports True and ``_distribution_installed()``
+        confirms the distribution is genuinely present — no invalidation and
+        no reinstall should occur.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir)
+            pyproject = module_path / "pyproject.toml"
+            pyproject.write_text(
+                '[project]\nname = "amplifier-bundle-evaluation"\nversion = "1.0.0"\n'
+            )
+
+            activator = ModuleActivator(cache_dir=module_path / "cache")
+
+            with (
+                patch.object(
+                    activator._install_state, "is_installed", return_value=True
+                ),
+                patch.object(activator._install_state, "invalidate") as mock_invalidate,
+                patch(
+                    "amplifier_foundation.modules.activator._distribution_installed",
+                    return_value=True,
+                ),
+                patch("subprocess.run") as mock_subprocess,
+            ):
+                await activator._install_dependencies(module_path)
+
+                mock_invalidate.assert_not_called()
+                mock_subprocess.assert_not_called()
+
+
+class TestStrictActivation343:
+    """Regression coverage for issue #343.
+
+    ``BundleRegistry(strict=...)`` made include failures fatal, but module
+    activation had no equivalent: ``activate_all`` logged every failure and
+    returned the survivors, so a session could start with a provider or tool
+    silently missing. These tests pin both halves of the contract.
+    """
+
+    @pytest.mark.asyncio
+    async def test_strict_raises_and_reports_every_failure(self) -> None:
+        """strict=True surfaces ALL failures, not just the first."""
+        activator = ModuleActivator(install_deps=False, strict=True)
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            if name in ("bad-one", "bad-two"):
+                raise RuntimeError(f"clone failed for {name}")
+            return Path("/tmp") / name
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            with pytest.raises(ModuleActivationError) as exc_info:
+                await activator.activate_all(
+                    [
+                        {"module": "good-one", "source": "file:///good-one"},
+                        {"module": "bad-one", "source": "file:///bad-one"},
+                        {"module": "bad-two", "source": "file:///bad-two"},
+                    ]
+                )
+
+        message = str(exc_info.value)
+        assert "2 of 3 modules failed" in message
+        # Both failures reported together -- not just the first.
+        assert "bad-one" in message
+        assert "bad-two" in message
+        # Original cause is chained for debuggability.
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_non_strict_preserves_skip_and_continue(self) -> None:
+        """strict=False (the default) keeps the pre-#343 behaviour."""
+        activator = ModuleActivator(install_deps=False)
+        assert activator.strict is False
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            if name == "bad-one":
+                raise RuntimeError("clone failed")
+            return Path("/tmp") / name
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            activated = await activator.activate_all(
+                [
+                    {"module": "good-one", "source": "file:///good-one"},
+                    {"module": "bad-one", "source": "file:///bad-one"},
+                ]
+            )
+
+        assert "good-one" in activated
+        assert "bad-one" not in activated
+
+
+class TestModuleActivationErrorIsBundleError343:
+    """``ModuleActivationError`` must live inside the ``BundleError`` hierarchy.
+
+    This class existed before issue #343 but nothing ever raised it, so its
+    base class was never load-bearing. Turning on strict activation made it
+    fire for the first time -- and because it subclassed bare ``Exception`` it
+    walked straight past every ``except BundleError`` handler in the codebase
+    and reached the user as a raw Python traceback.
+
+    The fix is inheritance, not another catch site: a bundle whose modules
+    fail to activate *is* a bundle error, so every current and future
+    ``except BundleError`` handler should cover it for free.
+    """
+
+    def test_is_bundle_error_subclass(self) -> None:
+        assert issubclass(ModuleActivationError, BundleError)
+
+    def test_caught_by_a_generic_bundle_error_handler(self) -> None:
+        """The whole point of the inheritance, pinned directly."""
+        try:
+            raise ModuleActivationError("1 of 2 modules failed to activate")
+        except BundleError as exc:
+            assert "1 of 2 modules failed to activate" in str(exc)
+        else:  # pragma: no cover - only reached if the fix regresses
+            pytest.fail("ModuleActivationError escaped `except BundleError`")
+
+    @pytest.mark.asyncio
+    async def test_real_strict_failure_is_catchable_as_bundle_error(self) -> None:
+        """End-to-end: the actual strict path raises something handlers catch.
+
+        Asserting the class hierarchy alone would still pass if ``activate_all``
+        were changed to raise some other error type, so drive the real path.
+        """
+        activator = ModuleActivator(install_deps=False, strict=True)
+
+        async def fake_activate(name: str, uri: str, **_: object) -> Path:
+            raise RuntimeError(f"clone failed for {name}")
+
+        with patch.object(activator, "activate", side_effect=fake_activate):
+            with pytest.raises(BundleError):
+                await activator.activate_all(
+                    [{"module": "bad-one", "source": "file:///bad-one"}]
+                )

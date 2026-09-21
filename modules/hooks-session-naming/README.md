@@ -17,6 +17,7 @@ The module is entirely non-blocking: all LLM calls run as background asyncio tas
 - **Description updates**: Periodically updates the session description as the conversation evolves, only when scope meaningfully expands
 - **Smart context extraction**: Uses a bookend+sampling strategy for long conversations (first 3 turns, sampled middle, last 5 turns)
 - **Graceful deferral**: If the LLM signals insufficient context, retries on subsequent turns up to `max_retries` times
+- **Attributable**: Every `llm:*` event a naming call emits carries `data.purpose = "session-naming"`, so analyzers can exclude it from the session's own work (see [Event Attribution](#event-attribution))
 
 ## Configuration
 
@@ -41,24 +42,106 @@ hooks:
 matrix — the same mechanism used by the `delegate` tool and recipe agent steps.
 Session naming is a simple classification task; it does not need the priority model.
 
+**Naming never BORROWS a provider; it may ROUTE to one you configured.** Every
+path below ends on either the routing matrix's candidate for the role -- if it is
+mounted in this session -- or the session's own conversation provider. There is no
+arbitrary fallback.
+
 Resolution order:
 
-1. **`model_role`** — Resolved against the `model_role_resolver` capability
-   (registered by whichever routing bundle is active — typically the
+1. **`model_role`** -- Resolved against the `model_role_resolver` capability
+   (registered by whichever routing bundle is active -- typically the
    matrix-based one shipped in `amplifier-bundle-routing-matrix`). Defaults to
-   `"fast"`.
+   `"fast"`. A resolved candidate is **accepted whenever it is mounted in this
+   session**, whatever vendor answers the conversation: naming is an
+   out-of-band chore, not a turn of the conversation, and `fast` is your own
+   statement of which cheap model to use for chores. A candidate that resolves
+   to a provider **not** mounted here is refused with a WARNING (once per
+   session) and naming falls back to path 2.
 
-2. **Fallback** — `next(iter(providers.values()))` — the first/priority provider.
-   Used when `model_role` is `None`, or when resolution fails.
+2. **The session's own conversation provider** -- the `conversation.provider_pin`
+   pin when one is set, otherwise the same priority ordering the streaming
+   orchestrator uses to pick the conversation provider (`provider.priority`,
+   then `provider.config["priority"]`, default 100, ties broken by mount order).
+   No model override is applied on this path.
+
+If the conversation is pinned to a provider that is no longer mounted, naming is
+**skipped** for that turn rather than run on some other provider.
+
+### Keeping naming on one vendor
+
+If a session must not emit even a small call on another vendor -- an evaluation
+cell pinned to anthropic, say -- the fix is configuration, not a code rule:
+
+- configure only the providers you want used in that session or cell (a role
+  candidate that resolves to a provider that is not mounted is refused), or
+- select a provider-specific or custom routing matrix (`amplifier routing use
+  anthropic`, or your own file under `~/.amplifier/routing/`) so `fast`
+  resolves inside the vendor.
+
+Either keeps naming cheap *and* single-vendor without a code path that silently
+overrides the user's matrix.
+
+### History: the leak, and the rule that briefly over-corrected it
+
+Session naming used to resolve `model_role` through the routing matrix and, when
+the resolved name matched no mount, fall through to
+`next(iter(providers.values()))` -- an order-dependent, silent borrow of whichever
+provider instance happened to be first in the mount dict. In an Anthropic-pinned
+evaluation cell that emitted openai calls into the session's event stream (321
+foreign responses across 12 capture roots; see `model_performance-egh`). That
+fallback is gone: the fallback is the session's OWN provider, chosen the same
+way the orchestrator chooses it.
+
+The same fix (#348) also added a *same-vendor* rule for the role candidate. That
+rule was a stand-in for attribution, and the event stamping below now provides
+attribution directly -- scorers exclude naming's calls by marker, not by vendor.
+Kept as a rule, it made every naming call on a mixed-provider host run on the
+conversation's expensive model while `fast` resolved to a cheap one (measured
+2026-09-07: claude-opus-5 answering naming while `fast` -> gpt-5.6-luna), which is
+the exact cost the role exists to avoid. Removed 2026-09-07.
+
+## Event Attribution
+
+A provider emits `llm:request` / `llm:response` through the coordinator it was
+mounted with — the session's own — and the kernel stamps `session_id` and
+`parent_id` defaults onto every event
+(`amplifier_core/session.py`: `set_default_fields(...)`). A background naming
+call therefore lands in the session's `events.jsonl` with `parent_id: null` and,
+before this module stamped them, nothing at all to distinguish it from the root
+agent's own turns.
+
+Every event a naming call emits now carries:
+
+```json
+{"purpose": "session-naming", "origin_module": "hooks-session-naming"}
+```
+
+Excluding session naming from an analysis is then one predicate:
+
+```jq
+select(.data.purpose != "session-naming")
+```
+
+The stamp is applied to a naming-only *view* of the provider (a shallow copy
+carrying a wrapping coordinator), built once per provider per session. The
+shared provider instance is never mutated, so the foreground conversation's own
+events are unaffected. If a provider's events cannot be stamped, the naming call
+is **skipped** with a WARNING rather than emitted unattributably.
+
+Note: the provider call has a 60 s hard timeout. A timed-out call can leave a
+stamped `llm:request` with no matching `llm:response` — the stamp is what makes
+that orphan identifiable rather than mysterious.
 
 ### Optional Dependency: hooks-routing
 
 `hooks-routing` is an **optional runtime dependency**. The module degrades gracefully:
 
-- If `hooks-routing` is not installed, the module silently falls back to the priority
-  provider. No warning is emitted — falling back is the expected behaviour when the
-  routing module is absent.
-- To disable routing explicitly and always use the priority provider, set `model_role: null`.
+- If `hooks-routing` is not installed, the module falls back to the session's own
+  conversation provider (debug-logged). Falling back is the expected behaviour when
+  the routing module is absent.
+- To disable routing explicitly and always use the session's own provider, set
+  `model_role: null`.
 
 ## Async Behavior
 
@@ -70,9 +153,9 @@ Session naming is designed to be entirely non-blocking. Here is how the async ma
 
 3. **`done_callback`**: `task.add_done_callback(self._pending_tasks.discard)` is registered on each task so it removes itself from the set upon completion, keeping the set lean.
 
-4. **`session:end` drain (15s timeout)**: The `on_session_end` handler iterates `_pending_tasks` and calls `asyncio.wait_for(asyncio.shield(task), timeout=15.0)` for each. This gives in-flight naming tasks up to 15 seconds to complete before session teardown. If a task times out or is cancelled, the error is logged at `DEBUG` level and teardown continues — naming is best-effort.
+4. **`session:end` drain (15s timeout)**: The `on_session_end` handler iterates `_pending_tasks` and calls `asyncio.wait_for(task, timeout=15.0)` for each. This gives in-flight naming tasks up to 15 seconds to complete before session teardown. On drain timeout the task is cancelled; the error is logged at `DEBUG` level and teardown continues — naming is best-effort.
 
-5. **Internal 10s provider timeout**: Inside `_generate_name`, the LLM provider call is wrapped in `asyncio.wait_for(self._call_provider(prompt), timeout=10.0)`. This caps stalled or slow providers and ensures the naming task itself finishes well within the `session:end` 15-second drain window.
+5. **Internal 60s provider timeout**: Inside `_generate_name`, both initial naming and description updates wrap the provider call with `asyncio.wait_for(..., timeout=NAMING_PROVIDER_TIMEOUT_SECONDS)`. The 60-second limit gives slower requests more time without blocking the conversation. The separate 15-second session-end drain is unchanged and can cancel an in-flight request earlier during teardown.
 
 ## How It Works
 
