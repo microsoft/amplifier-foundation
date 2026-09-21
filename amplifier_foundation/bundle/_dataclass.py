@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -320,7 +321,9 @@ class Bundle:
         if self.spawn:
             mount_plan["spawn"] = dict(self.spawn)
 
-        return mount_plan
+        # Modules may add runtime defaults to nested config during mount. Keep
+        # those changes out of this reusable bundle and future child plans.
+        return deepcopy(mount_plan)
 
     async def prepare(
         self,

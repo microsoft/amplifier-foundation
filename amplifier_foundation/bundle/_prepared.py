@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
 from decimal import Decimal
@@ -585,12 +586,15 @@ class PreparedBundle:
             inject_additional_events,
         )
 
-        inject_additional_events(self.mount_plan, FOUNDATION_OBSERVABILITY_EVENTS)
+        # A prepared bundle can create sessions with different runtime defaults.
+        # Event injection and module mounts must only mutate this session's plan.
+        mount_plan = deepcopy(self.mount_plan)
+        inject_additional_events(mount_plan, FOUNDATION_OBSERVABILITY_EVENTS)
 
         from amplifier_core import AmplifierSession
 
         session = AmplifierSession(
-            self.mount_plan,
+            mount_plan,
             session_id=session_id,
             parent_id=parent_id,
             approval_system=approval_system,
