@@ -1,7 +1,6 @@
 """Prepared bundles must not retain paths to evicted module checkouts."""
 
 import asyncio
-import shutil
 import subprocess
 import sys
 from unittest.mock import AsyncMock
@@ -12,6 +11,7 @@ from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFo
 
 from amplifier_foundation.bundle import BundleModuleResolver
 from amplifier_foundation.modules.activator import ModuleActivator
+from amplifier_foundation.sources.git import rmtree_robust
 
 
 @pytest.fixture
@@ -55,7 +55,8 @@ async def test_reactivates_evicted_checkout_before_package_validation(
     activator = ModuleActivator(cache_dir=tmp_path / "cache", install_deps=False)
     cached = await activator.activate("loop-live", source)
     resolver = BundleModuleResolver({"loop-live": cached}, activator)
-    shutil.rmtree(cached)
+    # Git packfiles are read-only on Windows; use the cache's eviction helper.
+    rmtree_robust(cached)
 
     restored = (await resolver.async_resolve("loop-live", source_hint=source)).resolve()
 
