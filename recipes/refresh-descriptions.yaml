@@ -40,14 +40,15 @@
 # silently falls back to a private copy of the rules.
 #
 # CHANGELOG:
+# v1.0.1 - Resolve the design agent from its owning current-main behavior.
 # v1.0.0 - Initial release. Companion to validate-bundle-repo v3.15.0 /
 #          validate-agents v1.8.0 (model_performance-pwmy).
 
 schema_version: 2
 
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
-    kind: bundle
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/bundle-design.yaml"
+    kind: behavior
     required_agents:
       - "foundation:bundle-design-expert"
 
@@ -61,7 +62,7 @@ description: |
   Read-only with respect to the repository. Nothing is applied automatically;
   the proposals are written to an output directory for a human to review and
   land.
-version: "1.0.0"
+version: "1.0.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "descriptions", "refresh", "alignment", "fidelity"]
 
