@@ -220,13 +220,14 @@ class BundleModuleResolver:
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         _hint = profile_hint if profile_hint is not None else source_hint  # noqa: F841
-        if module_id not in self._paths:
+        path = self._paths.get(module_id)
+        if path is None or not path.exists():
             raise CoreModuleNotFoundError(
-                f"Module '{module_id}' not found in prepared bundle. "
+                f"Module '{module_id}' has no available path in prepared bundle. "
                 f"Available modules: {list(self._paths.keys())}. "
                 f"Use async_resolve() for lazy activation support."
             )
-        return BundleModuleSource(self._paths[module_id])
+        return BundleModuleSource(path)
 
     async def async_resolve(
         self, module_id: str, source_hint: Any = None, profile_hint: Any = None
@@ -247,9 +248,12 @@ class BundleModuleResolver:
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         hint = profile_hint if profile_hint is not None else source_hint
-        # Fast path: already activated
-        if module_id in self._paths:
-            return BundleModuleSource(self._paths[module_id])
+        # Prepared bundles can outlive a cache checkout (for example when a
+        # child is spawned after cache eviction). Reuse only a present path;
+        # let the activator recover a missing checkout from the declared source.
+        path = self._paths.get(module_id)
+        if path is not None and path.exists():
+            return BundleModuleSource(path)
 
         # Lazy activation path
         if not self._activator:
@@ -267,8 +271,9 @@ class BundleModuleResolver:
         # Thread-safe activation
         async with self._activation_lock:
             # Double-check after acquiring lock (another task may have activated)
-            if module_id in self._paths:
-                return BundleModuleSource(self._paths[module_id])
+            path = self._paths.get(module_id)
+            if path is not None and path.exists():
+                return BundleModuleSource(path)
 
             logger.info(f"Lazy activating module '{module_id}' from '{hint}'")
             try:
