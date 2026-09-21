@@ -331,6 +331,8 @@ class Bundle:
         source_resolver: Callable[[str, str], str] | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
         strict: bool = False,
+        *,
+        cache_dir: Path | None = None,
     ) -> PreparedBundle:
         """Prepare bundle for execution by activating all modules.
 
@@ -355,6 +357,10 @@ class Bundle:
                 Mirrors BundleRegistry(strict=...), which governs include
                 failures. Without this, a bundle whose modules fail to download
                 still returns a PreparedBundle -- just missing capabilities.
+            cache_dir: Optional app-owned module cache. Applies to initial,
+                agent-specific, and lazy module activation through the prepared
+                resolver. Defaults to the shared Amplifier cache; choosing a
+                cache does not change AMPLIFIER_HOME or session storage.
 
         Returns:
             PreparedBundle with mount_plan and create_session() helper.
@@ -390,7 +396,10 @@ class Bundle:
         # Create activator with bundle's base_path so relative module paths
         # like ./modules/foo resolve relative to the bundle, not cwd
         activator = ModuleActivator(
-            install_deps=install_deps, base_path=self.base_path, strict=strict
+            cache_dir=cache_dir,
+            install_deps=install_deps,
+            base_path=self.base_path,
+            strict=strict,
         )
 
         # Collect all modules that need activation
