@@ -1,0 +1,27 @@
+{
+  "before-anchors-session": {
+    "raw_system_total_chars": 97948,
+    "status_context_block_chars": 1400,
+    "bundle_attributable_chars": 96548
+  },
+  "after-anchors-session": {
+    "raw_system_total_chars": 98698,
+    "status_context_block_chars": 2504,
+    "bundle_attributable_chars": 96194
+  },
+  "before-ampdev-session": {
+    "raw_system_total_chars": 98502,
+    "status_context_block_chars": 1400,
+    "bundle_attributable_chars": 97102
+  },
+  "after-ampdev-session": {
+    "raw_system_total_chars": 100418,
+    "status_context_block_chars": 2504,
+    "bundle_attributable_chars": 97914
+  },
+  "after-ampdev-subagent": {
+    "raw_system_total_chars": 44169,
+    "status_context_block_chars": 2595,
+    "bundle_attributable_chars": 41574
+  }
+}

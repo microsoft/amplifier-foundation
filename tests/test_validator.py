@@ -8,6 +8,7 @@ from amplifier_foundation.exceptions import BundleValidationError
 from amplifier_foundation.validator import (
     BundleValidator,
     ValidationResult,
+    check_body_is_instruction,
     validate_bundle,
     validate_bundle_completeness,
     validate_bundle_completeness_or_raise,
@@ -252,3 +253,125 @@ class TestStrictMode:
         assert result.valid is True
         assert result.errors == []
         assert result.warnings == []
+
+
+class TestCheckBodyIsInstruction:
+    """Tests for check_body_is_instruction()."""
+
+    def test_mentions_only_body_is_ok(self) -> None:
+        """A body containing only @mentions is OK (nothing to flag)."""
+        content = (
+            "---\nname: test\n---\n@foundation:context/FOO.md\n@core:docs/BAR.md\n"
+        )
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "OK"
+        assert result["reason"] == "body carries no prose (mentions/scaffolding only)"
+        assert result["prose_chars"] == 0
+        assert result["prose_preview"] == ""
+
+    def test_second_person_body_is_ok(self) -> None:
+        """A body that addresses the model in second person is OK (instruction)."""
+        content = (
+            "---\nname: test\n---\n"
+            "You are a helpful assistant. Your job is to help the user work through "
+            "their task. Delegate research to the explorer agent, and keep your "
+            "own responses short and concrete rather than exhaustive.\n"
+        )
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "OK"
+        assert result["reason"] == "addresses the model (second person)"
+        assert result["prose_chars"] > 0
+
+    def test_third_person_prose_with_trailing_mention_is_flagged(self) -> None:
+        """Heading + third-person descriptive paragraph + trailing @mention is FLAG."""
+        content = (
+            "---\nname: test\n---\n"
+            "# About This Bundle\n\n"
+            "This bundle provides tools for working with documents. "
+            "It was created by the team to simplify document processing, and "
+            "collects the conventions the team settled on for that work.\n\n"
+            "@foundation:context/FOO.md\n"
+        )
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "FLAG"
+        assert result["reason"] == (
+            "no second-person address -- reads as documentation, not instruction"
+        )
+        assert result["prose_chars"] > 0
+        # the heading is scaffolding and is stripped; the paragraph is the prose
+        assert result["prose_preview"].startswith("This bundle provides tools")
+
+    def test_second_person_inside_code_fence_does_not_rescue_prose(self) -> None:
+        """A placeholder like "your-server" in a sample config is not instruction.
+
+        Regression test for the real defect this missed: amplifier-foundation's
+        own root bundle.md is documentation prose that passed as OK solely
+        because of the string "your-server" inside a fenced JSON example.
+        """
+        content = (
+            "---\nname: test\n---\n"
+            "# Foundation Bundle\n\n"
+            "This bundle provides the standard Amplifier foundation with the "
+            "enhanced delegate tool for agent orchestration. It bundles the "
+            "common tool roster and the default orchestrator.\n\n"
+            "## MCP Configuration\n\n"
+            "```json\n"
+            '{\n  "mcpServers": {\n    "your-server": {\n      "url": "https://example.com/mcp"\n    }\n  }\n}\n'
+            "```\n"
+        )
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "FLAG"
+        assert "your-server" not in result["prose_preview"]
+
+    def test_bare_heading_body_is_not_flagged(self) -> None:
+        """A body that is only a title heading carries no prose."""
+        content = "---\nname: test\n---\n# LLM Wiki Bundle\n"
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "OK"
+        assert result["prose_chars"] == 0
+
+    def test_scaffolding_and_mentions_only_body_is_not_flagged(self) -> None:
+        """Headings, horizontal rules and @mentions are scaffolding, not prose."""
+        content = (
+            "---\nname: test\n---\n"
+            "# Design Intelligence\n\n"
+            "@design-intelligence:context/design-instructions.md\n\n"
+            "---\n\n"
+            "## Design Philosophy\n\n"
+            "@design-intelligence:context/philosophy/DESIGN-PHILOSOPHY.md\n"
+        )
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "OK"
+        assert result["prose_chars"] == 0
+
+    def test_no_frontmatter_returns_no_frontmatter_verdict(self) -> None:
+        """A file without YAML frontmatter returns NO_FRONTMATTER."""
+        content = "# Just a markdown file\n\nNo frontmatter here.\n"
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "NO_FRONTMATTER"
+        assert result["prose_chars"] == 0
+        assert result["prose_preview"] == ""
+        assert result["reason"] == "no frontmatter"
+
+    def test_html_comment_only_body_is_ok(self) -> None:
+        """A body containing only an HTML comment is OK (mentions-only equivalent)."""
+        content = "---\nname: test\n---\n<!-- This is just a note for maintainers -->\n"
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "OK"
+        assert result["reason"] == "body carries no prose (mentions/scaffolding only)"
+        assert result["prose_chars"] == 0
+
+    def test_multiline_html_comment_is_skipped(self) -> None:
+        """A multi-line HTML comment is fully skipped, not counted as prose."""
+        content = (
+            "---\nname: test\n---\n"
+            "<!--\n"
+            "This is a long internal note.\n"
+            "It spans multiple lines and describes the bundle.\n"
+            "-->\n"
+            "@foundation:context/FOO.md\n"
+        )
+        result = check_body_is_instruction(content)
+        assert result["verdict"] == "OK"
+        assert result["reason"] == "body carries no prose (mentions/scaffolding only)"
+        assert result["prose_chars"] == 0

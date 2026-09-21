@@ -15,6 +15,7 @@ import pytest
 from amplifier_core.hooks import HookRegistry
 
 from amplifier_foundation.bundle import Bundle, PreparedBundle
+from amplifier_foundation.spawn_utils import ProviderPreference
 
 # Resolve the example file relative to this test file
 _EXAMPLE_07 = (
@@ -228,6 +229,59 @@ class TestSpawnSelfDelegationDepth:
 
         assert result["output"] == "Done"
         assert result["session_id"] == "test-child-123"
+
+    @pytest.mark.asyncio
+    async def test_spawn_preserves_full_preference_chain_in_child_config(self):
+        """A cold-resumed child retains the caller's ordered routing intent."""
+        hooks = HookRegistry()
+        child_bundle = Bundle(
+            name="test-child",
+            version="0.0.1",
+            providers=[
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet-4-5"},
+                }
+            ],
+        )
+        prepared = _make_prepared_bundle()
+        mock_session = _make_mock_session(hooks)
+        captured_config = {}
+        preferences = [
+            ProviderPreference(
+                provider="anthropic",
+                model="claude-haiku-*",
+                config={"reasoning_effort": "low"},
+            ),
+            ProviderPreference(provider="anthropic", model="claude-sonnet-*"),
+        ]
+
+        def capture_session_init(config, **kwargs):
+            captured_config.update(config)
+            return mock_session
+
+        with patch(
+            "amplifier_core.AmplifierSession",
+            side_effect=capture_session_init,
+        ):
+            await prepared.spawn(
+                child_bundle,
+                "Do something",
+                compose=False,
+                provider_preferences=preferences,
+            )
+
+        assert captured_config["provider_preferences"] == [
+            {
+                "provider": "anthropic",
+                "model": "claude-haiku-*",
+                "config": {"reasoning_effort": "low"},
+            },
+            {"provider": "anthropic", "model": "claude-sonnet-*", "config": {}},
+        ]
+        assert captured_config["provider_preferences"][0]["config"] is not preferences[0].config
+        assert child_bundle.providers[0]["config"]["default_model"] == "claude-sonnet-4-5"
 
     @pytest.mark.asyncio
     async def test_spawn_turn_count_defaults_to_1(self):

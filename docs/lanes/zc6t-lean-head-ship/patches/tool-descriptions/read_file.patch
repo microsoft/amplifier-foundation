@@ -1,0 +1,25 @@
+--- a/read_file.description
++++ b/read_file.description
+@@ -1,18 +1,7 @@
++Read a file, or list a directory, from the local filesystem. Any file is directly accessible.
+ 
+-Reads a file or lists a directory from the local filesystem. You can access any file directly by using this tool.
+-Supports @mention paths for accessing bundle resources.
++file_path accepts absolute paths (/home/user/file.md), relative paths (./docs/README.md), @bundle-name:path bundle resources (e.g. @mybundle:docs/README.md), and @mention directories (@mybundle:docs, returns a listing).
+ 
+-Usage:
+-- The file_path parameter accepts:
+-  - Absolute paths: /home/user/file.md
+-  - Relative paths: ./docs/README.md
+-  - @bundle-name:path - Bundle resources (e.g., @mybundle:docs/README.md)
+-  - @mention directories: @mybundle:docs (returns directory listing)
+-- By default, reads up to 2000 lines starting from the beginning of the file
+-- You can optionally specify a line offset and limit (especially handy for long files)
+-- Any lines longer than 2000 characters will be truncated
+-- Results are returned using cat -n format, with line numbers starting at 1
+-- For directories, returns a formatted listing showing DIR/FILE entries
+-- You can call multiple tools in a single response. It is always better to speculatively read multiple potentially useful files in parallel.
+-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
+-    +Reads up to 2000 lines from the start by default; pass offset (1-indexed) and limit for long files. Lines longer than 2000 characters are truncated. Output is cat -n format, line numbers starting at 1; a directory returns a listing of DIR/FILE entries. A file that exists but is empty returns a system-reminder warning in place of contents.
++
++Read multiple potentially useful files in parallel in one response.

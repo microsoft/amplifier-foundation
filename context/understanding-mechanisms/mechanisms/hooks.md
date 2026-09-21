@@ -108,6 +108,21 @@ When a hook returns `inject_context` with `ephemeral=True`:
 This is the pattern used by `hooks-mode` (mode body), `hooks-skills-visibility`
 (skill list), and `hooks-status-context` (git/environment status).
 
+**Provider caveat**: everything above describes the *local* context module --
+what Amplifier itself retains between calls. It says nothing about what a
+given LLM provider does with the message once it has been sent. On
+providers that chain conversation state server-side (e.g. OpenAI's
+Responses API with `previous_response_id`), a `user`/`assistant`-role
+ephemeral injection still rides the request once and then persists in the
+provider's own server-held history for the rest of the chain -- there is no
+retraction API, and repeated injections accumulate rather than replace
+(bounded in practice by the provider's own prompt caching and by
+compaction, which resets the chain). `system`-role injections are
+generally retractable on those providers instead, since the per-request
+system/instructions field is typically re-derived each turn rather than
+carried from the chain root. See amplifier-core's `docs/HOOKS_API.md`
+("Ephemeral Semantics on Stateful Providers") for the full contract.
+
 ### Persistent Injections (use sparingly)
 
 When a hook returns `inject_context` with `ephemeral=False` (or calls

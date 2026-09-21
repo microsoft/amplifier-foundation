@@ -1,5 +1,6 @@
 bundle:
   name: provider-anthropic-sonnet
+  display_name: Anthropic Claude Sonnet
   version: 1.0.0
   description: Anthropic Claude Sonnet provider
 
@@ -7,5 +8,5 @@ providers:
   - module: provider-anthropic
     source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
     config:
-      default_model: claude-sonnet-4-5
+      default_model: claude-sonnet-5
       raw: true

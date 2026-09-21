@@ -113,12 +113,12 @@ class TestFinderExports:
 class TestDunderAll:
     """Verify __all__ contains all 41 expected names."""
 
-    def test_all_contains_41_names(self):
+    def test_all_contains_60_names(self):
         import amplifier_foundation.session as session
 
         assert hasattr(session, "__all__"), "__all__ must be defined"
-        assert len(session.__all__) == 41, (
-            f"Expected 41 names in __all__, got {len(session.__all__)}: "
+        assert len(session.__all__) == 60, (
+            f"Expected 60 names in __all__, got {len(session.__all__)}: "
             f"{sorted(session.__all__)}"
         )
 
@@ -148,6 +148,19 @@ class TestDunderAll:
             "find_sessions",
             "resolve_session",
             "session_info",
+            "CI_EVENTS_PATH",
+            "EventAssociation",
+            "HistoryDiagnostic",
+            "SessionHistory",
+            "SessionHistoryError",
+            "SessionHistoryStore",
+            "associate_events",
+            # Portable shared-state checkpoints
+            "FileStamp",
+            "file_stamp",
+            "SessionBusyError",
+            "SharedSessionStore",
+            "HeldSession",
         }
         for name in expected_new:
             assert name in session.__all__, f"{name!r} missing from __all__"

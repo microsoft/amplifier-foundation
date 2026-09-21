@@ -1,5 +1,6 @@
 bundle:
   name: behavior-amplifier-dev
+  display_name: Amplifier dev
   version: 1.1.0
   description: Amplifier ecosystem development behavior - multi-repo workflows, testing patterns, and ecosystem expertise
 

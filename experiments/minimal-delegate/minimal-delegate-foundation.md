@@ -1,6 +1,7 @@
 ---
 bundle:
   name: minimal-delegate-foundation
+  display_name: Minimal delegation · Foundation
   version: 0.2.0
   description: |
     EXPERIMENTAL minimal-delegate bundle — constrained orchestrator with only

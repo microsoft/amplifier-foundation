@@ -1,0 +1,9 @@
+Search file contents with regex patterns. Uses ripgrep when available (fast), falls back to Python re.
+
+Filter with `glob` ("*.js", "**/*.tsx") or `type` ("py", "js", "rust"). Output modes: "files_with_matches" (default), "content" (matching lines; supports -A/-B/-C context and -n line numbers), "count". `-i: true` = case-insensitive; `multiline: true` = patterns spanning lines.
+
+Ripgrep regex, not grep - literal braces need escaping: `interface\{\}` finds `interface{}`.
+
+Limits: node_modules, .venv, .git, __pycache__ and build dirs are excluded unless `include_ignored: true`. Results are capped by default (200 files/counts, 500 content matches); `head_limit: 0` = unlimited (use with caution). In content mode each matched line is truncated to 2000 characters (marked "... [truncated]") and the total serialized result is capped at 100,000 bytes - both configurable, set to 0 to disable.
+
+Paginate with `head_limit` + `offset`; the response includes `total_matches` (how many exist beyond the limit).

@@ -1,0 +1,44 @@
+$ git grep -n "build-up"   # AFTER, on branch lane/hxcl-delete-build-up
+
+--- ALL match lines, grouped ---
+     20 docs/lanes/6phe-experiments-example-sweep/evidence/reference-check-git-grep.txt
+      6 tests/test_registry.py
+      6 docs/lanes/xe1u-validate-agents-discovery/DONE-NOTE.md
+      6 docs/lanes/6phe-experiments-example-sweep/DONE-NOTE.md
+      5 docs/lanes/6phe-experiments-example-sweep/evidence/validation-recipes-AFTER.md
+      4 docs/lanes/xe1u-validate-agents-discovery/evidence/parity-guards-FAIL-BEFORE.txt
+      4 docs/lanes/6phe-experiments-example-sweep/evidence/scope-parity.txt
+      2 experiments/minimal-delegate/behaviors/minimal-delegate-foundation.yaml
+      2 docs/lanes/xe1u-validate-agents-discovery/evidence/after-validate-agents-run.txt
+      2 docs/lanes/xe1u-validate-agents-discovery/evidence/after-deterministic-phases.json
+      2 docs/lanes/39z0-agent-classifier-scope/evidence/deterministic-before-after.txt
+      1 modules/tool-delegate/tests/test_delegate_self_delegation_disabled.py
+      1 experiments/minimal-delegate/minimal-delegate-foundation.md
+      1 docs/lanes/6phe-experiments-example-sweep/evidence/guard-tests-FAIL-BEFORE.txt
+      1 docs/lanes/39z0-agent-classifier-scope/evidence/parity-guards-FAIL-BEFORE.txt
+
+--- NON-docs/lanes matches (the ones that must be justified) ---
+experiments/minimal-delegate/behaviors/minimal-delegate-foundation.yaml:25:      0.2.0 — Refactored to mirror build-up v3 structure: thin pointer +
+experiments/minimal-delegate/behaviors/minimal-delegate-foundation.yaml:108:# Agents available for delegation: broader pool than build-up (which ships
+experiments/minimal-delegate/minimal-delegate-foundation.md:10:    Where build-up uses 4 purpose-built agents (explorer/planner/coder/tester),
+modules/tool-delegate/tests/test_delegate_self_delegation_disabled.py:175:    file (e.g. delegation-mechanics.md in the build-up bundle), not in
+tests/test_registry.py:394:        The concrete production failure: build-up:coder was loading foundation:explorer's
+tests/test_registry.py:395:        tool list because source_base_paths['build-up'] pointed at the foundation checkout root
+tests/test_registry.py:397:        experiments/build-up/ (where build-up:explorer.md lives at agents/explorer.md).
+tests/test_registry.py:414:            # Sub-bundle directory — simulates experiments/build-up/
+tests/test_registry.py:435:            # Sub-bundle main file — simulates build-up-foundation.md
+tests/test_registry.py:452:            # Behavior YAML — simulates build-up-foundation.yaml with bundle.name: build-up.
+
+--- total match lines repo-wide ---
+63
+
+--- experiments/build-up exists? ---
+NO -- deleted
+
+--- experiments/ now contains ---
+bundle-configurator
+delegation-only
+exp-amplifier-dev.md
+exp-foundation.md
+exp-lean
+minimal-delegate

@@ -8,23 +8,34 @@ on:
 
 jobs:
   tests:
-    name: Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    # A Windows failure must not cancel the POSIX legs -- those tell us whether
+    # we regressed the population that actually works today, which is the more
+    # expensive outcome by far.
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ['3.11', '3.12', '3.13']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
 
       - name: Install dependencies (with grpc-adapter)
         run: uv sync --extra grpc-adapter
 
+      # `-rA` appends the short-summary section listing every test by node id.
+      # Without it `-q` prints one dot per test and the log can never name what
+      # ran, so "prove test X executed in CI" is unanswerable from the log --
+      # you are reduced to inferring it from the passed COUNT, which is
+      # arithmetic about a number, not evidence about a test. Nothing about
+      # which tests run changes here; only whether the log says their names.
       - name: Run tests
-        run: uv run pytest tests/ -q --tb=short
+        run: uv run pytest tests/ -q --tb=short -rA

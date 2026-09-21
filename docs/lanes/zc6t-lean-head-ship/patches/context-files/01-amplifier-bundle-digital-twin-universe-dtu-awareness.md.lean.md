@@ -1,0 +1,3 @@
+# Digital Twin Universe (DTU)
+On-demand isolated environments from declarative profiles; test code as if actually deployed — realistic-deployment testing, a simulated Amplifier user environment or web UI, an ephemeral container with DNS rewriting / API passthrough / port forwarding, local repos tested as if published.
+Build a profile, launch and verify an environment (also handles Gitea setup for local repos): `delegate(agent="digital-twin-universe:dtu-profile-builder", instruction="<what the user needs>", context_depth="recent", context_scope="conversation")`. Other DTU needs (general questions, install help, troubleshooting): `load_skill(skill_name="digital-twin-universe")`.

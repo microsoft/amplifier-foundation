@@ -1,0 +1,67 @@
+........................................................................ [  3%]
+........................................................................ [  7%]
+........................................................................ [ 10%]
+...........................ss........................................... [ 14%]
+........................................................................ [ 17%]
+........................................................................ [ 21%]
+..............................................................s......... [ 24%]
+........................................................................ [ 28%]
+........................................................................ [ 32%]
+........................................................................ [ 35%]
+........................................................................ [ 39%]
+........................................................................ [ 42%]
+........................................................................ [ 46%]
+........................................................................ [ 49%]
+........................................................................ [ 53%]
+........................................................................ [ 57%]
+........................................................................ [ 60%]
+........................................................................ [ 64%]
+........................................................................ [ 67%]
+............................................F........................... [ 71%]
+........................................................................ [ 74%]
+........................................................................ [ 78%]
+........................................................................ [ 81%]
+........................................................................ [ 85%]
+........................................................................ [ 89%]
+........................................................................ [ 92%]
+........................................................................ [ 96%]
+........................................................................ [ 99%]
+....                                                                     [100%]
+=================================== FAILURES ===================================
+_______________ TestFileSourceHandler.test_resolve_existing_file _______________
+
+self = <tests.test_sources.TestFileSourceHandler object at 0xe598591e5ba0>
+
+    @pytest.mark.asyncio
+    async def test_resolve_existing_file(self) -> None:
+        """Resolves existing file path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.yaml"
+            test_file.write_text("name: test")
+    
+            handler = FileSourceHandler(base_path=Path(tmpdir))
+            parsed = ParsedURI(
+                scheme="file", host="", path=str(test_file), ref="", subpath=""
+            )
+            result = await handler.resolve(parsed, Path(tmpdir) / "cache")
+    
+            # FileSourceHandler.resolve() calls Path.resolve() internally. On
+            # Windows, tempfile.TemporaryDirectory() may hand back a path
+            # containing an 8.3 short component (e.g. "RUNNER~1") while
+            # resolve() returns the canonical long form (e.g. "runneradmin").
+            # Both spellings name the same file/directory, so resolve the
+            # expected side too rather than comparing raw/short vs.
+            # canonical/long.
+            assert result.active_path == test_file.resolve()
+            # source_root is the parent directory for non-cached files
+>           assert result.source_root == test_file.parent.resolve()
+E           AssertionError: assert PosixPath('/tmp') == PosixPath('/tmp/tmps4tvhbdm')
+E            +  where PosixPath('/tmp') = ResolvedSource(active_path=PosixPath('/tmp/tmps4tvhbdm/test.yaml'), source_root=PosixPath('/tmp')).source_root
+E            +  and   PosixPath('/tmp/tmps4tvhbdm') = resolve()
+E            +    where resolve = PosixPath('/tmp/tmps4tvhbdm').resolve
+E            +      where PosixPath('/tmp/tmps4tvhbdm') = PosixPath('/tmp/tmps4tvhbdm/test.yaml').parent
+
+tests/test_sources.py:73: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_sources.py::TestFileSourceHandler::test_resolve_existing_file
+1 failed, 2016 passed, 3 skipped in 22.99s

@@ -1,0 +1,39 @@
+{
+  "session": "59c1175c-72cd-4e95-9158-34041a46b2a3",
+  "head_260": "@anchors:context/system.md\n\n@anchors-amp-dev:context/amplifier-ecosystem.md\n\n---\n\n<context_file paths=\"@anchors:context/system.md \u2192 /root/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/bundles/anchors/context/system.md\">\n# System\n\nYou are Amplifier, an",
+  "system_chars": 43325,
+  "tools_json_chars": 38064,
+  "off_You_are_Amplifier": 239,
+  "off_Behavioral_Principles": 327,
+  "off_configured_for_development_OF": 2155,
+  "off_Amplifier_Ecosystem_Principles": 2349,
+  "off_Notify_Bundle": -1,
+  "p3_short_form": false,
+  "p4_delegate_present": true,
+  "roster": [
+    "amplifier-tester:setup-digital-twin",
+    "amplifier-tester:validator",
+    "anchors-amp-dev:amplifier-dev-expert",
+    "anchors:architect",
+    "anchors:builder",
+    "anchors:debugger",
+    "anchors:explorer",
+    "anchors:git-ops",
+    "anchors:researcher",
+    "app-cli:cli-expert",
+    "context-intelligence:session-navigator",
+    "digital-twin-universe:dtu-profile-builder"
+  ],
+  "roster_count": 12,
+  "has_session_analyst": false,
+  "delegate_desc_chars": 11800,
+  "delegate_desc_example_tags": 10,
+  "resolved_context_files": [
+    "@anchors:context/system.md \u2192 /root/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/bundles/anchors/context/system.md",
+    "@anchors-amp-dev:context/amplifier-ecosystem.md \u2192 /root/.amplifier/cache/amplifier-foundation-26df61cccf7c4703/bundles/anchors-amp-dev/context/amplifier-ecosystem.md",
+    "gitea:context/gitea-awareness.md \u2192 /root/.amplifier/cache/amplifier-bundle-gitea-c559d851424c1857/context/gitea-awareness.md",
+    "digital-twin-universe:context/dtu-awareness.md \u2192 /root/.amplifier/cache/amplifier-bundle-digital-twin-universe-3f1120375ad1dbc5/context/dtu-awareness.md",
+    "amplifier-tester:context/amplifier-tester-awareness.md \u2192 /root/.amplifier/cache/amplifier-bundle-amplifier-tester-51fb043af4f8b374/context/amplifier-tester-awareness.md",
+    "modes:context/modes-instructions.md \u2192 /root/.amplifier/cache/amplifier-bundle-modes-85a0e90c360a77e3/context/modes-instructions.md"
+  ]
+}

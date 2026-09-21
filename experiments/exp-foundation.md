@@ -1,6 +1,7 @@
 ---
 bundle:
   name: exp-foundation
+  display_name: Experimental · Foundation
   version: 0.1.0
   description: |
     EXPERIMENTAL foundation bundle with NEW delegate tool.
@@ -51,7 +52,6 @@ session:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
     config:
-      max_tokens: 300000
       compact_threshold: 0.8
       auto_compact: true
 

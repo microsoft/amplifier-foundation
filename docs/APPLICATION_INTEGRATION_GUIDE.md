@@ -106,6 +106,44 @@ response = await session.execute("Hello, what can you help with?")
 
 **PreparedBundle is your singleton; sessions are ephemeral.** `prepare()` is expensive — it downloads modules, resolves dependencies, and activates everything. Do it once at application startup. `create_session()` is cheap. Do it per-request, per-conversation, or per-user as your pattern requires.
 
+**An update generation can explicitly refresh Python dependencies.** Ordinary
+preparation preserves installed packages for fast startup and native-wheel reuse.
+That is not proof that a Git dependency such as `some-module @ git+...@main` is
+current: two commits can have the same package version. In a **new, isolated
+generation's interpreter**, use:
+
+```python
+prepared = await bundle.prepare(
+    strict=True,
+    cache_dir=staged_module_cache,
+    refresh_dependencies=True,
+    install_overrides=qualified_overrides_path,  # Optional, host-owned uv file
+)
+```
+
+This bypasses installed-package and fingerprint shortcuts, disables automatic
+Git-to-installed-version overrides, and asks uv to upgrade and refresh the
+declared dependency graph, including transitive Git references. Each explicitly
+selected editable package is rebuilt even if its version has not changed. The
+policy reaches bundle root packages, agent modules, and later lazy activation
+through this prepared resolver. `install_deps=False` still disables installation.
+
+The host must select/refresh source checkouts separately, supply any deliberate
+overrides (for example a qualified Core native wheel), verify the resulting
+versions **and source revisions**, and record the complete graph before
+activation. The override file is passed through unchanged; Foundation does not
+infer a new generation's policy from whatever happens to be installed. Direct
+local source overrides remain local. `[tool.uv.sources]` development overrides
+are still ignored during installation.
+
+Do not opt in on ordinary resumed turns, an active generation, or an existing
+pending/rollback generation. Do not reuse the refresh-enabled prepared resolver
+after freezing a generation: its lazy activations also refresh. Recreate it with
+the normal policy against the recorded environment. `ModuleActivator` exposes
+the same `refresh_dependencies` and `install_overrides` options, alongside its
+existing `install_python` and `install_constraints` arguments for hosts that
+manage activation directly. Neither API updates generation pointers or locks.
+
 **`session_cwd` is critical for non-CLI apps.** Without it, file-system tools see the server's working directory, not the user's project or workspace. Always pass it explicitly when creating sessions for web or API applications.
 
 **Composition replaces configuration.** Want different behavior for different environments, users, or modes? Don't toggle flags — compose a different bundle overlay.
@@ -134,6 +172,15 @@ Care should be taken with orchestrator changes (different orchestrators may hand
 
 Three approaches, each with different tradeoffs.
 
+> **Scope:** These are complete-application compositions. When publishing a
+> reusable capability for another host, follow the behavior-first guide: publish
+> its behavior without selecting a root, provider, or orchestrator. Add a
+> supporting root when you intentionally ship a complete host. A flat repository
+> may separately need an enclosing root manifest to anchor namespace resources;
+> that metadata/resource role does not make root configuration the primary
+> capability artifact. See
+> [BUNDLE_GUIDE.md](BUNDLE_GUIDE.md).
+
 ### Declarative (YAML Includes Chain)
 
 Everything lives in `bundle.md`. Good for stable configurations that rarely change at runtime.
@@ -145,13 +192,11 @@ bundle:
   version: 1.0.0
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main
-  - behavior: my-app:behaviors/domain-expert
-
-session:
-  orchestrator: {module: loop-streaming}
-  context: {module: context-simple}
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  - bundle: my-app:behaviors/domain-expert
 ---
+
+@anchors:context/system.md
 
 You are a helpful domain expert.
 ```
@@ -357,12 +402,12 @@ unreg = session.coordinator.hooks.register(
 Hooks declared in the **bundle** propagate to spawned sub-sessions automatically. When a spawn capability calls `prepared.spawn(child_bundle, instruction, compose=True)` — and `compose=True` is the default — the parent bundle is composed with the child before the child session is created. Everything the parent declares (hook modules, providers, tools) is therefore inherited by the child. Compose one observability or logging hook into the parent and *every* descendant session is instrumented, with no per-child wiring:
 
 ```python
-# Generic observability hook composed into the PARENT bundle once...
+# Generic observability hook composed into an Anchors-based parent once...
 observability = Bundle(
     name="observability-behavior",
     hooks=[{"module": "hooks-observability", "source": "<your-hook-source>", "config": {...}}],
 )
-composed = foundation.compose(provider).compose(observability)
+composed = anchors.compose(provider).compose(observability)
 prepared = await composed.prepare()
 
 # ...is inherited by children spawned with compose=True (the default).

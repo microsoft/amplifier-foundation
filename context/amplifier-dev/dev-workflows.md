@@ -6,14 +6,14 @@
 
 ```bash
 # 1. Create ephemeral workspace
-amplifier-dev ~/work/feature-name
+amplifier-workspace ~/work/feature-name
 
 # 2. Work in the workspace (changes go to submodule repos)
 cd ~/work/feature-name
 # ... make changes, commit to submodules, push ...
 
 # 3. Destroy workspace when done
-amplifier-dev -d ~/work/feature-name
+amplifier-workspace -d ~/work/feature-name
 ```
 
 **Key insight**: The workspace itself is disposable. Your work persists because you push submodule changes to their repos.
@@ -76,7 +76,7 @@ Always make changes and push in this order:
 
 ```bash
 # 1. Create minimal workspace
-amplifier-dev ~/work/module-feature
+amplifier-workspace ~/work/module-feature
 cd ~/work/module-feature
 
 # 2. Add the module repo
@@ -96,14 +96,14 @@ git push origin feat/my-feature
 
 # 6. Cleanup
 cd ~/work
-amplifier-dev -d ~/work/module-feature
+amplifier-workspace -d ~/work/module-feature
 ```
 
 ### Changing Core + Dependent Module
 
 ```bash
 # 1. Workspace with both repos
-amplifier-dev ~/work/core-change
+amplifier-workspace ~/work/core-change
 
 # 2. Make core changes first
 cd amplifier-core
@@ -137,9 +137,10 @@ For bundle structure, composition patterns, and the context sink pattern, consul
 
 **Key steps:**
 1. Create the bundle repo on GitHub (`microsoft/amplifier-bundle-newbundle`)
-2. Clone and create directory structure: `behaviors/`, `agents/`, `context/`, `docs/`
-3. Create `bundle.md` following the thin bundle pattern
-4. Add to `amplifier/docs/MODULES.md`
+2. Create the capability structure: `behaviors/`, `agents/`, `context/`, `docs/`
+3. Author and verify the behavior as the reusable entry point
+4. Add a thin Anchors supporting root only if shipping a complete host is useful
+5. Add to `amplifier/docs/MODULES.md`
 
 **Canonical example:** [amplifier-bundle-recipes](https://github.com/microsoft/amplifier-bundle-recipes) - demonstrates proper structure, thin bundle pattern, behavior composition, and context sink agents.
 
@@ -151,13 +152,12 @@ For bundle structure, composition patterns, and the context sink pattern, consul
 type: short description
 
 Longer explanation if needed.
-
-🤖 Generated with [Amplifier](https://github.com/microsoft/amplifier)
-
-Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.com>
 ```
 
 Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+
+The commit footer is stated once, in the bundle's `system.md`. Use it verbatim
+from there -- do not restate it here.
 
 ### Branch Naming
 

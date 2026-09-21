@@ -1,0 +1,18 @@
+parent commit under comparison: 5d8db2fa4715e4dfe7d3b6604d725de4c291ec9d
+
+_PARTIAL_GUIDANCE
+  parent sha256=b1d9796d1a9adf29 len=416
+  now    sha256=b1d9796d1a9adf29 len=416
+  BYTE-IDENTICAL = True
+_NO_PARTIAL_GUIDANCE
+  parent sha256=d73f51f164c545d3 len=245
+  now    sha256=d73f51f164c545d3 len=245
+  BYTE-IDENTICAL = True
+
+runtime: this build's guidance vs what the PARENT selector would return
+  text partial (spawn-accumulator)     unchanged-vs-parent = True
+  text partial (source absent)         unchanged-vs-parent = True
+  text partial (unknown source)        unchanged-vs-parent = True
+  text partial (non-str source)        unchanged-vs-parent = True
+  no partial                           unchanged-vs-parent = True
+  reasoning partial (CHANGES)          unchanged-vs-parent = False

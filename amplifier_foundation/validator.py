@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -303,3 +304,104 @@ def validate_bundle_completeness_or_raise(bundle: Bundle) -> None:
     """
     validator = BundleValidator()
     validator.validate_completeness_or_raise(bundle)
+
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n(.*)$", re.DOTALL)
+_BARE_MENTION_RE = re.compile(r"^\s*@[\w.-]+:[\w./-]+\s*$")
+_SECOND_PERSON_RE = re.compile(r"\b(you|your|yours|yourself)\b", re.IGNORECASE)
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+# Markdown scaffolding: headings and horizontal rules. These carry no prose --
+# a body of "# LLM Wiki Bundle" and a divider says nothing to the model, so
+# there is nothing there to classify as instruction or as documentation.
+_SCAFFOLDING_RE = re.compile(r"^\s{0,3}(#{1,6}\s|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$)")
+
+
+def check_body_is_instruction(content: str) -> dict[str, Any]:
+    """Classify the markdown body of a bundle/agent/mode file.
+
+    Everything below the YAML frontmatter is sent to the model as system
+    instruction. Only instruction -- or @mention pointers to instruction
+    files -- belongs there. Descriptive prose about the artifact is a defect.
+
+    The discriminator is whether the remaining text addresses the model
+    (second person). Fenced code blocks are excluded before that test: they are
+    examples, and a placeholder such as "your-server" inside a sample config is
+    not the body addressing the model.
+
+    Args:
+        content: Full text of the .md file, including frontmatter.
+
+    Returns:
+        Dict with keys:
+          verdict: "OK" | "FLAG" | "NO_FRONTMATTER"
+          prose_chars: int, characters of body text left after removing
+            fenced code, @mention lines, HTML comments, and markdown
+            scaffolding (headings, horizontal rules)
+          prose_preview: str, first 200 chars of that prose ("" when none)
+          reason: str, short human-readable explanation
+    """
+    match = _FRONTMATTER_RE.match(content)
+    if not match:
+        return {
+            "verdict": "NO_FRONTMATTER",
+            "prose_chars": 0,
+            "prose_preview": "",
+            "reason": "no frontmatter",
+        }
+
+    # Fenced code blocks are examples, not the body speaking to the model.
+    body = _CODE_FENCE_RE.sub("", match.group(1))
+
+    prose_lines: list[str] = []
+    in_html_comment = False
+    for line in body.split("\n"):
+        stripped = line.strip()
+
+        if in_html_comment:
+            if "-->" in stripped:
+                in_html_comment = False
+            continue
+
+        if not stripped:
+            continue
+
+        if stripped.startswith("<!--"):
+            if "-->" not in stripped:
+                in_html_comment = True
+            continue
+
+        if _BARE_MENTION_RE.match(line):
+            continue
+
+        if _SCAFFOLDING_RE.match(line):
+            continue
+
+        prose_lines.append(line)
+
+    prose_text = "\n".join(prose_lines)
+    prose_chars = len(prose_text)
+    prose_preview = prose_text[:200]
+
+    if not prose_text.strip():
+        return {
+            "verdict": "OK",
+            "prose_chars": prose_chars,
+            "prose_preview": prose_preview,
+            "reason": "body carries no prose (mentions/scaffolding only)",
+        }
+
+    if _SECOND_PERSON_RE.search(prose_text):
+        return {
+            "verdict": "OK",
+            "prose_chars": prose_chars,
+            "prose_preview": prose_preview,
+            "reason": "addresses the model (second person)",
+        }
+
+    return {
+        "verdict": "FLAG",
+        "prose_chars": prose_chars,
+        "prose_preview": prose_preview,
+        "reason": "no second-person address -- reads as documentation, not instruction",
+    }

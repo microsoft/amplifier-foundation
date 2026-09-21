@@ -1,0 +1,53 @@
+AFTER  --  validate-agents v1.6.0 (widened discovery), same repo, same host, same day
+run_id:        run-67388a546d75
+session_id:    10ba26d6554c4252-20260906-123907_recipe
+repo_path:     /home/bkrabach/dev/hw-model-performance/lanes/xe1u-validate-agents-discovery/amplifier-foundation
+status:        completed
+
+discovery_results.total_count:       32          (was 23)
+discovery_results.search_locations:  6           (was 3)
+discovery_results.scan_patterns:     ["<repo>/**/agents/*.md", "<repo>/agents/*.md"]
+discovery_results.excluded_parts:    [".git", ".venv", "docs", "node_modules", "test-fixtures", "tests"]
+discovery_results.location_counts:
+  agents/                          16   (walked before)
+  bundles/anchors/agents/           6   (walked before)
+  bundles/anchors-amp-dev/agents/   1   (walked before)
+  context/agents/                   4   NEWLY WALKED
+  examples/agents/                  1   NEWLY WALKED
+  experiments/build-up/agents/      4   NEWLY WALKED
+
+This set is IDENTICAL to the 32 files in 6phe's
+docs/lanes/6phe-experiments-example-sweep/evidence/scope-parity.txt
+("validator scope ... 32 agents / guard (c) scope ... 32 agents / identical sets: True").
+All three scopes now agree.
+
+structural summary:  total 32, passed 28, errors 4, warnings 1
+quality_level:       critical   (was "good")
+requires_llm_analysis: true     (was false)
+classification:      good 27, polish 0, needs_work 1, critical 4
+
+VERDICT (synthesize-report): FAIL   <-- CHANGED from PASS
+
+NEWLY-SURFACED FINDINGS -- REPORTED, NOT FIXED (goal scope-out):
+
+  4x ERROR  NO_FRONTMATTER
+      context/agents/delegation-instructions.md
+      context/agents/multi-agent-patterns.md
+      context/agents/session-repair-knowledge.md
+      context/agents/session-storage-knowledge.md
+
+  1x WARNING NO_TOOLS_SECTION
+      examples/agents/file-responder.md
+
+  0 findings in experiments/build-up/agents/ (4 files) -- confirms 6phe cleaned
+    the content to zero; the widened scan's good news.
+
+LLM steps EXECUTED (3):  description-quality-check, tool-access-analysis, synthesize-report
+LLM steps SKIPPED  (1):  quick-approval (condition requires_llm_analysis == false)
+  -- note the inversion vs the BEFORE run, which executed quick-approval and
+     skipped the other two.
+
+REPRODUCE THE DETERMINISTIC PART FOR $0:
+  the discovery / structural / classification steps are pure bash+python.
+  after-deterministic-phases.json in this directory is their exact output,
+  re-derived locally from the same recipe file with no LLM step involved.

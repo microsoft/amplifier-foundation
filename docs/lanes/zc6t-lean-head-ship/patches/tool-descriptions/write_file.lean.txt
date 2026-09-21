@@ -1,0 +1,5 @@
+Write a file to the local filesystem, overwriting anything already at that path. file_path accepts absolute paths, relative paths, and @bundle-name:path bundle resources (full form in read_file's description).
+
+HARD CONSTRAINT: if the file already exists you MUST call read_file on it first - this tool fails if you did not read it first.
+
+ALWAYS prefer editing an existing file; NEVER write new files unless explicitly required. NEVER proactively create documentation (*.md) or README files unless the User explicitly requests them. Do not write emojis unless asked.

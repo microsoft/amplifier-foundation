@@ -1,0 +1,21 @@
+--- a/context/gitea-awareness.md
++++ b/context/gitea-awareness.md
+@@ -1,17 +1,2 @@
+ # Gitea Environments
+-
+-You have access to `amplifier-gitea`, a CLI for on-demand ephemeral Gitea Docker environments. Use it for isolated git workflows, safe experimentation, and GitHub mirroring/promoting.
+-
+-## When to Use
+-
+-- User needs an isolated git environment (experiments, testing, demos)
+-- User wants to mirror a GitHub repo, work freely, then promote changes back as a PR
+-- User needs a disposable git server with issues, PRs, and API access
+-
+-## How to Use
+-
+-It will tell you the necessary prerequisites, installation instructions, CLI documentation, workflows, and troubleshooting:
+-
+-```
+-load_skill(skill_name="gitea")
+-```
++`amplifier-gitea` CLI = on-demand ephemeral Gitea Docker environments: isolated git workflows (experiments, testing, demos), mirroring a GitHub repo then promoting changes back as a PR, disposable git server with issues, PRs, API access. Prereqs, install, CLI docs, workflows, troubleshooting: `load_skill(skill_name="gitea")`.

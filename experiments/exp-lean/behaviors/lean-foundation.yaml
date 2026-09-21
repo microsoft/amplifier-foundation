@@ -1,6 +1,7 @@
 ---
 bundle:
   name: lean-foundation-behavior
+  display_name: Lean Foundation
   version: 1.0.0
   description: |
     Minimal Amplifier infrastructure: session config, core tools, essential UX hooks,
@@ -19,7 +20,6 @@ session:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
     config:
-      max_tokens: 300000
       compact_threshold: 0.8
       auto_compact: true
 

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Any
 from unittest.mock import AsyncMock
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
 
 from amplifier_foundation.spawn_utils import ProviderPreference
+from amplifier_foundation.spawn_utils import ModelResolutionResult
 from amplifier_foundation.spawn_utils import _apply_single_override
 from amplifier_foundation.spawn_utils import _build_provider_lookup
 from amplifier_foundation.spawn_utils import _find_provider_index
@@ -49,6 +53,11 @@ class TestProviderPreference:
         """Test from_dict raises error when model is missing."""
         with pytest.raises(ValueError, match="requires 'model' key"):
             ProviderPreference.from_dict({"provider": "openai"})
+
+    def test_resolution_result_keeps_legacy_positional_arguments(self) -> None:
+        result = ModelResolutionResult("model", "pattern", ["model"], ["model"])
+        assert result.status == "resolved"
+        assert result.provider is None
 
 
 class TestIsGlobPattern:
@@ -213,15 +222,16 @@ class TestResolveModelPattern:
         assert result.pattern is None
 
     @pytest.mark.asyncio
-    async def test_pattern_without_provider_returns_as_is(self) -> None:
-        """Test that patterns without provider are returned as-is."""
+    async def test_pattern_without_provider_is_an_explicit_failure(self) -> None:
+        """A glob without a provider must never become a literal model name."""
         result = await resolve_model_pattern(
             "claude-haiku-*",
             None,
             MagicMock(),
         )
-        assert result.resolved_model == "claude-haiku-*"
+        assert result.resolved_model is None
         assert result.pattern == "claude-haiku-*"
+        assert result.status == "provider_not_mounted"
 
     @pytest.mark.asyncio
     async def test_pattern_resolves_to_latest(self) -> None:
@@ -705,6 +715,207 @@ class TestApplyProviderPreferencesWithResolution:
             assert "default_model" not in p["config"]
 
 
+class TestResolutionDiagnosticsAndColdResume:
+    """No-network regressions for resolution status and warning ownership."""
+
+    @pytest.mark.asyncio
+    async def test_cold_resume_promotes_matching_persisted_default_quietly(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        plan = {
+            "providers": [
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 4, "default_model": "Claude-Sonnet-4-5"},
+                }
+            ]
+        }
+        diagnostics = []
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_foundation.spawn_utils"):
+            result = await apply_provider_preferences_with_resolution(
+                plan,
+                [ProviderPreference(provider="anthropic", model="claude-sonnet-*")],
+                coordinator=None,
+                diagnostics=diagnostics,
+            )
+
+        assert result["providers"][0]["config"]["default_model"] == "Claude-Sonnet-4-5"
+        assert [(item.status, item.provider, item.resolved_model) for item in diagnostics] == [
+            ("resolved", "sonnet", "Claude-Sonnet-4-5")
+        ]
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_cold_resume_nonmatching_default_is_catalog_unavailable(self) -> None:
+        plan = {
+            "providers": [
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet-4-5"},
+                }
+            ]
+        }
+        diagnostics = []
+
+        result = await apply_provider_preferences_with_resolution(
+            plan,
+            [ProviderPreference(provider="anthropic", model="claude-haiku-*")],
+            coordinator=None,
+            diagnostics=diagnostics,
+        )
+
+        assert result is plan
+        assert diagnostics[0].status == "catalog_unavailable"
+        assert diagnostics[0].resolved_model is None
+
+    @pytest.mark.asyncio
+    async def test_query_failure_never_uses_persisted_default_as_a_fallback(self) -> None:
+        plan = {
+            "providers": [
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet-4-5"},
+                }
+            ]
+        }
+        coordinator = MagicMock()
+        coordinator.get.side_effect = RuntimeError("network details must stay hidden")
+        diagnostics = []
+
+        result = await apply_provider_preferences_with_resolution(
+            plan,
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-*")],
+            coordinator,
+            diagnostics=diagnostics,
+        )
+
+        assert result is plan
+        assert diagnostics[0].status == "catalog_query_failed"
+        assert diagnostics[0].resolved_model is None
+
+    @pytest.mark.asyncio
+    async def test_catalog_query_failure_empty_catalog_and_no_match_stay_distinct(self) -> None:
+        async def resolve(models: Any) -> str:
+            provider = MagicMock()
+            provider.list_models = AsyncMock(
+                side_effect=models if isinstance(models, Exception) else None,
+                return_value=None if isinstance(models, Exception) else models,
+            )
+            coordinator = MagicMock()
+            coordinator.get.return_value = {"provider-anthropic": provider}
+            return (
+                await resolve_model_pattern("claude-haiku-*", "anthropic", coordinator)
+            ).status
+
+        assert await resolve(RuntimeError("not for logs")) == "catalog_query_failed"
+        assert await resolve([]) == "empty_catalog"
+        assert await resolve(["claude-sonnet-4-5"]) == "no_matching_model"
+
+    @pytest.mark.asyncio
+    async def test_selected_instance_is_the_only_catalog_queried(self) -> None:
+        opus = MagicMock()
+        opus.list_models = AsyncMock(return_value=["claude-opus-4-5"])
+        sonnet = MagicMock()
+        sonnet.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        plan = {
+            "providers": [
+                {
+                    "id": "opus",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 1, "default_model": "claude-opus-4-5"},
+                },
+                {
+                    "id": "sonnet",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 9, "default_model": "claude-sonnet-4-5"},
+                },
+            ]
+        }
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"opus": opus, "sonnet": sonnet}
+
+        result = await apply_provider_preferences_with_resolution(
+            plan,
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-*")],
+            coordinator,
+        )
+
+        assert result["providers"][1]["config"]["default_model"] == "claude-sonnet-4-5"
+        opus.list_models.assert_not_awaited()
+        sonnet.list_models.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_include_failed_attempt_and_terminal_success_without_warnings(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        openai = MagicMock()
+        openai.list_models = AsyncMock(return_value=["gpt-4o-mini"])
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"provider-openai": openai}
+        diagnostics = []
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_foundation.spawn_utils"):
+            result = await apply_provider_preferences_with_resolution(
+                {"providers": [{"module": "provider-openai", "config": {}}]},
+                [
+                    ProviderPreference(provider="anthropic", model="claude-haiku-*"),
+                    ProviderPreference(provider="openai", model="gpt-4o-*"),
+                ],
+                coordinator,
+                diagnostics=diagnostics,
+            )
+
+        assert result["providers"][0]["config"]["default_model"] == "gpt-4o-mini"
+        assert [(item.status, item.provider) for item in diagnostics] == [
+            ("provider_not_mounted", "anthropic"),
+            ("resolved", "provider-openai"),
+        ]
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_later_success_without_diagnostics_is_silent(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        openai = MagicMock()
+        openai.list_models = AsyncMock(return_value=["gpt-4o-mini"])
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"provider-openai": openai}
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_foundation.spawn_utils"):
+            result = await apply_provider_preferences_with_resolution(
+                {"providers": [{"module": "provider-openai", "config": {}}]},
+                [
+                    ProviderPreference(provider="anthropic", model="claude-haiku-*"),
+                    ProviderPreference(provider="openai", model="gpt-4o-*"),
+                ],
+                coordinator,
+            )
+
+        assert result["providers"][0]["config"]["default_model"] == "gpt-4o-mini"
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_all_failures_without_diagnostics_emit_one_final_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="amplifier_foundation.spawn_utils"):
+            await apply_provider_preferences_with_resolution(
+                {"providers": [{"module": "provider-openai", "config": {}}]},
+                [
+                    ProviderPreference(provider="anthropic", model="claude-haiku-*"),
+                    ProviderPreference(provider="openai", model="gpt-4o-*"),
+                ],
+                coordinator=None,
+            )
+
+        assert len(caplog.records) == 1
+        assert "No provider preference could be applied" in caplog.records[0].message
+
+
 class TestProviderPreferenceConfig:
     """Tests for ProviderPreference config field."""
 
@@ -988,3 +1199,803 @@ class TestProviderPreferenceConfigWiring:
         assert result_config["temperature"] == 0.3
         # Existing protected key untouched
         assert result_config["api_key"] == "sk-test"
+
+
+class TestListModelsSingleFlightMemoization:
+    """Regression tests: concurrent glob-pattern resolutions must coalesce
+    provider.list_models() into a single upstream call (per provider, per TTL
+    window) instead of firing one GET /v1/models per spawned child session.
+    """
+
+    def _make_coordinator(self, provider: AsyncMock) -> MagicMock:
+        coordinator = MagicMock()
+        coordinator.get.return_value = {"provider-anthropic": provider}
+        return coordinator
+
+    @pytest.mark.asyncio
+    async def test_concurrent_resolutions_fetch_once(self) -> None:
+        """50 parallel spawns resolving the same pattern = 1 upstream call."""
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            return_value=["claude-sonnet-4-5", "claude-haiku-4-5"]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        results = await asyncio.gather(
+            *(
+                resolve_model_pattern("claude-haiku-*", "anthropic", coordinator)
+                for _ in range(50)
+            )
+        )
+
+        assert provider.list_models.await_count == 1
+        assert all(r.resolved_model == "claude-haiku-4-5" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_sequential_resolutions_reuse_within_ttl(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        coordinator = self._make_coordinator(provider)
+
+        for _ in range(5):
+            result = await resolve_model_pattern(
+                "claude-sonnet-*", "anthropic", coordinator
+            )
+            assert result.resolved_model == "claude-sonnet-4-5"
+
+        assert provider.list_models.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_after_ttl_expiry(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        coordinator = self._make_coordinator(provider)
+
+        import amplifier_foundation.spawn_utils as su
+
+        original_ttl = su.LIST_MODELS_CACHE_TTL_SECONDS
+        su.LIST_MODELS_CACHE_TTL_SECONDS = 0.05
+        try:
+            await resolve_model_pattern("claude-*", "anthropic", coordinator)
+            await asyncio.sleep(0.1)
+            await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        finally:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = original_ttl
+
+        assert provider.list_models.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exact_name_never_fetches(self) -> None:
+        provider = AsyncMock()
+        coordinator = self._make_coordinator(provider)
+
+        result = await resolve_model_pattern(
+            "claude-sonnet-4-5", "anthropic", coordinator
+        )
+
+        assert result.resolved_model == "claude-sonnet-4-5"
+        provider.list_models.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_providers_cached_independently(self) -> None:
+        provider_a = AsyncMock()
+        provider_a.list_models = AsyncMock(return_value=["m-a"])
+        coordinator_a = MagicMock()
+        coordinator_a.get.return_value = {"provider-anthropic": provider_a}
+
+        provider_b = AsyncMock()
+        provider_b.list_models = AsyncMock(return_value=["m-b"])
+        coordinator_b = MagicMock()
+        coordinator_b.get.return_value = {"provider-anthropic": provider_b}
+
+        await asyncio.gather(
+            resolve_model_pattern("m-*", "anthropic", coordinator_a),
+            resolve_model_pattern("m-*", "anthropic", coordinator_b),
+        )
+
+        assert provider_a.list_models.await_count == 1
+        assert provider_b.list_models.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failures_are_not_cached(self) -> None:
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            side_effect=[RuntimeError("boom"), ["claude-sonnet-4-5"]]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        first = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        assert first.resolved_model is None
+
+        second = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        assert second.resolved_model == "claude-sonnet-4-5"
+        assert provider.list_models.await_count == 2
+
+
+class TestListModelsCacheHardening:
+    """Regression tests for the hardening pass on top of #302's single-flight
+    TTL cache (danshapiro): soft-failure non-answers must never poison the
+    cache, a failing fetch must be shared once (not re-run per waiter) and
+    must not persist past its own delivery, and a waiter must not block
+    forever on a hung shared fetch.
+
+    See repro_302.py / repro_302_hol.py for the standalone demonstrations
+    these tests mirror.
+    """
+
+    def _make_coordinator(
+        self, provider: AsyncMock, key: str = "provider-ollama"
+    ) -> MagicMock:
+        coordinator = MagicMock()
+        coordinator.get.return_value = {key: provider}
+        return coordinator
+
+    @pytest.mark.asyncio
+    async def test_empty_list_not_cached_then_refetches_and_later_caches(
+        self,
+    ) -> None:
+        """Mirrors repro_302.py CASE 1 (ollama-style soft failure -> []).
+
+        An empty result must never be cached -- the next call must refetch
+        live -- but once a genuinely non-empty result comes back, THAT one
+        is cached normally (no refetch on the following call).
+        """
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            side_effect=[[], [], ["qwen3.6-35b-a3b", "llama4:70b"]]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        first = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        assert first.resolved_model is None
+        assert provider.list_models.await_count == 1
+
+        # [] must NOT have been cached -- this call refetches live.
+        second = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        assert second.resolved_model is None
+        assert provider.list_models.await_count == 2
+
+        # Server "recovers": a genuinely non-empty result comes back.
+        third = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        assert third.resolved_model == "qwen3.6-35b-a3b"
+        assert provider.list_models.await_count == 3
+
+        # The non-empty result IS cached -- a 4th call must not refetch.
+        fourth = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        assert fourth.resolved_model == "qwen3.6-35b-a3b"
+        assert provider.list_models.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_degraded_single_model_list_bounded_by_ttl(self) -> None:
+        """Mirrors repro_302.py CASE 2 (chat-completions degraded fallback).
+
+        A degraded single-model fallback list (e.g. chat-completions
+        returning `[configured_model]` on ANY exception) is NON-empty, so
+        it is indistinguishable at this generic, provider-agnostic cache
+        layer from a legitimately single-model catalog -- and
+        `test_sequential_resolutions_reuse_within_ttl` above requires a
+        genuine single-model result to be cached, so this layer cannot
+        special-case "list of length 1" without breaking that contract.
+
+        What the hardening DOES guarantee: the poisoning window is bounded
+        by the (now-configurable, see TestListModelsConfigurableKnobs) TTL
+        instead of being permanent -- once the TTL expires, a subsequent
+        real catalog fetch replaces the degraded entry rather than being
+        stuck behind it indefinitely.
+        """
+        provider = AsyncMock()
+        provider.list_models = AsyncMock(
+            side_effect=[
+                ["local-default"],  # degraded fallback while "down"
+                ["qwen3.6-35b-a3b", "qwen3.6-8b", "local-default"],  # recovered
+            ]
+        )
+        coordinator = self._make_coordinator(provider)
+
+        import amplifier_foundation.spawn_utils as su
+
+        original_ttl = su.LIST_MODELS_CACHE_TTL_SECONDS
+        su.LIST_MODELS_CACHE_TTL_SECONDS = 0.05
+        try:
+            degraded = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+            # The degraded list is non-empty, so it is cached like any other
+            # answer -- pattern doesn't match it, so resolution fails, but
+            # this is a real answer as far as the cache can tell.
+            assert degraded.resolved_model is None
+            assert provider.list_models.await_count == 1
+
+            await asyncio.sleep(0.1)  # TTL expires
+
+            recovered = await resolve_model_pattern("qwen3.6-*", "ollama", coordinator)
+        finally:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = original_ttl
+
+        # Once the (bounded, configurable) TTL has passed, the degraded
+        # entry is gone and a fresh, real catalog is fetched and resolved
+        # correctly -- not permanently poisoned.
+        assert provider.list_models.await_count == 2
+        # Two matches ("qwen3.6-35b-a3b", "qwen3.6-8b"); descending sort picks
+        # "qwen3.6-8b" ("8" > "3" at the first differing character).
+        assert recovered.resolved_model == "qwen3.6-8b"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_failure_shared_once_then_fresh_fetch(self) -> None:
+        """A failing fetch is shared once across every concurrent waiter --
+        not re-run as a full retry campaign per waiter -- and does not
+        persist past its own delivery: the next NEW caller after the wave
+        settles gets a genuinely fresh fetch.
+        """
+        provider = AsyncMock()
+        started = asyncio.Event()
+
+        async def flaky_list_models() -> list[str]:
+            started.set()
+            await asyncio.sleep(0.05)
+            raise RuntimeError("boom")
+
+        provider.list_models = AsyncMock(side_effect=flaky_list_models)
+        coordinator = self._make_coordinator(provider, key="provider-anthropic")
+
+        results = await asyncio.gather(
+            *(
+                resolve_model_pattern("claude-*", "anthropic", coordinator)
+                for _ in range(20)
+            )
+        )
+
+        # The failure was delivered to every one of the 20 waiters...
+        assert all(r.resolved_model is None for r in results)
+        # ...but the provider was only actually called once for the whole
+        # wave (not once per waiter re-running its own retry campaign).
+        assert provider.list_models.await_count == 1
+
+        # The next NEW caller, after the failed wave has settled, starts a
+        # genuinely fresh fetch rather than adopting the dead failed task.
+        provider.list_models = AsyncMock(return_value=["claude-sonnet-4-5"])
+        result = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        assert result.resolved_model == "claude-sonnet-4-5"
+        assert provider.list_models.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_waiter_timeout_falls_through_to_direct_call(self) -> None:
+        """A caller must not block forever on someone else's in-flight
+        fetch -- past the configured wait timeout it falls through to a
+        direct, uncached provider.list_models() call of its own.
+        """
+        provider = AsyncMock()
+        release = asyncio.Event()
+        calls = 0
+
+        async def hangs_then_direct_succeeds() -> list[str]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                # The shared fetch: held open past the wait timeout.
+                await release.wait()
+                return ["claude-sonnet-4-5"]
+            # This caller's own direct fallback call, once it gives up
+            # waiting on the (still-hanging) shared fetch.
+            return ["claude-haiku-4-5"]
+
+        provider.list_models = AsyncMock(side_effect=hangs_then_direct_succeeds)
+        coordinator = self._make_coordinator(provider, key="provider-anthropic")
+
+        import amplifier_foundation.spawn_utils as su
+
+        original_timeout = su.LIST_MODELS_WAIT_TIMEOUT_SECONDS
+        su.LIST_MODELS_WAIT_TIMEOUT_SECONDS = 0.05
+        try:
+            result = await resolve_model_pattern("claude-*", "anthropic", coordinator)
+        finally:
+            su.LIST_MODELS_WAIT_TIMEOUT_SECONDS = original_timeout
+            release.set()
+            # Let the still-in-flight shared fetch drain cleanly instead of
+            # leaving a pending task for the loop to warn about at teardown.
+            entry = su._MODEL_LIST_CACHE.get(provider)
+            if entry is not None and entry.task is not None:
+                await asyncio.wait_for(entry.task, timeout=1)
+
+        assert result.resolved_model == "claude-haiku-4-5"
+        assert calls == 2
+
+
+class TestListModelsConfigurableKnobs:
+    """Regression tests for making the TTL and wait-timeout configurable via
+    environment variables while preserving the existing module-global
+    monkey-patch surface (`su.LIST_MODELS_CACHE_TTL_SECONDS = ...` etc.).
+    """
+
+    def test_ttl_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import amplifier_foundation.spawn_utils as su
+
+        monkeypatch.delenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", raising=False)
+        assert su._get_ttl_seconds() == su.LIST_MODELS_CACHE_TTL_SECONDS
+
+        monkeypatch.setenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", "5")
+        assert su._get_ttl_seconds() == 5.0
+
+    def test_ttl_module_global_still_monkeypatchable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import amplifier_foundation.spawn_utils as su
+
+        monkeypatch.delenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", raising=False)
+        original = su.LIST_MODELS_CACHE_TTL_SECONDS
+        try:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = 123.0
+            assert su._get_ttl_seconds() == 123.0
+        finally:
+            su.LIST_MODELS_CACHE_TTL_SECONDS = original
+
+    def test_wait_timeout_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import amplifier_foundation.spawn_utils as su
+
+        monkeypatch.delenv("AMPLIFIER_LIST_MODELS_WAIT_TIMEOUT_SECONDS", raising=False)
+        assert su._get_wait_timeout_seconds() == su.LIST_MODELS_WAIT_TIMEOUT_SECONDS
+
+        monkeypatch.setenv("AMPLIFIER_LIST_MODELS_WAIT_TIMEOUT_SECONDS", "2.5")
+        assert su._get_wait_timeout_seconds() == 2.5
+
+    def test_invalid_env_value_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import amplifier_foundation.spawn_utils as su
+
+        monkeypatch.setenv("AMPLIFIER_LIST_MODELS_CACHE_TTL_SECONDS", "not-a-number")
+        assert su._get_ttl_seconds() == su.LIST_MODELS_CACHE_TTL_SECONDS
+
+
+class TestOverrideOutranksTiedPriorityZeroPrimary:
+    """Regression tests for openai_improvement-ejq.
+
+    An override selecting a non-primary provider instance must STRICTLY
+    win child provider resolution, even when the user's primary provider
+    is declared FIRST at priority=0 (the natural "make this my default
+    model" config).
+
+    Before the fix, `_apply_single_override` only ever promoted the
+    overridden target to priority=0 and never touched anyone else's
+    priority. When the primary was ALSO priority=0 (having been declared
+    first -- the ordinary shape of a user's default-provider config), the
+    two tied at priority=0 and a stable sort broke the tie by declaration
+    order, silently handing resolution back to the primary regardless of
+    which instance the override selected. In a 5-run live eval, 100% of
+    sub-agent LLM calls ran the primary instead of the role-resolved /
+    agent-frontmatter `provider_preferences` selection -- completely
+    silently.
+
+    `_pick_default_provider` below simulates the production tie-break
+    rule exactly as documented in the bug report, and exactly matching the
+    `candidates.sort(key=lambda c: c[0])` stable-sort-by-priority idiom
+    `_find_provider_instance` already uses elsewhere in this module: the
+    provider with the lowest `config.priority` wins; a tie is broken by
+    declaration order (first in the list wins), because Python's
+    `sort`/`sorted` are stable.
+    """
+
+    @staticmethod
+    def _pick_default_provider(mount_plan: dict) -> dict:
+        """Simulate production's priority-based default-provider selection."""
+        providers = mount_plan["providers"]
+        candidates = [
+            (p.get("config", {}).get("priority", 0), i) for i, p in enumerate(providers)
+        ]
+        candidates.sort(key=lambda c: c[0])
+        return providers[candidates[0][1]]
+
+    def test_override_second_instance_outranks_priority_zero_primary_same_type(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two instances of the SAME provider type: the primary is declared
+        FIRST at priority=0 (typical user default-model config); the
+        override picks the SECOND instance by its explicit `id`. The
+        second instance must strictly win resolution -- not merely tie.
+        """
+        mount_plan = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-primary",
+                    "config": {
+                        "priority": 0,
+                        "default_model": "claude-primary-model",
+                    },
+                },
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-secondary",
+                    "config": {"priority": 10},
+                },
+            ]
+        }
+        prefs = [
+            ProviderPreference(
+                provider="anthropic-secondary", model="claude-secondary-model"
+            )
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="amplifier_foundation.spawn_utils"):
+            result = apply_provider_preferences(mount_plan, prefs)
+
+        selected = self._pick_default_provider(result)
+        assert selected["id"] == "anthropic-secondary", (
+            "The overridden (secondary) instance must win child provider "
+            "resolution, not silently lose a priority=0 tie to the "
+            "first-declared primary."
+        )
+        assert selected["config"]["default_model"] == "claude-secondary-model"
+
+        # The primary must have been demoted strictly below the target --
+        # not merely left tied with it at priority=0.
+        primary = result["providers"][0]
+        assert primary["id"] == "anthropic-primary"
+        assert primary["config"]["priority"] > selected["config"]["priority"]
+
+        # A tie-demotion occurred -- it must be observable.
+        assert any(
+            "tie-break" in r.message and "anthropic-primary" in r.message
+            for r in caplog.records
+        ), "Expected a debug-level tie-break log noting the demoted instance"
+
+    @pytest.mark.asyncio
+    async def test_override_cross_provider_outranks_priority_zero_primary(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Cross-provider case: primary is a DIFFERENT provider type (openai)
+        than the override target (anthropic) -- the mechanism must be
+        provider-agnostic, not special-cased to same-module-type
+        disambiguation.
+        """
+        mount_plan = {
+            "providers": [
+                {
+                    "module": "provider-openai",
+                    "config": {"priority": 0, "default_model": "gpt-primary-model"},
+                },
+                {
+                    "module": "provider-anthropic",
+                    "config": {"priority": 20},
+                },
+            ]
+        }
+        prefs = [
+            ProviderPreference(provider="anthropic", model="claude-secondary-model")
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="amplifier_foundation.spawn_utils"):
+            result = await apply_provider_preferences_with_resolution(
+                mount_plan, prefs, coordinator=None
+            )
+
+        selected = self._pick_default_provider(result)
+        assert selected["module"] == "provider-anthropic", (
+            "The overridden anthropic instance must win child provider "
+            "resolution over the priority=0, first-declared openai primary."
+        )
+        assert selected["config"]["default_model"] == "claude-secondary-model"
+
+        primary = result["providers"][0]
+        assert primary["module"] == "provider-openai"
+        assert primary["config"]["priority"] > selected["config"]["priority"]
+
+        assert any("tie-break" in r.message for r in caplog.records), (
+            "Expected a debug-level tie-break log for the cross-provider case too"
+        )
+
+    def test_override_selecting_primary_itself_no_demotion_needed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When the override selects the primary itself, there is no tie to
+        break (the target IS the priority=0 instance) -- no other provider
+        should be touched and no tie-break log should fire.
+        """
+        mount_plan = {
+            "providers": [
+                {"module": "provider-anthropic", "config": {"priority": 0}},
+                {"module": "provider-openai", "config": {"priority": 20}},
+            ]
+        }
+        prefs = [
+            ProviderPreference(provider="anthropic", model="claude-override-model")
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="amplifier_foundation.spawn_utils"):
+            result = apply_provider_preferences(mount_plan, prefs)
+
+        selected = self._pick_default_provider(result)
+        assert selected["module"] == "provider-anthropic"
+        assert selected["config"]["default_model"] == "claude-override-model"
+        assert selected["config"]["priority"] == 0
+
+        # Secondary is untouched -- it never tied with the target, so no
+        # demotion should have been applied.
+        secondary = result["providers"][1]
+        assert secondary["config"]["priority"] == 20
+        assert "default_model" not in secondary["config"]
+
+        assert not any("tie-break" in r.message for r in caplog.records), (
+            "No tie-break demotion should occur when the override target "
+            "is already the sole priority=0 instance"
+        )
+
+
+# =============================================================================
+# recipes-0ac -- a preference is a (provider, model) PAIR
+# =============================================================================
+#
+# Measured 2026-09-02 on a 14-provider host. Module `provider-anthropic` is
+# mounted three times with distinct ids and priorities; the routing matrix
+# addresses it by MODULE name ("anthropic") and discriminates with the model
+# glob. Before the fix the model half never reached instance resolution, so
+# every {anthropic, *} preference landed on whichever anthropic mount ranked
+# first and stamped the requested model onto THAT instance's config -- right
+# model name, wrong instance, and with it the wrong base_url / context window
+# / cache-retention settings. Downstream this put a reasoning-role agent on a
+# 65K-context mount and produced 400s.
+
+
+MEASURED_HOST: list[dict[str, Any]] = [
+    {
+        "id": "opus",
+        "module": "provider-anthropic",
+        "config": {"priority": 1, "default_model": "claude-opus-5"},
+    },
+    {
+        "id": "sonnet",
+        "module": "provider-anthropic",
+        "config": {"priority": 5, "default_model": "claude-sonnet-5"},
+    },
+    {
+        "id": "fable",
+        "module": "provider-anthropic",
+        "config": {"priority": 6, "default_model": "claude-sonnet-4-5"},
+    },
+    {
+        "id": "gemini",
+        "module": "provider-gemini",
+        "config": {"priority": 3, "default_model": "gemini-3-pro"},
+    },
+]
+
+
+def _measured_host() -> dict[str, Any]:
+    """A fresh, deeply-copied copy of the measured mount plan."""
+    return {"providers": [{**p, "config": dict(p["config"])} for p in MEASURED_HOST]}
+
+
+def _promoted(plan: dict[str, Any]) -> dict[str, Any]:
+    """The single instance the override promoted to priority 0."""
+    winners = [p for p in plan["providers"] if p["config"].get("priority") == 0]
+    assert len(winners) == 1, f"expected exactly one promoted mount, got {winners}"
+    return winners[0]
+
+
+def _by_id(plan: dict[str, Any], instance_id: str) -> dict[str, Any]:
+    return next(p for p in plan["providers"] if p["id"] == instance_id)
+
+
+class TestModuleNamedPreferenceResolvesToMatchingInstance:
+    """Module-named preferences pick the instance that serves the model."""
+
+    def test_model_glob_selects_matching_instance_not_first_ranked(self) -> None:
+        """{anthropic, claude-opus-*} means `opus`, and only `opus`."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-opus-*")],
+        )
+
+        assert _promoted(result)["id"] == "opus"
+
+        # The instance that does NOT serve this model keeps its own config --
+        # no stray promotion, no stamped-on model, no borrowed settings.
+        fable = _by_id(result, "fable")
+        assert fable["config"]["priority"] == 6
+        assert fable["config"]["default_model"] == "claude-sonnet-4-5"
+
+    def test_model_selects_lower_priority_instance_that_serves_it(self) -> None:
+        """The fix proper: the model half outranks bare priority order.
+
+        Fails before the fix -- `opus` (priority 1, the highest-ranked
+        anthropic mount) was promoted and `claude-sonnet-4-5` written onto
+        ITS config, even though `fable` is the mount that serves that model.
+        """
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-4-5")],
+        )
+
+        promoted = _promoted(result)
+        assert promoted["id"] == "fable"
+        assert promoted["config"]["default_model"] == "claude-sonnet-4-5"
+
+        opus = _by_id(result, "opus")
+        assert opus["config"]["priority"] == 1
+        assert opus["config"]["default_model"] == "claude-opus-5"
+
+    def test_no_model_falls_back_to_highest_priority_instance(self) -> None:
+        """With nothing to discriminate on, highest priority wins."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="")],
+        )
+        assert _promoted(result)["id"] == "opus"
+
+    def test_unmatched_model_still_falls_back_to_highest_priority(self) -> None:
+        """A model no mount declares must never turn into a MISS.
+
+        Model metadata in a mount plan is optional and often absent; a hint
+        that matches nothing carries no information and must not stop the
+        preference from being applied at all.
+        """
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-unknown-9")],
+        )
+        assert _promoted(result)["id"] == "opus"
+
+    def test_instance_id_preference_is_exact_and_ignores_model(self) -> None:
+        """Naming an instance id addresses that instance, full stop."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="fable", model="claude-sonnet-4-5")],
+        )
+        assert _promoted(result)["id"] == "fable"
+
+        # Even a model only a SIBLING serves does not redirect an explicit id.
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="fable", model="claude-opus-5")],
+        )
+        assert _promoted(result)["id"] == "fable"
+
+    def test_other_module_untouched(self) -> None:
+        """Narrowing within one module never reaches across modules."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-4-5")],
+        )
+        gemini = _by_id(result, "gemini")
+        assert gemini["config"]["priority"] == 3
+        assert gemini["config"]["default_model"] == "gemini-3-pro"
+
+    def test_single_instance_module_is_unchanged_by_any_model(self) -> None:
+        """The common single-mount case resolves regardless of the model."""
+        plan = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-opus-5"},
+                },
+                {"module": "provider-openai", "config": {}},
+            ]
+        }
+        for model in ("claude-opus-5", "claude-sonnet-4-5", "totally-unknown", ""):
+            result = apply_provider_preferences(
+                {
+                    "providers": [
+                        {**p, "config": dict(p["config"])} for p in plan["providers"]
+                    ]
+                },
+                [ProviderPreference(provider="anthropic", model=model)],
+            )
+            promoted = _promoted(result)
+            assert promoted["module"] == "provider-anthropic", f"model={model!r}"
+            assert promoted["config"]["default_model"] == model, f"model={model!r}"
+
+    def test_declared_models_list_participates_when_present(self) -> None:
+        """A mount that declares a `models` list is selectable by any of them."""
+        plan = {
+            "providers": [
+                {
+                    "id": "primary",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 0, "default_model": "claude-opus-5"},
+                },
+                {
+                    "id": "long-context",
+                    "module": "provider-anthropic",
+                    "config": {
+                        "priority": 9,
+                        "default_model": "claude-opus-5",
+                        "models": ["claude-opus-5", "claude-opus-5-1m"],
+                    },
+                },
+            ]
+        }
+        result = apply_provider_preferences(
+            plan, [ProviderPreference(provider="anthropic", model="claude-opus-5-1m")]
+        )
+        assert _promoted(result)["id"] == "long-context"
+
+    def test_model_matching_is_case_insensitive(self) -> None:
+        """Model globs fold case, matching resolve_model_pattern()."""
+        result = apply_provider_preferences(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="CLAUDE-SONNET-4-5")],
+        )
+        assert _promoted(result)["id"] == "fable"
+
+
+class TestProviderResolutionHelpersAgree:
+    """`_find_provider_index` and `_build_provider_lookup` are one function."""
+
+    def test_helpers_agree_on_every_addressable_name(self) -> None:
+        lookup = _build_provider_lookup(MEASURED_HOST)
+        names = [
+            "anthropic",
+            "provider-anthropic",
+            "gemini",
+            "provider-gemini",
+            "opus",
+            "sonnet",
+            "fable",
+        ]
+        for name in names:
+            assert _find_provider_index(MEASURED_HOST, name) == lookup[name], name
+
+    def test_module_name_resolves_to_highest_priority_instance(self) -> None:
+        """Never the last-declared one (`fable`, priority 6)."""
+        lookup = _build_provider_lookup(MEASURED_HOST)
+        assert lookup["anthropic"] == 0
+        assert lookup["provider-anthropic"] == 0
+        assert _find_provider_index(MEASURED_HOST, "anthropic") == 0
+
+    def test_find_provider_index_honours_the_model_hint(self) -> None:
+        """The hint is optional; supplying it narrows to the serving mount."""
+        assert _find_provider_index(MEASURED_HOST, "anthropic") == 0
+        assert (
+            _find_provider_index(MEASURED_HOST, "anthropic", "claude-sonnet-4-5") == 2
+        )
+        assert _find_provider_index(MEASURED_HOST, "anthropic", "claude-opus-*") == 0
+
+    def test_unknown_name_is_still_a_miss(self) -> None:
+        assert _find_provider_index(MEASURED_HOST, "cohere") is None
+        assert _find_provider_index(MEASURED_HOST, "cohere", "command-r") is None
+        assert "cohere" not in _build_provider_lookup(MEASURED_HOST)
+
+
+class TestModuleNamedPreferenceWithAsyncResolution:
+    """The async path resolves the glob against the instance it promotes."""
+
+    @pytest.mark.asyncio
+    async def test_async_path_promotes_the_model_matching_instance(self) -> None:
+        provider = MagicMock()
+        provider.list_models = AsyncMock(
+            return_value=["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-5"]
+        )
+        coordinator = MagicMock()
+        coordinator.get = MagicMock(return_value={"fable": provider})
+
+        result = await apply_provider_preferences_with_resolution(
+            _measured_host(),
+            [ProviderPreference(provider="anthropic", model="claude-sonnet-4-*")],
+            coordinator,
+        )
+
+        promoted = _promoted(result)
+        assert promoted["id"] == "fable"
+        assert promoted["config"]["default_model"] == "claude-sonnet-4-5"
+        provider.list_models.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_async_path_preserves_protected_config_keys(self) -> None:
+        """PROTECTED_CONFIG_KEYS survive selection by model, as ever."""
+        plan = _measured_host()
+        _by_id(plan, "fable")["config"]["api_key"] = "fable-secret"
+
+        result = await apply_provider_preferences_with_resolution(
+            plan,
+            [
+                ProviderPreference(
+                    provider="anthropic",
+                    model="claude-sonnet-4-5",
+                    config={"api_key": "injected", "reasoning_effort": "high"},
+                )
+            ],
+            MagicMock(get=MagicMock(return_value={})),
+        )
+
+        promoted = _promoted(result)
+        assert promoted["id"] == "fable"
+        assert promoted["config"]["api_key"] == "fable-secret"
+        assert promoted["config"]["reasoning_effort"] == "high"

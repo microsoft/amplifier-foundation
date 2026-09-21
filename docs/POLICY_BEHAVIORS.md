@@ -28,7 +28,7 @@ Policy behaviors are app-level capabilities that get composed onto bundles at ru
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              BUNDLE (e.g., foundation)                      │
+│              COMPLETE HOST / SUPPORTING ROOT                 │
 │                                                             │
 │  Provides mechanisms:                                       │
 │  - Tools, agents, context, orchestrator                     │
@@ -45,7 +45,6 @@ Consider notifications: when you run Amplifier, you want to know when the assist
 ```yaml
 # DON'T DO THIS - notifications in bundle
 includes:
-  - bundle: foundation
   - bundle: notify:behaviors/desktop-notifications  # Bad!
 ```
 
@@ -125,7 +124,7 @@ def inject_policies(
 
 If you're creating a bundle with hooks that should be policy behaviors:
 
-1. **Don't include them in your main bundle** - provide them as separate behaviors
+1. **Don't include them in a supporting root** - provide them as separate behaviors
 2. **Document them as policy behaviors** - so apps know to compose them
 3. **Default to root-only** - check `parent_id` in the hook implementation
 

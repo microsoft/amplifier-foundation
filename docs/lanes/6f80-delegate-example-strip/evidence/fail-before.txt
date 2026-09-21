@@ -1,0 +1,40 @@
+FF...F...F.                                                              [100%]
+=================================== FAILURES ===================================
+E   AssertionError: The rendered catalog entry still carries an <example> block; the strip did not run at render time.
+    assert '<example>' not in '  - fixture...NE SURVIVES.'
+      
+      '<example>' is contained here:
+        irectly.
+        
+        <example>
+        user: 'How does auth work here?'
+        assistant: 'I'll use the explorer to map the auth flow.'...
+      
+      ...Full output truncated (12 lines hidden), use '-vv' to show
+/home/bkrabach/dev/hw-model-performance/lanes/6f80-delegate-example-strip/amplifier-foundation/tests/test_delegate_example_strip.py:115: AssertionError: The rendered catalog entry still carries an <example> block; the strip did not run at render time.
+E   AssertionError: assert 'How does auth work here?' not in '  - fixture...NE SURVIVES.'
+      
+      'How does auth work here?' is contained here:
+        e>
+        user: 'How does auth work here?'
+        assistant: 'I'll use the explorer to map the auth flow.'
+        <commentary>
+        Multi-file question, so the explorer is the right call....
+      
+      ...Full output truncated (10 lines hidden), use '-vv' to show
+/home/bkrabach/dev/hw-model-performance/lanes/6f80-delegate-example-strip/amplifier-foundation/tests/test_delegate_example_strip.py:131: AssertionError: assert 'How does auth work here?' not in '  - fixture...NE SURVIVES.'
+E   AssertionError: assert 'eaten' not in '  - fixture...ample> AFTER'
+      
+      'eaten' is contained here:
+          - fixture:inline: BEFORE <example>eaten</example> AFTER
+      ?                                     +++++
+/home/bkrabach/dev/hw-model-performance/lanes/6f80-delegate-example-strip/amplifier-foundation/tests/test_delegate_example_strip.py:186: AssertionError: assert 'eaten' not in '  - fixture...ample> AFTER'
+E   AssertionError: No debug record named the stripped agent. Silent stripping leaves a bundle author with no way to discover why their examples vanished.
+    assert []
+/home/bkrabach/dev/hw-model-performance/lanes/6f80-delegate-example-strip/amplifier-foundation/tests/test_delegate_example_strip.py:254: AssertionError: No debug record named the stripped agent. Silent stripping leaves a bundle author with no way to discover why their examples vanished.
+=========================== short test summary info ============================
+FAILED tests/test_delegate_example_strip.py::TestExampleBlocksAreStripped::test_example_block_absent_from_rendered_entry
+FAILED tests/test_delegate_example_strip.py::TestExampleBlocksAreStripped::test_example_body_text_absent_from_rendered_entry
+FAILED tests/test_delegate_example_strip.py::TestNothingOutsideTheBlocksIsConsumed::test_text_sharing_a_line_with_the_block_survives
+FAILED tests/test_delegate_example_strip.py::TestStrippedAgentsAreNamedInDebugLog::test_debug_line_names_the_stripped_agent
+4 failed, 7 passed in 0.07s

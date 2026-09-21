@@ -1,8 +1,10 @@
 # Anchors Bundle
 
-A lean experimental bundle that shapes the agent's conduct with a short, explicit
-set of **behavioral principles** placed at the very top of the system prompt --
-rather than encoding behavior across large rule documents.
+The CLI's current default runtime bundle and the recommended supporting root for a
+new complete host. It remains a lean experimental bundle that shapes the agent's
+conduct with a short, explicit set of **behavioral principles** placed at the very
+top of the system prompt -- rather than encoding behavior across large rule
+documents.
 
 The bet: a handful of sharp, well-chosen principles -- which the model re-reads on
 every turn -- steer conduct more cheaply and more reliably than verbose policy
@@ -27,31 +29,34 @@ desired conduct as a small set of named principles, loaded once at the head of
 the system prompt, and let those principles -- not paragraphs of policy -- anchor
 how the agent acts.
 
-The bundle is built around a small set of principles:
+The bundle is built around three principles:
 
 1. **Investigate before acting** -- understand the problem fully before proposing
    solutions; curiosity over assumptions.
 2. **Minimum viable change** -- nothing speculative; every line, file, and
    abstraction must earn its place.
-3. **Verify at every step** -- run tests, check types, validate assumptions;
-   evidence before assertions.
-4. **Delegate complex work** -- push multi-file exploration, design, implementation,
-   debugging, and git work to sub-agents so the parent context stays lean.
+3. **Verify at every step** -- never claim "done" without proof.
 
 These principles do most of the steering. Everything else in the bundle exists to
 support them.
+
+There is deliberately no "delegate complex work" principle. It was removed in
+#327 after it was measured to cause over-delegation; the agent roster below is
+what makes delegation targets obvious, without a standing instruction to reach
+for them.
 
 ## What's in it
 
 | Component | Notes |
 |-----------|-------|
-| **System prompt** | A minimal prompt: the four principles, a short operating-rules block, and a commit-message convention. That's it. |
+| **System prompt** | A minimal prompt: the three principles, a short operating-rules block, and a commit-message convention. That's it. |
 | **Orchestrator** | `loop-streaming` with extended thinking enabled. |
 | **Context** | `context-simple`, 300k window, auto-compact at 80%. |
 | **Tools** | A standard roster at the parent: filesystem, bash, web, search, todo, apply-patch, delegate, skills (discovery only), mode, recipes. |
-| **Agents** | Six thin, purposeful sub-agents -- `explorer`, `architect`, `builder`, `debugger`, `git-ops`, `researcher` -- each a tight USE-WHEN contract so delegation targets are obvious. |
+| **Agents** | Six thin, purposeful sub-agents -- `anchors:explorer`, `anchors:architect`, `anchors:builder`, `anchors:debugger`, `anchors:git-ops`, `anchors:researcher` -- each a tight USE-WHEN contract and one spawn-only shared baseline. |
+| **Shared baseline** | Spawned agents load `context/agent-baseline.md` once. It requires local-convention discovery and evidence-based, scoped, defensive conduct without copying a parent/root prompt or AGENTS/SCRATCH chain automatically. |
 | **Hooks** | Free-cost UX hooks only (`streaming-ui`, `status-context`, `redaction`, `logging`, `todo-reminder`, `todo-display`, `session-naming`) -- runtime behavior with no per-turn context cost. |
-| **Skills** | Discovery available; auto-injection (`visibility`) turned off to keep first-turn context small. |
+| **Skills** | Bare Anchors keeps auto-injection (`visibility`) off to keep first-turn context small. The app CLI composes the full skills behavior for its sessions. |
 
 ## Design philosophy
 
@@ -63,9 +68,9 @@ support them.
 - **Pay only for what earns its place.** Skill auto-injection is off, hooks are
   limited to the free-cost set, and the system prompt is deliberately short.
   Capabilities are added back only when a real task shows they're missing.
-- **Delegation-aware by default.** "Delegate complex work" is a first-class
-  principle, not an afterthought -- the parent is expected to route non-trivial
-  work to the agents.
+- **Delegation by contract, not by instruction.** Each agent's USE-WHEN /
+  DO-NOT-USE-WHEN boundary is what routes work, rather than a standing
+  principle telling the parent to delegate (removed in #327).
 
 ## Self-contained by design
 
@@ -90,10 +95,27 @@ anchors/
 │   ├── git-ops.md            # git / gh operations
 │   └── researcher.md         # external research
 └── context/
-    └── system.md             # the behavioral principles + operating rules
+    ├── system.md             # the behavioral principles + operating rules
+    └── agent-baseline.md     # shared, spawn-only agent conduct baseline
 ```
+
+## Spawned-agent conventions
+
+Each agent explicitly loads the same short baseline on spawn. For repository
+work, it discovers the applicable user, workspace, repository, and subdirectory
+conventions and phase-relevant verification rules. It does **not** automatically
+copy a parent/root prompt or that prompt's AGENTS/SCRATCH chain; this loading
+boundary is not permission to ignore rules that apply after discovery.
 
 ## Status
 
-Promoted from `experiments/behavioral-anchor` to a published bundle. Version 0.1.0. The principle set and tool/agent roster are a
-starting point and will be adjusted as observation shows what helps or hurts.
+Promoted out of an `experiments/` prototype to a published bundle by 70a84d0
+(#259); `anchors-amp-dev` followed in 78d0abe (#273). The prototype trees were
+deleted once promotion made them stale copies -- read `bundles/anchors/` and
+`bundles/anchors-amp-dev/` for the live text, and those two commits (or
+`git log --diff-filter=D -- experiments/behavioral-anchor`) for the originals.
+
+Version 0.2.0 -- the evaluated (#327) principle and agent text, and the source of
+the runtime that `anchors-amp-dev` includes. The principle set and tool/agent
+roster are a starting point and will be adjusted as observation shows what helps
+or hurts.

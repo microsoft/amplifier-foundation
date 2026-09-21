@@ -474,6 +474,340 @@ class TestChildBootstrapBundleContext:
         )
 
 
+class TestChildSystemInstruction:
+    """Tests that _run_child_session registers the agent's system instruction (persona).
+
+    Without this, subprocess-spawned agents silently drop their persona entirely --
+    the `instruction` key crosses the process boundary intact inside `config`, but
+    nothing on the subprocess child path ever reads it. Mirrors the in-process path
+    in amplifier-app-cli's session_spawner.py (spawn_sub_session()).
+    """
+
+    def _make_config_file(
+        self, tmp_path: Any, config: dict[str, Any], prompt: str = "Hello"
+    ) -> str:
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            serialize_subprocess_config(
+                config=config,
+                prompt=prompt,
+                parent_id="parent-123",
+                project_path=str(tmp_path),
+            )
+        )
+        return str(config_file)
+
+    @pytest.mark.asyncio
+    async def test_system_instruction_registers_factory(self, tmp_path: Any) -> None:
+        """LOAD-BEARING: top-level `instruction` -> set_system_prompt_factory is awaited,
+        and awaiting the registered factory returns exactly the instruction text.
+
+        This is the test that must fail without the fix (proves subprocess children
+        otherwise run with NO persona at all).
+        """
+        config: dict[str, Any] = {
+            "provider": "anthropic",
+            "instruction": "You are ROB-PERSONA-MARKER-9x7. Always be helpful.",
+        }
+        config_file = self._make_config_file(tmp_path, config)
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+
+            mock_context = MagicMock()
+            mock_context.set_system_prompt_factory = AsyncMock()
+            mock_instance.coordinator.get = MagicMock(
+                side_effect=lambda name: mock_context if name == "context" else None
+            )
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(config_file)
+
+        mock_context.set_system_prompt_factory.assert_awaited_once()
+        registered_factory = mock_context.set_system_prompt_factory.await_args[0][0]
+        assert (
+            await registered_factory()
+            == "You are ROB-PERSONA-MARKER-9x7. Always be helpful."
+        )
+        # add_message must NOT have been used -- factory path takes precedence.
+        assert (
+            not hasattr(mock_context, "add_message")
+            or not mock_context.add_message.called
+        )
+
+    @pytest.mark.asyncio
+    async def test_system_instruction_fallback_add_message_when_no_factory(
+        self, tmp_path: Any
+    ) -> None:
+        """Context WITHOUT set_system_prompt_factory -> falls back to add_message."""
+        config: dict[str, Any] = {
+            "provider": "anthropic",
+            "instruction": "Fallback persona text",
+        }
+        config_file = self._make_config_file(tmp_path, config)
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+
+            # spec=["add_message"] means hasattr(context, "set_system_prompt_factory")
+            # is False -- no factory surface available on this context.
+            mock_context = MagicMock(spec=["add_message"])
+            mock_context.add_message = AsyncMock()
+            mock_instance.coordinator.get = MagicMock(
+                side_effect=lambda name: mock_context if name == "context" else None
+            )
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(config_file)
+
+        mock_context.add_message.assert_awaited_once_with(
+            {"role": "system", "content": "Fallback persona text"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_system_instruction_nested_system_dict_form(
+        self, tmp_path: Any
+    ) -> None:
+        """Nested config["system"]["instruction"] form (no top-level instruction) -> registered."""
+        config: dict[str, Any] = {
+            "provider": "anthropic",
+            "system": {"instruction": "Nested persona text"},
+        }
+        config_file = self._make_config_file(tmp_path, config)
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+
+            mock_context = MagicMock()
+            mock_context.set_system_prompt_factory = AsyncMock()
+            mock_instance.coordinator.get = MagicMock(
+                side_effect=lambda name: mock_context if name == "context" else None
+            )
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(config_file)
+
+        mock_context.set_system_prompt_factory.assert_awaited_once()
+        registered_factory = mock_context.set_system_prompt_factory.await_args[0][0]
+        assert await registered_factory() == "Nested persona text"
+
+    @pytest.mark.asyncio
+    async def test_no_system_instruction_registers_nothing(self, tmp_path: Any) -> None:
+        """No instruction anywhere -> neither set_system_prompt_factory nor add_message
+        is called. Proves we don't inject an empty/placeholder persona.
+        """
+        config: dict[str, Any] = {"provider": "anthropic"}
+        config_file = self._make_config_file(tmp_path, config)
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+
+            mock_context = MagicMock()
+            mock_context.set_system_prompt_factory = AsyncMock()
+            mock_context.add_message = AsyncMock()
+            mock_instance.coordinator.get = MagicMock(
+                side_effect=lambda name: mock_context if name == "context" else None
+            )
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(config_file)
+
+        mock_context.set_system_prompt_factory.assert_not_awaited()
+        mock_context.add_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_system_instruction_mentions_expanded(self, tmp_path: Any) -> None:
+        """Instruction containing an @mention -> the REGISTERED text is the expanded
+        form, not the raw string.
+        """
+        config: dict[str, Any] = {
+            "provider": "anthropic",
+            "instruction": "Follow @some/doc.md carefully.",
+        }
+        config_file = self._make_config_file(tmp_path, config)
+
+        expanded_text = (
+            "<context_file>expanded content</context_file>\n\n"
+            "Follow @some/doc.md carefully."
+        )
+
+        with (
+            patch(
+                "amplifier_foundation.subprocess_runner.AmplifierSession"
+            ) as MockSession,
+            patch(
+                "amplifier_foundation.mentions.expand_mentions_in_instruction",
+                new=AsyncMock(return_value=expanded_text),
+            ) as mock_expand,
+        ):
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            # A real (truthy) mention_resolver so the expansion branch executes.
+            mock_instance.coordinator.get_capability = MagicMock(
+                side_effect=lambda name: (
+                    "fake-resolver" if name == "mention_resolver" else None
+                )
+            )
+
+            mock_context = MagicMock()
+            mock_context.set_system_prompt_factory = AsyncMock()
+            mock_instance.coordinator.get = MagicMock(
+                side_effect=lambda name: mock_context if name == "context" else None
+            )
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(config_file)
+
+        assert mock_expand.await_count >= 1
+        mock_context.set_system_prompt_factory.assert_awaited_once()
+        registered_factory = mock_context.set_system_prompt_factory.await_args[0][0]
+        assert await registered_factory() == expanded_text
+
+    @pytest.mark.asyncio
+    async def test_context_none_no_crash(self, tmp_path: Any) -> None:
+        """Coordinator.get("context") returning None must not crash the child session."""
+        config: dict[str, Any] = {
+            "provider": "anthropic",
+            "instruction": "Some persona text",
+        }
+        config_file = self._make_config_file(tmp_path, config)
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+            mock_instance.coordinator.get = MagicMock(return_value=None)
+            MockSession.return_value = mock_instance
+
+            result = await _run_child_session(config_file)
+
+        assert result == "result"
+
+    @pytest.mark.asyncio
+    async def test_persona_mentions_do_not_bleed_into_prompt(
+        self, tmp_path: Any
+    ) -> None:
+        """REGRESSION: persona @mention expansion must use a FRESH ContentDeduplicator,
+        not the shared session capability -- otherwise ContentDeduplicator.get_unique_files()
+        (which returns EVERY file the instance has ever seen, not just what was resolved on
+        this call) makes the persona's resolved @mention content bleed into the prompt's
+        expanded context block.
+
+        Uses the REAL expand_mentions_in_instruction + REAL ContentDeduplicator (nothing
+        mocked at that layer) with a real capability store on the mocked coordinator, so
+        register_capability("mention_deduplicator", ...) / get_capability(...) round-trip
+        exactly like the real coordinator does.
+        """
+        persona_file = tmp_path / "persona.md"
+        persona_file.write_text("PERSONA-FILE-CONTENT-XYZ")
+        task_file = tmp_path / "task.md"
+        task_file.write_text("TASK-FILE-CONTENT-ABC")
+
+        mention_map = {"@persona.md": persona_file, "@task.md": task_file}
+
+        class _FakeResolver:
+            def resolve(self, mention: str) -> Path | None:
+                return mention_map.get(mention)
+
+        config: dict[str, Any] = {
+            "provider": "anthropic",
+            "instruction": "Follow @persona.md carefully.",
+        }
+        config_file = self._make_config_file(
+            tmp_path, config, prompt="Complete @task.md now."
+        )
+
+        with patch(
+            "amplifier_foundation.subprocess_runner.AmplifierSession"
+        ) as MockSession:
+            mock_instance = MagicMock()
+            mock_instance.initialize = AsyncMock()
+            mock_instance.execute = AsyncMock(return_value="result")
+            mock_instance.cleanup = AsyncMock()
+            mock_instance.coordinator = MagicMock()
+            mock_instance.coordinator.mount = AsyncMock()
+
+            # Real capability store so register_capability(...) writes what
+            # get_capability(...) reads back -- mirrors the real coordinator's
+            # round-trip instead of hand-waving a canned return value.
+            capability_store: dict[str, Any] = {}
+
+            def _register_capability(name: str, value: Any) -> None:
+                capability_store[name] = value
+
+            def _get_capability(name: str) -> Any:
+                if name == "mention_resolver":
+                    return _FakeResolver()
+                return capability_store.get(name)
+
+            mock_instance.coordinator.register_capability = MagicMock(
+                side_effect=_register_capability
+            )
+            mock_instance.coordinator.get_capability = MagicMock(
+                side_effect=_get_capability
+            )
+
+            mock_context = MagicMock()
+            mock_context.set_system_prompt_factory = AsyncMock()
+            mock_instance.coordinator.get = MagicMock(
+                side_effect=lambda name: mock_context if name == "context" else None
+            )
+            MockSession.return_value = mock_instance
+
+            await _run_child_session(config_file)
+
+        # Sanity: persona expansion itself worked (its own mention resolved).
+        mock_context.set_system_prompt_factory.assert_awaited_once()
+        registered_factory = mock_context.set_system_prompt_factory.await_args[0][0]
+        persona_expanded = await registered_factory()
+        assert "PERSONA-FILE-CONTENT-XYZ" in persona_expanded
+
+        # The prompt passed to session.execute() must have its OWN mention
+        # resolved (proves the test setup is live, not vacuously passing)...
+        mock_instance.execute.assert_awaited_once()
+        prompt_arg = mock_instance.execute.await_args[0][0]
+        assert "TASK-FILE-CONTENT-ABC" in prompt_arg
+        # ...but must NOT contain the persona's resolved content (no bleed-through).
+        assert "PERSONA-FILE-CONTENT-XYZ" not in prompt_arg
+
+
 class TestMainEntryPoint:
     """Tests for the __main__ entry point."""
 
@@ -558,6 +892,8 @@ class TestRunSessionInSubprocess:
         project_path = str(tmp_path)
 
         mock_process = MagicMock()
+        mock_process.pid = 12345
+        mock_process.returncode = None
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
 
@@ -565,16 +901,19 @@ class TestRunSessionInSubprocess:
             "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_process)
         ):
             with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
-                with pytest.raises(TimeoutError, match="timed out after 30s"):
-                    await run_session_in_subprocess(
-                        config=config,
-                        prompt=prompt,
-                        parent_id=parent_id,
-                        project_path=project_path,
-                        timeout=30,
-                    )
+                with patch(
+                    "amplifier_foundation.subprocess_runner._kill_subprocess_tree"
+                ) as mock_kill_tree:
+                    with pytest.raises(TimeoutError, match="timed out after 30s"):
+                        await run_session_in_subprocess(
+                            config=config,
+                            prompt=prompt,
+                            parent_id=parent_id,
+                            project_path=project_path,
+                            timeout=30,
+                        )
 
-        mock_process.kill.assert_called_once()
+        mock_kill_tree.assert_called_once_with(mock_process.pid)
         mock_process.wait.assert_called_once()
 
     @pytest.mark.asyncio
@@ -602,6 +941,7 @@ class TestRunSessionInSubprocess:
 
         mock_process = MagicMock()
         mock_process.pid = 12345
+        mock_process.returncode = None
         mock_process.kill = MagicMock()
         # MagicMock (not AsyncMock) intentional: the patched asyncio.wait_for
         # raises TimeoutError before any await happens, so the wait() return
@@ -619,17 +959,20 @@ class TestRunSessionInSubprocess:
                 "asyncio.wait_for",
                 side_effect=[asyncio.TimeoutError(), asyncio.TimeoutError()],
             ):
-                with caplog.at_level(logging.WARNING):
-                    with pytest.raises(TimeoutError, match="timed out after 30s"):
-                        await run_session_in_subprocess(
-                            config=config,
-                            prompt=prompt,
-                            parent_id=parent_id,
-                            project_path=project_path,
-                            timeout=30,
-                        )
+                with patch(
+                    "amplifier_foundation.subprocess_runner._kill_subprocess_tree"
+                ) as mock_kill_tree:
+                    with caplog.at_level(logging.WARNING):
+                        with pytest.raises(TimeoutError, match="timed out after 30s"):
+                            await run_session_in_subprocess(
+                                config=config,
+                                prompt=prompt,
+                                parent_id=parent_id,
+                                project_path=project_path,
+                                timeout=30,
+                            )
 
-        mock_process.kill.assert_called_once()
+        mock_kill_tree.assert_called_once_with(mock_process.pid)
         assert "did not exit" in caplog.text
 
     @pytest.mark.asyncio
@@ -1554,3 +1897,40 @@ class TestMentionMappingsSerialization:
         deserialized = deserialize_subprocess_config(serialized)
 
         assert deserialized["mention_mappings"] == {}
+
+
+class TestChildEnvForcesUtf8:
+    """GAP-6b: the child subprocess must run in UTF-8 mode.
+
+    The child writes to a PIPE. On native Windows a piped stdout defaults to the
+    locale ANSI codepage (e.g. cp1252). The result envelope itself is safe --
+    json.dumps() defaults to ensure_ascii=True -- but non-ASCII output around it
+    (logging, tool output, third-party prints) gets encoded in that codepage, and
+    the parent decodes the whole stream with stdout.decode("utf-8") and no error
+    handler, raising UnicodeDecodeError in the parent. _build_child_env() must
+    force UTF-8 so this cannot happen, regardless of the parent's own environment.
+    """
+
+    def test_child_env_sets_pythonutf8(self) -> None:
+        env = _build_child_env()
+        assert env.get("PYTHONUTF8") == "1"
+
+    def test_child_env_sets_pythonioencoding(self) -> None:
+        env = _build_child_env()
+        assert env.get("PYTHONIOENCODING") == "utf-8"
+
+    def test_child_env_forces_utf8_even_when_parent_has_none(self) -> None:
+        # Parent env with NO utf-8 hints must still yield a utf-8 child env.
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            env = _build_child_env()
+        assert env.get("PYTHONUTF8") == "1"
+        assert env.get("PYTHONIOENCODING") == "utf-8"
+
+    def test_child_env_overrides_hostile_parent_value(self) -> None:
+        # A parent that pins a NON-utf-8 io encoding must not win: the child is
+        # forced to utf-8 so the parent's stdout.decode("utf-8") cannot raise
+        # UnicodeDecodeError on output printed around the envelope.
+        with patch.dict("os.environ", {"PYTHONIOENCODING": "cp1252"}, clear=True):
+            env = _build_child_env()
+        assert env.get("PYTHONIOENCODING") == "utf-8"
+        assert env.get("PYTHONUTF8") == "1"

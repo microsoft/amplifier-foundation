@@ -1,0 +1,111 @@
+# Validates local changes to: amplifier-foundation (branch lane/mikb-instruction-mentions-lead)
+#
+# Change under test: amplifier_foundation/bundle/_prepared.py::_create_system_prompt_factory
+# now resolves the bundle instruction's @mentions into the ContentDeduplicator BEFORE the
+# bundle's `context:` includes, so the instruction's mention blocks LEAD the <context_file>
+# section of the system prompt instead of trailing it.
+#
+# OUT-OF-BAND STATE REQUIRED (not self-contained -- documented per profiles.md):
+#   - A host-side Gitea instance holding a snapshot of the worktree under test at
+#     admin/amplifier-foundation-mikb (branch main).
+#   - Host env: ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENAI_BASE_URL.
+#
+# Launch invocation:
+#   amplifier-digital-twin launch \
+#     <repo>/.cache/dtu-smoke/mikb-foundation-order.yaml \
+#     --var GITEA_URL=http://10.119.176.1:10230 \
+#     --var GITEA_TOKEN=<token> \
+#     --name mikb-foundation-order
+#
+# NOTE: amplifier-foundation carries BOTH the Python package and the `anchors` /
+# `anchors-amp-dev` bundles (bundles/<name>/bundle.md), so the single url_rewrite below
+# redirects the package install AND the two bundles under test to the snapshot mirror.
+
+name: mikb-foundation-order
+description: >
+  Smoke-test the instruction-@mention ordering fix in amplifier-foundation:
+  the instruction's mention must be the FIRST <context_file> block.
+
+base:
+  image: ubuntu:24.04
+  config:
+    limits.cpu: "4"
+    limits.memory: "8GiB"
+
+url_rewrites:
+  auth:
+    username: admin
+    token_var: GITEA_TOKEN
+  default_match_mode: boundary
+  rules:
+    - match: github.com/microsoft/amplifier-foundation
+      target: ${GITEA_URL}/admin/amplifier-foundation-mikb
+
+passthrough:
+  allow_external: true
+  services:
+    - name: anthropic
+      key_env: ANTHROPIC_API_KEY
+    - name: openai
+      key_env: OPENAI_API_KEY
+    - name: openai-base-url
+      key_env: OPENAI_BASE_URL
+
+provision:
+  setup_cmds:
+    - apt-get update && apt-get install -y git curl jq
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - uv tool install git+https://github.com/microsoft/amplifier
+
+    # Provider config. DEVIATION from "mirror host config.providers verbatim":
+    # the host declares 15 providers, several referencing env vars that are UNSET on
+    # the host (e.g. ANTHROPIC_BASE_URL) which would render as empty YAML values here.
+    # This smoke needs two working providers, so a minimal two-provider config is used
+    # and the deviation is reported in the hand-back.
+    - |
+      mkdir -p /root/.amplifier
+      cat > /root/.amplifier/settings.yaml << EOF
+      config:
+        providers:
+          - id: sonnet
+            module: provider-anthropic
+            source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
+            config:
+              api_key: ${ANTHROPIC_API_KEY}
+              default_model: claude-sonnet-5
+              enable_prompt_caching: 'true'
+              priority: 1
+          - id: sol
+            module: provider-openai
+            source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
+            config:
+              api_key: ${OPENAI_API_KEY}
+              base_url: ${OPENAI_BASE_URL}
+              default_model: gpt-5.6-sol
+              priority: 2
+      EOF
+
+    # Compose two app behaviors that contribute `context:` includes. Without these the
+    # ordering assertion is vacuous -- the defect under test is precisely that app-bundle
+    # context includes were emitted BEFORE the instruction's own mention.
+    - amplifier bundle add git+https://github.com/microsoft/amplifier-bundle-digital-twin-universe@main#subdirectory=behaviors/digital-twin-universe.yaml --app
+    - amplifier bundle add git+https://github.com/microsoft/amplifier-bundle-dot-graph@main#subdirectory=behaviors/dot-graph.yaml --app
+
+    - amplifier --version
+    - amplifier bundle list
+
+    # Warm-up: seed lazy provider/module installs for both bundles under test so the
+    # readiness poll and the measured runs do not race a cold install.
+    - 'amplifier run "Say exactly: warmup-ok" -B anchors --mode single'
+    - 'amplifier run "Say exactly: warmup-ok" -B anchors-amp-dev --mode single'
+
+update:
+  cmds:
+    - amplifier update --yes --force
+    - 'amplifier run "Say exactly: warmup-ok" -B anchors --mode single'
+
+readiness:
+  - name: amplifier-installed
+    command: amplifier --version
+  - name: anchors-bundle-resolves
+    command: amplifier bundle list

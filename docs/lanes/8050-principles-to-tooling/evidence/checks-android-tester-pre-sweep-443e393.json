@@ -1,0 +1,41 @@
+{
+  "label": "android-tester-pre-sweep-443e393",
+  "repo_path": "/tmp/at-pre",
+  "agents": {
+    "checked": 3,
+    "errors": 9,
+    "warnings": 0,
+    "error_types": [
+      "agent_description_excessive",
+      "commentary_present",
+      "example_block_present"
+    ],
+    "warning_types": []
+  },
+  "skills": {
+    "checked": 1,
+    "errors": 0,
+    "warnings": 1,
+    "error_types": [],
+    "warning_types": [
+      "skill_description_high"
+    ]
+  },
+  "awareness": {
+    "files": 1,
+    "best_coverage_max": 0.087,
+    "warnings": 0,
+    "warning_types": []
+  },
+  "head_cost": {
+    "bundles": 2,
+    "warnings": 1,
+    "largest_head_chars": 8116,
+    "threshold_chars": 4000
+  },
+  "validate_agents_structural": {
+    "agents": 3,
+    "errors": 9,
+    "warnings": 3
+  }
+}

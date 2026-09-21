@@ -1,0 +1,250 @@
+[
+  {
+    "kind": "context",
+    "index": 0,
+    "status": "out-of-repo",
+    "source": "amplifier-bundle-gitea/context/gitea-awareness.md",
+    "resolved": "/home/bkrabach/.amplifier/cache/amplifier-bundle-gitea-c559d851424c1857/context/gitea-awareness.md",
+    "stock_chars": 629,
+    "lean_chars": 349,
+    "saved_chars": 280,
+    "missing_rules": []
+  },
+  {
+    "kind": "context",
+    "index": 1,
+    "status": "out-of-repo",
+    "source": "amplifier-bundle-digital-twin-universe/context/dtu-awareness.md",
+    "resolved": "/home/bkrabach/.amplifier/cache/amplifier-bundle-digital-twin-universe-3f1120375ad1dbc5/context/dtu-awareness.md",
+    "stock_chars": 1093,
+    "lean_chars": 686,
+    "saved_chars": 407,
+    "missing_rules": []
+  },
+  {
+    "kind": "context",
+    "index": 2,
+    "status": "out-of-repo",
+    "source": "amplifier-bundle-amplifier-tester/context/amplifier-tester-awareness.md",
+    "resolved": "/home/bkrabach/.amplifier/cache/amplifier-bundle-amplifier-tester-51fb043af4f8b374/context/amplifier-tester-awareness.md",
+    "stock_chars": 2068,
+    "lean_chars": 1242,
+    "saved_chars": 826,
+    "missing_rules": []
+  },
+  {
+    "kind": "context",
+    "index": 3,
+    "status": "out-of-repo",
+    "source": "amplifier-bundle-modes/context/modes-instructions.md",
+    "resolved": "/home/bkrabach/.amplifier/cache/amplifier-bundle-modes-85a0e90c360a77e3/context/modes-instructions.md",
+    "stock_chars": 4870,
+    "lean_chars": 2403,
+    "saved_chars": 2467,
+    "missing_rules": [
+      "mode(operation=\"list\")",
+      "mode(operation=\"current\")",
+      "mode(operation=\"clear\")"
+    ]
+  },
+  {
+    "kind": "context",
+    "index": 4,
+    "status": "out-of-repo",
+    "source": "__app_cli__/amplifier_app_cli/_bundle/context/cli-awareness.md",
+    "resolved": "/home/bkrabach/.local/share/uv/tools/amplifier/lib/python3.13/site-packages/amplifier_app_cli/_bundle/context/cli-awareness.md",
+    "stock_chars": 398,
+    "lean_chars": 338,
+    "saved_chars": 60,
+    "missing_rules": []
+  },
+  {
+    "kind": "context",
+    "index": 5,
+    "status": "out-of-repo",
+    "source": "amplifier-bundle-skills/context/skills-instructions.md",
+    "resolved": "/home/bkrabach/.amplifier/cache/amplifier-bundle-skills-5105b7c75992a85a/context/skills-instructions.md",
+    "stock_chars": 4478,
+    "lean_chars": 1993,
+    "saved_chars": 2485,
+    "missing_rules": [
+      "load_skill(skill_name=\"...\")"
+    ]
+  },
+  {
+    "kind": "context",
+    "index": 6,
+    "status": "out-of-repo",
+    "source": "amplifier-bundle-wayfinder/context/wayfinder-voice.md",
+    "resolved": "/home/bkrabach/.amplifier/cache/amplifier-bundle-wayfinder-4d453695317b3e38/context/wayfinder-voice.md",
+    "stock_chars": 2048,
+    "lean_chars": 1561,
+    "saved_chars": 487,
+    "missing_rules": []
+  },
+  {
+    "kind": "context",
+    "index": 7,
+    "status": "out-of-repo",
+    "source": "amplifier-bundle-wayfinder/context/propose-and-ack.md",
+    "resolved": "/home/bkrabach/.amplifier/cache/amplifier-bundle-wayfinder-4d453695317b3e38/context/propose-and-ack.md",
+    "stock_chars": 1974,
+    "lean_chars": 1587,
+    "saved_chars": 387,
+    "missing_rules": []
+  },
+  {
+    "kind": "context",
+    "index": 8,
+    "status": "out-of-repo",
+    "source": "amplifier-bundle-routing-matrix/context/routing-instructions.md",
+    "resolved": "/home/bkrabach/.amplifier/cache/amplifier-bundle-routing-matrix-972b0ce7f0cbc2f7/context/routing-instructions.md",
+    "stock_chars": 1148,
+    "lean_chars": 735,
+    "saved_chars": 413,
+    "missing_rules": []
+  },
+  {
+    "kind": "context",
+    "index": 9,
+    "status": "in-repo",
+    "source": "bundles/anchors/context/system.md + bundles/anchors-amp-dev/context/amplifier-ecosystem.md"
+  },
+  {
+    "kind": "tool",
+    "name": "load_skill",
+    "status": "out-of-repo",
+    "repo": "amplifier-bundle-skills",
+    "module": "modules/tool-skills",
+    "stock_chars": 1647,
+    "lean_chars": 968,
+    "saved_chars": 679,
+    "missing_rules": []
+  },
+  {
+    "kind": "tool",
+    "name": "delegate",
+    "status": "in-repo",
+    "stock_chars": 1190,
+    "lean_chars": 938,
+    "saved_chars": 252,
+    "note": "preamble only; runtime agent catalog out of scope"
+  },
+  {
+    "kind": "tool",
+    "name": "read_file",
+    "status": "out-of-repo",
+    "repo": "amplifier-module-tool-filesystem",
+    "module": "amplifier_module_tool_filesystem",
+    "stock_chars": 1074,
+    "lean_chars": 725,
+    "saved_chars": 349,
+    "missing_rules": []
+  },
+  {
+    "kind": "tool",
+    "name": "write_file",
+    "status": "out-of-repo",
+    "repo": "amplifier-module-tool-filesystem",
+    "module": "amplifier_module_tool_filesystem",
+    "stock_chars": 867,
+    "lean_chars": 567,
+    "saved_chars": 300,
+    "missing_rules": []
+  },
+  {
+    "kind": "tool",
+    "name": "edit_file",
+    "status": "out-of-repo",
+    "repo": "amplifier-module-tool-filesystem",
+    "module": "amplifier_module_tool_filesystem",
+    "stock_chars": 1345,
+    "lean_chars": 887,
+    "saved_chars": 458,
+    "missing_rules": [
+      "ALWAYS"
+    ]
+  },
+  {
+    "kind": "tool",
+    "name": "bash",
+    "status": "out-of-repo",
+    "repo": "amplifier-module-tool-bash",
+    "module": "amplifier_module_tool_bash",
+    "stock_chars": 1997,
+    "lean_chars": 1318,
+    "saved_chars": 679,
+    "missing_rules": []
+  },
+  {
+    "kind": "tool",
+    "name": "web_search",
+    "status": "identical-skip",
+    "repo": "amplifier-module-tool-web",
+    "stock_chars": 30
+  },
+  {
+    "kind": "tool",
+    "name": "web_fetch",
+    "status": "out-of-repo",
+    "repo": "amplifier-module-tool-web",
+    "module": "amplifier_module_tool_web",
+    "stock_chars": 632,
+    "lean_chars": 549,
+    "saved_chars": 83,
+    "missing_rules": []
+  },
+  {
+    "kind": "tool",
+    "name": "grep",
+    "status": "out-of-repo",
+    "repo": "amplifier-module-tool-filesystem",
+    "module": "amplifier_module_tool_filesystem",
+    "stock_chars": 1365,
+    "lean_chars": 1009,
+    "saved_chars": 356,
+    "missing_rules": []
+  },
+  {
+    "kind": "tool",
+    "name": "glob",
+    "status": "out-of-repo",
+    "repo": "amplifier-module-tool-filesystem",
+    "module": "amplifier_module_tool_filesystem",
+    "stock_chars": 904,
+    "lean_chars": 584,
+    "saved_chars": 320,
+    "missing_rules": []
+  },
+  {
+    "kind": "tool",
+    "name": "todo",
+    "status": "out-of-repo",
+    "repo": "amplifier-module-tool-todo",
+    "module": "amplifier_module_tool_todo",
+    "stock_chars": 667,
+    "lean_chars": 526,
+    "saved_chars": 141,
+    "missing_rules": []
+  },
+  {
+    "kind": "tool",
+    "name": "mode",
+    "status": "identical-skip",
+    "repo": "amplifier-bundle-modes",
+    "stock_chars": 198
+  },
+  {
+    "kind": "tool",
+    "name": "recipes",
+    "status": "out-of-repo",
+    "repo": "amplifier-bundle-recipes",
+    "module": "modules/tool-recipes",
+    "stock_chars": 1581,
+    "lean_chars": 1020,
+    "saved_chars": 561,
+    "missing_rules": [
+      "@recipes:examples/my-recipe.yaml"
+    ]
+  }
+]

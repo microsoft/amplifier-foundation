@@ -1,0 +1,7 @@
+Tests (ubuntu-latest, Python 3.11)	pass	43s	https://github.com/microsoft/amplifier-foundation/actions/runs/34057350037/job/101551552349	
+Tests (ubuntu-latest, Python 3.12)	pass	43s	https://github.com/microsoft/amplifier-foundation/actions/runs/34057350037/job/101551552286	
+Tests (ubuntu-latest, Python 3.13)	pass	41s	https://github.com/microsoft/amplifier-foundation/actions/runs/34057350037/job/101551552186	
+Tests (windows-latest, Python 3.11)	pass	1m21s	https://github.com/microsoft/amplifier-foundation/actions/runs/34057350037/job/101551552287	
+Tests (windows-latest, Python 3.12)	pass	1m13s	https://github.com/microsoft/amplifier-foundation/actions/runs/34057350037/job/101551552347	
+Tests (windows-latest, Python 3.13)	pass	1m9s	https://github.com/microsoft/amplifier-foundation/actions/runs/34057350037/job/101551552270	
+license/cla	pass	0	https://github.com/apps/microsoft-github-policy-service	

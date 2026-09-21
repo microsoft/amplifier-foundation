@@ -473,6 +473,17 @@ def bundle_repo_dot(repo_root: str | Path) -> str:
     # Build module name → path lookup
     module_name_to_path: dict[str, Path] = {m.name: m for m in modules}
 
+    # Build resolved local behavior path → node ID lookup for include edges.
+    behavior_path_to_id: dict[Path, str] = {}
+    for beh_path in behaviors:
+        beh_d: dict = {}
+        try:
+            beh_d, _ = parse_frontmatter(beh_path)
+        except Exception:
+            pass
+        beh_name = (beh_d.get("bundle") or {}).get("name") or beh_path.stem
+        behavior_path_to_id[beh_path.resolve()] = _sanitize_id(f"beh_{beh_name}")
+
     # Root → includes
     if root_bundle.exists():
         try:
@@ -486,20 +497,11 @@ def bundle_repo_dot(repo_root: str | Path) -> str:
                 continue
             local_path = _resolve_local_include(ref, repo_root)
             if local_path is not None:
-                # Find matching behavior
-                for beh_path in behaviors:
-                    if beh_path.resolve() == local_path:
-                        beh_d: dict = {}
-                        try:
-                            beh_d, _ = parse_frontmatter(beh_path)
-                        except Exception:
-                            pass
-                        beh_n = (beh_d.get("bundle") or {}).get("name") or beh_path.stem
-                        beh_i = _sanitize_id(f"beh_{beh_n}")
-                        edge_lines.append(
-                            f'    {root_id} -> {beh_i} [label="composes"]'
-                        )
-                        break
+                behavior_id = behavior_path_to_id.get(local_path)
+                if behavior_id is not None:
+                    edge_lines.append(
+                        f'    {root_id} -> {behavior_id} [label="composes"]'
+                    )
             else:
                 # External include — classify by cost impact
                 eid = f"ext_{_sanitize_id(ref)}"
@@ -535,6 +537,16 @@ def bundle_repo_dot(repo_root: str | Path) -> str:
         beh_meta2 = beh_d2.get("bundle") or {}
         beh_name2 = beh_meta2.get("name") or beh_path.stem
         beh_id2 = _sanitize_id(f"beh_{beh_name2}")
+
+        # Behavior → local behavior (composes)
+        for inc in beh_d2.get("includes") or []:
+            ref = str(inc.get("bundle") or "")
+            local_path = _resolve_local_include(ref, repo_root)
+            behavior_id = behavior_path_to_id.get(local_path)
+            if behavior_id is not None:
+                edge_lines.append(
+                    f'    {beh_id2} -> {behavior_id} [label="composes"]'
+                )
 
         # Behavior → agent (owns)
         for agt_ref in (beh_d2.get("agents") or {}).get("include") or []:

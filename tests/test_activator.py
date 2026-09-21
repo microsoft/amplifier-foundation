@@ -9,6 +9,7 @@ from their import name, or that ship no import package at all).
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,6 +21,69 @@ from amplifier_foundation.modules.activator import (
     ModuleActivator,
     _distribution_installed,
 )
+
+
+class TestInstallTarget:
+    """Tests for routing module installs to the caller's selected environment."""
+
+    @pytest.mark.asyncio
+    async def test_default_install_target_is_current_interpreter(self) -> None:
+        """The default command remains byte-for-byte compatible with the legacy path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir)
+            (module_path / "pyproject.toml").write_text(
+                '[project]\nname = "default-target-pkg"\nversion = "1.0.0"\n'
+            )
+            activator = ModuleActivator(cache_dir=module_path / "cache")
+
+            with patch("subprocess.run") as mock_subprocess:
+                await activator._install_dependencies(module_path, force=True)
+
+            assert mock_subprocess.call_args.args[0] == [
+                "uv",
+                "pip",
+                "install",
+                "-e",
+                str(module_path),
+                "--python",
+                sys.executable,
+                "--quiet",
+                "--no-sources",
+            ]
+
+    @pytest.mark.asyncio
+    async def test_explicit_install_target_and_constraints_are_passed_to_uv(self) -> None:
+        """Callers can direct an editable install away from the current interpreter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir)
+            (module_path / "pyproject.toml").write_text(
+                '[project]\nname = "explicit-target-pkg"\nversion = "1.0.0"\n'
+            )
+            target_python = "/isolated/home/env/bin/python"
+            constraints = module_path / "constraints.txt"
+            constraints.write_text("example-dependency==1.2.3\n")
+            activator = ModuleActivator(
+                cache_dir=module_path / "cache",
+                install_python=target_python,
+                install_constraints=constraints,
+            )
+
+            with patch("subprocess.run") as mock_subprocess:
+                await activator._install_dependencies(module_path, force=True)
+
+            assert mock_subprocess.call_args.args[0] == [
+                "uv",
+                "pip",
+                "install",
+                "-e",
+                str(module_path),
+                "--python",
+                target_python,
+                "--quiet",
+                "--no-sources",
+                "--constraints",
+                str(constraints),
+            ]
 
 
 class TestInstallDependenciesWheelGuard:

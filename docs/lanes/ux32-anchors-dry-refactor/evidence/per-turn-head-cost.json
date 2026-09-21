@@ -1,0 +1,30 @@
+{
+  "anchors_BEFORE": {
+    "system_chars": 97948,
+    "system_chars_excl_status_ctx": 96548,
+    "tools_json_chars": 223992,
+    "tool_count": 86,
+    "head_total_excl_status_ctx": 320540
+  },
+  "anchors_AFTER": {
+    "system_chars": 98698,
+    "system_chars_excl_status_ctx": 96194,
+    "tools_json_chars": 223992,
+    "tool_count": 86,
+    "head_total_excl_status_ctx": 320186
+  },
+  "ampdev_BEFORE": {
+    "system_chars": 98502,
+    "system_chars_excl_status_ctx": 97102,
+    "tools_json_chars": 226767,
+    "tool_count": 86,
+    "head_total_excl_status_ctx": 323869
+  },
+  "ampdev_AFTER": {
+    "system_chars": 100418,
+    "system_chars_excl_status_ctx": 97914,
+    "tools_json_chars": 224427,
+    "tool_count": 86,
+    "head_total_excl_status_ctx": 322341
+  }
+}

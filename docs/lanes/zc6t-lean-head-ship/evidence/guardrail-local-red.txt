@@ -1,0 +1,25 @@
+      - - agent: a name from the catalog below, "namespace:path/to/bundle" to delegate to any bundle directly, or "self" to spawn yourself (maximum token conservation).
+      - - instruction (required): every invocation is STATELESS - put all needed facts in it; the agent sees nothing else unless you pass context.
+      + Why delegate: Every tool call YOU make consumes YOUR context window permanently....
+      
+      ...Full output truncated (29 lines hidden), use '-vv' to show
+/home/bkrabach/dev/hw-model-performance/lanes/zc6t-lean-head-ship/amplifier-foundation/tests/test_lean_head_guardrail.py:205: AssertionError: The composed `delegate` preamble has drifted from the V1 lean head (1190 chars vs the pinned 938). The 13.57% cost reduction was measured against these exact bytes.
+E   AssertionError: bundles/anchors-amp-dev/context/amplifier-ecosystem.md is 1432 chars, over its pinned lean budget of 1300 (+132). The head is shared with the Anthropic wire, where every char is paid on one cold write per session. If the growth is a RULE that must be there, raise the budget in the same commit and say why in the message -- never silently.
+    assert 1432 <= 1300
+/home/bkrabach/dev/hw-model-performance/lanes/zc6t-lean-head-ship/amplifier-foundation/tests/test_lean_head_guardrail.py:229: AssertionError: bundles/anchors-amp-dev/context/amplifier-ecosystem.md is 1432 chars, over its pinned lean budget of 1300 (+132). The head is shared with the Anthropic wire, where every char is paid on one cold write per session. If the growth is a RULE that must be there, raise the budget in the same commit and say why in the message -- never silently.
+E   AssertionError: bundles/anchors/context/system.md is 1358 chars, over its pinned lean budget of 1142 (+216). The head is shared with the Anthropic wire, where every char is paid on one cold write per session. If the growth is a RULE that must be there, raise the budget in the same commit and say why in the message -- never silently.
+    assert 1358 <= 1142
+/home/bkrabach/dev/hw-model-performance/lanes/zc6t-lean-head-ship/amplifier-foundation/tests/test_lean_head_guardrail.py:229: AssertionError: bundles/anchors/context/system.md is 1358 chars, over its pinned lean budget of 1142 (+216). The head is shared with the Anthropic wire, where every char is paid on one cold write per session. If the growth is a RULE that must be there, raise the budget in the same commit and say why in the message -- never silently.
+E   AssertionError: The delegate preamble is 1190 chars, over its pinned lean budget of 938 (+252).
+    assert 1190 <= 938
+/home/bkrabach/dev/hw-model-performance/lanes/zc6t-lean-head-ship/amplifier-foundation/tests/test_lean_head_guardrail.py:240: AssertionError: The delegate preamble is 1190 chars, over its pinned lean budget of 938 (+252).
+E   AssertionError: bundles/anchors-amp-dev/context/amplifier-ecosystem.md lost these rules/commands/pointers: ['never push downstream before upstream is merged', 'push core-side first']. Fidelity beats compression at every point of conflict -- restore the text and raise the char budget rather than shipping the saving.
+    assert not ['never push downstream before upstream is merged', 'push core-side first']
+/home/bkrabach/dev/hw-model-performance/lanes/zc6t-lean-head-ship/amplifier-foundation/tests/test_lean_head_guardrail.py:340: AssertionError: bundles/anchors-amp-dev/context/amplifier-ecosystem.md lost these rules/commands/pointers: ['never push downstream before upstream is merged', 'push core-side first']. Fidelity beats compression at every point of conflict -- restore the text and raise the char budget rather than shipping the saving.
+=========================== short test summary info ============================
+FAILED tests/test_lean_head_guardrail.py::TestBytePinsAgainstTheV1Head::test_delegate_preamble_is_byte_identical_to_v1
+FAILED tests/test_lean_head_guardrail.py::TestGuardrailAHeadCensus::test_context_file_within_budget[bundles/anchors-amp-dev/context/amplifier-ecosystem.md]
+FAILED tests/test_lean_head_guardrail.py::TestGuardrailAHeadCensus::test_context_file_within_budget[bundles/anchors/context/system.md]
+FAILED tests/test_lean_head_guardrail.py::TestGuardrailAHeadCensus::test_delegate_preamble_within_budget
+FAILED tests/test_lean_head_guardrail.py::TestFidelityBeatsCompression::test_every_required_rule_survived[bundles/anchors-amp-dev/context/amplifier-ecosystem.md]
+5 failed, 10 passed in 0.05s

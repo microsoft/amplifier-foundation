@@ -1,7 +1,8 @@
 ---
 bundle:
   name: anchors
-  version: 0.1.0
+  display_name: Anchors
+  version: 0.2.0
   description: |
     Lean bundle driven by a small set of behavioral principles.
     A minimal system prompt, thin purposeful agents, and a standard tool roster.
@@ -15,6 +16,25 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/status-context.yaml
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/redaction.yaml
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/logging.yaml
+  # Context Intelligence: session event capture + local-JSONL navigation
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-logging.yaml
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-navigation.yaml
+  # Model routing: the hook that makes every agent's `model_role` mean something.
+  #
+  # Every anchors agent declares a role (explorer: [general, fast]; architect:
+  # reasoning; ...). Without hooks-routing those declarations are dead config
+  # and every sub-agent silently inherits the parent's provider -- measured
+  # 2026-09-07: a session on anchors-amp-dev spawned explorer with
+  # `provider_preferences: null` and ran it on the parent's opus while
+  # `amplifier routing show` said "balanced ... active" for every role.
+  #
+  # amplifier-app-cli ALSO composes this behavior on every session (routing is
+  # app-level policy there, like skills/wayfinder). Including it here too is
+  # deliberate, not redundant: anchors does not need the CLI to work, and a
+  # host that mounts anchors without app-cli must still route. Compose dedupes
+  # by module id, so the two never produce a second hook. Cost: one ~750-byte
+  # context file (the model_role contract) and the role-definitions skill.
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main#subdirectory=behaviors/routing.yaml
 
 session:
   raw: true
@@ -27,7 +47,6 @@ session:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
     config:
-      max_tokens: 300000
       compact_threshold: 0.8
       auto_compact: true
 
@@ -62,6 +81,8 @@ tools:
           enabled: true
       settings:
         exclude_tools: [tool-delegate]
+        timeout: null  # Delegation deadlines and call caps are opt-in.
+        max_llm_calls: null
 
   # Skills (user-invocable skills callable via /command + load_skill; auto-injection off to save tokens)
   - module: tool-skills
@@ -127,11 +148,5 @@ agents:
     - anchors:git-ops
     - anchors:researcher
 ---
-
-# Anchors
-
-A lean, principle-driven bundle. Behavior is shaped by a short set
-of named principles loaded once at the head of the system prompt, backed by thin
-purposeful agents and a standard tool roster.
 
 @anchors:context/system.md

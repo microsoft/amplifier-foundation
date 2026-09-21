@@ -1,6 +1,7 @@
 ---
 bundle:
   name: lean-amplifier-dev-behavior
+  display_name: Lean Amplifier development
   version: 1.0.0
   description: |
     Dev-focused agents and Python tooling layer.

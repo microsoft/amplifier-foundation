@@ -36,10 +36,14 @@ bundle:                        meta:
 
 ### What Makes a Good Description
 
-Answer three questions:
-1. **WHEN** should I use this agent? (Activation triggers)
-2. **WHAT** does it do? (Core capability)
-3. **HOW** do I invoke it? (Examples)
+Answer two questions:
+1. **WHAT** does it do? (Core capability)
+2. **WHEN** should I delegate to it? (The deciding factor -- see
+   description-authoring-principles.md V6 for phrasing)
+
+No third "HOW do I invoke it" question -- `<example>` blocks are rejected
+entirely (description-authoring-principles.md V3). A clear WHEN clause
+carries the trigger condition; no worked dialogue example is needed.
 
 ### Pattern
 
@@ -47,41 +51,26 @@ Answer three questions:
 meta:
   name: my-agent
   description: |
-    [WHEN to use - activation triggers]. Use PROACTIVELY when [condition].
-    
-    [WHAT it does - core capability in 1-2 sentences].
-    
-    Examples:
-    
-    <example>
-    user: '[Example user request]'
-    assistant: 'I'll use my-agent to [action].'
-    <commentary>[Why this agent is the right choice]</commentary>
-    </example>
+    [WHAT it does - core capability in 1-2 sentences]. [WHEN to delegate -
+    the deciding factor, not a bare imperative -- see
+    description-authoring-principles.md V6].
 ```
 
+See `context/shared/description-authoring-principles.md` for trigger
+phrasing (decision rules over bare absolutes), the example policy (no
+`<example>` blocks, no `<commentary>`), and the character budget.
+
 ### Real Example
+
+Illustrates the target shape under the current policy (no `<example>`
+block):
 
 ```yaml
 meta:
   name: bug-hunter
-  description: |
-    Specialized debugging expert. Use PROACTIVELY when user reports errors,
-    unexpected behavior, or test failures.
-    
-    Examples:
-    
-    <example>
-    user: 'The pipeline is throwing a KeyError somewhere'
-    assistant: 'I'll use bug-hunter to systematically track down this KeyError.'
-    <commentary>Bug reports trigger bug-hunter delegation.</commentary>
-    </example>
-    
-    <example>
-    user: 'Tests are failing after the recent changes'
-    assistant: 'Let me use bug-hunter to investigate the test failures.'
-    <commentary>Test failures are a clear debugging task.</commentary>
-    </example>
+  description: "Specialized debugging expert focused on finding and fixing
+    bugs systematically. Use when the user has reported or you are
+    encountering errors, unexpected behavior, or test failures."
 ```
 
 ### Anti-Patterns
@@ -91,52 +80,67 @@ meta:
 meta:
   description: "Helps with code stuff"
 
-# ❌ No examples - callers have to guess
-meta:
-  description: "Analyzes code for quality issues"
-
-# ✅ Clear triggers + capability + examples
+# ❌ <example> block - banned entirely, not just capped
 meta:
   description: |
-    Use PROACTIVELY when user reports errors or test failures.
-    Systematic debugging with hypothesis-driven root cause analysis.
-    
+    Analyzes code for quality issues.
+
     <example>
-    user: 'The build is failing'
-    assistant: 'I'll use bug-hunter to investigate.'
+    user: 'Review this PR'
+    assistant: 'I'll use the reviewer agent.'
     </example>
+
+# ✅ Clear capability + trigger, no example
+meta:
+  description: |
+    Systematic debugging with hypothesis-driven root cause analysis.
+    Use when user reports errors, unexpected behavior, or test failures.
 ```
 
 ---
 
-## Description Requirements (Critical)
+## Description Requirements
 
 The `meta.description` field is the **ONLY** discovery mechanism for agents. When the
 task tool presents available agents to the LLM, this description is all it sees to
 decide which agent to use.
 
-**Poor descriptions cause delegation failures.** One-liner descriptions are unacceptable.
+**How to write it is governed by the canonical
+[description-authoring-principles.md](../context/shared/description-authoring-principles.md)**
+-- trigger phrasing (decision rules over bare absolutes), the example policy
+(no `<example>` blocks, no `<commentary>`), staleness/deletion, and provider
+disposition all live there and are not restated here.
 
 ### Required Elements
 
-Every agent description MUST include:
+Every agent description should cover:
 
-#### 1. WHY - The Purpose
-What problem does this agent solve? What value does it provide?
+#### 1. WHAT - The Capability
+What does this agent do? What value does it provide?
 
-#### 2. WHEN - Activation Triggers  
-Explicit conditions that should cause delegation to this agent.
-Use keywords: MUST, REQUIRED, ALWAYS, PROACTIVELY, "Use when..."
+#### 2. WHEN - The Deciding Factor
+The condition that should cause delegation, phrased as a decision rule
+(see description-authoring-principles.md V6) rather than a bare imperative.
+State it FIRST -- a description is read by a router deciding whether this
+is the thing, not by a person learning what it does (V7).
 
-#### 3. WHAT - Domain/Taxonomy Terms
-Keywords and concepts this agent is authoritative on.
-Pattern: `**Authoritative on:** term1, term2, term3, "multi-word concept"`
+#### 2b. DO NOT USE WHEN - and what to use instead
+The half most often missing. Name the sibling that SHOULD handle the case
+you are rejecting. Its absence is what produces the silent failure this
+whole policy exists to prevent: a router picks the nearest-sounding
+capability, does the wrong work, and gives nobody a reason to trace it
+back. One clause removes a whole class of misroute.
 
-This serves as the agent's "taxonomy" - terms that should trigger delegation.
+#### 3. Authoritative On (optional)
+Domain terms this agent owns, so questions in that domain route here.
+Pattern: `**Authoritative on:** term1, term2, "multi-word concept"`
 
-#### 4. HOW - Usage Examples
-Concrete examples showing user request → delegation rationale.
-Use `<example>` blocks with `<commentary>` tags.
+#### 4. Examples -- Not Permitted
+`<example>` blocks are rejected entirely (description-authoring-
+principles.md V3) -- do not add one. If a worked example is genuinely
+useful for a human reading the docs, put it in a body doc (this guide, a
+README, or the agent's own markdown body), never in the `description`
+field.
 
 ### Template
 
@@ -144,51 +148,65 @@ Use `<example>` blocks with `<commentary>` tags.
 meta:
   name: my-agent
   description: |
-    [ONE SENTENCE: What this agent does and why it matters]
-    
-    Use PROACTIVELY when [primary trigger condition].
-    
+    [TRIGGER FIRST: the condition under which this applies, then what it does]
+
+    USE WHEN: [the deciding factor -- context shape, not a bare imperative].
+    DO NOT USE WHEN: [the case that belongs elsewhere] -- use [name].
+
     **Authoritative on:** [comma-separated domain terms/keywords]
-    
-    **MUST be used for:**
-    - [Condition 1]
-    - [Condition 2]
-    
-    <example>
-    user: '[Example user request]'
-    assistant: 'I'll delegate to [agent] because [reason].'
-    <commentary>
-    [Why this triggers the agent - helps LLMs learn the pattern]
-    </commentary>
-    </example>
 ```
+
+Budget: <= 600 chars for the whole block. If a routing fact will not fit,
+keep the fact and exceed the cap -- and say which fact forced it. Fidelity
+beats brevity (V7).
 
 ### Anti-Patterns
 
 ❌ One-liner descriptions: `"Helps with debugging"`
-❌ No trigger conditions: Missing WHEN to use
+❌ No indication of WHEN to delegate
 ❌ No taxonomy terms: LLM can't match domain questions
-❌ No examples: LLM doesn't learn delegation patterns
+❌ Any `<example>` block, or any `<commentary>` tag -- both are banned
+entirely (description-authoring-principles.md V3), not merely capped
 
-### Audit Your Agents
+### Description Length Cap
 
-Check each agent's description against these criteria:
-- [ ] >100 words (not a one-liner)
-- [ ] Has explicit trigger conditions
-- [ ] Lists domain terms ("Authoritative on:")
-- [ ] Includes at least one example
-- [ ] Explains the value proposition
+**<= 600 characters. ERROR above 1,200** (2x the cap). Enforced by
+`foundation:recipes/validate-agents.yaml` and
+`foundation:recipes/validate-bundle-repo.yaml`; the numbers and the
+measurement behind them are in description-authoring-principles.md V5.
+
+Chars, not tokens: chars are the unit every head measurement in this
+program was taken in, and they need no tokenizer. The superseded token
+tier (ERROR above 600 tokens = 2,400 chars) sat above the longest
+description in every already-aligned repo measured, so it could not fire
+on the defect it existed to catch.
+
+For an existing repo that is over the cap, do not shorten by hand and by
+eye -- run `foundation:recipes/refresh-descriptions.yaml`, which proposes
+a rewrite WITH a fidelity table accounting for every routing fact. See
+[BUNDLE_GUIDE.md - Refreshing descriptions](BUNDLE_GUIDE.md#refreshing-descriptions).
+
+### Awareness files are not a place to describe an agent
+
+If you find yourself writing an always-on `context.include` that says "this
+agent exists, and here is when to delegate to it", stop: that is the agent's
+`meta.description`, and a second copy is paid on every request and can drift
+from the first. An awareness file is for a CONCEPT that has no catalog line of
+its own. The full rule, and the validator that enforces it, are in
+[BUNDLE_GUIDE.md - Awareness: concept + trigger + pointer](BUNDLE_GUIDE.md#awareness-concept--trigger--pointer).
 
 ---
 
 ## Instruction Structure
 
-The markdown body after frontmatter becomes the agent's system prompt. Recommended structure:
+The markdown body after frontmatter becomes the agent's system prompt. It is instruction addressed to the agent — never a description of the agent for a human reader. That belongs in the frontmatter `meta.description`, which is metadata and is never sent to the model. See [What Goes Below the Frontmatter](BUNDLE_GUIDE.md#what-goes-below-the-frontmatter) for the general rule and the enforcing validators.
+
+Recommended structure:
 
 ```markdown
 # Agent Name
 
-[One-line role description]
+You are [role]. You [what you do, in one line].
 
 **Execution model:** You run as a one-shot sub-session. Work with what 
 you're given and return complete results.
@@ -300,6 +318,79 @@ When both `model_role` and `provider_preferences` are present, `provider_prefere
 
 ---
 
+## Sub-Agent Access Control with `agents`
+
+An agent can declare which sub-agents its own spawned session may delegate to. This is the `agents` field in agent frontmatter - a **Smart Single Value** taking one of three forms.
+
+> **Not the same as a bundle's `agents:` section.** A bundle or behavior uses `agents:` with a **mapping** value (`include:` lists, inline definitions) to declare which agents it *provides*. An agent uses `agents:` with a **string or list** value to declare which agents it may *delegate to*. Same key, two meanings, told apart by value type. See [BUNDLE_GUIDE.md](BUNDLE_GUIDE.md) for the roster form.
+
+### The `agents` Frontmatter Field
+
+`agents` is a top-level key - a sibling of `meta:`, alongside `tools:` and `providers:` - not a field nested inside `meta:`.
+
+**Disable delegation entirely** - the agent does the work itself:
+
+```yaml
+meta:
+  name: leaf-worker
+  description: "..."
+
+agents: none
+```
+
+**Allowlist** - the agent may delegate only to the named agents:
+
+```yaml
+meta:
+  name: coordinator
+  description: "..."
+
+agents: [explorer, bug-hunter]
+```
+
+**Inherit everything** - the default, and identical to omitting the field:
+
+```yaml
+meta:
+  name: orchestrator
+  description: "..."
+
+agents: all
+```
+
+An allowlist is satisfied from every agent available to the parent session - both those declared statically by the bundle and those contributed at runtime by an active mode. Naming an agent that does not exist yields no error; the agent simply is not available to delegate to.
+
+A value that is neither `all`, `none`, a list, nor a mapping raises at load time rather than being ignored, so a typo fails loudly instead of silently granting full access.
+
+### Example Agent Frontmatter
+
+```yaml
+---
+meta:
+  name: security-auditor
+  description: |
+    Use PROACTIVELY for vulnerability assessment and code auditing.
+    Reviews directly without delegating.
+  model_role: security-audit
+
+agents: none
+
+tools:
+  - module: tool-filesystem
+  - module: tool-bash
+---
+
+# Security Auditor
+
+[Agent instructions...]
+```
+
+> **Where this is enforced.** The reference spawn capability (`amplifier-app-cli`'s `session_spawner.py`) applies the declaration when it builds the child session's config, filtering both the parent's static agents and any runtime-contributed ones. An agent declaring `agents: none` receives an empty agent set, so its `delegate` tool has nothing to call.
+
+Restricting delegation is not a security boundary - it shapes what an agent is *meant* to reach for, keeping a focused worker focused. To remove the capability itself, drop the delegation tool from the agent's `tools:` list.
+
+---
+
 ## Agents as Context Sinks
 
 Expert agents serve as **context sinks** - they carry heavy documentation that would bloat every session if always loaded.
@@ -336,7 +427,11 @@ meta:
 
 ### The Behavior + Agent Pattern
 
-Pair your expert agent with a behavior that injects a thin awareness pointer:
+**The default behavior has no `context.include` at all.** The agent's own
+`meta.description` is the discovery surface — it is already concatenated into
+the `delegate` catalog and paid on every request. A context file that says
+"this domain exists, delegate to `my-expert`" is a second copy of that same
+sentence, paid twice:
 
 ```yaml
 # behaviors/my-expert.yaml
@@ -346,16 +441,20 @@ bundle:
 
 agents:
   include:
-    - my-bundle:my-expert    # Heavy agent file
-
-context:
-  include:
-    - my-bundle:context/my-awareness.md  # Thin pointer (~30 lines)
+    - my-bundle:my-expert    # Heavy agent file; its meta.description IS the pointer
 ```
 
-The thin awareness file tells root sessions: "This domain exists. Delegate to `my-bundle:my-expert`."
-
 The agent file carries all the heavy @mentions that only load when the agent is actually spawned.
+
+Add a `context.include` only when you can name something it says that the
+catalog line cannot — a cross-cutting hazard, a routing table to *other*
+bundles, or a prerequisite the session needs before any of the capabilities
+work. `validate-bundle-repo.yaml` Phase 2.84 warns
+(`awareness_is_pointer_only`) on a file that is when-to-use prose plus a
+`delegate(`/`load_skill(` pointer, which is precisely the file this section
+used to recommend. The full test, the three legitimate content types, and the
+four rules are in
+[BUNDLE_GUIDE.md — Awareness: concept + trigger + pointer](BUNDLE_GUIDE.md#awareness-concept--trigger--pointer).
 
 ### Anti-Pattern: Heavy Context in Behaviors
 
@@ -366,16 +465,21 @@ context:
     - my-bundle:docs/FULL_GUIDE.md      # 500 lines in every session!
     - my-bundle:docs/REFERENCE.md       # More bloat
 
-# ✅ GOOD: Thin pointer in behavior, heavy docs in agent
+# ❌ ALSO BAD: a file whose whole content is "domain exists, delegate to X"
 context:
   include:
-    - my-bundle:context/awareness.md    # 30 lines: "domain exists, delegate"
+    - my-bundle:context/awareness.md    # duplicates the agent's own description
 
-# ✅ EVEN BETTER: No always-on context at all when an expert agent owns the domain
+# ✅ GOOD: no always-on context at all when an expert agent owns the domain
 agents:
   include:
     - my-bundle:my-expert    # Agent meta.description IS the discovery surface
 # (no context.include block needed — the agent catalog tells the LLM "this exists")
+
+# ✅ ALSO GOOD: always-on context that carries what no description can
+context:
+  include:
+    - my-bundle:context/hazards.md      # a hazard true of EVERY agent in the bundle
 ```
 
 ### Hard policy: behavior `context.include` token budget
@@ -402,7 +506,9 @@ Only put a file in behavior `context.include` if you can clearly defend "this mu
 ## Common Mistakes
 
 ### 1. Vague Description
-Callers don't know when to use the agent. Add activation triggers and examples.
+Callers don't know when to use the agent. Add a concrete WHEN clause
+(decision rule, not a worked example -- `<example>` blocks are rejected
+entirely, see description-authoring-principles.md V3).
 
 ### 2. Missing @mention Base
 Forgetting `@foundation:context/shared/common-agent-base.md` causes inconsistent behavior.

@@ -173,8 +173,8 @@ Multi-step workflows need ordering. Where it lives depends on who drives the wor
 **Guardrails for companion skills that encode workflow ordering:**
 
 1. **Build the recipe equivalent when possible.** The recipe handles "run end-to-end with checkpoints." The skill handles "walk me through this interactively."
-2. **Keep the skill as a phase guide, not a script.** Describe phases and decision points. Don't dictate exact tool calls.
-3. **Don't enforce policy from the skill.** Policy enforcement belongs in the mode's tool policy tiers.
+2. **Keep the skill as a phase guide, not a script.** Describe phases and decision points, leaving exact tool calls to the executing agent.
+3. **Enforce policy only from the mode's tool policy tiers.** The skill carries guidance; the tiers carry enforcement.
 
 ---
 
@@ -295,7 +295,7 @@ Beyond token cost, the lifecycle question is: **does this context need to persis
 
 **The disposable context pattern.** The most powerful context management tool is **throwing context away**. When work runs in an agent, recipe step, or fork skill, the entire working context is discarded when the task completes. Only the distilled output survives. The parent doesn't need to know *how* the agent explored 20 files — it needs the *conclusion*.
 
-**Default to clean slate.** Use `context_depth: "none"` for delegations unless the agent genuinely needs conversational context. 84% of all delegations use clean-slate — the ecosystem has converged on this as the norm. Use `"recent"` only when the agent needs to understand what the user asked for. Use `"all"` almost never.
+**Default to clean slate.** Use `context_depth: "none"` for delegations unless the agent genuinely needs conversational context. 84% of all delegations use clean-slate — the ecosystem has converged on this as the norm. Use `"recent"` only when the agent needs to understand what the user asked for. Reserve `"all"` for the rare case that truly needs full history.
 
 **Choosing the right lifecycle:**
 

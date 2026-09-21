@@ -23,20 +23,82 @@ module is responsible for *how* to serialize and validate it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import platform
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from amplifier_core import AmplifierSession
+
 from amplifier_foundation.bundle import BundleModuleResolver
 
 logger = logging.getLogger(__name__)
+
+
+def _kill_subprocess_tree(pid: int) -> None:
+    """Kill a subprocess and its descendants.
+
+    GAP-026: a plain ``process.kill()`` (used on the ``asyncio.TimeoutError``
+    path below) only terminates the immediate child -- the
+    ``python -m amplifier_foundation.subprocess_runner`` process itself. If
+    that child has, in turn, spawned its own tool subprocesses (e.g. a bash
+    tool call made by the delegated subagent), those are not reparented or
+    reaped when only the direct child is killed. Mirrors
+    ``amplifier_foundation.sources.git._kill_process_tree`` (GAP-013/GAP-014),
+    duplicated here rather than imported to keep this module's dependency on
+    ``sources.git`` at zero -- these are two independently-triggerable
+    process-cleanup gaps in otherwise-unrelated code paths, not one shared
+    mechanism.
+
+    GAP-030: on POSIX, ``os.killpg(os.getpgid(pid), ...)`` only isolates the
+    *target* if that target was started in its own process group. The child
+    spawned below used to inherit *our* process group (the default for
+    ``asyncio.create_subprocess_exec``), so ``os.getpgid(pid)`` returned OUR
+    OWN pgid and this call would SIGKILL the calling process (and everything
+    else sharing its group -- e.g. the user's interactive shell) instead of
+    just the runaway child. Confirmed empirically on Linux before the
+    ``start_new_session=True`` fix below: child pgid == our pgid. Fixed at
+    the spawn site so the child gets its own group; this guard is a second,
+    independent line of defense that refuses to act if that ever regresses,
+    rather than trusting the spawn site silently forever.
+    """
+    if platform.system() == "Windows":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        import signal
+
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            target_pgid = os.getpgid(pid)
+            if target_pgid == os.getpgid(0):
+                # GAP-030 defense-in-depth: the target is (still) in OUR
+                # process group -- e.g. start_new_session somehow didn't
+                # take effect. Killing this group would kill the caller.
+                # Fall back to killing just the direct child instead of
+                # silently self-destructing.
+                logger.warning(
+                    "Refusing to killpg pid %s: its process group (%s) is "
+                    "our own. Falling back to killing only the direct "
+                    "child; descendants may be left running.",
+                    pid,
+                    target_pgid,
+                )
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)
+            else:
+                os.killpg(target_pgid, signal.SIGKILL)
+
 
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
 
@@ -100,12 +162,31 @@ def _build_child_env() -> dict[str, str]:
     Returns:
         A new dict containing only the allowed environment variables.
     """
-    return {
+    env = {
         key: value
         for key, value in os.environ.items()
         if key in _ENV_ALLOWED_EXACT
         or any(key.startswith(prefix) for prefix in _ENV_ALLOWED_PREFIXES)
     }
+    # Force UTF-8 for the child's stdio. The child writes to a PIPE (not a
+    # console), and on native Windows a piped stdout defaults to the locale ANSI
+    # codepage (e.g. cp1252). The result envelope itself is never at risk --
+    # json.dumps() defaults to ensure_ascii=True, so the envelope is pure ASCII by
+    # construction. The risk is everything AROUND it: log lines, tool output,
+    # third-party prints (em dash, checkmark, non-Latin text -- all common in LLM
+    # output), which _extract_framed_result deliberately tolerates and which land
+    # in the same pipe. Those get encoded in the ANSI codepage, and the parent
+    # then decodes the whole stream with stdout.decode("utf-8") and no error
+    # handler -- so the undecodable bytes raise UnicodeDecodeError in the PARENT,
+    # turning a successful child run into an opaque failure. PYTHONUTF8=1 puts the
+    # interpreter in UTF-8 mode (stdio + filesystem encoding); PYTHONIOENCODING is
+    # a belt-and-suspenders for any child that re-derives its stream encoding.
+    # These are set unconditionally rather than merely forwarded, so the child is
+    # UTF-8 even when the parent's environment is not. No-op on POSIX, where UTF-8
+    # is already the effective default.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 # Credential patterns — used by _sanitize_error() to redact sensitive values
@@ -396,6 +477,22 @@ async def run_session_in_subprocess(
         if current_mode & (stat.S_IRWXG | stat.S_IRWXO):
             os.chmod(tmp_path, 0o600)
 
+        # GAP-030: on POSIX, spawn the child into its own process group so
+        # that _kill_subprocess_tree's os.killpg() targets the child (and
+        # anything IT spawned) rather than the group this very process is
+        # in. Without this, the child inherits our group by default and
+        # killpg(getpgid(child)) == killpg(our own group) -- confirmed
+        # empirically on Linux: same pgid as the parent before this fix.
+        # Mirrors amplifier_foundation.sources.git._run_git_subprocess,
+        # which got this right for its own subprocess.Popen() call.
+        extra_spawn_kwargs: dict[str, Any] = {}
+        if platform.system() == "Windows":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if creationflags:
+                extra_spawn_kwargs["creationflags"] = creationflags
+        else:
+            extra_spawn_kwargs["start_new_session"] = True
+
         async with semaphore:
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
@@ -406,6 +503,7 @@ async def run_session_in_subprocess(
                 stderr=asyncio.subprocess.PIPE,
                 cwd=project_path,
                 env=_build_child_env(),
+                **extra_spawn_kwargs,
             )
 
             try:
@@ -413,7 +511,8 @@ async def run_session_in_subprocess(
                     process.communicate(), timeout=timeout
                 )
             except asyncio.TimeoutError:
-                process.kill()
+                if process.returncode is None:
+                    _kill_subprocess_tree(process.pid)
                 try:
                     await asyncio.wait_for(process.wait(), timeout=10)
                 except asyncio.TimeoutError:
@@ -422,6 +521,25 @@ async def run_session_in_subprocess(
                         process.pid,
                     )
                 raise TimeoutError(f"Subprocess session timed out after {timeout}s")
+            except BaseException:
+                # GAP-026: this function has NO cancellation wiring at all --
+                # unlike in-process delegation (session_spawner.py's
+                # register_child/unregister_child), a subprocess-mode
+                # delegate call is not linked to the parent's
+                # CancellationToken in any way. The only previously-handled
+                # exception here was our OWN asyncio.TimeoutError (default
+                # 1800s). Anything else that unwinds this await -- most
+                # importantly asyncio.CancelledError from the enclosing task
+                # being cancelled (what a real Ctrl+C would have to drive if
+                # this path is ever wired up), but also e.g. a bare
+                # KeyboardInterrupt -- left the child process (and anything
+                # IT spawned, such as a bash tool call made by the delegated
+                # subagent) running fully unsupervised, verified empirically:
+                # confirmed alive both immediately and 3s after cancellation.
+                # See GAP-026 in WINDOWS-GAP-LEDGER.md.
+                if process.returncode is None:
+                    _kill_subprocess_tree(process.pid)
+                raise
 
             raw_stdout = stdout.decode("utf-8")
             stderr_text = stderr.decode("utf-8")
@@ -517,8 +635,12 @@ async def _run_child_session(config_path: str) -> str:
             {name: Path(path) for name, path in module_paths.items()}
         )
         try:
-            from amplifier_app_cli.lib.bundle_loader import AppModuleResolver  # type: ignore[import-untyped,import-not-found]
-            from amplifier_app_cli.paths import create_foundation_resolver  # type: ignore[import-untyped,import-not-found]
+            from amplifier_app_cli.lib.bundle_loader import (
+                AppModuleResolver,  # type: ignore[import-untyped,import-not-found]
+            )
+            from amplifier_app_cli.paths import (
+                create_foundation_resolver,  # type: ignore[import-untyped,import-not-found]
+            )
 
             resolver = AppModuleResolver(
                 bundle_resolver=bundle_resolver,
@@ -592,13 +714,62 @@ async def _run_child_session(config_path: str) -> str:
 
     logger.debug("Subprocess child session initialized, capabilities registered")
 
-    # (7) Expand @mentions in the prompt before execute. Mirrors PreparedBundle.spawn.
+    # Shared mention-expansion inputs, resolved once and reused below for both
+    # the agent's system instruction (persona) and the prompt (step 7).
     from amplifier_foundation.mentions import expand_mentions_in_instruction
 
     _mention_resolver = session.coordinator.get_capability("mention_resolver")
     _mention_dedup = session.coordinator.get_capability("mention_deduplicator")
     _working_dir = session.coordinator.get_capability("session.working_dir")
     _relative_to = Path(_working_dir) if _working_dir else None
+
+    # (6b) Register the agent's system instruction (persona) on the child context.
+    #
+    # WHY THIS EXISTS: the `instruction` key crosses the process boundary intact
+    # inside `config` (merge_configs() on the parent side preserves it), but
+    # nothing on the subprocess child path ever reads it. Without this block, a
+    # subprocess-spawned agent runs as a generic session with NO persona at all
+    # -- the persona is silently dropped. Mirrors the in-process path in
+    # amplifier-app-cli's session_spawner.py (search "Inject agent's system
+    # instruction" near spawn_sub_session()) -- keep the two in sync.
+    system_instruction = config.get("instruction")
+    if not system_instruction:
+        _system_cfg = config.get("system")
+        if isinstance(_system_cfg, dict):
+            system_instruction = _system_cfg.get("instruction")
+
+    if system_instruction:
+        if _mention_resolver is not None:
+            # Fresh deduplicator for this call -- do NOT share the session's
+            # instance with the prompt expansion below. ContentDeduplicator
+            # accumulates every file it has ever seen and re-serializes the
+            # whole set on each call, so a shared instance makes the persona's
+            # resolved @mention content bleed into the prompt's context block
+            # (verified: shared -> bleed, fresh -> no bleed). Matches the
+            # already-correct pattern in bundle/_prepared.py ("Fresh
+            # deduplicator each call").
+            system_instruction = await expand_mentions_in_instruction(
+                system_instruction,
+                resolver=_mention_resolver,
+                deduplicator=ContentDeduplicator(),
+                relative_to=_relative_to,
+            )
+
+        context = session.coordinator.get("context")
+        if context is not None and hasattr(context, "set_system_prompt_factory"):
+            # Register a factory rather than a static system message so hooks
+            # that compose onto the system prompt have a surface to wrap.
+            # Mirrors the in-process spawn path exactly (see comment above).
+            _resolved_system_instruction = system_instruction
+
+            async def _system_prompt_factory() -> str:
+                return _resolved_system_instruction
+
+            await context.set_system_prompt_factory(_system_prompt_factory)
+        elif context is not None and hasattr(context, "add_message"):
+            await context.add_message({"role": "system", "content": system_instruction})
+
+    # (7) Expand @mentions in the prompt before execute. Mirrors PreparedBundle.spawn.
     if _mention_resolver is not None:
         prompt = await expand_mentions_in_instruction(
             prompt,

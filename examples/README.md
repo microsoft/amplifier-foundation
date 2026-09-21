@@ -2,6 +2,12 @@
 
 Progressive examples demonstrating how to use Amplifier Foundation, organized by learning progression.
 
+> **Scope:** These executable examples demonstrate Foundation library APIs and
+> complete application compositions. Some intentionally load the retained
+> Foundation root. They are not behavior-first bundle-authoring recommendations;
+> use [`docs/BUNDLE_GUIDE.md`](../docs/BUNDLE_GUIDE.md) when publishing a
+> reusable capability or an optional supporting root.
+
 ## Quick Start
 
 ```bash

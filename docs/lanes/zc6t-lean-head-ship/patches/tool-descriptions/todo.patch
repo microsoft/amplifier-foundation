@@ -1,0 +1,22 @@
+--- a/todo.description
++++ b/todo.description
+@@ -1,17 +1,5 @@
+-Manage your todo list for tracking complex multi-step tasks.
++Manage your todo list for tracking complex multi-step tasks: create a list when starting such work, update it after each completed step, stay accountable through long turns.
+ 
+-Use this tool to:
+-- Create a todo list when starting complex multi-step work
+-- Update the list as you complete each step
+-- Stay accountable and focused through long turns
++Each item has content (imperative, e.g. "Run tests"), activeForm (present continuous, e.g. "Running tests"), and status - one of "pending", "in_progress", "completed". Actions: create and update replace the whole list; list reads the current one.
+ 
+-Todo items have:
+-- content: Imperative description (e.g., "Run tests", "Build project")
+-- activeForm: Present continuous (e.g., "Running tests", "Building project")
+-- status: "pending" | "in_progress" | "completed"
+-
+-Recommended pattern:
+-1. Create list when you start complex multi-step work
+-2. Update after completing each step
+-3. Keep exactly ONE item as "in_progress" at a time
+-4. Mark items "completed" immediately after finishing+Keep exactly ONE item "in_progress" at a time; mark an item "completed" immediately after finishing it.

@@ -1,0 +1,40 @@
+--- a/context/amplifier-tester-awareness.md
++++ b/context/amplifier-tester-awareness.md
+@@ -1,34 +1,4 @@
+ # Amplifier Tester
+-
+-You have access to the Amplifier amplifier tester bundle for testing changes to Amplifier repos (core, modules, bundles, foundation, app-cli) in isolated Digital Twin Universe environments.
+-
+-## When to Use
+-
+-- Developer has local changes to Amplifier ecosystem repos and wants to validate them
+-- Developer wants to test bundle, module, or prompt changes before pushing to GitHub
+-- Developer needs to verify multi-repo changes work together in isolation
+-- Do NOT use this to validate apps or things outside the Amplifier ecosystem. You should use `amplifier-bundle-reality-check` for that instead. If it is not installed, tell the user to get that bundle. Only use this bundle if they insist.
+-
+-## How to Use
+-
+-Set up a DTU environment for validating Amplifier ecosystem changes:
+-```
+-delegate(agent="amplifier-tester:setup-digital-twin", instruction="<what the user needs>", context_depth="recent", context_scope="conversation")
+-```
+-
+-For additional targeted validation checks inside an existing DTU:
+-```
+-delegate(agent="amplifier-tester:validator", instruction="<DTU instance ID and what to check>", context_depth="recent", context_scope="agents")
+-```
+-
+-## ⚠️ Resource Accounting (orchestrator responsibility)
+-
+-Repeated `setup-digital-twin` delegations **accumulate** environments. Each invocation launches its own DTU (and may create or reuse a Gitea instance); nothing tears them down automatically. The sub-agent is **stateless** — it cannot see how many siblings you have already spawned or how many environments are already live.
+-
+-The **orchestrator owns the cumulative ledger and the cap** — the sub-agent cannot, so you must:
+-
+-- Track how many DTU environments you have launched across all delegations.
+-- Set and enforce a hard cap on concurrent environments.
+-- Pass the **current live count and the remaining budget** in every `setup-digital-twin` delegation instruction, so the sub-agent can confirm scope before adding another.
+-
+-Delegating N times without passing a running total will silently launch N environments and can exhaust host disk.
++Tests changes to Amplifier repos (core, modules, bundles, foundation, app-cli) in isolated DTUs: local ecosystem changes, bundle/module/prompt changes before pushing to GitHub, multi-repo changes verified together. Do NOT use it for apps or anything outside the Amplifier ecosystem — use `amplifier-bundle-reality-check`; if not installed, tell the user to get that bundle; use this one only if they insist.
++Setup: `delegate(agent="amplifier-tester:setup-digital-twin", instruction="<what the user needs>", context_depth="recent", context_scope="conversation")`. Checks in an existing DTU: `delegate(agent="amplifier-tester:validator", instruction="<DTU instance ID and what to check>", context_depth="recent", context_scope="agents")`.
++Resource accounting is yours: every `setup-digital-twin` launches another DTU (may create/reuse Gitea), nothing is torn down automatically, and the sub-agent is stateless — blind to siblings and live environments. Track DTUs launched across all delegations, enforce a hard cap on concurrent environments, and pass the current live count plus remaining budget in every `setup-digital-twin` instruction; without it, N delegations silently launch N environments and can exhaust host disk.

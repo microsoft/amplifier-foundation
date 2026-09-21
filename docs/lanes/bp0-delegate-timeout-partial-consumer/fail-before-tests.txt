@@ -1,0 +1,51 @@
+PARENT COMMIT: 5ebf1dab1fba33539e15499698f33cb3b9fc2b78
+CMD: uv run pytest <test_delegate_timeout_partial.py with a 2-line ImportError shim> -q
+WHY THE SHIM: on the parent commit the module exports no DEFAULT_PARTIAL_MAX_CHARS, so the real
+file dies at collection and yields ONE error instead of per-behaviour evidence. The shim defaults
+that one constant and changes nothing else, so each test fails on its own assertion.
+
+        """
+        tool = _make_tool()
+>       assert tool.partial_max_chars == DEFAULT_PARTIAL_MAX_CHARS == 20000
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'DelegateTool' object has no attribute 'partial_max_chars'
+
+modules/tool-delegate/tests/test_zz_failbefore_shim.py:349: AttributeError
+____________ test_resume_timeout_carries_the_same_partial_contract _____________
+
+    @pytest.mark.asyncio
+    async def test_resume_timeout_carries_the_same_partial_contract():
+        """The resume path is a second timeout call site; it must not diverge."""
+        hooks = _hooks()
+        tool = _make_tool(
+            timeout=0.01,
+            resume_fn=AsyncMock(side_effect=_never_finishes),
+            partial_fn=lambda sid: {"text": "resumed partial", "segments": 3},
+        )
+        result = await _resume(tool, hooks)
+    
+        assert result.success is False
+        assert "response" not in result.output
+>       assert result.output["status"] == "timeout"
+E       AssertionError: assert 'timed_out' == 'timeout'
+E         
+E         - timeout
+E         + timed_out
+E         ?     ++
+
+modules/tool-delegate/tests/test_zz_failbefore_shim.py:366: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_module_tool_delegate:__init__.py:2481 Resumed agent 'test-agent' timed out after 0.01s (delegate tool session-level timeout). Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+=========================== short test summary info ============================
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_timeout_is_not_success_on_either_channel
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_partial_text_never_lands_on_the_success_key
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_straggler_returns_rather_than_raises_so_siblings_survive
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_no_partial_capability_degrades_to_no_partial_not_to_error
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_partial_capability_raising_does_not_break_the_timeout_path
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_async_partial_capability_is_supported
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_partial_text_is_capped_and_keeps_the_tail
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_malformed_partial_payload_is_ignored
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_timeout_event_carries_elapsed_and_partial_flags
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_partial_max_chars_default_is_shipped_not_swept
+FAILED modules/tool-delegate/tests/test_zz_failbefore_shim.py::test_resume_timeout_carries_the_same_partial_contract
+11 failed, 1 passed in 0.24s

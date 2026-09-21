@@ -106,6 +106,19 @@ from amplifier_foundation import Bundle, BundleRegistry, load_bundle
 | `set_working_dir` | `session/capabilities.py` | Update session working directory dynamically |
 | `WORKING_DIR_CAPABILITY` | `session/capabilities.py` | Capability name constant (`"session.working_dir"`) |
 
+## Shared Session State
+
+Portable same-host checkpoints live in `session/shared_state.py`. They are supported for POSIX local filesystems and coordinate one writer per canonical workspace and session ID.
+
+| Export | Source | Purpose |
+|--------|--------|---------|
+| `FileStamp`, `file_stamp(path)` | `session/shared_state.py` | Metadata-only checkpoint change detection; never reads JSON. |
+| `SharedSessionStore` | `session/shared_state.py` | Addresses a checkpoint; `acquire(app=...)` returns the exclusive writer capability. |
+| `HeldSession` | `session/shared_state.py` | Process-bound, non-copyable writer; atomically writes messages, portable bundle reference, and credential-safe metadata. Its live `delete_checkpoint()` safely removes only the authoritative checkpoint. |
+| `SessionBusyError` | `session/shared_state.py` | Contention error with advisory, bounded owner diagnostics. |
+
+Import these names from `amplifier_foundation.session`. Store construction, `read`, `stamp`, and `list_ids` never create state directories. `acquire` alone creates or validates private state directories and the stable `session.lock`; it rejects symlinked, foreign-owned, or group/world-accessible state paths. `release` never rewrites the authoritative checkpoint. See [SHARED_SESSION_STATE.md](SHARED_SESSION_STATE.md) for the same-host participant contract, warm-reuse guidance, and safe checkpoint deletion.
+
 ## Spawn Utilities
 
 Utilities for spawning sub-sessions with provider/model preferences.
@@ -158,7 +171,10 @@ mount_plan = bundle.to_mount_plan()
 ```python
 from amplifier_foundation import load_bundle
 
-base = await load_bundle("foundation")
+base = await load_bundle(
+    "git+https://github.com/microsoft/amplifier-foundation@main"
+    "#subdirectory=bundles/anchors/bundle.md"
+)
 overlay = await load_bundle("./local-overlay.md")
 composed = base.compose(overlay)
 ```

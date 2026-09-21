@@ -86,6 +86,67 @@ class TestIsRealUserMessage:
         }
         assert is_real_user_message(entry) is True
 
+    def test_source_attr_reminder_string_content_returns_false(self):
+        """A source-attributed reminder (the actual injection convention --
+        e.g. hooks-status-context / hooks-deprecation) is NOT a real user
+        message.
+
+        This is the dead-matcher regression case: the old implementation
+        only matched the bare ``<system-reminder>`` tag (no attribute),
+        which real hooks never emit -- every actual injection uses
+        ``<system-reminder source="...">``. Before the fix this returned
+        True (wrong); it must return False.
+        """
+        entry = {
+            "role": "user",
+            "content": (
+                '<system-reminder source="hooks-status-context">\n'
+                "Some injected context.\n"
+                "</system-reminder>"
+            ),
+        }
+        assert is_real_user_message(entry) is False
+
+    def test_source_attr_reminder_list_content_returns_false(self):
+        """Source-attributed reminder in list/block content is not real."""
+        entry = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": '<system-reminder source="hooks-todo-reminder">\nctx\n</system-reminder>',
+                }
+            ],
+        }
+        assert is_real_user_message(entry) is False
+
+    def test_plural_system_reminders_envelope_returns_false(self):
+        """The plural <system-reminders> envelope form is not a real user
+        message either -- the prefix match covers both singular and plural
+        forms since it deliberately omits the closing '>'.
+        """
+        entry = {
+            "role": "user",
+            "content": (
+                "<system-reminders>\n"
+                '<system-reminder source="a">x</system-reminder>\n'
+                "</system-reminders>"
+            ),
+        }
+        assert is_real_user_message(entry) is False
+
+    def test_message_merely_mentioning_tag_mid_text_is_still_real(self):
+        """A genuine user message that merely MENTIONS the tag somewhere in
+        its text (not as a prefix) is still a real user message -- the
+        match is a prefix check on the stripped content, not a substring
+        search.
+        """
+        entry = {
+            "role": "user",
+            "content": "Can you explain what a <system-reminder> tag is used for in this system?",
+        }
+        assert is_real_user_message(entry) is True
+
 
 # =============================================================================
 # TestParameterizedSyntheticContent
