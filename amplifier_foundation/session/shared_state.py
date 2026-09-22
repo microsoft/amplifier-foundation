@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 try:  # Fail loudly on platforms without the locking primitive.
     import fcntl
@@ -78,6 +78,14 @@ class SessionBusyError(RuntimeError):
 
 class SharedStateError(RuntimeError):
     """Raised when shared-state storage or a checkpoint is invalid."""
+
+
+class SessionTransferFencedError(RuntimeError):
+    """A durable transfer marker prevents ordinary session execution."""
+
+    def __init__(self, fence: dict[str, Any]) -> None:
+        self.fence = copy.deepcopy(fence)
+        super().__init__("session execution is fenced by a durable transfer")
 
 
 def _default_root() -> Path:
@@ -360,6 +368,53 @@ class SharedSessionStore:
         self.session_id = _session_id(session_id)
         self.root = Path(root).expanduser() if root is not None else _default_root()
         self._directory = self.root / "v1" / _workspace_key(self.workspace) / self.session_id
+        home = Path(os.environ.get("AMPLIFIER_HOME") or Path.home() / ".amplifier").expanduser().absolute()
+        slug = str(self.workspace).replace("/", "-").replace("\\", "-").replace(":", "")
+        self._native_root = home
+        self._native_directory = home / "projects" / (slug if slug.startswith("-") else "-" + slug) / "sessions" / self.session_id
+
+    @property
+    def transfer_fence_path(self) -> Path:
+        """Native-history marker; reading this property creates no files."""
+        return self._native_directory / "transfer-fence.json"
+
+    def _transfer_directory(self, *, create: bool = False) -> None:
+        # Native histories predate private coordination roots, so do not change
+        # existing directory modes. Reject links, non-directories and foreign
+        # owners; the marker itself must always be private regular data.
+        relative = self._native_directory.relative_to(self._native_root)
+        directories = [self._native_root]
+        for part in relative.parts:
+            directories.append(directories[-1] / part)
+        for directory in directories:
+            try:
+                info = directory.lstat()
+            except FileNotFoundError:
+                if not create:
+                    return
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                info = directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                raise SharedStateError("native session transfer directory is unsafe")
+        _validate_private_file(self.transfer_fence_path)
+
+    def transfer_fence(self) -> dict[str, Any] | None:
+        """Inspect durable transfer state without acquiring or starting work."""
+        self._transfer_directory()
+        value = _read_json(self.transfer_fence_path, missing_ok=True)
+        if value is None:
+            return None
+        required = {"version", "session_id", "transfer_id", "destination_host", "role", "phase"}
+        if (set(value) != required or type(value["version"]) is not int or value["version"] != 1
+                or value["session_id"] != self.session_id
+                or not isinstance(value["transfer_id"], str) or not _ID_RE.fullmatch(value["transfer_id"])
+                or not isinstance(value["destination_host"], str) or not 1 <= len(value["destination_host"]) <= 255
+                or any(ord(char) < 32 for char in value["destination_host"])
+                or not isinstance(value["role"], str) or value["role"] not in {"source", "destination"}
+                or not isinstance(value["phase"], str) or value["phase"] not in {"staged", "committed"}
+                or (value["role"] == "destination" and value["phase"] != "staged")):
+            raise SharedStateError("invalid session transfer fence")
+        return value
 
     @property
     def checkpoint_path(self) -> Path:
@@ -400,6 +455,19 @@ class SharedSessionStore:
 
     def acquire(self, *, app: str, **diagnostics: Any) -> "HeldSession":
         """Acquire the stable OS lock and publish advisory owner diagnostics."""
+        return self._acquire(app=app, diagnostics=diagnostics)
+
+    def acquire_transfer(self, transfer_id: str, *, app: str, **diagnostics: Any) -> "HeldTransfer":
+        """Acquire only a matching staged fence for explicit adapter recovery.
+
+        This does not grant execution or validate remote release evidence. The
+        application must authenticate the transfer before clearing/committing.
+        Committed source markers cannot be acquired through this API.
+        """
+        _session_id(transfer_id)
+        return cast("HeldTransfer", self._acquire(app=app, diagnostics=diagnostics, transfer_id=transfer_id))
+
+    def _acquire(self, *, app: str, diagnostics: dict[str, Any], transfer_id: str | None = None) -> "HeldSession":
         _ensure_supported()
         owner = _owner_details(app, diagnostics, self.workspace, self.session_id, self.root)
         _ensure_private_state_path(self.root, self._directory)
@@ -424,6 +492,12 @@ class SharedSessionStore:
                     pass
                 raise SharedStateError("cannot acquire stable session lock") from exc
             try:
+                fence = self.transfer_fence()
+                if transfer_id is None:
+                    if fence is not None:
+                        raise SessionTransferFencedError(fence)
+                elif fence is None or fence["transfer_id"] != transfer_id or fence["phase"] != "staged":
+                    raise SharedStateError("transfer recovery requires the exact staged fence")
                 _atomic_json(self._owner_path, owner)
             except BaseException:
                 fcntl.flock(fd, fcntl.LOCK_UN)
@@ -431,6 +505,8 @@ class SharedSessionStore:
                 raise
             _PROCESS_LOCKS.add(lock_name)
             _LOCK_FDS.add(fd)
+        if transfer_id is not None:
+            return HeldTransfer(self, fd, owner, transfer_id)
         return HeldSession(self, fd, owner)
 
     @classmethod
@@ -482,10 +558,40 @@ class HeldSession:
         return self._active and self._pid == os.getpid()
 
     def check(self) -> None:
+        self._check_active()
+        fence = self._store.transfer_fence()
+        if fence is not None:
+            raise SessionTransferFencedError(fence)
+
+    def _check_active(self) -> None:
         if self._pid != os.getpid():
             raise RuntimeError("HeldSession belongs to a different process")
         if not self._active:
             raise RuntimeError("HeldSession is no longer active")
+
+    def fence_transfer(self, transfer_id: str, destination_host: str, *, role: str = "source") -> dict[str, Any]:
+        """Fence this saved, quiescent writer before releasing it for transfer.
+
+        The host must settle work and persist native history first. The marker
+        does not stop a runtime or prove any remote outcome. Once written this
+        handle cannot authorize further execution or checkpoint writes.
+        """
+        _session_id(transfer_id)
+        if (not isinstance(destination_host, str) or not 1 <= len(destination_host) <= 255
+                or any(ord(char) < 32 for char in destination_host) or role not in {"source", "destination"}):
+            raise ValueError("invalid transfer destination or role")
+        record = {"version": 1, "session_id": self._store.session_id, "transfer_id": transfer_id,
+                  "destination_host": destination_host, "role": role, "phase": "staged"}
+        with self._mutex:
+            self._check_active()
+            existing = self._store.transfer_fence()
+            if existing is not None:
+                if existing == record:
+                    return existing
+                raise SharedStateError("a different transfer fence already exists")
+            self._store._transfer_directory(create=True)
+            _atomic_json(self._store.transfer_fence_path, record)
+            return copy.deepcopy(record)
 
     def read(self) -> dict[str, Any] | None:
         self.check()
@@ -562,3 +668,46 @@ class HeldSession:
                         _PROCESS_LOCKS.discard(lock_name)
                         _LOCK_FDS.discard(self._fd)
                     os.close(self._fd)
+
+
+class HeldTransfer(HeldSession):
+    """A receipt-matched lock for resolving a staged fence, never execution."""
+
+    def __init__(self, store: SharedSessionStore, fd: int, owner: dict[str, Any], transfer_id: str) -> None:
+        super().__init__(store, fd, owner)
+        self._transfer_id = transfer_id
+
+    def check(self) -> None:
+        self._check_active()
+        raise SharedStateError("transfer recovery capability cannot authorize execution")
+
+    def fence_transfer(self, transfer_id: str, destination_host: str, *, role: str = "source") -> dict[str, Any]:
+        raise SharedStateError("transfer recovery capability cannot replace a fence")
+
+    def _staged(self) -> dict[str, Any]:
+        self._check_active()
+        record = self._store.transfer_fence()
+        if record is None or record["transfer_id"] != self._transfer_id or record["phase"] != "staged":
+            raise SharedStateError("transfer recovery requires the exact staged fence")
+        return record
+
+    def commit_transfer(self) -> dict[str, Any]:
+        """Permanently fence the source after the host verifies its transfer."""
+        with self._mutex:
+            record = self._staged()
+            if record["role"] != "source":
+                raise SharedStateError("only a source transfer fence can be committed")
+            record["phase"] = "committed"
+            _atomic_json(self._store.transfer_fence_path, record)
+            return record
+
+    def clear_transfer(self) -> None:
+        """Explicitly cancel a staged source or activate a staged destination.
+
+        Authenticate the corresponding cancellation or release receipt before
+        calling. Release this capability and acquire normally before execution.
+        """
+        with self._mutex:
+            self._staged()
+            self._store.transfer_fence_path.unlink()
+            _fsync_directory(self._store.transfer_fence_path.parent)

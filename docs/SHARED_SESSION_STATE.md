@@ -25,6 +25,11 @@ No live attach protocol, TUI/web multiwriter protocol, or remote protocol is
 provided. There is no force unlock, TTL, lease, takeover, or shared lock-file
 deletion API.
 
+Applications implementing host migration can use the separate
+[durable transfer fence](SESSION_TRANSFER_FENCE.md) to keep ordinary execution
+blocked after a saved writer releases its lock. This persists admission state
+beside native history and does not implement remote transfer or authentication.
+
 ## Minimal participant pattern
 
 ```python

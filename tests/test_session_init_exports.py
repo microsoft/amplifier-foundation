@@ -111,14 +111,14 @@ class TestFinderExports:
 
 
 class TestDunderAll:
-    """Verify __all__ contains all 41 expected names."""
+    """Verify the public session utility names."""
 
-    def test_all_contains_60_names(self):
+    def test_all_contains_62_names(self):
         import amplifier_foundation.session as session
 
         assert hasattr(session, "__all__"), "__all__ must be defined"
-        assert len(session.__all__) == 60, (
-            f"Expected 60 names in __all__, got {len(session.__all__)}: "
+        assert len(session.__all__) == 62, (
+            f"Expected 62 names in __all__, got {len(session.__all__)}: "
             f"{sorted(session.__all__)}"
         )
 
@@ -161,6 +161,8 @@ class TestDunderAll:
             "SessionBusyError",
             "SharedSessionStore",
             "HeldSession",
+            "HeldTransfer",
+            "SessionTransferFencedError",
         }
         for name in expected_new:
             assert name in session.__all__, f"{name!r} missing from __all__"

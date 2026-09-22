@@ -154,7 +154,9 @@ from .history import (
 from .shared_state import (
     FileStamp,
     HeldSession,
+    HeldTransfer,
     SessionBusyError,
+    SessionTransferFencedError,
     SharedSessionStore,
     file_stamp,
 )
@@ -231,6 +233,8 @@ __all__ = [
     "FileStamp",
     "file_stamp",
     "SessionBusyError",
+    "SessionTransferFencedError",
     "SharedSessionStore",
     "HeldSession",
+    "HeldTransfer",
 ]
