@@ -184,6 +184,7 @@ class BundleRegistry:
         *,
         strict: bool = False,
         include_source_resolver: Callable[[str], str | None] | None = None,
+        persist: bool = True,
     ) -> None:
         """Initialize registry.
 
@@ -198,9 +199,15 @@ class BundleRegistry:
                     source URIs. When provided, called before default resolution
                     logic. Returns a resolved URI string or None to fall back to
                     default behavior.
+            persist: If False, read the shared registrations but keep all changes
+                    in this registry instance. Loads, include tracking, stale-path
+                    cleanup and explicit save() calls cannot write registry.json.
+                    Source downloads still use the shared content cache. Use a
+                    fresh instance per session with scoped source overrides.
         """
         self._home = self._resolve_home(home)
         self._strict = strict
+        self._persist = persist
         self._include_source_resolver = include_source_resolver
         self._registry: dict[str, BundleState] = {}
         self._source_resolver = SimpleSourceResolver(
@@ -1399,7 +1406,9 @@ class BundleRegistry:
     # =========================================================================
 
     def save(self) -> None:
-        """Persist registry state to home/registry.json."""
+        """Persist state, unless this is an isolated in-memory registry view."""
+        if not self._persist:
+            return
         self._home.mkdir(parents=True, exist_ok=True)
         registry_path = self._home / "registry.json"
 
