@@ -116,6 +116,7 @@ Portable same-host checkpoints live in `session/shared_state.py`. They are suppo
 | `SharedSessionStore` | `session/shared_state.py` | Addresses a checkpoint; `acquire(app=...)` returns the exclusive writer capability. |
 | `HeldSession` | `session/shared_state.py` | Process-bound, non-copyable writer; atomically writes messages, portable bundle reference, and credential-safe metadata. Its live `delete_checkpoint()` safely removes only the authoritative checkpoint. |
 | `SessionBusyError` | `session/shared_state.py` | Contention error with advisory, bounded owner diagnostics. |
+| `SessionTransferFencedError`, `HeldTransfer` | `session/shared_state.py` | Durable native-history admission fence and restricted receipt-matched resolution capability; see [session transfer fences](SESSION_TRANSFER_FENCE.md). |
 
 Import these names from `amplifier_foundation.session`. Store construction, `read`, `stamp`, and `list_ids` never create state directories. `acquire` alone creates or validates private state directories and the stable `session.lock`; it rejects symlinked, foreign-owned, or group/world-accessible state paths. `release` never rewrites the authoritative checkpoint. See [SHARED_SESSION_STATE.md](SHARED_SESSION_STATE.md) for the same-host participant contract, warm-reuse guidance, and safe checkpoint deletion.
 
