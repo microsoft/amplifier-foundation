@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 
 import pytest
@@ -233,7 +235,9 @@ def test_fresh_native_root_persists_all_ancestors_before_marker(tmp_path, monkey
             created.append(directory)
             directory = directory.parent
         expected = [("synced", directory.parent) for directory in reversed(created)]
-        assert events[:marker_index] == expected
+        assert events[:len(expected)] == expected
+        ancestors = [store.transfer_fence_path.parent, *store.transfer_fence_path.parent.parents]
+        assert events[len(expected):marker_index] == [("synced", path) for path in reversed(ancestors)]
         assert ("synced", store.transfer_fence_path.parent) in events[marker_index + 1:]
         assert all(directory.stat().st_mode & 0o777 == 0o700 for directory in created)
         assert not (store.transfer_fence_path.parent / "transcript.jsonl").exists()
@@ -269,3 +273,174 @@ def test_private_ancestor_creation_is_bounded_and_has_no_partial_tree(tmp_path):
     with pytest.raises(SharedStateError, match="depth limit"):
         _mkdir_private_durable(requested)
     assert not (tmp_path / "d").exists()
+
+
+@pytest.mark.parametrize("error", [errno.EIO, errno.ENOSPC, errno.EACCES, errno.EBADF])
+def test_directory_fsync_real_failures_propagate_and_close_descriptor(tmp_path, monkeypatch, error):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    descriptors = []
+
+    def fail(fd):
+        descriptors.append(fd)
+        raise OSError(error, "injected persistence failure")
+
+    monkeypatch.setattr(shared_state.os, "fsync", fail)
+    with pytest.raises(OSError) as failure:
+        shared_state._fsync_directory(tmp_path)
+    assert failure.value.errno == error
+    with pytest.raises(OSError) as closed:
+        os.fstat(descriptors[0])
+    assert closed.value.errno == errno.EBADF
+
+
+def test_directory_open_failure_is_not_treated_as_unsupported(tmp_path, monkeypatch):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    def fail(*args, **kwargs):
+        raise OSError(errno.EACCES, "injected open failure")
+
+    monkeypatch.setattr(shared_state.os, "open", fail)
+    with pytest.raises(OSError) as failure:
+        shared_state._fsync_directory(tmp_path)
+    assert failure.value.errno == errno.EACCES
+
+
+@pytest.mark.parametrize("error", sorted({errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}))
+def test_only_explicitly_unsupported_directory_fsync_is_tolerated(tmp_path, monkeypatch, error):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    def unsupported(fd):
+        raise OSError(error, "directory fsync unsupported")
+
+    monkeypatch.setattr(shared_state.os, "fsync", unsupported)
+    shared_state._fsync_directory(tmp_path)
+
+
+def test_failed_ancestor_sync_never_acks_and_retry_resyncs_existing_residue(store, monkeypatch):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    held = store.acquire(app="source")
+    sync = shared_state._fsync_directory
+    home = Path(os.environ["AMPLIFIER_HOME"])
+    events = []
+    try:
+        def fail_parent(directory):
+            if directory == home.parent:
+                raise OSError(errno.EIO, "injected ancestor failure")
+            sync(directory)
+
+        monkeypatch.setattr(shared_state, "_fsync_directory", fail_parent)
+        with pytest.raises(OSError, match="ancestor failure"):
+            held.fence_transfer("transfer-1", "destination")
+        assert home.exists() and not store.transfer_fence_path.exists()
+
+        def record(directory):
+            sync(directory)
+            events.append(directory)
+
+        monkeypatch.setattr(shared_state, "_fsync_directory", record)
+        assert held.fence_transfer("transfer-1", "destination")["phase"] == "staged"
+        # The root existed on retry, but its earlier parent sync never succeeded.
+        assert home.parent in events
+        assert store.transfer_fence_path.parent in events
+    finally:
+        monkeypatch.setattr(shared_state, "_fsync_directory", sync)
+        held.release()
+
+
+def test_staged_marker_visible_after_failed_sync_requires_new_durability_ack(store, monkeypatch):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    held = store.acquire(app="source")
+    sync = os.fsync
+    temporary_marker = store.transfer_fence_path
+    try:
+        def fail_after_replace(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode) and temporary_marker.exists():
+                raise OSError(errno.EIO, "injected marker-directory failure")
+            sync(fd)
+
+        monkeypatch.setattr(shared_state.os, "fsync", fail_after_replace)
+        for _ in range(2):
+            with pytest.raises(OSError, match="marker-directory failure"):
+                held.fence_transfer("transfer-1", "destination")
+            assert store.transfer_fence()["phase"] == "staged"
+        monkeypatch.setattr(shared_state.os, "fsync", sync)
+        file_syncs = []
+
+        def record(fd):
+            file_syncs.append(stat.S_ISREG(os.fstat(fd).st_mode))
+            sync(fd)
+
+        monkeypatch.setattr(shared_state.os, "fsync", record)
+        assert held.fence_transfer("transfer-1", "destination")["phase"] == "staged"
+        assert True in file_syncs and False in file_syncs
+    finally:
+        monkeypatch.setattr(shared_state.os, "fsync", sync)
+        held.release()
+
+
+def test_commit_sync_failure_never_acks_and_exact_live_retry_can_confirm(store, monkeypatch):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    stage(store)
+    held = store.acquire_transfer("transfer-1", app="source")
+    sync = os.fsync
+    try:
+        def fail_committed(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode) and store.transfer_fence()["phase"] == "committed":
+                raise OSError(errno.EIO, "injected commit failure")
+            sync(fd)
+
+        monkeypatch.setattr(shared_state.os, "fsync", fail_committed)
+        for _ in range(2):
+            with pytest.raises(OSError, match="commit failure"):
+                held.commit_transfer()
+            assert store.transfer_fence()["phase"] == "committed"
+        monkeypatch.setattr(shared_state.os, "fsync", sync)
+        assert held.commit_transfer()["phase"] == "committed"
+        with pytest.raises(SharedStateError, match="exact staged"):
+            held.clear_transfer()
+    finally:
+        monkeypatch.setattr(shared_state.os, "fsync", sync)
+        held.release()
+
+
+def test_restart_commit_confirmation_checks_exact_fence_and_repeats_durability(store, monkeypatch):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    stage(store)
+    with pytest.raises(SharedStateError, match="exact committed source"):
+        store.confirm_transfer_commit("transfer-1", app="confirmer")
+    held = store.acquire_transfer("transfer-1", app="source")
+    held.commit_transfer()
+    held.release()
+    fresh = SharedSessionStore(store.workspace, store.session_id, root=store.root)
+    with pytest.raises(SharedStateError, match="exact committed source"):
+        fresh.confirm_transfer_commit("different-transfer", app="confirmer")
+    with pytest.raises(SharedStateError, match="exact staged"):
+        fresh.acquire_transfer("transfer-1", app="recovery")
+    sync = shared_state._fsync_directory
+    events = []
+
+    def fail(directory):
+        if directory == fresh.transfer_fence_path.parent:
+            raise OSError(errno.EIO, "injected confirmation failure")
+        sync(directory)
+
+    monkeypatch.setattr(shared_state, "_fsync_directory", fail)
+    with pytest.raises(OSError, match="confirmation failure"):
+        fresh.confirm_transfer_commit("transfer-1", app="confirmer")
+
+    def record(directory):
+        sync(directory)
+        events.append(directory)
+
+    monkeypatch.setattr(shared_state, "_fsync_directory", record)
+    confirmed = fresh.confirm_transfer_commit("transfer-1", app="confirmer")
+    assert confirmed["phase"] == "committed"
+    assert fresh.transfer_fence_path.parent in events
+    assert Path(os.environ["AMPLIFIER_HOME"]).parent in events
+    with pytest.raises(SessionTransferFencedError):
+        fresh.acquire(app="ordinary")

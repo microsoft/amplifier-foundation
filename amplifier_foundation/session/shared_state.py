@@ -291,17 +291,37 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 def _fsync_directory(directory: Path) -> None:
     """Persist a directory entry where the local POSIX filesystem supports it."""
-
-    try:
-        directory_fd = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(directory_fd)
-    except OSError:
-        pass  # Some POSIX filesystems do not support directory fsync.
+    except OSError as exc:
+        # These errors specifically mean directory fsync is unsupported. I/O,
+        # space, permission, bad-descriptor and open errors must prevent ack.
+        unsupported = {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}
+        if exc.errno not in unsupported:
+            raise
     finally:
         os.close(directory_fd)
+
+
+def _fsync_ancestor_chain(directory: Path) -> None:
+    """Re-establish ancestor durability, including after a failed earlier mkdir.
+
+    An existing directory may be the residue of a failed unacknowledged write,
+    so existence cannot stand in for parent durability on a retry. Bound the
+    complete chain before doing I/O, then sync from filesystem root inward.
+    """
+    ancestors = []
+    current = directory.absolute()
+    while True:
+        if len(ancestors) >= 128:
+            raise SharedStateError("native transfer directory exceeds the durability depth limit")
+        ancestors.append(current)
+        if current == current.parent:
+            break
+        current = current.parent
+    for ancestor in reversed(ancestors):
+        _fsync_directory(ancestor)
 
 
 def _process_start_identity(path: Path = Path("/proc/self/stat")) -> str | None:
@@ -446,6 +466,11 @@ class SharedSessionStore:
             raise SharedStateError("invalid session transfer fence")
         return value
 
+    def _save_transfer_fence(self, record: dict[str, Any]) -> None:
+        self._transfer_directory(create=True)
+        _fsync_ancestor_chain(self.transfer_fence_path.parent)
+        _atomic_json(self.transfer_fence_path, record)
+
     @property
     def checkpoint_path(self) -> Path:
         """The authoritative checkpoint path; obtaining it never creates directories."""
@@ -497,7 +522,22 @@ class SharedSessionStore:
         _session_id(transfer_id)
         return cast("HeldTransfer", self._acquire(app=app, diagnostics=diagnostics, transfer_id=transfer_id))
 
-    def _acquire(self, *, app: str, diagnostics: dict[str, Any], transfer_id: str | None = None) -> "HeldSession":
+    def confirm_transfer_commit(self, transfer_id: str, *, app: str, **diagnostics: Any) -> dict[str, Any]:
+        """Durably confirm an exact committed source after an uncertain ack.
+
+        This returns evidence only, never an execution or clearing capability.
+        It cannot commit a staged marker or change the recorded destination.
+        """
+        _session_id(transfer_id)
+        held = cast("HeldTransfer", self._acquire(app=app, diagnostics=diagnostics,
+                    transfer_id=transfer_id, committed_only=True))
+        try:
+            return held.commit_transfer()
+        finally:
+            held.release()
+
+    def _acquire(self, *, app: str, diagnostics: dict[str, Any], transfer_id: str | None = None,
+                 committed_only: bool = False) -> "HeldSession":
         _ensure_supported()
         owner = _owner_details(app, diagnostics, self.workspace, self.session_id, self.root)
         _ensure_private_state_path(self.root, self._directory)
@@ -526,6 +566,10 @@ class SharedSessionStore:
                 if transfer_id is None:
                     if fence is not None:
                         raise SessionTransferFencedError(fence)
+                elif committed_only:
+                    if (fence is None or fence["transfer_id"] != transfer_id
+                            or fence["phase"] != "committed" or fence["role"] != "source"):
+                        raise SharedStateError("commit confirmation requires the exact committed source fence")
                 elif fence is None or fence["transfer_id"] != transfer_id or fence["phase"] != "staged":
                     raise SharedStateError("transfer recovery requires the exact staged fence")
                 _atomic_json(self._owner_path, owner)
@@ -616,11 +660,11 @@ class HeldSession:
             self._check_active()
             existing = self._store.transfer_fence()
             if existing is not None:
-                if existing == record:
-                    return existing
-                raise SharedStateError("a different transfer fence already exists")
-            self._store._transfer_directory(create=True)
-            _atomic_json(self._store.transfer_fence_path, record)
+                if existing != record:
+                    raise SharedStateError("a different transfer fence already exists")
+            # Even an identical marker can be left by a failed fsync. Repeat
+            # file and ancestor durability before acknowledging that request.
+            self._store._save_transfer_fence(record)
             return copy.deepcopy(record)
 
     def read(self) -> dict[str, Any] | None:
@@ -724,11 +768,14 @@ class HeldTransfer(HeldSession):
     def commit_transfer(self) -> dict[str, Any]:
         """Permanently fence the source after the host verifies its transfer."""
         with self._mutex:
-            record = self._staged()
+            self._check_active()
+            record = self._store.transfer_fence()
+            if record is None or record["transfer_id"] != self._transfer_id:
+                raise SharedStateError("transfer commit requires the exact source fence")
             if record["role"] != "source":
                 raise SharedStateError("only a source transfer fence can be committed")
             record["phase"] = "committed"
-            _atomic_json(self._store.transfer_fence_path, record)
+            self._store._save_transfer_fence(record)
             return record
 
     def clear_transfer(self) -> None:

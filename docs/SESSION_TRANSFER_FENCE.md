@@ -29,7 +29,8 @@ finally:
 `fence_transfer` does not stop work or save history. The host must establish that
 boundary first. It writes a staged marker atomically, fsyncs its directory where
 supported, and makes that handle fail execution checks and checkpoint writes.
-An identical call is idempotent; a different existing marker is rejected.
+An identical call is idempotent; it repeats file and ancestor durability before
+acknowledging the marker. A different existing marker is rejected.
 If native history does not yet exist, creation is bounded to 128 missing
 ancestors at a time. Each new directory is private and its containing directory
 is fsynced before descendants or the marker are published, where supported.
@@ -51,6 +52,22 @@ A committed source cannot be acquired normally, recovered with
 needs a new destination workspace/native history location. Preserve the source
 marker when archiving inactive history. A failed or unknown application-level
 transfer must retain its marker and expose its evidence for reconciliation.
+
+A marker can become visible even when its final directory sync fails. A raw
+`transfer_fence()` read therefore does not prove a durable commit acknowledgment.
+The same live `HeldTransfer.commit_transfer()` can retry an exact committed
+source, repeating marker and ancestor sync. After releasing that handle or
+restarting, an application can confirm the existing committed source without
+obtaining execution or clearing authority:
+
+```python
+committed = store.confirm_transfer_commit(transfer_id, app="transfer-adapter")
+```
+
+This takes the exclusive lock, requires the exact committed source transfer,
+re-establishes durability, returns the record and releases the lock. It cannot
+commit a staged transfer or alter its destination. Confirm durability before
+issuing or reissuing a remote release certificate after an uncertain write.
 
 ## Destination staging and explicit resolution
 
@@ -100,6 +117,14 @@ the temporary lock and does not change history, marker or owner metadata.
 Ordinary `acquire()` raises `SessionTransferFencedError`, whose `fence` attribute
 is a detached record. `acquire_transfer()` requires the exact staged transfer;
 passing a transfer ID among ordinary acquisition diagnostics never bypasses it.
+
+Genuine file or directory open, I/O, space and permission failures propagate;
+the caller must treat the acknowledgment as failed or uncertain. Directory
+`fsync` alone may return `EINVAL`, `ENOSYS`, `ENOTSUP` or `EOPNOTSUPP` on filesystems
+without this operation; those cases retain the qualified best-effort directory
+durability boundary. File fsync errors are never ignored. Transfer marker saves
+sync a bounded complete ancestor chain before file replacement, even for
+directories already present after an earlier failed creation attempt.
 
 The marker is addressed through native history rather than the configurable
 coordination root, so choosing another coordination root does not erase this
