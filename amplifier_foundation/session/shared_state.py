@@ -164,6 +164,36 @@ def _validate_private_file(path: Path) -> None:
         raise SharedStateError(f"state file {path.name} has unsafe permissions")
 
 
+def _mkdir_private_durable(path: Path) -> None:
+    """Create at most 128 private ancestors, persisting each new directory entry.
+
+    A marker's own parent fsync cannot make a newly created ancestor durable.
+    Build from the existing ancestor outward and sync each containing directory
+    before publishing any descendant. Existing directory modes are untouched.
+    """
+    missing = []
+    current = path
+    while True:
+        try:
+            current.lstat()
+        except FileNotFoundError:
+            if len(missing) >= 128 or current == current.parent:
+                raise SharedStateError("native transfer directory exceeds the creation depth limit") from None
+            missing.append(current)
+            current = current.parent
+        else:
+            if not current.is_dir():
+                raise SharedStateError("native transfer ancestor is not a directory")
+            break
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        _validate_private_directory(directory, create=False)
+        _fsync_directory(directory.parent)
+
+
 def _ensure_private_state_path(root: Path, directory: Path) -> None:
     """Create the state-root chain, validating each state-owned component."""
 
@@ -392,7 +422,7 @@ class SharedSessionStore:
             except FileNotFoundError:
                 if not create:
                     return
-                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                _mkdir_private_durable(directory)
                 info = directory.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
                 raise SharedStateError("native session transfer directory is unsafe")

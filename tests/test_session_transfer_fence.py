@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -198,3 +199,73 @@ def test_nonprivate_marker_fails_closed(store):
     store.transfer_fence_path.chmod(0o644)
     with pytest.raises(SharedStateError, match="unsafe permissions"):
         store.acquire(app="ordinary")
+
+
+def test_fresh_native_root_persists_all_ancestors_before_marker(tmp_path, monkeypatch):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    native = tmp_path / "new-parent" / "new-account" / "native"
+    monkeypatch.setenv("AMPLIFIER_HOME", str(native))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SharedSessionStore(workspace, "fresh-task", root=tmp_path / "locks")
+    held = store.acquire(app="destination")
+    events = []
+    sync = shared_state._fsync_directory
+    atomic = shared_state._atomic_json
+
+    def recorded_sync(directory):
+        sync(directory)
+        events.append(("synced", Path(directory)))
+
+    def recorded_atomic(path, value):
+        events.append(("published", Path(path)))
+        return atomic(path, value)
+
+    monkeypatch.setattr(shared_state, "_fsync_directory", recorded_sync)
+    monkeypatch.setattr(shared_state, "_atomic_json", recorded_atomic)
+    try:
+        held.fence_transfer("fresh-transfer", "destination", role="destination")
+        marker_index = events.index(("published", store.transfer_fence_path))
+        created = []
+        directory = store.transfer_fence_path.parent
+        while directory != tmp_path:
+            created.append(directory)
+            directory = directory.parent
+        expected = [("synced", directory.parent) for directory in reversed(created)]
+        assert events[:marker_index] == expected
+        assert ("synced", store.transfer_fence_path.parent) in events[marker_index + 1:]
+        assert all(directory.stat().st_mode & 0o777 == 0o700 for directory in created)
+        assert not (store.transfer_fence_path.parent / "transcript.jsonl").exists()
+    finally:
+        held.release()
+    with pytest.raises(SessionTransferFencedError):
+        SharedSessionStore(workspace, "fresh-task", root=store.root).acquire(app="another-host")
+
+
+def test_existing_native_directories_keep_modes_and_skip_creation_sync(store, monkeypatch):
+    import amplifier_foundation.session.shared_state as shared_state
+
+    directory = store.transfer_fence_path.parent
+    directory.mkdir(parents=True, mode=0o755)
+    directory.chmod(0o755)
+    root = Path(os.environ["AMPLIFIER_HOME"])
+    existing = [directory, *directory.parents]
+    existing = existing[:existing.index(root) + 1]
+    before = {path: path.stat().st_mode for path in existing}
+
+    def no_creation(path):
+        pytest.fail("existing native history must not create ancestors")
+
+    monkeypatch.setattr(shared_state, "_mkdir_private_durable", no_creation)
+    stage(store)
+    assert {path: path.stat().st_mode for path in existing} == before
+
+
+def test_private_ancestor_creation_is_bounded_and_has_no_partial_tree(tmp_path):
+    from amplifier_foundation.session.shared_state import _mkdir_private_durable
+
+    requested = tmp_path.joinpath(*["d"] * 129)
+    with pytest.raises(SharedStateError, match="depth limit"):
+        _mkdir_private_durable(requested)
+    assert not (tmp_path / "d").exists()

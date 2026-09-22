@@ -30,6 +30,10 @@ finally:
 boundary first. It writes a staged marker atomically, fsyncs its directory where
 supported, and makes that handle fail execution checks and checkpoint writes.
 An identical call is idempotent; a different existing marker is rejected.
+If native history does not yet exist, creation is bounded to 128 missing
+ancestors at a time. Each new directory is private and its containing directory
+is fsynced before descendants or the marker are published, where supported.
+Existing native directory modes are unchanged.
 
 The application exports saved data without replaying inputs or uncertain effects.
 After authenticating destination readiness, it permanently commits the source:
