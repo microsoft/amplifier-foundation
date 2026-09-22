@@ -1,0 +1,45 @@
+// This recipe checks all your Amplifier bundles are healthy — finds them, validates each one, and writes a summary report.
+digraph validate_bundle {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Bundle Health Check\nFinds all your bundles, validates each one, and writes up a report"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="dbb0a956cb48bd81a947ba29f5b1eccf747161c16e345d0487e8979f8ed19fc7"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done!", shape=oval, fillcolor="#e0e0e0"]
+
+    step_environment_check [label="Check Setup\n\"Is everything ready?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import sys  results = {     'phase': 'environment',     'foundation_ava"]
+    step_discover_bundles [label="Find All Bundles\n\"What bundles exist?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json from pathlib import Path  def discover_bundles(bundle_path: str) -> dic"]
+    step_validate_bundles [label="Validate Each Bundle\n(validate-single-bundle)", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed", tooltip="validate-bundles"]
+    step_synthesize_report [label="Write the Report\n\"How did everything do?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_environment_check
+    step_environment_check -> step_discover_bundles
+    step_discover_bundles -> step_validate_bundles
+    step_validate_bundles -> step_synthesize_report
+    step_synthesize_report -> done
+
+    subgraph cluster_legend {
+        label="Legend\n\"What do the colors mean?\""
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_bash [label="Script Step", shape=box, fillcolor="#bbdefb"]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_sub [label="Sub-Recipe Call", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_bash -> leg_agent -> leg_sub -> leg_start [style=invis]
+    }
+}
