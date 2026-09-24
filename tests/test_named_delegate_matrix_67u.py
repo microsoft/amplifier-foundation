@@ -111,6 +111,9 @@ def _make_coordinator(
         p["id"]: _FakeProvider(models_by_module.get(p["module"], [])) for p in providers
     }
     coordinator = MagicMock()
+    # These characterize the legacy host, which has not opted into an
+    # availability policy. An unconfigured MagicMock invents a callable.
+    coordinator.get_capability.return_value = None
     coordinator.config = {"providers": providers}
     coordinator.get = MagicMock(
         side_effect=lambda key: runtime if key == "providers" else None
