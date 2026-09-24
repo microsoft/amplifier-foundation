@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle._prepared import PreparedBundle
+    from amplifier_foundation.bundle._provider_preparation import ProviderFailurePolicy
 
 from amplifier_foundation.bundle._provenance import (
     _prov_add as _prov_add,  # re-exported for backwards compatibility
@@ -335,6 +336,7 @@ class Bundle:
         cache_dir: Path | None = None,
         refresh_dependencies: bool = False,
         install_overrides: Path | None = None,
+        provider_failure_policy: ProviderFailurePolicy | None = None,
     ) -> PreparedBundle:
         """Prepare bundle for execution by activating all modules.
 
@@ -372,6 +374,12 @@ class Bundle:
             install_overrides: Explicit uv overrides file for host-qualified
                 dependencies such as native wheels. Replaces automatic overrides
                 based on installed versions; the file is never modified.
+            provider_failure_policy: Optional async callback receiving a private
+                ProviderPreparationFailure. Returning accepts that provider's
+                source-resolution/activation failure; raising aborts preparation.
+                Provider entries remain in the plan, with failed sources blocked
+                in the prepared resolver. Non-provider strictness and bundle
+                package failures are unchanged. Not a routing fallback policy.
 
         Returns:
             PreparedBundle with mount_plan and create_session() helper.
@@ -415,7 +423,17 @@ class Bundle:
             install_overrides=install_overrides,
         )
 
-        # Collect all modules that need activation
+        # Only explicit host policy opts providers out of strict aggregate
+        # preparation. Other module and bundle-package rules stay intact.
+        from amplifier_foundation.bundle._provider_preparation import (
+            ProviderPreparation,
+        )
+
+        provider_preparation = (
+            ProviderPreparation(provider_failure_policy)
+            if provider_failure_policy
+            else None
+        )
         modules_to_activate = []
 
         # Helper to apply source resolver if provided
@@ -442,7 +460,10 @@ class Bundle:
         for section in ["providers", "tools", "hooks"]:
             for mod_spec in mount_plan.get(section, []):
                 if isinstance(mod_spec, dict) and "source" in mod_spec:
-                    modules_to_activate.append(resolve_source(mod_spec))
+                    if section == "providers" and provider_preparation is not None:
+                        provider_preparation.specs.append((deepcopy(mod_spec), None))
+                    else:
+                        modules_to_activate.append(resolve_source(mod_spec))
 
         # Pre-activate modules declared in agent configs so child sessions
         # can find them via the inherited BundleModuleResolver.
@@ -470,7 +491,21 @@ class Bundle:
                 if isinstance(agent_mods, list):
                     for mod_spec in agent_mods:
                         if isinstance(mod_spec, dict) and "source" in mod_spec:
-                            modules_to_activate.append(resolve_source(mod_spec))
+                            if (
+                                agent_section == "providers"
+                                and provider_preparation is not None
+                            ):
+                                provider_preparation.specs.append(
+                                    (deepcopy(mod_spec), _agent_name)
+                                )
+                            else:
+                                modules_to_activate.append(resolve_source(mod_spec))
+
+        provider_sources = (
+            await provider_preparation.resolve(resolve_source)
+            if provider_preparation is not None
+            else []
+        )
 
         # Phase 1: schema-only modes walk.
         # Validates contributes structure; actual module activation for contributed
@@ -489,7 +524,7 @@ class Bundle:
         if install_deps:
             declared_sources = [
                 m["source"]
-                for m in modules_to_activate
+                for m in [*modules_to_activate, *provider_sources]
                 if isinstance(m.get("source"), str)
             ]
             # This bundle's own package: a failure here is a failure of the bundle
@@ -525,12 +560,26 @@ class Bundle:
             modules_to_activate, progress_callback=progress_callback
         )
 
+        if provider_preparation is not None:
+            module_paths.update(
+                await provider_preparation.activate(activator, progress_callback)
+            )
+
         # Save install state to disk for fast subsequent startups
         activator.finalize()
 
         # Create resolver from activated paths with activator for lazy activation
         # This enables child sessions to activate agent-specific modules on-demand
-        resolver = BundleModuleResolver(module_paths, activator=activator)
+        resolver = BundleModuleResolver(
+            module_paths,
+            activator=activator,
+            source_paths=provider_preparation.source_paths
+            if provider_preparation
+            else None,
+            source_failures=provider_preparation.failed_sources
+            if provider_preparation
+            else None,
+        )
 
         # Get bundle package paths for inheritance by child sessions
         bundle_package_paths = activator.bundle_package_paths
@@ -548,6 +597,9 @@ class Bundle:
             bundle_package_paths=bundle_package_paths,
             mode_warnings=mode_warnings,
             module_exports=module_exports,
+            provider_preparation_failures=tuple(provider_preparation.failures)
+            if provider_preparation
+            else (),
         )
 
     def resolve_context_path(self, name: str) -> Path | None:

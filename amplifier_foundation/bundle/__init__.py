@@ -9,7 +9,10 @@ from amplifier_foundation.bundle._prepared import (
     PreparedBundle,
 )
 
+from amplifier_foundation.bundle._provider_preparation import ProviderPreparationFailure
+
 __all__ = [
+    "ProviderPreparationFailure",
     "Bundle",
     "BundleModuleResolver",
     "BundleModuleSource",
