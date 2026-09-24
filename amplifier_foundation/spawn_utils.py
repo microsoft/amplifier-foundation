@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import inspect
 import logging
 import os
 import time
@@ -621,7 +622,7 @@ def _spec_for_instance(
     for spec in provider_specs:
         if not isinstance(spec, dict):
             continue
-        spec_id = spec.get("id") or spec.get("module", "")
+        spec_id = spec.get("instance_id") or spec.get("id") or spec.get("module", "")
         if spec_id == instance_id:
             return spec
     return None
@@ -841,7 +842,7 @@ def _resolve_provider_index(
     """
     # 1. An explicit instance id is the most specific address there is.
     for i, p in enumerate(providers):
-        if p.get("id", "") == provider_id:
+        if (p.get("instance_id") or p.get("id", "")) == provider_id:
             return i
 
     # 2. Otherwise the name addresses a MODULE -- gather every instance of it.
@@ -952,7 +953,7 @@ def _build_provider_lookup(
     # instance addressable by its own id even if its id never appears as a
     # module-type key above.)
     for i, p in enumerate(providers):
-        instance_id = p.get("id")
+        instance_id = p.get("instance_id") or p.get("id")
         if instance_id:
             lookup[instance_id] = i
 
@@ -1141,6 +1142,10 @@ async def apply_provider_preferences_with_resolution(
 
     providers = mount_plan.get("providers", [])
     attempt_results = diagnostics if diagnostics is not None else []
+    getter = getattr(coordinator, "get_capability", None)
+    availability = getter("provider.check_available") if callable(getter) else None
+    availability = availability if callable(availability) else None
+    failures = []
 
     # Find first matching preference whose model actually resolves, and
     # apply it. A preference whose provider is present but whose glob
@@ -1166,6 +1171,20 @@ async def apply_provider_preferences_with_resolution(
 
         target = providers[target_idx]
         runtime_provider = _runtime_provider_name(target)
+        if availability is not None:
+            try:
+                checked = availability(runtime_provider)
+            except Exception as error:
+                failures.append(error)
+                attempt_results.append(ModelResolutionResult(
+                    resolved_model=None, pattern=pref.model,
+                    status="provider_unavailable", provider=runtime_provider,
+                ))
+                continue  # Only another declared preference may supply fallback.
+            if inspect.isawaitable(checked):
+                if inspect.iscoroutine(checked):
+                    checked.close()
+                raise TypeError("provider.check_available must be synchronous; no provider was selected.")
         # Resolve model pattern if it's a glob.  The runtime instance comes
         # from the same model-aware selection that chose target_idx: never
         # query a bare alias then apply the resulting model to another mount.
@@ -1196,6 +1215,12 @@ async def apply_provider_preferences_with_resolution(
     # in the mount plan, or every candidate's model pattern failed to
     # resolve. Either way, leave the mount plan unmodified rather than
     # writing an unresolved pattern string into it.
+    if availability is not None:
+        if failures:
+            raise failures[0]
+        # Under the host's isolation policy an explicit preference cannot
+        # quietly turn into the parent/default account when resolution fails.
+        raise ValueError("No declared provider preference could be resolved; the default provider was not substituted.")
     if diagnostics is None:
         statuses = ", ".join(sorted({result.status for result in attempt_results}))
         logger.warning(

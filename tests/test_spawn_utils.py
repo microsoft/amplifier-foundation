@@ -691,6 +691,7 @@ class TestApplyProviderPreferencesWithResolution:
         mock_openai.list_models = AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
 
         mock_coordinator = MagicMock()
+        mock_coordinator.get_capability.return_value = None
         mock_coordinator.get.return_value = {
             "provider-anthropic": mock_anthropic,
             "provider-openai": mock_openai,
@@ -783,6 +784,7 @@ class TestResolutionDiagnosticsAndColdResume:
             ]
         }
         coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
         coordinator.get.side_effect = RuntimeError("network details must stay hidden")
         diagnostics = []
 

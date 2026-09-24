@@ -59,3 +59,19 @@ These mechanisms do not choose providers, remove unavailable entries, or enable
 account fallback. The host still needs an unavailable-provider representation and
 routing that distinguishes an explicit failed account from an absent model match.
 They do not make arbitrary package-install side effects transactional.
+
+## Applying a selected child's provider preferences
+
+A host that retains unavailable accounts may additionally register the
+synchronous `provider.check_available(instance_id)` capability. Returning means
+the mounted account is available; raising preserves its actionable failure.
+`apply_provider_preferences_with_resolution` calls it for the exact configured
+account before an exact model or catalog lookup, honoring Core `instance_id`
+before the older `id` field. Only another entry in the declared preference list
+may provide fallback. If all entries fail or no model resolves, it raises rather
+than leaving the default account selected. Cancellation is never fallback.
+Without this capability, legacy no-match behavior remains unchanged.
+
+This is a host boundary, not an automatic health probe. The host owns safe
+error text, per-session account state, revalidation, and applying this policy on
+each root/resumed/child session. Never publish provider secrets in exceptions.
