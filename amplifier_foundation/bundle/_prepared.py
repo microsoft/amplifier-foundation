@@ -24,6 +24,7 @@ from amplifier_foundation.spawn_utils import ProviderPreference
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 
 from amplifier_foundation.bundle._dataclass import Bundle
+from amplifier_foundation.bundle._provider_preparation import ProviderPreparationFailure
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,9 @@ class BundleModuleResolver:
         self,
         module_paths: dict[str, Path],
         activator: "ModuleActivator | None" = None,
+        *,
+        source_paths: dict[tuple[str, str], Path] | None = None,
+        source_failures: dict[tuple[str, str], Exception] | None = None,
     ) -> None:
         """Initialize with activated module paths and optional activator.
 
@@ -200,7 +204,37 @@ class BundleModuleResolver:
         """
         self._paths = module_paths
         self._activator = activator
+        self._source_paths = dict(source_paths or {})
+        self._source_failures = dict(source_failures or {})
+        self._prepared_provider_ids = {
+            key[0] for key in (*self._source_paths, *self._source_failures)
+        }
         self._activation_lock = asyncio.Lock()
+
+    def _source_path(self, module_id: str, hint: Any) -> Path | None:
+        if module_id not in self._prepared_provider_ids:
+            return None
+        if not isinstance(hint, str):
+            raise CoreModuleNotFoundError(
+                f"An explicit prepared source is required for provider '{module_id}'"
+            )
+        key = (module_id, hint)
+        if key in self._source_failures:
+            # Do not retry an accepted failed source or reuse another account's
+            # source under the same module ID during this prepared generation.
+            raise CoreModuleNotFoundError(
+                f"Provider source preparation failed for '{module_id}'"
+            ) from self._source_failures[key]
+        if key in self._source_paths:
+            path = self._source_paths[key]
+            if not path.exists():
+                raise CoreModuleNotFoundError(
+                    f"Prepared provider source is no longer available for '{module_id}'"
+                )
+            return path
+        raise CoreModuleNotFoundError(
+            f"Provider source was not prepared for '{module_id}'; prepare the updated bundle first"
+        )
 
     def resolve(
         self, module_id: str, source_hint: Any = None, profile_hint: Any = None
@@ -220,8 +254,8 @@ class BundleModuleResolver:
 
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
-        _hint = profile_hint if profile_hint is not None else source_hint  # noqa: F841
-        path = self._paths.get(module_id)
+        hint = profile_hint if profile_hint is not None else source_hint
+        path = self._source_path(module_id, hint) or self._paths.get(module_id)
         if path is None or not path.exists():
             raise CoreModuleNotFoundError(
                 f"Module '{module_id}' has no available path in prepared bundle. "
@@ -249,6 +283,9 @@ class BundleModuleResolver:
         FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
         """
         hint = profile_hint if profile_hint is not None else source_hint
+        source_path = self._source_path(module_id, hint)
+        if source_path is not None:
+            return BundleModuleSource(source_path)
         # Prepared bundles can outlive a cache checkout (for example when a
         # child is spawned after cache eviction). Reuse only a present path;
         # let the activator recover a missing checkout from the declared source.
@@ -331,6 +368,7 @@ class PreparedBundle:
     bundle_package_paths: list[str] = field(default_factory=list)
     mode_warnings: list[str] = field(default_factory=list)
     module_exports: dict[str, list[str]] = field(default_factory=dict)
+    provider_preparation_failures: tuple[ProviderPreparationFailure, ...] = ()
 
     def _build_bundles_for_resolver(self, bundle: "Bundle") -> dict[str, "Bundle"]:
         """Build bundle registry for mention resolution.
@@ -546,6 +584,8 @@ class PreparedBundle:
         display_system: Any = None,
         session_cwd: Path | None = None,
         is_resumed: bool = False,
+        *,
+        before_initialize: Callable[[Any], Awaitable[None]] | None = None,
     ) -> Any:
         """Create an AmplifierSession with the resolver properly mounted.
 
@@ -569,6 +609,10 @@ class PreparedBundle:
                 Defaults to bundle.base_path if not provided.
             is_resumed: Whether this session is being resumed (vs newly created).
                 Controls whether session:start or session:resume events are emitted.
+            before_initialize: Optional async host callback receiving the newly
+                created session after resolver/working-directory capabilities are
+                mounted, before module initialization and lifecycle hooks. May
+                install failure policy or raise to abort. Not inherited implicitly.
 
         Returns:
             Initialized AmplifierSession ready for execute().
@@ -657,6 +701,9 @@ class PreparedBundle:
             "mention_deduplicator", initial_deduplicator
         )
 
+        # Host policy must be registered before mounts and lifecycle routing.
+        if before_initialize is not None:
+            await before_initialize(session)
         # Initialize the session (loads all modules)
         await session.initialize()
 
@@ -754,6 +801,7 @@ class PreparedBundle:
         session_cwd: Path | None = None,
         provider_preferences: list[ProviderPreference] | None = None,
         self_delegation_depth: int = 0,
+        before_initialize: Callable[[Any], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         """Spawn a sub-session with a child bundle.
 
@@ -773,6 +821,9 @@ class PreparedBundle:
         Args:
             child_bundle: Bundle to spawn (already resolved by app layer).
             instruction: Task instruction for the sub-session.
+            before_initialize: Optional async host callback for the fresh child,
+                before its modules and lifecycle hooks initialize. Hosts should
+                pass the same policy installer used for root/resumed sessions.
             compose: Whether to compose child with parent bundle (default True).
             parent_session: Parent session for lineage tracking and UX inheritance.
             session_id: Optional session ID for resuming existing session.
@@ -944,6 +995,8 @@ class PreparedBundle:
             "mention_deduplicator", ContentDeduplicator()
         )
 
+        if before_initialize is not None:
+            await before_initialize(child_session)
         await child_session.initialize()
 
         # Register mentions:resolved on observability.events for child sessions.
