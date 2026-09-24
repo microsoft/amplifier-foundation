@@ -29,6 +29,7 @@ Firing decisions are made in two phases:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -130,11 +131,55 @@ def parse_deprecation_configs(raw: dict[str, Any]) -> list[DeprecationConfig]:
     return tombstones
 
 
+# Users author configuration that can reference a bundle in two places under
+# a ``.amplifier/`` directory: the settings files at its top level
+# (settings.yaml, settings.local.yaml, ...) and hand-written bundle files
+# under ``bundles/``. Other top-level ``*.yaml`` files (some tool-written) are
+# scanned too; they are few and small. The subdirectories are tool-managed state --
+# the resolved module cache (#344), per-project session transcripts, and
+# data stores of installed bundles (knowledge bases, evaluation runs, recipe
+# state) -- which can be very large (tens of thousands of directories on a
+# well-used machine) and can mention bundle names as *data*, producing false
+# "evidence". Scanning only the authored locations keeps session:start cheap
+# and the evidence meaningful.
+_BUNDLES_SUBDIR = "bundles"
+_BUNDLES_MAX_DEPTH = 4
+_BUNDLES_SKIP_DIRS = frozenset({".git", "cache"})
+
+
+def _authored_yaml_files(amp_dir: Path):
+    """Yield top-level ``*.yaml`` files and ``*.yaml`` under ``bundles/``
+    (``.git`` and ``cache`` directories skipped, depth-capped)."""
+    try:
+        entries = sorted(amp_dir.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.suffix == ".yaml" and entry.is_file():
+            yield entry
+    bundles = amp_dir / _BUNDLES_SUBDIR
+    if not bundles.is_dir():
+        return
+    for dirpath, dirnames, filenames in os.walk(bundles):
+        depth = len(Path(dirpath).relative_to(bundles).parts)
+        dirnames[:] = (
+            []
+            if depth >= _BUNDLES_MAX_DEPTH
+            else sorted(d for d in dirnames if d not in _BUNDLES_SKIP_DIRS)
+        )
+        for filename in sorted(filenames):
+            if filename.endswith(".yaml"):
+                yield Path(dirpath) / filename
+
+
 def find_source_files(bundle_name: str, search_dirs: list[Path]) -> list[str]:
-    """Scan .amplifier/ directories for files referencing the deprecated bundle.
+    """Scan authored ``.amplifier/`` configuration for references to the deprecated bundle.
 
     Best-effort: silently skips unreadable files and missing directories.
-    Searches for any YAML file under .amplifier/ that contains the bundle_name string.
+    Looks only at top-level ``*.yaml`` in ``.amplifier/`` (settings files and a
+    few tool-written files) and ``*.yaml`` under ``.amplifier/bundles/`` --
+    never tool-managed state (module cache, sessions, bundle data stores).
+    Results are de-duplicated by real path and returned in scan order.
 
     Args:
         bundle_name: Name of the deprecated bundle to search for.
@@ -144,21 +189,20 @@ def find_source_files(bundle_name: str, search_dirs: list[Path]) -> list[str]:
         List of absolute file paths containing references to the bundle.
     """
     found: list[str] = []
+    seen: set[str] = set()
 
     for base_dir in search_dirs:
         amp_dir = base_dir / ".amplifier"
         if not amp_dir.is_dir():
             continue
 
-        for yaml_file in amp_dir.rglob("*.yaml"):
-            # Skip resolved/cached artifacts (e.g. .amplifier/cache/...) — the
-            # tombstone's own carrier config is cached on every install and would
-            # otherwise always self-match, defeating require_evidence gating. (#344)
-            # Scope the check to the path *below* .amplifier so a "cache" segment
-            # in an ancestor of base_dir (e.g. a user project under some cache/
-            # dir) doesn't suppress genuine authored config.
-            if "cache" in yaml_file.relative_to(amp_dir).parts:
+        for yaml_file in _authored_yaml_files(amp_dir):
+            # os.path.realpath never raises on symlink loops (Path.resolve
+            # does before Python 3.13).
+            key = os.path.realpath(yaml_file)
+            if key in seen:
                 continue
+            seen.add(key)
             try:
                 content = yaml_file.read_text(encoding="utf-8")
                 if bundle_name in content:
