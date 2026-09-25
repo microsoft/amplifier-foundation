@@ -11,6 +11,7 @@ from amplifier_foundation.mentions import (
     BaseMentionResolver,
     ContentDeduplicator,
     load_mentions,
+    load_mentions_from_file,
 )
 
 
@@ -21,28 +22,28 @@ def write(path: Path, text: str) -> Path:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mention", ["@./journal.md", "@./journal"])
+@pytest.mark.parametrize("mention", ["@./tasks.md", "@./tasks"])
 async def test_nested_reference_uses_referring_file_not_workspace(tmp_path, mention):
     write(tmp_path / "rules/AGENTS.md", f"Follow {mention} and @workspace.md")
     write(tmp_path / "workspace.md", "WORKSPACE RULE")
-    write(tmp_path / "rules/journal.md", "NESTED JOURNAL RULE")
-    write(tmp_path / "journal.md", "WRONG WORKSPACE RULE")
+    write(tmp_path / "rules/tasks.md", "NESTED TASKS RULE")
+    write(tmp_path / "tasks.md", "WRONG WORKSPACE RULE")
     resolver = BaseMentionResolver(base_path=tmp_path)
     dedup = ContentDeduplicator()
     await load_mentions("@rules/AGENTS.md", resolver, dedup)
     contents = [entry.content for entry in dedup.get_unique_files()]
-    assert "NESTED JOURNAL RULE" in contents
+    assert "NESTED TASKS RULE" in contents
     assert "WORKSPACE RULE" in contents
     assert "WRONG WORKSPACE RULE" not in contents
     assert resolver.base_path == tmp_path
-    assert resolver.resolve("@journal.md") == tmp_path / "journal.md"
+    assert resolver.resolve("@tasks.md") == tmp_path / "tasks.md"
 
 
 @pytest.mark.asyncio
 async def test_same_content_different_roots_preserves_both_nested_files(tmp_path):
     for name in ("global", "project"):
-        write(tmp_path / name / "AGENTS.md", "Read @./journal.md")
-        write(tmp_path / name / "journal.md", f"{name} journal rule @./AGENTS.md")
+        write(tmp_path / name / "AGENTS.md", "Read @./tasks.md")
+        write(tmp_path / name / "tasks.md", f"{name} tasks rule @./AGENTS.md")
     dedup = ContentDeduplicator()
     await load_mentions(
         "@global/AGENTS.md @project/AGENTS.md",
@@ -53,9 +54,9 @@ async def test_same_content_different_roots_preserves_both_nested_files(tmp_path
     assert len(entries) == 3
     assert len(entries[0].paths) == 2
     assert {entry.content for entry in entries} == {
-        "Read @./journal.md",
-        "global journal rule @./AGENTS.md",
-        "project journal rule @./AGENTS.md",
+        "Read @./tasks.md",
+        "global tasks rule @./AGENTS.md",
+        "project tasks rule @./AGENTS.md",
     }
 
 
@@ -142,9 +143,9 @@ def test_scoped_resolution_keeps_subclass_policy(tmp_path):
 
 @pytest.mark.asyncio
 async def test_explicit_parent_reference_and_cycle_are_bounded(tmp_path):
-    write(tmp_path / "rules/sub/AGENTS.md", "@../journal.md")
-    write(tmp_path / "rules/journal.md", "RIGHT RULE @./sub/AGENTS.md")
-    write(tmp_path / "journal.md", "WRONG RULE")
+    write(tmp_path / "rules/sub/AGENTS.md", "@../tasks.md")
+    write(tmp_path / "rules/tasks.md", "RIGHT RULE @./sub/AGENTS.md")
+    write(tmp_path / "tasks.md", "WRONG RULE")
     dedup = ContentDeduplicator()
     await load_mentions(
         "@rules/sub/AGENTS.md",
@@ -153,14 +154,14 @@ async def test_explicit_parent_reference_and_cycle_are_bounded(tmp_path):
         max_depth=100,
     )
     assert [entry.content for entry in dedup.get_unique_files()] == [
-        "@../journal.md",
+        "@../tasks.md",
         "RIGHT RULE @./sub/AGENTS.md",
     ]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bundle_name", ["anchors-fixture", "work-fixture"])
-async def test_journal_rules_refresh_in_real_prompt_factory(
+async def test_tasks_rules_refresh_in_real_prompt_factory(
     tmp_path, monkeypatch, bundle_name
 ):
     home, workspace, cache = (
@@ -180,9 +181,9 @@ async def test_journal_rules_refresh_in_real_prompt_factory(
         (home / ".amplifier", "GLOBAL"),
         (workspace / ".amplifier", "PROJECT"),
     ):
-        write(root / "AGENTS.md", "Read @./rules/journal.md")
-        write(root / "rules/journal.md", f"{label} JOURNAL RULE")
-    write(workspace / "rules/journal.md", "WRONG WORKSPACE RULE")
+        write(root / "AGENTS.md", "Read @./rules/tasks.md")
+        write(root / "rules/tasks.md", f"{label} TASKS RULE")
+    write(workspace / "rules/tasks.md", "WRONG WORKSPACE RULE")
     write(workspace / "AGENTS.md", "BARE WORKSPACE RULE")
     write(cache / "context/system.md", "BUNDLE RULE @AGENTS.md")
     bundle = Bundle(
@@ -202,14 +203,46 @@ async def test_journal_rules_refresh_in_real_prompt_factory(
     ):
         prompt = await factory()
         for label in (
-            "GLOBAL JOURNAL RULE",
-            "PROJECT JOURNAL RULE",
+            "GLOBAL TASKS RULE",
+            "PROJECT TASKS RULE",
             "BARE WORKSPACE RULE",
         ):
             assert prompt.count(label) == 1
         assert "WRONG WORKSPACE RULE" not in prompt
-    write(home / ".amplifier/rules/journal.md", "UPDATED JOURNAL RULE")
-    assert "UPDATED JOURNAL RULE" in await render()
-    assert "GLOBAL JOURNAL RULE" not in await render()
-    (workspace / ".amplifier/rules/journal.md").unlink()
-    assert "PROJECT JOURNAL RULE" not in await render()
+    write(home / ".amplifier/rules/tasks.md", "UPDATED TASKS RULE")
+    assert "UPDATED TASKS RULE" in await render()
+    assert "GLOBAL TASKS RULE" not in await render()
+    (workspace / ".amplifier/rules/tasks.md").unlink()
+    assert "PROJECT TASKS RULE" not in await render()
+
+
+@pytest.mark.asyncio
+async def test_declared_context_files_share_recursive_loading_and_roots(tmp_path):
+    workspace, cache = tmp_path / "workspace", tmp_path / "cache with spaces"
+    write(workspace / "AGENTS.md", "WORKSPACE RULE")
+    parent = write(cache / "context/rules.md", "@./tasks.md @AGENTS.md")
+    write(cache / "context/tasks.md", "INCLUDED TASK RULE @./rules.md")
+    bundle = Bundle(
+        name="fixture", base_path=cache, instruction="Root", context={"rules": parent}
+    )
+    prepared = PreparedBundle({}, BundleModuleResolver({}), bundle)
+    session = SimpleNamespace(
+        coordinator=SimpleNamespace(hooks=SimpleNamespace(emit=AsyncMock()))
+    )
+    render = prepared.create_system_prompt_factory(session, session_cwd=workspace)
+    for factory in (
+        render,
+        prepared.create_system_prompt_factory(session, session_cwd=workspace),
+    ):
+        prompt = await factory()
+        assert prompt.count("INCLUDED TASK RULE") == 1
+        assert prompt.count("WORKSPACE RULE") == 1
+        assert str(parent) in prompt
+    write(cache / "context/tasks.md", "EDITED INCLUDED RULE")
+    assert "EDITED INCLUDED RULE" in await render()
+    assert "INCLUDED TASK RULE" not in await render()
+    dedup = ContentDeduplicator()
+    await load_mentions_from_file(
+        parent, BaseMentionResolver(base_path=workspace), dedup
+    )
+    assert len(dedup.get_unique_files()) == 3

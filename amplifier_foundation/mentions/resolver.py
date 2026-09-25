@@ -52,7 +52,7 @@ class BaseMentionResolver:
         mention_body = mention[1:]  # Remove @ prefix
 
         # Pattern 1: @bundle-name:context-name
-        if ":" in mention_body:
+        if ":" in mention_body and not Path(mention_body).is_absolute():
             namespace, name = mention_body.split(":", 1)
             if bundle := self.bundles.get(namespace):
                 return bundle.resolve_context_path(name)

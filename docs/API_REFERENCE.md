@@ -210,6 +210,12 @@ once, but identical instruction files in different directories still load their
 own relative references. Missing files remain optional; recursion depth and
 canonical-path cycle detection bound traversal.
 
+Bundle-declared `context:` files use the same recursive loading rules.
+`load_mentions_from_file(path, resolver, deduplicator)` exposes that path-based
+entry point without reparsing filenames as mention syntax. This affects context
+assembly, not ordinary file-tool results or attachments, whose content remains
+literal.
+
 Custom resolvers keep the existing `resolve(mention)` contract. To support
 per-file relative resolution, also implement the optional
 `RelativeMentionResolverProtocol.resolve_relative(mention, relative_to)` method.

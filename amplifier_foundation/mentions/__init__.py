@@ -1,7 +1,12 @@
 """@mention parsing and loading utilities."""
 
 from .deduplicator import ContentDeduplicator
-from .loader import expand_mentions_in_instruction, format_context_block, load_mentions
+from .loader import (
+    expand_mentions_in_instruction,
+    format_context_block,
+    load_mentions,
+    load_mentions_from_file,
+)
 from .models import ContextFile, MentionResult
 from .parser import parse_mentions
 from .protocol import MentionResolverProtocol, RelativeMentionResolverProtocol
@@ -19,5 +24,6 @@ __all__ = [
     "format_context_block",
     "format_directory_listing",
     "load_mentions",
+    "load_mentions_from_file",
     "parse_mentions",
 ]
