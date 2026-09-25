@@ -424,6 +424,7 @@ class PreparedBundle:
         from amplifier_foundation.mentions import ContentDeduplicator
         from amplifier_foundation.mentions import format_context_block
         from amplifier_foundation.mentions import load_mentions
+        from amplifier_foundation.mentions import load_mentions_from_file
 
         # Capture state for the closure
         captured_bundle = bundle
@@ -486,9 +487,7 @@ class PreparedBundle:
             # Add to deduplicator and mention_to_path for unified formatting
             for context_name, context_path in captured_bundle.context.items():
                 if context_path.exists():
-                    content = context_path.read_text(encoding="utf-8")
-                    # Add to deduplicator for content-based deduplication
-                    deduplicator.add_file(context_path, content)
+                    await load_mentions_from_file(context_path, resolver, deduplicator)
                     # Add to mention_to_path for attribution (context_name → path)
                     mention_to_path[context_name] = context_path
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -51,7 +52,7 @@ class BaseMentionResolver:
         mention_body = mention[1:]  # Remove @ prefix
 
         # Pattern 1: @bundle-name:context-name
-        if ":" in mention_body:
+        if ":" in mention_body and not Path(mention_body).is_absolute():
             namespace, name = mention_body.split(":", 1)
             if bundle := self.bundles.get(namespace):
                 return bundle.resolve_context_path(name)
@@ -84,3 +85,13 @@ class BaseMentionResolver:
             bundle: Bundle instance.
         """
         self.bundles[name] = bundle
+
+    def resolve_relative(self, mention: str, relative_to: Path) -> Path | None:
+        """Resolve local mentions from a referring file, without shared mutation.
+
+        Use ``resolve`` on a scoped copy so subclasses retain their resolution
+        policy. Home paths and bundle namespaces keep their explicit roots.
+        """
+        scoped = copy(self)
+        scoped.base_path = relative_to
+        return scoped.resolve(mention)

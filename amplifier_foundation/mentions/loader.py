@@ -9,7 +9,7 @@ from amplifier_foundation.io.files import read_with_retry
 from .deduplicator import ContentDeduplicator
 from .models import MentionResult
 from .parser import parse_mentions
-from .protocol import MentionResolverProtocol
+from .protocol import MentionResolverProtocol, RelativeMentionResolverProtocol
 from .utils import format_directory_listing
 
 
@@ -91,7 +91,10 @@ async def load_mentions(
         text: Text containing @mentions.
         resolver: Resolver to convert mentions to paths.
         deduplicator: Optional deduplicator for content. If None, creates one.
-        relative_to: Base path for relative mentions (defaults to cwd).
+        relative_to: Base path for local mentions (defaults to the resolver's
+            base). Nested explicit ./ and ../ mentions use the referring file's
+            directory with RelativeMentionResolverProtocol; bare local mentions
+            retain the resolver's base.
         max_depth: Maximum recursion depth to prevent infinite loops (default 3).
 
     Returns:
@@ -101,6 +104,7 @@ async def load_mentions(
         deduplicator = ContentDeduplicator()
 
     results: list[MentionResult] = []
+    visited_paths: set[Path] = set()
     mentions = parse_mentions(text)
 
     for mention in mentions:
@@ -111,6 +115,7 @@ async def load_mentions(
             relative_to=relative_to,
             max_depth=max_depth,
             current_depth=0,
+            visited_paths=visited_paths,
         )
         results.append(result)
 
@@ -138,7 +143,10 @@ async def expand_mentions_in_instruction(
         instruction: The text to expand. May contain @mention tokens.
         resolver: Resolver to convert @mentions to file paths.
         deduplicator: Optional deduplicator for content. If None, creates a fresh one.
-        relative_to: Base path for relative mentions (defaults to cwd).
+        relative_to: Base path for local mentions (defaults to the resolver's
+            base). Nested explicit ./ and ../ mentions use the referring file's
+            directory with RelativeMentionResolverProtocol; bare local mentions
+            retain the resolver's base.
 
     Returns:
         Instruction with <context_file> blocks prepended, or the original instruction
@@ -172,6 +180,31 @@ async def expand_mentions_in_instruction(
     return f"{block}\n\n{instruction}"
 
 
+async def load_mentions_from_file(
+    path: Path,
+    resolver: MentionResolverProtocol,
+    deduplicator: ContentDeduplicator | None = None,
+    max_depth: int = 3,
+) -> MentionResult:
+    """Load a declared context file and its nested mentions using the same rules.
+
+    Taking a Path avoids reparsing a known filename as mention syntax (including
+    spaces or Windows drive letters). Explicit relative references use this
+    file's directory; bare references retain the resolver's workspace root.
+    """
+    return await _load_file(
+        mention=str(path),
+        path=path,
+        resolver=resolver,
+        deduplicator=deduplicator
+        if deduplicator is not None
+        else ContentDeduplicator(),
+        max_depth=max_depth,
+        current_depth=0,
+        visited_paths=set(),
+    )
+
+
 async def _resolve_mention(
     mention: str,
     resolver: MentionResolverProtocol,
@@ -179,10 +212,18 @@ async def _resolve_mention(
     relative_to: Path | None,
     max_depth: int,
     current_depth: int,
+    visited_paths: set[Path],
 ) -> MentionResult:
     """Resolve a single mention and recursively load its mentions."""
     # Resolve mention to path
-    path = resolver.resolve(mention)
+    if (
+        relative_to is not None
+        and (current_depth == 0 or mention.startswith(("@./", "@../")))
+        and isinstance(resolver, RelativeMentionResolverProtocol)
+    ):
+        path = resolver.resolve_relative(mention, relative_to)
+    else:
+        path = resolver.resolve(mention)
     if path is None:
         return MentionResult(
             mention=mention,
@@ -191,6 +232,22 @@ async def _resolve_mention(
             error=None,  # Opportunistic - no error for not found
             failure_reason="not_found",
         )
+
+    return await _load_file(
+        mention, path, resolver, deduplicator, max_depth, current_depth, visited_paths
+    )
+
+
+async def _load_file(
+    mention: str,
+    path: Path,
+    resolver: MentionResolverProtocol,
+    deduplicator: ContentDeduplicator,
+    max_depth: int,
+    current_depth: int,
+    visited_paths: set[Path],
+) -> MentionResult:
+    """Shared read/recursion path for resolved mentions and declared context."""
 
     # Handle directories: generate listing as content
     if path.is_dir():
@@ -223,6 +280,15 @@ async def _resolve_mention(
                 failure_reason="not_found",
             )
 
+    # Path identity stops cycles, while content identity deduplicates output.
+    # Identical files in different directories may reference different siblings.
+    canonical_path = path.resolve()
+    if canonical_path in visited_paths:
+        return MentionResult(
+            mention=mention, resolved_path=path, content=None, error=None
+        )
+    visited_paths.add(canonical_path)
+
     # Read file
     try:
         content = await read_with_retry(path)
@@ -244,13 +310,7 @@ async def _resolve_mention(
         )
 
     # Check for duplicate content
-    if not deduplicator.add_file(path, content):
-        return MentionResult(
-            mention=mention,
-            resolved_path=path,
-            content=None,  # Already seen, don't include again
-            error=None,
-        )
+    new_content = deduplicator.add_file(path, content)
 
     # Recursively load mentions from this file (if not at max depth)
     if current_depth < max_depth:
@@ -263,11 +323,12 @@ async def _resolve_mention(
                 relative_to=path.parent,
                 max_depth=max_depth,
                 current_depth=current_depth + 1,
+                visited_paths=visited_paths,
             )
 
     return MentionResult(
         mention=mention,
         resolved_path=path,
-        content=content,
+        content=content if new_content else None,
         error=None,
     )
