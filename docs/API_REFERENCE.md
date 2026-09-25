@@ -198,3 +198,20 @@ from amplifier_foundation import load_mentions, BaseMentionResolver
 resolver = BaseMentionResolver(bundles={"foundation": foundation_bundle})
 results = await load_mentions("See @foundation:context/guidelines.md", resolver)
 ```
+
+Local mentions in the initial text use the resolver's base directory, or the
+explicit `relative_to` passed to `load_mentions`. Inside an included file, explicit
+relative mentions (`@./journal.md` or `@../rules.md`) use that file's directory.
+Bare local mentions such as `@AGENTS.md` retain the resolver's workspace root;
+this preserves bundles that intentionally include the current project's rules.
+Bundle namespaces and explicit home/absolute paths retain their own roots.
+The resolver is never mutated while loading a nested file. Content is included
+once, but identical instruction files in different directories still load their
+own relative references. Missing files remain optional; recursion depth and
+canonical-path cycle detection bound traversal.
+
+Custom resolvers keep the existing `resolve(mention)` contract. To support
+per-file relative resolution, also implement the optional
+`RelativeMentionResolverProtocol.resolve_relative(mention, relative_to)` method.
+App shortcuts such as `@user:` and `@project:` should retain their configured
+roots. Legacy resolvers without that method continue to resolve exactly as before.

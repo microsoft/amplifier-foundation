@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -84,3 +85,13 @@ class BaseMentionResolver:
             bundle: Bundle instance.
         """
         self.bundles[name] = bundle
+
+    def resolve_relative(self, mention: str, relative_to: Path) -> Path | None:
+        """Resolve local mentions from a referring file, without shared mutation.
+
+        Use ``resolve`` on a scoped copy so subclasses retain their resolution
+        policy. Home paths and bundle namespaces keep their explicit roots.
+        """
+        scoped = copy(self)
+        scoped.base_path = relative_to
+        return scoped.resolve(mention)

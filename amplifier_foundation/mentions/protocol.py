@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 class MentionResolverProtocol(Protocol):
@@ -22,4 +22,18 @@ class MentionResolverProtocol(Protocol):
         Returns:
             Path to the resolved file, or None if not found.
         """
+        ...
+
+
+@runtime_checkable
+class RelativeMentionResolverProtocol(Protocol):
+    """Optional per-call context for resolvers used by the recursive loader.
+
+    Legacy ``resolve(mention)`` implementations remain supported. Implement this
+    extension to anchor local paths to the referring file without changing the
+    resolver's workspace, namespace roots, or state between calls.
+    """
+
+    def resolve_relative(self, mention: str, relative_to: Path) -> Path | None:
+        """Resolve local paths relative to ``relative_to``; retain shortcut roots."""
         ...
