@@ -1,0 +1,358 @@
+name: "validate-examples"
+description: "Validates all example scripts and module tests, with cleanup of generated files"
+version: "1.1.0"
+tags: ["validation", "ci", "examples", "testing"]
+
+context:
+  skip_list: ""           # Comma-separated example numbers to skip (e.g., "12,19,20")
+  example_timeout: "300"  # Timeout in seconds for each example (default: 300)
+  cleanup: "true"         # Whether to clean up generated files after running (default: true)
+
+steps:
+  - id: "snapshot-initial-state"
+    type: "bash"
+    timeout: 30
+    parse_json: true
+    command: |
+      #!/bin/bash
+      # Capture initial state to detect generated files later
+      find . -maxdepth 1 -name '*.py' -type f 2>/dev/null | sort > /tmp/initial_py_files.txt
+      find . -maxdepth 1 \( -name '*.pyc' -o -name '*.pyo' -o -name '*.log' \) -type f 2>/dev/null | sort > /tmp/initial_other_files.txt
+      INITIAL_COUNT=$(wc -l < /tmp/initial_py_files.txt | tr -d ' ')
+      
+      # Output JSON (must be last line for parse_json to work)
+      echo "{\"captured\": true, \"py_file_count\": $INITIAL_COUNT}"
+    output: "initial_state"
+
+  - id: "validate-all-examples"
+    type: "bash"
+    timeout: 7200
+    on_error: continue
+    parse_json: true
+    command: |
+      #!/bin/bash
+      set -o pipefail
+
+      SKIP_LIST="{{skip_list}}"
+      EXAMPLE_TIMEOUT="{{example_timeout}}"
+      FAILURE_DETAILS_FILE=$(mktemp)
+
+      PASSED=0
+      FAILED=0
+      SKIPPED=0
+      TOTAL=0
+      FAILED_NAMES=""
+
+      # Build skip map
+      declare -A SKIP_MAP
+      if [[ -n "$SKIP_LIST" ]]; then
+        IFS=',' read -ra SKIP_NUMS <<< "$SKIP_LIST"
+        for num in "${SKIP_NUMS[@]}"; do
+          num=$(echo "$num" | tr -d ' ')
+          SKIP_MAP["$num"]=1
+          padded=$(printf "%02d" "$num" 2>/dev/null || echo "$num")
+          SKIP_MAP["$padded"]=1
+        done
+      fi
+
+      # Cross-platform timeout wrapper
+      run_with_timeout() {
+        local secs=$1
+        shift
+        if command -v timeout >/dev/null 2>&1; then
+          timeout "$secs" "$@"
+        elif command -v gtimeout >/dev/null 2>&1; then
+          gtimeout "$secs" "$@"
+        else
+          perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+        fi
+      }
+
+      # Discover examples
+      EXAMPLES=$(find examples -maxdepth 1 -name '[0-9][0-9]_*.py' 2>/dev/null | sort)
+
+      if [[ -z "$EXAMPLES" ]]; then
+        echo '{"passed": 0, "failed": 0, "skipped": 0, "total": 0, "failed_names": [], "success": true}'
+        exit 0
+      fi
+
+      # Progress output to stderr (won't interfere with JSON parsing)
+      echo "=== EXAMPLE VALIDATION ===" >&2
+      echo "Skip list: ${SKIP_LIST:-none}" >&2
+      echo "Timeout: ${EXAMPLE_TIMEOUT}s per example" >&2
+      echo "" >&2
+
+      while IFS= read -r example_path; do
+        [[ -z "$example_path" ]] && continue
+        TOTAL=$((TOTAL + 1))
+        
+        example_file=$(basename "$example_path")
+        example_num="${example_file%%_*}"
+        example_name="${example_file%.py}"
+        
+        if [[ -n "${SKIP_MAP[$example_num]}" ]]; then
+          echo "[SKIP] $example_name" >&2
+          SKIPPED=$((SKIPPED + 1))
+          continue
+        fi
+        
+        echo -n "[....] $example_name " >&2
+        
+        OUTPUT_FILE=$(mktemp)
+        START_TIME=$(date +%s)
+        
+        run_with_timeout "${EXAMPLE_TIMEOUT}" uv run python "$example_path" > "$OUTPUT_FILE" 2>&1
+        EXIT_CODE=$?
+        
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        
+        FAIL_REASON=""
+        if [[ $EXIT_CODE -eq 124 ]]; then
+          FAIL_REASON="timeout"
+          echo -e "\r[FAIL] $example_name - TIMEOUT (${EXAMPLE_TIMEOUT}s)" >&2
+        elif [[ $EXIT_CODE -ne 0 ]]; then
+          FAIL_REASON="exit_code_$EXIT_CODE"
+          echo -e "\r[FAIL] $example_name - EXIT $EXIT_CODE (${DURATION}s)" >&2
+        elif grep -qE "Traceback|Exception:|ERROR:|Error:|FAILED" "$OUTPUT_FILE"; then
+          FAIL_REASON="error_in_output"
+          echo -e "\r[FAIL] $example_name - ERROR DETECTED (${DURATION}s)" >&2
+        else
+          echo -e "\r[ OK ] $example_name (${DURATION}s)" >&2
+          PASSED=$((PASSED + 1))
+          rm -f "$OUTPUT_FILE"
+          continue
+        fi
+        
+        # Record failure
+        FAILED=$((FAILED + 1))
+        if [[ -n "$FAILED_NAMES" ]]; then
+          FAILED_NAMES="$FAILED_NAMES, \"$example_name\""
+        else
+          FAILED_NAMES="\"$example_name\""
+        fi
+        
+        {
+          echo ""
+          echo "--- $example_name ---"
+          echo "Reason: $FAIL_REASON"
+          echo ""
+          tail -100 "$OUTPUT_FILE"
+        } >> "$FAILURE_DETAILS_FILE"
+        
+        rm -f "$OUTPUT_FILE"
+      done <<< "$EXAMPLES"
+
+      # Save failure details for report step
+      if [[ -s "$FAILURE_DETAILS_FILE" ]]; then
+        cp "$FAILURE_DETAILS_FILE" /tmp/example_failures.txt
+      fi
+      rm -f "$FAILURE_DETAILS_FILE"
+
+      echo "" >&2
+      
+      # Output clean JSON as last line
+      SUCCESS=$([[ $FAILED -eq 0 ]] && echo "true" || echo "false")
+      echo "{\"passed\": $PASSED, \"failed\": $FAILED, \"skipped\": $SKIPPED, \"total\": $TOTAL, \"failed_names\": [$FAILED_NAMES], \"success\": $SUCCESS}"
+    output: "example_results"
+
+  - id: "run-module-tests"
+    type: "bash"
+    timeout: 600
+    on_error: continue
+    parse_json: true
+    command: |
+      #!/bin/bash
+      set -o pipefail
+
+      ROUTER_DIR="examples/modules/router-orchestrator"
+      
+      echo "=== MODULE TESTS ===" >&2
+
+      if [[ ! -d "$ROUTER_DIR" ]]; then
+        echo "Directory $ROUTER_DIR not found, skipping." >&2
+        echo '{"status": "skipped", "reason": "directory_not_found"}'
+        exit 0
+      fi
+
+      TEST_FILES=$(find "$ROUTER_DIR" -name 'test_*.py' -o -name '*_test.py' 2>/dev/null)
+      TESTS_DIR=$(find "$ROUTER_DIR" -type d -name 'tests' 2>/dev/null)
+
+      if [[ -z "$TEST_FILES" && -z "$TESTS_DIR" ]]; then
+        echo "No test files found in $ROUTER_DIR, skipping." >&2
+        echo '{"status": "skipped", "reason": "no_tests_found"}'
+        exit 0
+      fi
+
+      echo "Running pytest in $ROUTER_DIR..." >&2
+      
+      cd "$ROUTER_DIR" || exit 1
+      OUTPUT_FILE=$(mktemp)
+      
+      uv run pytest -v --tb=short 2>&1 | tee "$OUTPUT_FILE" >&2
+      PYTEST_EXIT=$?
+      
+      cd - > /dev/null
+
+      if [[ $PYTEST_EXIT -eq 0 ]]; then
+        echo "" >&2
+        echo "[ OK ] Module tests PASSED" >&2
+        echo '{"status": "passed", "exit_code": 0}'
+      else
+        echo "" >&2
+        echo "[FAIL] Module tests FAILED" >&2
+        cp "$OUTPUT_FILE" /tmp/router_failures.txt
+        echo "{\"status\": \"failed\", \"exit_code\": $PYTEST_EXIT}"
+      fi
+      
+      rm -f "$OUTPUT_FILE"
+    output: "module_results"
+
+  - id: "generate-report"
+    type: "bash"
+    timeout: 60
+    parse_json: true
+    command: |
+      #!/bin/bash
+      
+      # Access parsed JSON fields directly via template variables
+      EX_PASSED="{{example_results.passed}}"
+      EX_FAILED="{{example_results.failed}}"
+      EX_SKIPPED="{{example_results.skipped}}"
+      EX_TOTAL="{{example_results.total}}"
+      EX_SUCCESS="{{example_results.success}}"
+      
+      MOD_STATUS="{{module_results.status}}"
+      
+      # Calculate overall status
+      TOTAL_FAILURES=$EX_FAILED
+      if [[ "$MOD_STATUS" == "failed" ]]; then
+        TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
+      fi
+      
+      # Nice output format (using simple ASCII for YAML compatibility)
+      echo "" >&2
+      echo "================================================================" >&2
+      echo "                  EXAMPLE VALIDATION REPORT                     " >&2
+      echo "================================================================" >&2
+      echo "" >&2
+      echo "EXAMPLES" >&2
+      echo "--------" >&2
+      echo "  Passed:  $EX_PASSED" >&2
+      echo "  Failed:  $EX_FAILED" >&2
+      echo "  Skipped: $EX_SKIPPED" >&2
+      echo "  Total:   $EX_TOTAL" >&2
+      echo "" >&2
+      echo "MODULE TESTS (router-orchestrator)" >&2
+      echo "----------------------------------" >&2
+      if [[ "$MOD_STATUS" == "passed" ]]; then
+        echo "  Status: PASSED" >&2
+      elif [[ "$MOD_STATUS" == "failed" ]]; then
+        echo "  Status: FAILED" >&2
+      else
+        echo "  Status: SKIPPED" >&2
+      fi
+      echo "" >&2
+
+      # Show failure details if any
+      if [[ $TOTAL_FAILURES -gt 0 ]]; then
+        echo "================================================================" >&2
+        echo "FAILURE DETAILS" >&2
+        echo "================================================================" >&2
+        
+        if [[ -f /tmp/example_failures.txt ]]; then
+          cat /tmp/example_failures.txt >&2
+        fi
+        
+        if [[ -f /tmp/router_failures.txt ]]; then
+          echo "" >&2
+          echo "--- router-orchestrator ---" >&2
+          cat /tmp/router_failures.txt >&2
+        fi
+        echo "" >&2
+      fi
+
+      # Final verdict
+      echo "================================================================" >&2
+      if [[ $TOTAL_FAILURES -eq 0 ]]; then
+        echo "RESULT: ALL VALIDATIONS PASSED" >&2
+      else
+        echo "RESULT: VALIDATION FAILED ($TOTAL_FAILURES failure(s))" >&2
+      fi
+      echo "================================================================" >&2
+      echo "" >&2
+      
+      # Output JSON result (for cleanup step and recipe result)
+      SUCCESS=$([[ $TOTAL_FAILURES -eq 0 ]] && echo "true" || echo "false")
+      echo "{\"examples_passed\": $EX_PASSED, \"examples_failed\": $EX_FAILED, \"module_status\": \"$MOD_STATUS\", \"total_failures\": $TOTAL_FAILURES, \"success\": $SUCCESS}"
+    output: "report"
+
+  - id: "cleanup"
+    type: "bash"
+    timeout: 60
+    parse_json: true
+    command: |
+      #!/bin/bash
+      
+      CLEANUP="{{cleanup}}"
+      VALIDATION_SUCCESS="{{report.success}}"
+      
+      CLEANED=0
+      
+      if [[ "$CLEANUP" == "true" ]]; then
+        echo "=== CLEANUP ===" >&2
+        
+        # Remove generated .py files
+        if [[ -f /tmp/initial_py_files.txt ]]; then
+          find . -maxdepth 1 -name '*.py' -type f 2>/dev/null | sort > /tmp/current_py_files.txt
+          NEW_FILES=$(comm -13 /tmp/initial_py_files.txt /tmp/current_py_files.txt)
+          
+          if [[ -n "$NEW_FILES" ]]; then
+            while IFS= read -r file; do
+              [[ -z "$file" ]] && continue
+              echo "Removing: $file" >&2
+              rm -f "$file"
+              CLEANED=$((CLEANED + 1))
+            done <<< "$NEW_FILES"
+          fi
+          rm -f /tmp/initial_py_files.txt /tmp/current_py_files.txt
+        fi
+        
+        # Remove generated .pyc/.pyo/.log files
+        if [[ -f /tmp/initial_other_files.txt ]]; then
+          find . -maxdepth 1 \( -name '*.pyc' -o -name '*.pyo' -o -name '*.log' \) -type f 2>/dev/null | sort > /tmp/current_other_files.txt
+          NEW_OTHER=$(comm -13 /tmp/initial_other_files.txt /tmp/current_other_files.txt)
+          
+          if [[ -n "$NEW_OTHER" ]]; then
+            while IFS= read -r file; do
+              [[ -z "$file" ]] && continue
+              echo "Removing: $file" >&2
+              rm -f "$file"
+              CLEANED=$((CLEANED + 1))
+            done <<< "$NEW_OTHER"
+          fi
+          rm -f /tmp/initial_other_files.txt /tmp/current_other_files.txt
+        fi
+        
+        if [[ $CLEANED -eq 0 ]]; then
+          echo "No generated files to clean up." >&2
+        else
+          echo "Cleaned $CLEANED file(s)." >&2
+        fi
+      fi
+      
+      # Always clean temp files
+      rm -f /tmp/example_failures.txt /tmp/router_failures.txt 2>/dev/null
+      
+      echo "" >&2
+      
+      # Output final result
+      echo "{\"cleaned\": $CLEANED, \"success\": $VALIDATION_SUCCESS}"
+      
+      # Exit with validation status
+      if [[ "$VALIDATION_SUCCESS" == "true" ]]; then
+        exit 0
+      else
+        exit 1
+      fi
+    output: "final_result"
