@@ -575,6 +575,23 @@ class ModuleActivator:
         progress_callback: Callable[[str, str], None] | None = None,
         force: bool = False,
     ) -> None:
+        from .preparation import PreparationReceipt
+
+        receipt = PreparationReceipt(self, module_path)
+        if not force and await asyncio.to_thread(receipt.reusable):
+            return
+        await self._install_dependencies_uncached(
+            module_path, module_name, progress_callback, force
+        )
+        await asyncio.to_thread(receipt.record)
+
+    async def _install_dependencies_uncached(
+        self,
+        module_path: Path,
+        module_name: str | None = None,
+        progress_callback: Callable[[str, str], None] | None = None,
+        force: bool = False,
+    ) -> None:
         """Install Python dependencies for a module.
 
         Uses uv to install into the selected Python environment. The --python flag
@@ -675,6 +692,13 @@ class ModuleActivator:
         requirements = module_path / "requirements.txt"
 
         if pyproject.exists():
+            from amplifier_foundation.sources.shared import build_lock, build_view
+
+            install_path, immutable = await asyncio.to_thread(build_view, module_path)
+            # Shared source trees are read-only. Build wheels from a private
+            # writable input; never create an editable installation on them.
+            # uv reuses the wheel for the same source and build contract.
+            # Build metadata may change without rewriting the canonical source.
             # Build overrides for git URL dependencies that are already installed.
             # This prevents uv from fetching/building packages from git when a
             # prebuilt wheel is already available (e.g. amplifier-core from PyPI).
@@ -689,8 +713,8 @@ class ModuleActivator:
                     "uv",
                     "pip",
                     "install",
-                    "-e",
-                    str(module_path),
+                    *([] if immutable else ["-e"]),
+                    str(install_path),
                     "--python",
                     self.install_python,
                     "--quiet",
@@ -724,12 +748,10 @@ class ModuleActivator:
                     overrides_file.close()
                     cmd.extend(["--overrides", overrides_file.name])
 
-                subprocess.run(
-                    cmd,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
+                # Holding this across uv prevents concurrent build backends
+                # from modifying the same writable source view.
+                with build_lock(install_path):
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
                 # Mark as installed after successful install
                 self._install_state.mark_installed(module_path)
                 # Refresh Python's package discovery so subprocess-installed packages

@@ -1977,3 +1977,32 @@ class TestPendingLoadFailurePropagation343:
             )
             assert isinstance(waiter_exc, RuntimeError)
             assert sentinel in str(waiter_exc)
+
+
+def test_independent_registry_skips_saved_aliases_without_changing_default(tmp_path):
+    """Hosts can use settings authority without importing another registry."""
+    import json
+
+    path = tmp_path / "registry.json"
+    path.write_text(json.dumps({"version": 1, "bundles": {
+        "legacy": {"uri": "git+https://example.invalid/legacy@main"}}}))
+    before = path.read_bytes()
+    default = BundleRegistry(home=tmp_path, persist=False)
+    assert default.find("legacy") == "git+https://example.invalid/legacy@main"
+    independent = BundleRegistry(home=tmp_path, persist=False, read_persisted=False)
+    assert independent.list_registered() == []
+    independent.register({"selected": "git+https://example.invalid/selected@main"})
+    assert independent.find("selected") == "git+https://example.invalid/selected@main"
+    independent.save()
+    assert path.read_bytes() == before
+
+
+def test_independent_registry_never_reads_saved_state(tmp_path, monkeypatch):
+    from amplifier_foundation import BundleRegistry
+
+    def forbidden(*args):
+        raise AssertionError("Saved registration state must not be inspected")
+
+    monkeypatch.setattr(BundleRegistry, "_load_persisted_state", forbidden)
+    monkeypatch.setattr(BundleRegistry, "_validate_cached_paths", forbidden)
+    assert BundleRegistry(home=tmp_path, read_persisted=False).list_registered() == []

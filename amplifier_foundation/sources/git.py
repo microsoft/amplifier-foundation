@@ -411,6 +411,14 @@ class GitSourceHandler:
         scheme = parsed.scheme.replace("git+", "")
         return f"{scheme}://{parsed.host}{parsed.path}"
 
+    def _shared_uri(self, parsed):
+        uri = "git+" + self._build_git_url(parsed)
+        if parsed.ref:
+            uri += "@" + parsed.ref
+        if parsed.subpath:
+            uri += "#subdirectory=" + parsed.subpath
+        return uri
+
     def _get_cache_path(self, parsed: ParsedURI, cache_dir: Path) -> Path:
         """Get the cache path for a parsed URI."""
         git_url = self._build_git_url(parsed)
@@ -672,6 +680,20 @@ class GitSourceHandler:
         Raises:
             BundleNotFoundError: If clone fails or ref not found.
         """
+        if os.environ.get("AMPLIFIER_SOURCE_STORE"):
+            from .shared import resolve_shared_source
+
+            result = await resolve_shared_source(
+                parsed.original
+                if hasattr(parsed, "original")
+                else self._shared_uri(parsed),
+                cache_dir,
+            )
+            if not self._verify_clone_integrity(result.source_root):
+                raise BundleNotFoundError(
+                    "Shared source is not a bundle or module repository"
+                )
+            return result
         cache_path = self._get_cache_path(parsed, cache_dir)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         # Workers share this cache across processes. Check integrity only after
@@ -829,6 +851,31 @@ class GitSourceHandler:
             source_uri += f"#subdirectory={parsed.subpath}"
 
         # Initialize status
+        if shared_root := os.environ.get("AMPLIFIER_SOURCE_STORE"):
+            from .shared import SharedSourceStore
+
+            try:
+                shared_path = await asyncio.to_thread(
+                    SharedSourceStore(shared_root).cached, source_uri, cache_dir
+                )
+                if shared_path is not None:
+                    cache_path = shared_path
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                TypeError,
+                subprocess.SubprocessError,
+            ):
+                return SourceStatus(
+                    source_uri=source_uri,
+                    is_cached=False,
+                    cached_ref=ref,
+                    remote_ref=ref,
+                    has_update=None,
+                    error="Shared source could not be verified",
+                    summary="Shared source was retained for inspection",
+                )
         status = SourceStatus(
             source_uri=source_uri,
             is_cached=cache_path.exists(),
@@ -856,7 +903,12 @@ class GitSourceHandler:
 
         # Get remote commit
         try:
-            status.remote_commit = await self._get_remote_commit(git_url, ref)
+            if shared_root:
+                from .shared import remote_revision
+
+                status.remote_commit = await remote_revision(git_url, ref)
+            else:
+                status.remote_commit = await self._get_remote_commit(git_url, ref)
 
             if status.remote_commit is None:
                 status.has_update = None
@@ -900,6 +952,12 @@ class GitSourceHandler:
         Raises:
             BundleNotFoundError: If clone fails.
         """
+        if os.environ.get("AMPLIFIER_SOURCE_STORE"):
+            from .shared import resolve_shared_source
+
+            return await resolve_shared_source(
+                self._shared_uri(parsed), cache_dir, refresh=True
+            )
         cache_path = self._get_cache_path(parsed, cache_dir)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         async with AsyncFileLock(cache_path.with_name(f".{cache_path.name}.lock")):
