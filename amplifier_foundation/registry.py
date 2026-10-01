@@ -185,6 +185,7 @@ class BundleRegistry:
         strict: bool = False,
         include_source_resolver: Callable[[str], str | None] | None = None,
         persist: bool = True,
+        read_persisted: bool = True,
     ) -> None:
         """Initialize registry.
 
@@ -204,6 +205,10 @@ class BundleRegistry:
                     cleanup and explicit save() calls cannot write registry.json.
                     Source downloads still use the shared content cache. Use a
                     fresh instance per session with scoped source overrides.
+            read_persisted: If False, start with no saved registrations. The
+                    caller supplies its authoritative registrations; the source
+                    cache still belongs to the explicit home. Defaults to True
+                    so existing CLI and library consumers retain their behavior.
         """
         self._home = self._resolve_home(home)
         self._strict = strict
@@ -217,8 +222,9 @@ class BundleRegistry:
         # Future-based deduplication: cache loaded bundles and track in-progress loads
         self._loaded_bundles: dict[str, Bundle] = {}  # Cache of fully loaded bundles
         self._pending_loads: dict[str, asyncio.Future[Bundle]] = {}  # In-progress loads
-        self._load_persisted_state()
-        self._validate_cached_paths()
+        if read_persisted:
+            self._load_persisted_state()
+            self._validate_cached_paths()
 
     @property
     def home(self) -> Path:

@@ -34,3 +34,9 @@ An intervening graph/source/policy change or explicit force triggers installatio
 A new attempt always resolves fresh; receipts do not pin future dependencies.
 External install interpreters and unqualifiable external build inputs never reuse
 the caller's metadata evidence.
+
+Hosts that construct registrations from shared settings can create
+`BundleRegistry(home=owned_home, persist=False, read_persisted=False)`.
+This skips saved registrations even when an older imported registry remains in
+that directory. Both flags default to `True`, preserving existing CLI/library
+behavior. The explicit `home` still owns source caches.
