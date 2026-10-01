@@ -110,6 +110,54 @@ asyncio.run(main())
     )
 
 
+def test_shared_source_builds_real_wheel_without_editable_canonical_files(tmp_path):
+    import asyncio
+    from amplifier_foundation.sources.shared import SharedSourceStore
+
+    env = {
+        name: os.environ[name] for name in ("PATH", "SystemRoot") if name in os.environ
+    }
+    env.update(
+        UV_NO_INDEX="true",
+        UV_NO_CONFIG="true",
+        UV_PYTHON_DOWNLOADS="never",
+        UV_CACHE_DIR=str(tmp_path / "uv-cache"),
+        PYTHONPATH=os.pathsep.join(path for path in sys.path if path),
+    )
+    repo = repository(tmp_path / "source", "shared-fixture")
+    revision = run("git", "rev-parse", "HEAD", cwd=repo)
+    store = SharedSourceStore(tmp_path / "store")
+    cache = tmp_path / "generation/cache"
+    url = "https://example.invalid/shared-fixture"
+    canonical = asyncio.run(store.bind(cache, url, "main", revision, existing=repo))
+    env["AMPLIFIER_SOURCE_STORE"] = str(store.root)
+    target = tmp_path / "worker"
+    run(UV, "venv", "--python", sys.executable, target, env=env)
+    override = tmp_path / "qualified.txt"
+    override.write_text("")
+    activate(
+        environment_python(target),
+        "git+" + url + "@main",
+        cache,
+        override,
+        env,
+        refresh=True,
+    )
+    result = json.loads(
+        run(
+            environment_python(target),
+            "-c",
+            'import json,importlib.metadata as m,shared_fixture; d=m.distribution("shared-fixture"); print(json.dumps({"value":shared_fixture.VALUE,"direct":json.loads(d.read_text("direct_url.json"))}))',
+            env=env,
+        )
+    )
+    assert result["value"] == "old"
+    assert not result["direct"].get("dir_info", {}).get("editable", False)
+    assert result["direct"]["url"].startswith((store.root / "builds").as_uri() + "/")
+    assert store.verify(url, revision) == canonical
+    assert not (canonical / "shared_fixture/__init__.py").stat().st_mode & 0o222
+
+
 def test_new_generation_refreshes_same_version_direct_and_transitive_sources(tmp_path):
     # No indexes, network, external build dependencies, shared uv cache or host installs.
     # uv rejects --refresh together with --offline. Restrict resolution to our

@@ -139,3 +139,68 @@ async def test_refresh_does_not_enable_disabled_installs(tmp_path, monkeypatch):
             install_deps=False, refresh_dependencies=True, cache_dir=tmp_path / "cache"
         )
     install.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_preparation_attempt_reuses_only_matching_source_policy_and_installed_graph(
+    tmp_path, monkeypatch
+):
+    import sys
+    from amplifier_foundation.modules import preparation
+
+    module = project(tmp_path / "module")
+    monkeypatch.setenv("AMPLIFIER_INSTALL_PREPARATION", "a" * 32)
+    graph = ["first"]
+    monkeypatch.setattr(preparation, "graph_signature", lambda: graph[0])
+    activator = ModuleActivator(
+        cache_dir=tmp_path / "cache",
+        install_python=sys.executable,
+        refresh_dependencies=True,
+    )
+    from unittest.mock import AsyncMock
+
+    install = AsyncMock()
+    monkeypatch.setattr(activator, "_install_dependencies_uncached", install)
+    await activator._install_dependencies(module)
+    await activator._install_dependencies(module)
+    assert install.await_count == 1
+    # Installing another module can change transitive dependencies. Recheck.
+    graph[0] = "changed graph"
+    await activator._install_dependencies(module)
+    assert install.await_count == 2
+    (module / "implementation.py").write_text("source changed without a version bump")
+    await activator._install_dependencies(module)
+    assert install.await_count == 3
+    # A fresh attempt never inherits earlier refresh evidence.
+    monkeypatch.setenv("AMPLIFIER_INSTALL_PREPARATION", "b" * 32)
+    await activator._install_dependencies(module)
+    assert install.await_count == 4
+    await activator._install_dependencies(module, force=True)
+    assert install.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_external_build_input_never_reuses_preparation_receipt(
+    tmp_path, monkeypatch
+):
+    import sys
+    from unittest.mock import AsyncMock
+    from amplifier_foundation.modules import preparation
+
+    module = project(tmp_path / "module")
+    external = tmp_path / "external.txt"
+    external.write_text("first")
+    (module / "external.txt").symlink_to(external)
+    monkeypatch.setenv("AMPLIFIER_INSTALL_PREPARATION", "a" * 32)
+    monkeypatch.setattr(preparation, "graph_signature", lambda: "same")
+    activator = ModuleActivator(
+        cache_dir=tmp_path / "cache",
+        install_python=sys.executable,
+        refresh_dependencies=True,
+    )
+    install = AsyncMock()
+    monkeypatch.setattr(activator, "_install_dependencies_uncached", install)
+    await activator._install_dependencies(module)
+    external.write_text("changed")
+    await activator._install_dependencies(module)
+    assert install.await_count == 2
