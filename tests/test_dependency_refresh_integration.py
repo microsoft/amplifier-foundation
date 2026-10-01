@@ -117,6 +117,9 @@ def test_shared_source_builds_real_wheel_without_editable_canonical_files(tmp_pa
     env = {
         name: os.environ[name] for name in ("PATH", "SystemRoot") if name in os.environ
     }
+    fixture_home = tmp_path / "home"
+    fixture_home.mkdir()
+    env.update(HOME=str(fixture_home), USERPROFILE=str(fixture_home))
     env.update(
         UV_NO_INDEX="true",
         UV_NO_CONFIG="true",

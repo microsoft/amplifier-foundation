@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from filelock import AsyncFileLock
 
 from amplifier_foundation.paths.resolution import ResolvedSource, parse_uri
+from amplifier_foundation.sources.git import _with_longpaths
 
 
 async def complete_io(function, *args, **kwargs):
@@ -59,13 +60,22 @@ def clean_checkout(root):
     root = Path(root)
     if not (root / ".git").is_dir() or (root / ".git").is_symlink():
         return False  # Linked worktrees can refer to a mutable external Git dir.
+    # Commit-addressed roots can exceed MAX_PATH even for Git object reads.
     dirty = subprocess.check_output(
-        ["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=no"],
+        _with_longpaths(
+            [
+                "git",
+                "--no-optional-locks",
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ]
+        ),
         cwd=root,
         text=True,
     )
     extras = subprocess.check_output(
-        ["git", "ls-files", "--others", "-z"], cwd=root
+        _with_longpaths(["git", "ls-files", "--others", "-z"]), cwd=root
     ).split(b"\0")
     extras = [name for name in extras if name and name != b".amplifier_cache_meta.json"]
     return not dirty and not extras
@@ -92,7 +102,7 @@ class SharedSourceStore:
         ):
             raise ValueError("Shared source identity changed")
         actual = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=target, text=True
+            _with_longpaths(["git", "rev-parse", "HEAD"]), cwd=target, text=True
         ).strip()
         if actual != revision or not clean_checkout(target):
             raise ValueError("Shared source contents changed")
@@ -136,16 +146,20 @@ class SharedSourceStore:
                         },
                     )
                     actual = subprocess.check_output(
-                        ["git", "rev-parse", "HEAD"], cwd=stage, text=True
+                        _with_longpaths(["git", "rev-parse", "HEAD"]),
+                        cwd=stage,
+                        text=True,
                     ).strip()
                     dirty = subprocess.check_output(
-                        [
-                            "git",
-                            "--no-optional-locks",
-                            "status",
-                            "--porcelain",
-                            "--untracked-files=no",
-                        ],
+                        _with_longpaths(
+                            [
+                                "git",
+                                "--no-optional-locks",
+                                "status",
+                                "--porcelain",
+                                "--untracked-files=no",
+                            ]
+                        ),
                         cwd=stage,
                         text=True,
                     )
