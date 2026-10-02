@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-02",
+  "distribution": "amplifier-recall",
+  "consumer": {
+    "module": "amplifier_recall",
+    "python": "3.13.16",
+    "nativeRuntimeInstalled": false,
+    "importCreatedState": false
+  },
+  "tests": {
+    "collected": 6,
+    "passed": 6,
+    "skipped": 0,
+    "execution": "libraries/qualify.py recall; installed wheel, isolated Python 3.13.16 consumer; no Core/Foundation/Unified"
+  },
+  "artifacts": [
+    {
+      "name": ".gitignore",
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+    },
+    {
+      "name": "amplifier_recall-0.1.0-py3-none-any.whl",
+      "sha256": "0403b4358330f6986d74cfa9e4667e771c2ea42f18dacdbf56d26c20d154ac55"
+    },
+    {
+      "name": "amplifier_recall-0.1.0.tar.gz",
+      "sha256": "54dcf34bd56cfa6a5ac57d193d3be878ddf08625b0f20fae816764dfa2d54af7"
+    }
+  ],
+  "limits": [
+    "Host/native/browser integration remains separate.",
+    "Legacy source index remains preserved but requires explicit scoped re-ingestion."
+  ]
+}
