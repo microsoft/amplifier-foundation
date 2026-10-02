@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
+import os
 import platform
 import site
 import subprocess
@@ -74,7 +76,7 @@ class BundlePackageInstallError(BundleError):
 
 
 def bundle_root_declares_module(
-    bundle_path: Path, module_sources: Iterable[str]
+    bundle_path: Path, module_sources: Iterable[str], *, cache_dir: Path | None = None
 ) -> bool:
     """Does at least one declared module ``source`` resolve INSIDE ``bundle_path``?
 
@@ -109,6 +111,14 @@ def bundle_root_declares_module(
     except OSError:
         return False
     git_handler = None
+    shared_url = None
+    if cache_dir is not None and os.environ.get("AMPLIFIER_SOURCE_STORE"):
+        try:
+            shared_url = json.loads(
+                (root / ".amplifier_cache_meta.json").read_text()
+            ).get("git_url")
+        except (OSError, ValueError):
+            pass
     for source in module_sources:
         if not isinstance(source, str) or not source:
             continue
@@ -119,6 +129,26 @@ def bundle_root_declares_module(
             logger.debug(f"Ignoring unparseable module source {source!r}: {exc}")
             continue
         if parsed.is_git:
+            # Shared objects use commit-addressed paths, not legacy cache names.
+            # Follow this preparation's binding; matching the repository alone
+            # could install a root from a different pinned revision.
+            store_root = os.environ.get("AMPLIFIER_SOURCE_STORE")
+            if store_root and cache_dir is not None and shared_url:
+                from amplifier_foundation.sources.git import GitSourceHandler
+                from amplifier_foundation.sources.shared import (
+                    SharedSourceStore,
+                    source_id,
+                )
+
+                try:
+                    url = GitSourceHandler()._build_git_url(parsed)
+                    if source_id(url, "") != source_id(shared_url, ""):
+                        continue
+                    cached = SharedSourceStore(store_root).cached(source, cache_dir)
+                    if cached is not None and cached.resolve() == root:
+                        return True
+                except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                    pass  # Unknown provenance is not permission to install a root.
             if git_handler is None:
                 from amplifier_foundation.sources.git import GitSourceHandler
 
@@ -391,7 +421,7 @@ class ModuleActivator:
         # that ships a skills-only behavior has a [project] table for the
         # application. Only install when a declared module actually lives here.
         if module_sources is not None and not bundle_root_declares_module(
-            bundle_path, module_sources
+            bundle_path, module_sources, cache_dir=self.cache_dir
         ):
             logger.info(
                 f"Skipping root package install for bundle at {bundle_path}: none of the "

@@ -10,12 +10,31 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
 import tomllib
 from contextlib import ExitStack
 from pathlib import Path
+
+
+def requirement_name(line):
+    """Identify named requirements and local directory entries from uv export."""
+    from urllib.parse import unquote, urlsplit
+
+    value = line.strip().removeprefix("-e ").strip()
+    if value.startswith("file:"):
+        parsed = urlsplit(value.split(" ; ", 1)[0])
+        try:
+            metadata = tomllib.loads(
+                (Path(unquote(parsed.path)) / "pyproject.toml").read_text()
+            )
+            return package_name(metadata.get("project", {}).get("name", ""))
+        except (OSError, ValueError):
+            return None  # Preserve unknown policy for the resolver to reject.
+    match = re.match(r"^([A-Za-z0-9_.-]+)", value)
+    return package_name(match[1]) if match else None
 
 
 def package_name(value):
@@ -147,8 +166,7 @@ class DependencyBatch:
                 stack.enter_context(locks[identity])
             if activator.install_overrides:
                 for line in Path(activator.install_overrides).read_text().splitlines():
-                    match = re.match(r"^([A-Za-z0-9_.-]+)", line.strip())
-                    if not match or package_name(match[1]) not in self.names:
+                    if requirement_name(line) not in self.names:
                         overrides.append(line)
             for source in sorted(self.sources):
                 if (source / "pyproject.toml").exists():
@@ -167,7 +185,15 @@ class DependencyBatch:
                 policy = Path(directory) / "overrides.txt"
                 policy.write_text("\n".join(overrides) + "\n")
                 cmd.extend(["--overrides", str(policy)])
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            environment = dict(os.environ)
+            # The explicit policy above incorporates the caller's overrides.
+            # uv combines UV_OVERRIDE with --overrides; inheriting the original
+            # file would reintroduce superseded URLs for selected root packages.
+            if activator.install_overrides:
+                environment.pop("UV_OVERRIDE", None)
+            subprocess.run(
+                cmd, check=True, capture_output=True, text=True, env=environment
+            )
         # Only successful whole-batch resolution establishes install evidence.
         for source, owner in self.sources.items():
             owner._install_state.mark_installed(source)

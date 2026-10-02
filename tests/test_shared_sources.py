@@ -214,3 +214,31 @@ async def test_shared_status_reads_binding_without_clone_or_mutation(
     assert (await store.resolve(uri, cache)).source_root == store.checkout(
         "https://example.invalid/repo", revision
     )
+
+
+@pytest.mark.asyncio
+async def test_bundle_root_package_recognition_uses_generation_binding(
+    tmp_path, monkeypatch, repository
+):
+    from amplifier_foundation.modules.activator import bundle_root_declares_module
+
+    repo, revision = repository
+    store = SharedSourceStore(tmp_path / "store")
+    monkeypatch.setenv("AMPLIFIER_SOURCE_STORE", str(store.root))
+    cache = tmp_path / "generation/cache"
+    url = "https://example.invalid/repo"
+    root = await store.bind(cache, url, "main", revision, existing=repo)
+    module = "git+" + url + "@main#subdirectory=modules/example"
+    assert bundle_root_declares_module(root, [module], cache_dir=cache)
+    assert not bundle_root_declares_module(
+        root, [module.replace("@main", "@other")], cache_dir=cache
+    )
+    assert not bundle_root_declares_module(
+        root, [module.replace("/repo@", "/unrelated@")], cache_dir=cache
+    )
+    (repo / "bundle.md").write_text("changed")
+    git(repo, "commit", "-am", "next")
+    second = git(repo, "rev-parse", "HEAD")
+    newer = await store.bind(cache, url, "main", second, existing=repo)
+    assert bundle_root_declares_module(newer, [module], cache_dir=cache)
+    assert not bundle_root_declares_module(root, [module], cache_dir=cache)

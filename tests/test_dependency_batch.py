@@ -203,3 +203,31 @@ async def test_sibling_build_views_materialize_before_shared_lock(
         batch.add(owner(), package(tmp_path, name))
     assert (await batch.install())["resolverTransactions"] == 1
     assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_selected_source_replaces_bare_file_policy_without_reinheriting_it(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    old = package(tmp_path, "old")
+    selected = package(tmp_path, "new")
+    (selected / "pyproject.toml").write_text((old / "pyproject.toml").read_text())
+    policy = tmp_path / "overrides.txt"
+    policy.write_text(old.as_uri() + "\nother==1\n")
+    module = owner()
+    module.install_overrides = policy
+    monkeypatch.setenv("UV_OVERRIDE", str(policy))
+    batch = DependencyBatch()
+    batch.add(module, selected)
+
+    def install(command, **kwargs):
+        actual = Path(command[command.index("--overrides") + 1]).read_text()
+        assert old.as_uri() not in actual
+        assert selected.as_uri() in actual
+        assert "other==1" in actual
+        assert "UV_OVERRIDE" not in kwargs["env"]
+
+    monkeypatch.setattr(subprocess, "run", install)
+    await batch.install()
