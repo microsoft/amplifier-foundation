@@ -236,19 +236,15 @@ class TestVerifyModuleType:
         """
         import types
 
-        from amplifier_core.interfaces import Provider, Tool
         from amplifier_foundation.grpc_adapter.__main__ import _verify_module_type  # type: ignore[import-not-found]
 
         module_obj = types.SimpleNamespace()
         module_obj.mount = lambda coordinator, config: None  # type: ignore[attr-defined]
 
-        # Explicitly verify this object is NOT a Tool or Provider instance
-        assert not isinstance(module_obj, Tool), (
-            "Test setup: SimpleNamespace must not satisfy Tool protocol"
-        )
-        assert not isinstance(module_obj, Provider), (
-            "Test setup: SimpleNamespace must not satisfy Provider protocol"
-        )
+        # Core interfaces are typing-only protocols, not runtime-checkable.
+        # This namespace lacks either instance contract; only mount is present.
+        assert not hasattr(module_obj, "execute")
+        assert not hasattr(module_obj, "complete")
 
         # Should NOT raise — structural conformance (callable mount) is the v1 check
         _verify_module_type(module_obj, "tool")
