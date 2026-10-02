@@ -1,0 +1,6 @@
+{
+  "sourceRepository": "https://github.com/microsoft/amplifier-unified",
+  "originalExtraction": "See library README provenance",
+  "localQualifiedCommit": "a75c9cbc43844e53f8737912b8f5d46778032c53",
+  "landing": "Foundation optional library; package API unchanged; no base Foundation dependency or eager import added."
+}

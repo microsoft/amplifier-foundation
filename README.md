@@ -9,6 +9,7 @@ Foundation provides:
 - **Shared session history** - CLI-compatible transcripts and metadata with optional Context Intelligence activity enrichment
 - **Session ownership** - POSIX-local exclusive root-session locking
 - **Reference Content** - Reusable providers, agents, behaviors, and context files
+- **Optional application libraries** - Independently installed scheduling, operations, worktrees, and Recall mechanisms; see [`libraries/`](libraries/README.md). These are not loaded by the base Foundation package.
 
 ## Quick Start
 
