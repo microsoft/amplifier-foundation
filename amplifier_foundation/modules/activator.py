@@ -409,6 +409,14 @@ class ModuleActivator:
         with open(pyproject, "rb") as f:
             pyproject_data = tomllib.load(f)
 
+        # Bundle repositories can declare project/dev dependencies while
+        # explicitly opting out of packaging (their modules are separate
+        # distributions). Installing such a root asks setuptools to discover
+        # context/skills directories as packages and breaks batch preparation.
+        if pyproject_data.get("tool", {}).get("uv", {}).get("package") is False:
+            logger.debug("Skipping bundle root explicitly declared non-package")
+            return
+
         if "project" not in pyproject_data and "build-system" not in pyproject_data:
             logger.debug(
                 f"pyproject.toml at {bundle_path} has no [project] or [build-system], "
