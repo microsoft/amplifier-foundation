@@ -41,7 +41,7 @@ def test_partial_source_is_invisible_until_verified_complete_and_survives_reopen
     try:
         store.replace(source(),'old','old',[message(text='Original cobalt statement.')])
         token=store.begin_source(source(),'new','new')
-        store.append_source(token,[message('a','New violet source.')])
+        store.append_source(token,[{**message('a','New violet source.'),'authorization':'unverified-native-history'}])
         store.close();store=RecallStore(path)
         assert store.search_scope('cobalt')['items']
         assert not store.search_scope('violet')['items']
@@ -55,6 +55,7 @@ def test_partial_source_is_invisible_until_verified_complete_and_survives_reopen
         plan=store.db.execute('EXPLAIN QUERY PLAN SELECT text FROM documents WHERE source=? AND generation=? AND identity=?',('one',token,'a')).fetchall()
         assert any('INDEX' in row[-1] for row in plan)
         assert store.message('one','a',limit=3)['nextOffset']==3
+        assert store.message('one','a')['authorization']=='unverified-native-history'
     finally:store.close()
 
 
