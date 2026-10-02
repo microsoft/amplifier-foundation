@@ -137,7 +137,7 @@ class RecallStore:
                 identity = row.get('id')
                 if not isinstance(identity, str) or not identity:
                     raise ValueError('Every paged source record needs a stable identity')
-                metadata = {key: copy.deepcopy(row[key]) for key in ('role','via','createdAt','inputOrigin','questionId','scheduledRunId','sourceKind','recordId','recordRevision') if key in row}
+                metadata = {key: copy.deepcopy(row[key]) for key in ('role','via','createdAt','inputOrigin','authorization','questionId','scheduledRunId','sourceKind','recordId','recordRevision') if key in row}
                 metadata.update(messageId=identity,sha256=hashlib.sha256(row['text'].encode()).hexdigest())
                 metadata.setdefault('sourceKind','message')
                 self.db.execute('INSERT INTO documents(source,generation,identity,text,metadata) VALUES(?,?,?,?,?) ON CONFLICT(source,generation,identity) DO UPDATE SET text=excluded.text,metadata=excluded.metadata', (sid,token,identity,row['text'],json.dumps(metadata)))
