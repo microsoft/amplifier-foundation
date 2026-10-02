@@ -369,6 +369,7 @@ class PreparedBundle:
     mode_warnings: list[str] = field(default_factory=list)
     module_exports: dict[str, list[str]] = field(default_factory=dict)
     provider_preparation_failures: tuple[ProviderPreparationFailure, ...] = ()
+    dependency_batch: Any = field(default=None, repr=False, compare=False)
 
     def _build_bundles_for_resolver(self, bundle: "Bundle") -> dict[str, "Bundle"]:
         """Build bundle registry for mention resolution.
@@ -621,6 +622,8 @@ class PreparedBundle:
             async with prepared.create_session() as session:
                 response = await session.execute("Hello!")
         """
+        if self.dependency_batch is not None and not self.dependency_batch.installed:
+            raise RuntimeError('Install the dependency batch before creating sessions')
         # Subscribe foundation-owned event names that are emitted by
         # amplifier-core but not in the Rust kernel's ALL_EVENTS list.
         # Idempotent and a no-op if no subscriber hooks are configured.

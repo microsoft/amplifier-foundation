@@ -165,6 +165,7 @@ class ModuleActivator:
         *,
         refresh_dependencies: bool = False,
         install_overrides: Path | None = None,
+        dependency_batch=None,
     ) -> None:
         """Initialize module activator.
 
@@ -200,6 +201,7 @@ class ModuleActivator:
         self.install_constraints = install_constraints
         self.refresh_dependencies = refresh_dependencies
         self.install_overrides = install_overrides
+        self.dependency_batch = dependency_batch
         self._resolver = SimpleSourceResolver(
             cache_dir=self.cache_dir, base_path=base_path
         )
@@ -575,6 +577,9 @@ class ModuleActivator:
         progress_callback: Callable[[str, str], None] | None = None,
         force: bool = False,
     ) -> None:
+        if self.dependency_batch is not None:
+            self.dependency_batch.add(self, module_path)
+            return
         from .preparation import PreparationReceipt
 
         receipt = PreparationReceipt(self, module_path)
