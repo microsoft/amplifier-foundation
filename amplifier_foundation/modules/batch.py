@@ -130,9 +130,21 @@ class DependencyBatch:
         # local inputs; immutable commit-addressed inputs reuse their artifacts.
         if activator.install_constraints:
             cmd.extend(["--constraints", str(activator.install_constraints)])
+        # build_view itself takes the repository lock. Materialize every view
+        # before holding build locks; sibling modules can share one repository.
+        views = {
+            source: build_view(source)
+            for source in sorted(self.sources)
+            if (source / "pyproject.toml").exists()
+        }
+        locks = {}
+        for path, _ in views.values():
+            lock = build_lock(path)
+            locks.setdefault(getattr(lock, "lock_file", str(path)), lock)
         with ExitStack() as stack:
             overrides = []
-            locks = set()
+            for identity in sorted(locks):
+                stack.enter_context(locks[identity])
             if activator.install_overrides:
                 for line in Path(activator.install_overrides).read_text().splitlines():
                     match = re.match(r"^([A-Za-z0-9_.-]+)", line.strip())
@@ -140,12 +152,7 @@ class DependencyBatch:
                         overrides.append(line)
             for source in sorted(self.sources):
                 if (source / "pyproject.toml").exists():
-                    path, immutable = build_view(source)
-                    lock = build_lock(path)
-                    identity = getattr(lock, "lock_file", str(path))
-                    if identity not in locks:
-                        stack.enter_context(lock)
-                        locks.add(identity)
+                    path, immutable = views[source]
                     cmd.extend(([] if immutable else ["-e"]) + [str(path)])
                     metadata = tomllib.loads((source / "pyproject.toml").read_text())
                     name = metadata.get("project", {}).get("name")
@@ -156,12 +163,10 @@ class DependencyBatch:
                 elif (source / "requirements.txt").exists():
                     cmd.extend(["-r", str(source / "requirements.txt")])
             if overrides:
-                handle = stack.enter_context(
-                    tempfile.NamedTemporaryFile(mode="w", suffix=".txt")
-                )
-                handle.write("\n".join(overrides) + "\n")
-                handle.flush()
-                cmd.extend(["--overrides", handle.name])
+                directory = stack.enter_context(tempfile.TemporaryDirectory())
+                policy = Path(directory) / "overrides.txt"
+                policy.write_text("\n".join(overrides) + "\n")
+                cmd.extend(["--overrides", str(policy)])
             subprocess.run(cmd, check=True, capture_output=True, text=True)
         # Only successful whole-batch resolution establishes install evidence.
         for source, owner in self.sources.items():

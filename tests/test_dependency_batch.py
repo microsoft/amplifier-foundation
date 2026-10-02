@@ -174,3 +174,32 @@ async def test_concurrent_callers_share_install_and_cancellation_joins(
     assert calls == ["install"] and batch.installed
     with pytest.raises(RuntimeError):
         batch.add(owner(), tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_sibling_build_views_materialize_before_shared_lock(
+    tmp_path, monkeypatch
+):
+    from filelock import FileLock
+
+    from amplifier_foundation.sources import shared
+
+    lockfile = str(tmp_path / "repository.lock")
+    seen = []
+
+    def view(source):
+        # This reproduces build_view's own lock acquisition for each sibling.
+        with FileLock(lockfile, timeout=0):
+            seen.append(source)
+        return source, True
+
+    monkeypatch.setattr(shared, "build_view", view)
+    monkeypatch.setattr(
+        shared, "build_lock", lambda source: FileLock(lockfile, timeout=0)
+    )
+    monkeypatch.setattr(subprocess, "run", Mock())
+    batch = DependencyBatch()
+    for name in ("sibling-a", "sibling-b"):
+        batch.add(owner(), package(tmp_path, name))
+    assert (await batch.install())["resolverTransactions"] == 1
+    assert len(seen) == 2
