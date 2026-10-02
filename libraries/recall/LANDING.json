@@ -1,0 +1,19 @@
+{
+  "sourceRepository": "https://github.com/microsoft/amplifier-unified",
+  "originalExtraction": {
+    "sourceRepository": "https://github.com/microsoft/amplifier-unified",
+    "sourceRevision": "95e96851b799b2e63c44344d69457ca044572c45",
+    "files": {
+      "amplifier_recall/store.py": "d8e18df67f84f47d86359f9d15a184a1a6faaf4fb67f85bcae83e73c44e15c37",
+      "amplifier_recall/__init__.py": "3cdf8988875076c89e82c77e1b7e56410cfcb92fde3f9014210f48211cb873f1",
+      "amplifier_recall/personalization.py": "082befc446abffa322d10f5e9b1b8efec790058b384af4f1a3b3e22e2efdef28",
+      "tests/test_recall.py": "699e8898a04ff0d3702d67eeea91e6c275d3dc1ebf4bf9fe931ac8b8ced1c77d"
+    },
+    "testSelection": [
+      "test_fts_ranks_entire_5000_conversation_library_and_isolates_scopes"
+    ],
+    "boundary": "Extracted library; application integration cases remain in distribution acceptance, not replaced with skips."
+  },
+  "localQualifiedCommit": "e4902cd3b76d4869cdb9fedfdd01418b60a1b8ee",
+  "landing": "Foundation optional library; package API unchanged; no base Foundation dependency or eager import added."
+}

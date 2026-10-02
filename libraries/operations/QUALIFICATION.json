@@ -1,0 +1,40 @@
+{
+  "library": "operations",
+  "consumer": {
+    "module": "amplifier_operations",
+    "python": "3.13.11",
+    "nativeRuntimeInstalled": false,
+    "importCreatedState": false
+  },
+  "tests": {
+    "exitCode": 0,
+    "log": "tests.log",
+    "passed": 6,
+    "skipped": 0
+  },
+  "artifacts": [
+    {
+      "name": ".gitignore",
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+    },
+    {
+      "name": "amplifier_operations-0.1.0-py3-none-any.whl",
+      "sha256": "a5c84ec1fe065e3ef7d660c4cd533a6f1e0165c9744dcdccc517ecea1d9942e4"
+    },
+    {
+      "name": "amplifier_operations-0.1.0.tar.gz",
+      "sha256": "e8bed17086620cd1ba6b23c9aa0cb149e827e8921f37712e0cb039eeb31b45c8"
+    }
+  ],
+  "date": "2026-10-02",
+  "landing": {
+    "sourceRepository": "https://github.com/microsoft/amplifier-unified",
+    "originalExtraction": "See library README provenance",
+    "localQualifiedCommit": "51fdedb32c53c2e0b6fc8181f3f254c1be201b50",
+    "landing": "Foundation optional library; package API unchanged; no base Foundation dependency or eager import added."
+  },
+  "limits": [
+    "Installed library contracts on macOS arm64 Python3.13.11. Linux/Python3.11 CI configured but not run here.",
+    "No publication, native runtime, host adoption or end-user acceptance claimed."
+  ]
+}

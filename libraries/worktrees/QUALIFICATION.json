@@ -1,0 +1,59 @@
+{
+  "library": "worktrees",
+  "consumer": {
+    "module": "amplifier_worktrees",
+    "python": "3.13.11",
+    "nativeRuntimeInstalled": false,
+    "importCreatedState": false
+  },
+  "tests": {
+    "exitCode": 0,
+    "log": "tests.log",
+    "passed": 5,
+    "skipped": 0
+  },
+  "artifacts": [
+    {
+      "name": ".gitignore",
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+    },
+    {
+      "name": "amplifier_worktrees-0.1.0-py3-none-any.whl",
+      "sha256": "9bd83e4aba66462c550bd9d08962d64e5c0f15d44603c622aaad827f9604dd16"
+    },
+    {
+      "name": "amplifier_worktrees-0.1.0.tar.gz",
+      "sha256": "396dc9650928b0f36b46595eac53531b4ab62c27e8172ea093c610c3e97d2435"
+    }
+  ],
+  "date": "2026-10-02",
+  "landing": {
+    "sourceRepository": "https://github.com/microsoft/amplifier-unified",
+    "originalExtraction": {
+      "sourceRepository": "https://github.com/microsoft/amplifier-unified",
+      "sourceRevision": "95e96851b799b2e63c44344d69457ca044572c45",
+      "files": {
+        "amplifier_worktrees/git.py": "bba6a19eef067409dd0bdb37a3f23eb8a475a3baf03572c05ee10c4ea0d67d06",
+        "amplifier_worktrees/__init__.py": "f20ae179647e8e5fbdb298242127ce3715b70f20fc1beb31d56282365f5874d2",
+        "amplifier_worktrees/README.md": "ec187cacc40b9b09ec14218172f563f16870441fd83fbc2c7964b8e82b3dcc1b",
+        "tests/test_worktrees.py": "051bb5a306d6d99708b7235e6139bc58216d58677bb621db41811d178cddc029"
+      },
+      "testSelection": [
+        "repository",
+        "create",
+        "test_clean_and_explicit_dirty_copies_preserve_source_index_and_manifest",
+        "test_stale_branch_conflict_and_attached_ownership",
+        "test_unmerged_index_refuses_carry_and_source_stays_intact",
+        "test_unsupported_index_flags_and_nested_storage_preserve_originals",
+        "test_cleanup_keeps_detached_commits_until_they_have_a_retained_ref"
+      ],
+      "boundary": "Extracted library; application integration cases remain in distribution acceptance, not replaced with skips."
+    },
+    "localQualifiedCommit": "0797683312b13f8891ae75f3e172cd740d553fa1",
+    "landing": "Foundation optional library; package API unchanged; no base Foundation dependency or eager import added."
+  },
+  "limits": [
+    "Installed library contracts on macOS arm64 Python3.13.11. Linux/Python3.11 CI configured but not run here.",
+    "No publication, native runtime, host adoption or end-user acceptance claimed."
+  ]
+}

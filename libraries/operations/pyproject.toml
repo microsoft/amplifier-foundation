@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "amplifier-operations"
+version = "0.1.0"
+description = "Native-independent durable operations primitives"
+requires-python = ">=3.11"
+license = "MIT"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/amplifier_operations"]
+
+[dependency-groups]
+dev = ["pytest>=8"]

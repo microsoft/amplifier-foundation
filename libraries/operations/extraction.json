@@ -1,0 +1,9 @@
+{
+  "sourceRepository": "microsoft/amplifier-unified",
+  "sourceRevision": "828d2bff97a77fbdbd0f06429369f7ff1f4abf42",
+  "sourcePaths": [
+    "amplifier_operations"
+  ],
+  "license": "MIT",
+  "extractionDate": "2026-10-02"
+}
