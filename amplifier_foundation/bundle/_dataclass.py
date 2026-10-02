@@ -337,6 +337,7 @@ class Bundle:
         refresh_dependencies: bool = False,
         install_overrides: Path | None = None,
         provider_failure_policy: ProviderFailurePolicy | None = None,
+        dependency_batch=None,
     ) -> PreparedBundle:
         """Prepare bundle for execution by activating all modules.
 
@@ -380,6 +381,10 @@ class Bundle:
                 Provider entries remain in the plan, with failed sources blocked
                 in the prepared resolver. Non-provider strictness and bundle
                 package failures are unchanged. Not a routing fallback policy.
+            dependency_batch: Optional DependencyBatch for isolated preparation.
+                Collect dependencies across multiple bundles, then call its
+                install() once before creating any session. Ordinary callers
+                retain immediate installation and their existing policy.
 
         Returns:
             PreparedBundle with mount_plan and create_session() helper.
@@ -421,6 +426,7 @@ class Bundle:
             strict=strict,
             refresh_dependencies=refresh_dependencies,
             install_overrides=install_overrides,
+            dependency_batch=dependency_batch,
         )
 
         # Only explicit host policy opts providers out of strict aggregate
@@ -470,7 +476,13 @@ class Bundle:
         # Without this, spawned agent sessions fail silently when their
         # orchestrator/provider/tool modules aren't in the resolver's paths.
         agents_section = mount_plan.get("agents", {})
-        for _agent_name, agent_def in agents_section.items():
+        def agent_declarations(values):
+            for name, definition in values.items():
+                yield name, definition
+                if dependency_batch is not None and isinstance(definition, dict):
+                    yield from agent_declarations(definition.get("agents", {}))
+
+        for _agent_name, agent_def in agent_declarations(agents_section):
             if not isinstance(agent_def, dict):
                 continue
 
@@ -594,6 +606,7 @@ class Bundle:
             mount_plan=mount_plan,
             resolver=resolver,
             bundle=self,
+            dependency_batch=dependency_batch,
             bundle_package_paths=bundle_package_paths,
             mode_warnings=mode_warnings,
             module_exports=module_exports,

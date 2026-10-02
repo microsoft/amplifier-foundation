@@ -113,6 +113,23 @@ class TestBundleRootDeclaresModule:
 
 class TestActivateBundlePackage:
     @pytest.mark.asyncio
+    async def test_non_package_root_with_separate_modules_is_not_installed(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        root = _write_root(tmp_path / "bundle")
+        project = root / "pyproject.toml"
+        project.write_text(project.read_text() + '\n[tool.uv]\npackage = false\n')
+        act = _activator(tmp_path)
+        install = AsyncMock()
+        monkeypatch.setattr(act, "_install_dependencies", install)
+
+        await act.activate_bundle_package(
+            root, module_sources=[str(root / "modules" / "tool-example")]
+        )
+
+        install.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_app_repo_shape_skips_install_entirely(
         self, tmp_path: Path, monkeypatch
     ) -> None:

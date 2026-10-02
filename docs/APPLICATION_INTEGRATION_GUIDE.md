@@ -144,6 +144,39 @@ the same `refresh_dependencies` and `install_overrides` options, alongside its
 existing `install_python` and `install_constraints` arguments for hosts that
 manage activation directly. Neither API updates generation pointers or locks.
 
+**Collect compatible profiles before installing their dependencies.** Hosts
+preparing several offered bundles can avoid repeating the resolver for every
+profile. Use one batch in a fresh candidate interpreter:
+
+```python
+from amplifier_foundation.modules.batch import DependencyBatch
+
+batch = DependencyBatch()
+for bundle in offered_bundles:
+    await bundle.prepare(
+        strict=True,
+        refresh_dependencies=True,
+        dependency_batch=batch,
+        install_overrides=qualified_overrides_path,
+        cache_dir=staged_module_cache,
+    )
+receipt = await batch.install()
+```
+
+Collection does not install packages or permit sessions to mount. `install()`
+resolves the union in one transaction, including bundle packages and nested
+agent declarations. It deduplicates selected paths and rejects two selected
+sources for the same distribution or inconsistent interpreter/install policies.
+Incompatible profiles need separate candidate environments; no source is chosen
+silently. The selected local distributions override their transitive URL
+references while the remaining explicit install policy is retained. Immutable
+source revisions reuse built artifacts without a blanket cache refresh.
+
+Freeze the resulting environment, then validate profiles in fresh processes
+using ordinary `prepare(install_deps=False)` and normal session mounting. Do not
+reuse the collection resolver for later lazy activation. CLI callers that omit
+`dependency_batch` keep their existing preparation behavior.
+
 **`session_cwd` is critical for non-CLI apps.** Without it, file-system tools see the server's working directory, not the user's project or workspace. Always pass it explicitly when creating sessions for web or API applications.
 
 **Composition replaces configuration.** Want different behavior for different environments, users, or modes? Don't toggle flags — compose a different bundle overlay.
