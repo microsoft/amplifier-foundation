@@ -21,14 +21,27 @@ from pathlib import Path
 
 def requirement_name(line):
     """Identify named requirements and local directory entries from uv export."""
-    from urllib.parse import unquote, urlsplit
+    from urllib.parse import urlsplit
+    from urllib.request import url2pathname
 
     value = line.strip().removeprefix("-e ").strip()
     if value.startswith("file:"):
         parsed = urlsplit(value.split(" ; ", 1)[0])
         try:
             metadata = tomllib.loads(
-                (Path(unquote(parsed.path)) / "pyproject.toml").read_text()
+                (
+                    Path(
+                        url2pathname(
+                            (
+                                "//" + parsed.netloc
+                                if parsed.netloc and parsed.netloc != "localhost"
+                                else ""
+                            )
+                            + parsed.path
+                        )
+                    )
+                    / "pyproject.toml"
+                ).read_text()
             )
             return package_name(metadata.get("project", {}).get("name", ""))
         except (OSError, ValueError):
