@@ -53,6 +53,28 @@ class ScheduleStore:
 
     def close(self): self.db.close()
 
+    def command_receipt(self, session_id, command_id):
+        """Read one original committed result without consulting current schedule state.
+
+        Absence is not permission to retry: a caller may still be in flight or
+        have lost its upstream admission response. No builder or scheduler runs.
+        """
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 200:
+            raise ValueError('A bounded session identity is required')
+        if not isinstance(command_id, str) or not command_id or len(command_id) > 200:
+            raise ValueError('A bounded command identity is required')
+        row = self.db.execute('''SELECT CASE WHEN length(CAST(result AS BLOB))<=393216 THEN result ELSE NULL END,
+                length(CAST(result AS BLOB)) FROM schedule_commands
+            WHERE id=? AND (json_extract(result,'$.schedule.sessionId')=?
+                OR json_extract(result,'$.run.sessionId')=?
+                OR json_extract(result,'$.run.destinationSessionId')=?)''',
+            (command_id, session_id, session_id, session_id)).fetchone()
+        if row is None:
+            return None
+        if row[1] > 384 * 1024:
+            raise ValueError('Saved command receipt exceeds the bounded representation; retained on disk')
+        return {'commandId': command_id, 'status': 'committed', 'result': json.loads(row[0])}
+
     def list(self, session_id=None):
         rows = self.db.execute('SELECT value FROM schedules' + (' WHERE session_id=?' if session_id else ''), (session_id,) if session_id else ())
         return [json.loads(row[0]) for row in rows]
