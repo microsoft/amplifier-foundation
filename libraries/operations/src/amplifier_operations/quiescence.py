@@ -103,7 +103,9 @@ class DurableIntakeFence:
             if row and json.loads(row[0])==receipt:return {'released':True,'intakeClosed':False}
             raise ValueError('No exact retained owner release receipt')
         if self.fence!=context:raise ValueError('Owner release does not identify the current fence')
-        if outcome=='unknown':return {'released':False,'intakeClosed':True}
+        if outcome=='unknown':
+            self._live_fence=None
+            return {'released':False,'intakeClosed':True}
         known=outcome=='unchanged' and proof=={'kind':'admission-refused'}
         if known and context['purpose'] == 'service-stop' and self._live_fence != context:
             raise ValueError('Service admission rollback requires its exact newly acquired live lease')

@@ -175,3 +175,24 @@ def test_service_partial_acquisition_rollback_is_same_live_lease_only(tmp_path):
         assert gate.release({**next_context, 'outcome': 'unchanged', 'proof': candidate})['released']
     finally:
         gate.close()
+
+
+@pytest.mark.parametrize('reopen', [False, True])
+def test_unknown_service_outcome_permanently_retires_live_rollback(tmp_path, reopen):
+    path = tmp_path / 'gate.sqlite3'
+    gate = DurableIntakeFence(path)
+    gate.acquire(SERVICE)
+    assert gate.release({**SERVICE, 'outcome': 'unknown'})['intakeClosed']
+    if reopen:
+        gate.close()
+        gate = DurableIntakeFence(path)
+    try:
+        assert gate.acquire(SERVICE)['acquired']
+        with pytest.raises(ValueError, match='newly acquired live lease'):
+            gate.release({**SERVICE, 'outcome': 'unchanged',
+                          'proof': {'kind': 'admission-refused'}})
+        assert gate.fence == SERVICE
+        assert gate.release({**SERVICE, 'outcome': 'unchanged',
+                             'proof': service_proof('unchanged')})['released']
+    finally:
+        gate.close()
