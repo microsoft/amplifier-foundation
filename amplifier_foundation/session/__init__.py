@@ -157,6 +157,7 @@ from .shared_state import (
     HeldTransfer,
     SessionBusyError,
     SessionTransferFencedError,
+    SharedSessionIdentity,
     SharedSessionStore,
     file_stamp,
 )
@@ -235,6 +236,7 @@ __all__ = [
     "SessionBusyError",
     "SessionTransferFencedError",
     "SharedSessionStore",
+    "SharedSessionIdentity",
     "HeldSession",
     "HeldTransfer",
 ]

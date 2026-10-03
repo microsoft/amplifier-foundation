@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, TypedDict, cast
 
 try:  # Fail loudly on platforms without the locking primitive.
     import fcntl
@@ -35,6 +35,14 @@ _MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
 _PROCESS_LOCKS: set[str] = set()
 _PROCESS_LOCKS_GUARD = threading.RLock()
 _LOCK_FDS: set[int] = set()
+
+
+class SharedSessionIdentity(TypedDict):
+    """Retainable canonical address, not a permission or execution capability."""
+
+    version: Literal[1]
+    workspace: str
+    sessionId: str
 
 
 @dataclass(frozen=True)
@@ -106,6 +114,23 @@ def _canonical_workspace(workspace: str | os.PathLike[str]) -> Path:
     if not canonical.is_dir():
         raise ValueError("workspace must be a directory")
     return canonical
+
+
+def _retained_workspace(workspace: object) -> Path:
+    """Validate an already-canonical address without requiring its directory."""
+    if not isinstance(workspace, str) or not 1 <= len(workspace) <= 4096 or "\x00" in workspace:
+        raise ValueError("retained workspace must be a bounded canonical absolute path")
+    path = Path(workspace)
+    try:
+        # The comparison rejects traversal, alternate spellings, and a new
+        # symlink in any surviving ancestor. No directory is created here.
+        if (not path.is_absolute() or str(path) != workspace
+                or path.resolve(strict=False) != path
+                or (path.exists() and not path.is_dir())):
+            raise ValueError("retained workspace must remain a canonical directory address")
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("retained workspace is not a resolvable canonical address") from exc
+    return path
 
 
 def _session_id(session_id: str) -> str:
@@ -414,7 +439,10 @@ class SharedSessionStore:
     """Address and coordinate one portable checkpoint for a workspace/session ID."""
 
     def __init__(self, workspace: str | os.PathLike[str], session_id: str, *, root: str | os.PathLike[str] | None = None) -> None:
-        self.workspace = _canonical_workspace(workspace)
+        self._configure(_canonical_workspace(workspace), session_id, root=root)
+
+    def _configure(self, workspace: Path, session_id: str, *, root: str | os.PathLike[str] | None) -> None:
+        self.workspace = workspace
         self.session_id = _session_id(session_id)
         self.root = Path(root).expanduser() if root is not None else _default_root()
         self._directory = self.root / "v1" / _workspace_key(self.workspace) / self.session_id
@@ -422,6 +450,35 @@ class SharedSessionStore:
         slug = str(self.workspace).replace("/", "-").replace("\\", "-").replace(":", "")
         self._native_root = home
         self._native_directory = home / "projects" / (slug if slug.startswith("-") else "-" + slug) / "sessions" / self.session_id
+
+    def identity(self) -> SharedSessionIdentity:
+        """Export this canonical address for application-owned historical use.
+
+        The normal constructor verifies an existing directory. Applications may
+        retain this descriptor before retiring that directory. They must verify
+        its provenance and their own operation authority before reusing it.
+        State root and native home remain explicit deployment configuration.
+        """
+        return {"version": 1, "workspace": str(self.workspace), "sessionId": self.session_id}
+
+    @classmethod
+    def from_identity(cls, identity: SharedSessionIdentity, *, root: str | os.PathLike[str] | None = None) -> "SharedSessionStore":
+        """Reopen a verified historical address without recreating its workspace.
+
+        This is an address mechanism, not proof that a caller owns a session or
+        may execute it. The application must authenticate its retained identity
+        and keep the original state-root/native-home configuration. All normal
+        checkpoint ownership, OS lock, and native transfer-fence checks remain
+        in force. The ordinary constructor and ``list_ids`` remain strict.
+        """
+        if (not isinstance(identity, dict) or set(identity) != {"version", "workspace", "sessionId"}
+                or type(identity["version"]) is not int or identity["version"] != 1):
+            raise ValueError("retained session identity has an unsupported schema")
+        workspace = _retained_workspace(identity["workspace"])
+        session_id = _session_id(identity["sessionId"])
+        store = cls.__new__(cls)
+        store._configure(workspace, session_id, root=root)
+        return store
 
     @property
     def transfer_fence_path(self) -> Path:
