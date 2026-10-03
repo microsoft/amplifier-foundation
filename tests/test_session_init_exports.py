@@ -1,6 +1,6 @@
 """Tests for amplifier_foundation.session __init__.py exports.
 
-Verifies that all 38 public symbols are importable directly from the
+Verifies that the public symbols are importable directly from the
 top-level session package after the __init__.py update.
 """
 
@@ -113,12 +113,12 @@ class TestFinderExports:
 class TestDunderAll:
     """Verify the public session utility names."""
 
-    def test_all_contains_62_names(self):
+    def test_all_contains_63_names(self):
         import amplifier_foundation.session as session
 
         assert hasattr(session, "__all__"), "__all__ must be defined"
-        assert len(session.__all__) == 62, (
-            f"Expected 62 names in __all__, got {len(session.__all__)}: "
+        assert len(session.__all__) == 63, (
+            f"Expected 63 names in __all__, got {len(session.__all__)}: "
             f"{sorted(session.__all__)}"
         )
 
@@ -160,6 +160,7 @@ class TestDunderAll:
             "file_stamp",
             "SessionBusyError",
             "SharedSessionStore",
+            "SharedSessionIdentity",
             "HeldSession",
             "HeldTransfer",
             "SessionTransferFencedError",
