@@ -1,0 +1,22 @@
+{
+  "library": "operations",
+  "date": "2026-10-02",
+  "mechanism": "DurableIntakeFence",
+  "installedConsumer": {
+    "python": [
+      "3.11",
+      "3.13"
+    ],
+    "tests": 16,
+    "skipped": 0,
+    "nativeRuntimeRequired": false
+  },
+  "artifact": {
+    "name": "amplifier_operations-0.1.0-py3-none-any.whl",
+    "sha256": "4810e3bf88bcb65f04f1e7c572da743006a3e00ca544851b9615f9819bbb0fbb"
+  },
+  "limits": [
+    "Caller must provide exclusive owner lifetime, active work accounting and authenticated proof.",
+    "No application, host, remote work, deployment or browser acceptance claimed."
+  ]
+}
