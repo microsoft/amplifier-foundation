@@ -1,0 +1,30 @@
+{
+  "library": "operations",
+  "mechanism": "DurableIntakeFence service-stop version1",
+  "upstreamBase": "211f2fcc",
+  "installedConsumer": {
+    "python": [
+      "3.11.14",
+      "3.13.11"
+    ],
+    "testsEach": 37,
+    "skipped": 0,
+    "nativeRuntimeRequired": false
+  },
+  "artifact": {
+    "name": "amplifier_operations-0.1.0-py3-none-any.whl",
+    "sha256": "34354d22c0be9365c0d58394178c44639e9315f4222ff0baf2fe3838b20a8471"
+  },
+  "coverage": [
+    "Complete service identity retained across restart",
+    "Cross-installation/owner/scope/release and legacy proof refusal",
+    "Exact full release proof and changed-proof retry refusal",
+    "Same-live-acquisition-only pre-effect service rollback",
+    "Existing generic-purpose contracts unchanged"
+  ],
+  "limits": [
+    "Caller owns exclusive lifetime, effect accounting, platform exit/readiness authentication and aggregate admission.",
+    "Library performs no signals, startup, native maintenance or deployment.",
+    "Full host all-owner service composition remains separately qualified."
+  ]
+}
