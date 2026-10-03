@@ -1,26 +1,27 @@
 {
   "library": "operations",
   "mechanism": "DurableIntakeFence service-stop version1",
-  "upstreamBase": "211f2fcc",
+  "upstreamBase": "c356c96967958d8d45fb6c1130c6cc0f13f1f9fc",
   "installedConsumer": {
     "python": [
       "3.11.14",
       "3.13.11"
     ],
-    "testsEach": 37,
+    "testsEach": 39,
     "skipped": 0,
     "nativeRuntimeRequired": false
   },
   "artifact": {
     "name": "amplifier_operations-0.1.0-py3-none-any.whl",
-    "sha256": "34354d22c0be9365c0d58394178c44639e9315f4222ff0baf2fe3838b20a8471"
+    "sha256": "676708bccd4564ef93c7121a231f8fe945023694c5e1fb2842f6d6a048329265"
   },
   "coverage": [
     "Complete service identity retained across restart",
     "Cross-installation/owner/scope/release and legacy proof refusal",
     "Exact full release proof and changed-proof retry refusal",
     "Same-live-acquisition-only pre-effect service rollback",
-    "Existing generic-purpose contracts unchanged"
+    "Existing generic-purpose contracts unchanged",
+    "Unknown outcome retires live rollback permanently; reacquire and restart never restore it"
   ],
   "limits": [
     "Caller owns exclusive lifetime, effect accounting, platform exit/readiness authentication and aggregate admission.",

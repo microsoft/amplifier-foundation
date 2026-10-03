@@ -54,7 +54,9 @@ receipt cannot silently pass an exact retry after restart.
 
 Pre-effect `admission-refused` can unwind a service lease only if that same
 `DurableIntakeFence` instance newly acquired it. Reopening a stored fence or
-calling `acquire` on an existing fence does not gain rollback authority. A
+calling `acquire` on an existing fence does not gain rollback authority. Reporting
+`outcome: "unknown"` permanently retires that live rollback authority, including
+within the original process. A
 recovered held fence requires the full authenticated service proof. Repeating an
 already completed exact release is a read of its durable receipt.
 
