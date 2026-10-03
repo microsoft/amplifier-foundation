@@ -27,3 +27,37 @@ Consumers decide which reads are passive and which jobs belong to their owner.
 The mechanism supplies neither application authorization nor an idle proof for
 external/native/remote work. Its `calls` and `background` counters are process-local
 and require the caller's exclusive lifetime lock; durable fences remain on disk.
+
+
+### Optional persistent service lifecycle
+
+`DurableIntakeFence.SERVICE_STOP_VERSION == 1` declares additive support for
+`purpose: "service-stop"`. A consumer must check this marker before advertising a
+service-stop participant. Older installed libraries are unavailable for this
+purpose; composition must not stamp them as supported.
+
+A service context additionally requires `serviceIdentity` containing exactly
+`installationId`, `dataScope`, `ownerId`, `instanceId`, and `releaseDigest` bounded
+strings. Its instance and data scope must equal the enclosing context. The entire
+identity is copied into the durable fence. Other existing purpose values retain
+their previous behavior.
+
+Service release requires trusted proof with `kind: "service-lifecycle"`, exact
+`expected` and `observed` identities, and all ordinary fence/command/scope/instance
+bindings. `outcome: "ready"` also requires `serviceOutcome: "resumed"`, a distinct
+observed instance, and `resumeCommandId`, `exitReceiptId`, `readyReceiptId`.
+`outcome: "unchanged"` requires `serviceOutcome: "stop-refused"`, identical
+identities, and `refusalReceiptId`. Installation, owner, release and data scope
+cannot change. A generic update/recovery proof never releases a service fence.
+The complete accepted service proof is retained: a changed exit/readiness/refusal
+receipt cannot silently pass an exact retry after restart.
+
+Pre-effect `admission-refused` can unwind a service lease only if that same
+`DurableIntakeFence` instance newly acquired it. Reopening a stored fence or
+calling `acquire` on an existing fence does not gain rollback authority. A
+recovered held fence requires the full authenticated service proof. Repeating an
+already completed exact release is a read of its durable receipt.
+
+The library does not authenticate proof, observe process exit, signal processes,
+launch replacements, or grant maintenance/native-admin permission. These remain
+caller responsibilities; no PID or missing endpoint is considered evidence.
