@@ -1,5 +1,41 @@
 # Amplifier Operations
 
+## Purpose and public contract
+
+This package owns operation journals, admitted input receipts, output cursors,
+coordination delivery and durable intake-fence records. It follows Foundation's
+[mechanism, not policy](../../README.md#philosophy) design and
+[optional package boundary](../README.md). Applications install it independently
+and select storage explicitly. Amplifier Unified is a consumer, not the authority
+for this generic API.
+
+Public mechanisms are [`OperationJournal`](src/amplifier_operations/journal.py),
+[`OperationRequests`](src/amplifier_operations/requests.py),
+[`coordination`](src/amplifier_operations/coordination.py), and
+[`DurableIntakeFence`](src/amplifier_operations/quiescence.py). Callers supply
+scoped operation events, actor/argument identities, cursor requests and trusted
+lifecycle proofs. Returned records distinguish committed, refused and unknown
+outcomes; output bounds expose truncation/gaps rather than inventing delivery.
+The library validates proof bindings but does not authenticate the coordinator.
+Process ownership, effect accounting, execution, permissions, UI and stop/restart
+orchestration remain caller responsibilities. It grants no native writer lease.
+
+## Contract acceptance
+
+Run an explicit Python 3.11 or 3.13 interpreter from the Foundation checkout:
+`python libraries/qualify.py operations --output /owned/qualification/path`.
+The [installed-consumer harness](../qualify.py) builds wheel/sdist, installs the
+wheel separately, checks runtime isolation and import state, and runs
+[journal/cursor](tests/test_journal.py), [unknown admission](tests/test_requests.py)
+and [durable lifecycle proof](tests/test_quiescence.py) checks. Public contract
+changes also require declared consumer compatibility checks.
+[Provenance](extraction.json), [landing](LANDING.json),
+[original qualification](QUALIFICATION.json),
+[intake-fence qualification](QUALIFICATION-QUIESCENCE.json) and
+[service-stop qualification](QUALIFICATION-SERVICE-STOP.json) retain their exact
+artifact scopes. They do not establish platform process observation, full host
+coverage, browser/account acceptance or deployment.
+
 Independent Python library extracted from Amplifier Unified. Standard-library runtime; no client, model, Amplifier runtime or host application imports. See extraction.json for provenance.
 
 Run `uv sync` and `uv run pytest`. Durable SQLite receipts preserve uncertainty and never replay work. Applications own authentication, admission, execution and user presentation.

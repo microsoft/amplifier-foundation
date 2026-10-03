@@ -1,5 +1,35 @@
 # Managed Git worktrees
 
+## Purpose and public contract
+
+This package owns reusable Git checkout lifecycle and retained source/ownership
+evidence. It follows Foundation's [mechanism, not policy](../../README.md#philosophy)
+design and [optional package boundary](../README.md), with independent installation
+and explicit managed storage. Amplifier Unified is one consumer; its task and
+handoff policy does not define this library's generic contract.
+
+[`GitWorktrees`](src/amplifier_worktrees/git.py) accepts a source checkout, exact
+inspected revision, stable command identity and an explicit clean/dirty-copy mode.
+It returns checkout records, immutable source evidence and status; stale revisions
+or unsafe cleanup refuse. Imported/attached paths do not gain deletion ownership.
+Partial and unknown attempts remain inspectable without automatic retry. Session
+handoff, active-work guards, permissions and cleanup intent remain caller-owned.
+This library is neither a runtime supervisor nor a repository synchronization service.
+
+## Contract acceptance entry point
+
+Run an explicit Python 3.11 or 3.13 interpreter from the Foundation checkout:
+`python libraries/qualify.py worktrees --output /owned/qualification/path`.
+The [installed-consumer harness](../qualify.py) builds wheel/sdist, installs the
+wheel separately and checks import state/runtime isolation before running
+[checkout preservation and ownership tests](tests/test_worktrees_library.py).
+They cover clean/dirty copies, stale-source/branch conflicts, unmerged or unsupported
+indexes, external storage and detached-commit retention. Public API changes also
+require declared handoff/portability consumer compatibility checks.
+[Landing](LANDING.json) and [qualification](QUALIFICATION.json) preserve historical
+revision/artifact scopes. OS/Git/filesystem variants, actual handoff, browser/account
+and deployment acceptance need their own receipts.
+
 A small reusable Git library for inspect/create/attach/status/remove. It accepts
 bounded argv and never invokes a shell. Repository hooks and external diff
 helpers are disabled. A file lock in the common Git directory serializes

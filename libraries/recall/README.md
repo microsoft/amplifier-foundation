@@ -1,5 +1,34 @@
 # Amplifier Recall
 
+## Purpose and public contract
+
+This package owns a derived search index and versioned memory records, separate
+from canonical native history. It follows Foundation's
+[mechanism, not policy](../../README.md#philosophy) design and
+[optional package boundary](../README.md): caller-selected storage and independent
+installation. Amplifier Unified is a consumer, not the authority for generic
+consent, personalization or indexing behavior.
+
+[`RecallStore`](src/amplifier_recall/store.py) accepts explicitly authorized source
+metadata, stable record identities, revisions and bounded source batches. It
+returns scoped search/message pages, staged-generation results, memory versions
+and durable mutation receipts. Publication requires the expected source revision;
+interrupted staging does not replace the committed index. Search scope never grants
+authorization: callers must recheck current visibility before exposing results.
+Source discovery, canonical transcript mutation, models, background consolidation,
+consent, budgets and retention decisions remain outside this mechanism.
+
+## Contract acceptance entry point
+
+Use the standalone qualification command below with an explicit Python 3.11 or
+3.13 interpreter. The [installed-consumer harness](../qualify.py) verifies independent
+wheel imports and runs [native-history preservation](tests/test_recall_library.py)
+and [scoped index/version contracts](tests/test_scoped_recall.py). Public behavior
+changes also require declared consumer authorization/visibility compatibility
+checks. [Provenance](PROVENANCE.json), [landing](LANDING.json) and
+[qualification](QUALIFICATION.json) retain exact historical scopes; they are not
+current host, browser, account or deployment acceptance.
+
 Optional, standalone derived search and versioned record storage. Install `amplifier-recall` independently; importing Foundation does not import or install it. Callers supply authorized source records and storage paths. No agent runtime, model, catalog scan, consent policy, or background worker is started.
 
 ## Bounded indexing and reads
