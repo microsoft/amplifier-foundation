@@ -3,6 +3,7 @@ import copy
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -18,51 +19,121 @@ def digest(value):
 
 class RecallStore:
     def __init__(self, path, *, retain_versions=None, max_text_characters=None):
-        path = Path(path)
+        path = Path(path).absolute()
         if retain_versions is not None and (isinstance(retain_versions, bool) or not isinstance(retain_versions, int) or retain_versions < 1):
             raise ValueError('retain_versions must be a positive explicit policy or None')
         if max_text_characters is not None and (isinstance(max_text_characters, bool) or not isinstance(max_text_characters, int) or max_text_characters < 1):
             raise ValueError('max_text_characters must be a positive explicit policy or None')
         self.retain_versions, self.max_text_characters = retain_versions, max_text_characters
         self.lock = threading.RLock()
-        self.db = sqlite3.connect(path, check_same_thread=False)
-        path.chmod(0o600)
-        self.db.execute('PRAGMA journal_mode=WAL')
-        self.db.execute('PRAGMA secure_delete=ON')
-        self.db.executescript('''
-          CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, signature TEXT, revision TEXT, value TEXT);
-          CREATE VIRTUAL TABLE IF NOT EXISTS messages USING fts5(text, session_id UNINDEXED, identity UNINDEXED, metadata UNINDEXED, tokenize='unicode61');
-          CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, scope TEXT, target TEXT, revision INTEGER, value TEXT);
-          CREATE TABLE IF NOT EXISTS memory_versions(id TEXT, revision INTEGER, value TEXT, PRIMARY KEY(id,revision));
-          CREATE TABLE IF NOT EXISTS memory_receipts(id TEXT PRIMARY KEY, fingerprint TEXT, result TEXT);
-          CREATE INDEX IF NOT EXISTS memories_scope ON memories(scope,target,id);
-          CREATE TABLE IF NOT EXISTS recall_meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
-          INSERT OR IGNORE INTO recall_meta VALUES('revision',0);
-          CREATE TABLE IF NOT EXISTS staged_sources(token TEXT PRIMARY KEY,source TEXT NOT NULL,signature TEXT,revision TEXT,metadata TEXT,created REAL NOT NULL,base_generation TEXT);
-          CREATE INDEX IF NOT EXISTS staged_by_source ON staged_sources(source);
-          CREATE TABLE IF NOT EXISTS documents(rowid INTEGER PRIMARY KEY,source TEXT NOT NULL,generation TEXT NOT NULL,identity TEXT NOT NULL,text TEXT NOT NULL,metadata TEXT NOT NULL,UNIQUE(source,generation,identity));
-          CREATE INDEX IF NOT EXISTS documents_generation ON documents(generation,rowid);
-          CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(text,content='documents',content_rowid='rowid',tokenize='unicode61');
-          CREATE TRIGGER IF NOT EXISTS documents_insert AFTER INSERT ON documents BEGIN
-            INSERT INTO documents_fts(rowid,text) VALUES(new.rowid,new.text);
-          END;
-          CREATE TRIGGER IF NOT EXISTS documents_delete AFTER DELETE ON documents BEGIN
-            INSERT INTO documents_fts(documents_fts,rowid,text) VALUES('delete',old.rowid,old.text);
-          END;
-          CREATE TRIGGER IF NOT EXISTS documents_update AFTER UPDATE ON documents BEGIN
-            INSERT INTO documents_fts(documents_fts,rowid,text) VALUES('delete',old.rowid,old.text);
-            INSERT INTO documents_fts(rowid,text) VALUES(new.rowid,new.text);
-          END;
-        ''')
-        columns = {row[1] for row in self.db.execute('PRAGMA table_info(sources)')}
-        for name, sql in (('workspace', 'TEXT'), ('kind', 'TEXT'), ('parent', 'TEXT'), ('generation', 'TEXT'), ('available', 'INTEGER NOT NULL DEFAULT 1')):
-            if name not in columns:
-                self.db.execute('ALTER TABLE sources ADD COLUMN '+name+' '+sql)
-        self.db.execute('CREATE INDEX IF NOT EXISTS sources_scope ON sources(workspace,available,kind,id)')
-        self.db.execute('CREATE INDEX IF NOT EXISTS sources_available ON sources(available,id)')
-        if 'base_generation' not in {row[1] for row in self.db.execute('PRAGMA table_info(staged_sources)')}:
-            self.db.execute('ALTER TABLE staged_sources ADD COLUMN base_generation TEXT')
-        self.db.commit()
+        # Callers serialize initialization within their owned store partition.
+        new = not os.path.lexists(path)
+        if new and any(os.path.lexists(str(path) + suffix)
+                       for suffix in ('-wal', '-shm', '-journal')):
+            raise ValueError('Recall store has retained sidecars without its main database')
+        legacy = False
+        if not new:
+            # WAL-aware read-only validation cannot checkpoint authority on
+            # refusal. immutable=1 is unsuitable because it ignores crash WAL.
+            reader = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+            try:
+                legacy = self._validate_memory_profile(reader)
+            finally:
+                reader.close()
+        else:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+        self.db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True,
+                                  check_same_thread=False)
+        try:
+            if new or legacy:
+                self.db.executescript("""CREATE TABLE memories(id TEXT PRIMARY KEY,scope TEXT,target TEXT,revision INTEGER,value TEXT);
+                  CREATE TABLE memory_versions(id TEXT,revision INTEGER,value TEXT,PRIMARY KEY(id,revision));
+                  CREATE TABLE memory_receipts(id TEXT PRIMARY KEY,fingerprint TEXT,result TEXT);""")
+            path.chmod(0o600)
+            self.db.execute('PRAGMA journal_mode=WAL')
+            self.db.execute('PRAGMA secure_delete=ON')
+            self.db.executescript('''
+              CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, signature TEXT, revision TEXT, value TEXT);
+              CREATE VIRTUAL TABLE IF NOT EXISTS messages USING fts5(text, session_id UNINDEXED, identity UNINDEXED, metadata UNINDEXED, tokenize='unicode61');
+              CREATE INDEX IF NOT EXISTS memories_scope ON memories(scope,target,id);
+              CREATE TABLE IF NOT EXISTS recall_meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
+              INSERT OR IGNORE INTO recall_meta VALUES('revision',0);
+              CREATE TABLE IF NOT EXISTS staged_sources(token TEXT PRIMARY KEY,source TEXT NOT NULL,signature TEXT,revision TEXT,metadata TEXT,created REAL NOT NULL,base_generation TEXT);
+              CREATE INDEX IF NOT EXISTS staged_by_source ON staged_sources(source);
+              CREATE TABLE IF NOT EXISTS documents(rowid INTEGER PRIMARY KEY,source TEXT NOT NULL,generation TEXT NOT NULL,identity TEXT NOT NULL,text TEXT NOT NULL,metadata TEXT NOT NULL,UNIQUE(source,generation,identity));
+              CREATE INDEX IF NOT EXISTS documents_generation ON documents(generation,rowid);
+              CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(text,content='documents',content_rowid='rowid',tokenize='unicode61');
+              CREATE TRIGGER IF NOT EXISTS documents_insert AFTER INSERT ON documents BEGIN
+                INSERT INTO documents_fts(rowid,text) VALUES(new.rowid,new.text);
+              END;
+              CREATE TRIGGER IF NOT EXISTS documents_delete AFTER DELETE ON documents BEGIN
+                INSERT INTO documents_fts(documents_fts,rowid,text) VALUES('delete',old.rowid,old.text);
+              END;
+              CREATE TRIGGER IF NOT EXISTS documents_update AFTER UPDATE ON documents BEGIN
+                INSERT INTO documents_fts(documents_fts,rowid,text) VALUES('delete',old.rowid,old.text);
+                INSERT INTO documents_fts(rowid,text) VALUES(new.rowid,new.text);
+              END;
+            ''')
+            columns = {row[1] for row in self.db.execute('PRAGMA table_info(sources)')}
+            for name, sql in (('workspace', 'TEXT'), ('kind', 'TEXT'), ('parent', 'TEXT'), ('generation', 'TEXT'), ('available', 'INTEGER NOT NULL DEFAULT 1')):
+                if name not in columns:
+                    self.db.execute('ALTER TABLE sources ADD COLUMN '+name+' '+sql)
+            self.db.execute('CREATE INDEX IF NOT EXISTS sources_scope ON sources(workspace,available,kind,id)')
+            self.db.execute('CREATE INDEX IF NOT EXISTS sources_available ON sources(available,id)')
+            if 'base_generation' not in {row[1] for row in self.db.execute('PRAGMA table_info(staged_sources)')}:
+                self.db.execute('ALTER TABLE staged_sources ADD COLUMN base_generation TEXT')
+            self.db.commit()
+
+        except BaseException:
+            self.db.close()
+            raise
+
+    @staticmethod
+    def _validate_memory_profile(db):
+        expected = {
+            'memories': {'id': ('TEXT', 1), 'scope': ('TEXT', 0),
+                         'target': ('TEXT', 0), 'revision': ('INTEGER', 0),
+                         'value': ('TEXT', 0)},
+            'memory_versions': {'id': ('TEXT', 1), 'revision': ('INTEGER', 2),
+                                'value': ('TEXT', 0)},
+            'memory_receipts': {'id': ('TEXT', 1), 'fingerprint': ('TEXT', 0),
+                                'result': ('TEXT', 0)},
+        }
+        present = dict(db.execute("SELECT name,type FROM sqlite_master WHERE name IN ('memories','memory_versions','memory_receipts')"))
+        if not present and RecallStore._legacy_search_profile(db):
+            return True
+        for table, columns in expected.items():
+            actual = {row[1]: (row[2].upper(), row[5])
+                      for row in db.execute('PRAGMA table_info(' + table + ')')}
+            if present.get(table) != 'table' or any(actual.get(name) != definition
+                                                  for name, definition in columns.items()):
+                raise ValueError('Existing Recall store is missing memory authority schema')
+            db.execute('SELECT ' + ','.join(columns) + ' FROM ' + table + ' LIMIT 0')
+        return False
+
+    @staticmethod
+    def _legacy_search_profile(db):
+        # The supported historical search-only profile predates memory tables
+        # and modern source generations. Metadata only: never scan source rows.
+        names = ('sources', 'sqlite_autoindex_sources_1', 'messages',
+                 'messages_data', 'messages_idx', 'messages_content',
+                 'messages_docsize', 'messages_config')
+        marks = ','.join('?' for _ in names)
+        if db.execute('SELECT 1 FROM sqlite_master WHERE name NOT IN (' + marks + ') LIMIT 1', names).fetchone():
+            return False
+        tables = dict(db.execute('SELECT name,type FROM sqlite_master WHERE name IN (' + marks + ')', names))
+        if any(tables.get(name) != 'table' for name in names if name != 'sqlite_autoindex_sources_1'):
+            return False
+        source = {row[1]: (row[2].upper(), row[5]) for row in db.execute('PRAGMA table_info(sources)')}
+        if source != {'id': ('TEXT', 1), 'signature': ('TEXT', 0),
+                      'revision': ('TEXT', 0), 'value': ('TEXT', 0)}:
+            return False
+        message = {row[1]: (row[2], row[5]) for row in db.execute('PRAGMA table_info(messages)')}
+        if message != {name: ('', 0) for name in ('text', 'session_id', 'identity', 'metadata')}:
+            return False
+        sql = db.execute("SELECT sql FROM sqlite_master WHERE name='messages'").fetchone()[0]
+        return bool(re.search(r'\bUSING\s+fts5\s*\(', sql, re.IGNORECASE))
 
     def close(self):
         with self.lock:
