@@ -10,5 +10,14 @@ workspace conventions), see amplifier-module-resolution.
 
 from amplifier_foundation.modules.activator import ModuleActivationError
 from amplifier_foundation.modules.activator import ModuleActivator
+from amplifier_foundation.modules.install_policy import (
+    DependencyInstallationDenied,
+    dependency_installation_policy,
+)
 
-__all__ = ["ModuleActivator", "ModuleActivationError"]
+__all__ = [
+    "ModuleActivator",
+    "ModuleActivationError",
+    "DependencyInstallationDenied",
+    "dependency_installation_policy",
+]
