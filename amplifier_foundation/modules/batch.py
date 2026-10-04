@@ -60,6 +60,9 @@ class DependencyConflict(ValueError):
 
 class DependencyBatch:
     def __init__(self):
+        from .install_policy import installation_allowed
+
+        self._dependency_installation_allowed = installation_allowed()
         self.sources = {}
         self.names = {}
         self.policy = None
@@ -68,6 +71,9 @@ class DependencyBatch:
         self._install_task = None
 
     def add(self, activator, source):
+        from .install_policy import installation_allowed
+
+        self._dependency_installation_allowed &= installation_allowed()
         if self.installed or self._install_task is not None:
             raise RuntimeError(
                 "An installing or completed dependency batch cannot be extended"
@@ -141,6 +147,16 @@ class DependencyBatch:
 
     def _install(self):
         from amplifier_foundation.sources.shared import build_lock, build_view
+        from .install_policy import assert_installation_allowed
+
+        # Check before creating build views or resolver inputs, then again at
+        # the installer boundary. Retain each activator's preparation policy.
+        for owner in self.sources.values():
+            assert_installation_allowed(
+                owner.install_python,
+                captured_allowed=self._dependency_installation_allowed
+                and getattr(owner, "_dependency_installation_allowed", True),
+            )
 
         # One transaction resolves the full requirement set. Never reinstall
         # each profile in sequence: it makes cost scale with workspace count and
@@ -204,6 +220,11 @@ class DependencyBatch:
             # file would reintroduce superseded URLs for selected root packages.
             if activator.install_overrides:
                 environment.pop("UV_OVERRIDE", None)
+            assert_installation_allowed(
+                activator.install_python,
+                captured_allowed=self._dependency_installation_allowed
+                and getattr(activator, "_dependency_installation_allowed", True),
+            )
             subprocess.run(
                 cmd, check=True, capture_output=True, text=True, env=environment
             )

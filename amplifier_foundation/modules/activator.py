@@ -24,6 +24,10 @@ from pathlib import Path
 
 from amplifier_foundation.exceptions import BundleError
 from amplifier_foundation.modules.install_state import InstallStateManager
+from amplifier_foundation.modules.install_policy import (
+    assert_installation_allowed,
+    installation_allowed,
+)
 from amplifier_foundation.paths.resolution import get_amplifier_home, parse_uri
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
 
@@ -224,6 +228,7 @@ class ModuleActivator:
         """
         self.cache_dir = cache_dir or get_amplifier_home() / "cache"
         self.install_deps = install_deps
+        self._dependency_installation_allowed = installation_allowed()
         self.strict = strict
         self.install_python = (
             install_python if install_python is not None else sys.executable
@@ -737,6 +742,10 @@ class ModuleActivator:
         if pyproject.exists():
             from amplifier_foundation.sources.shared import build_lock, build_view
 
+            assert_installation_allowed(
+                self.install_python,
+                captured_allowed=self._dependency_installation_allowed,
+            )
             install_path, immutable = await asyncio.to_thread(build_view, module_path)
             # Shared source trees are read-only. Build wheels from a private
             # writable input; never create an editable installation on them.
@@ -794,6 +803,10 @@ class ModuleActivator:
                 # Holding this across uv prevents concurrent build backends
                 # from modifying the same writable source view.
                 with build_lock(install_path):
+                    assert_installation_allowed(
+                        self.install_python,
+                        captured_allowed=self._dependency_installation_allowed,
+                    )
                     subprocess.run(cmd, check=True, capture_output=True, text=True)
                 # Mark as installed after successful install
                 self._install_state.mark_installed(module_path)
@@ -818,6 +831,10 @@ class ModuleActivator:
                     Path(overrides_file.name).unlink(missing_ok=True)
         elif requirements.exists():
             try:
+                assert_installation_allowed(
+                    self.install_python,
+                    captured_allowed=self._dependency_installation_allowed,
+                )
                 cmd = [
                     "uv",
                     "pip",
