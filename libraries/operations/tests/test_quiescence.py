@@ -196,3 +196,179 @@ def test_unknown_service_outcome_permanently_retires_live_rollback(tmp_path, reo
                              'proof': service_proof('unchanged')})['released']
     finally:
         gate.close()
+
+
+# Startup must preserve existing authority instead of manufacturing empty state.
+import hashlib
+import json
+import sqlite3
+import subprocess
+import sys
+
+
+def authority_hashes(path):
+    return {suffix: hashlib.sha256(Path(str(path) + suffix).read_bytes()).hexdigest()
+            for suffix in ('', '-wal')
+            if Path(str(path) + suffix).exists() and Path(str(path) + suffix).stat().st_size}
+
+
+@pytest.mark.parametrize('tables', [('fence',), ('releases',), ('fence', 'releases')])
+@pytest.mark.parametrize('profile', ['generic-held', 'generic-released', 'service-held', 'service-released'])
+def test_existing_missing_authority_never_reinitializes(tmp_path, tables, profile):
+    path = tmp_path / 'intake.sqlite'
+    context = SERVICE if profile.startswith('service') else CONTEXT
+    gate = DurableIntakeFence(path)
+    gate.acquire(context)
+    if profile.endswith('released'):
+        receipt = service_proof('unchanged') if profile.startswith('service') else proof()
+        gate.release({**context, 'outcome': 'unchanged', 'proof': receipt})
+    gate.close()
+    with sqlite3.connect(path) as db:
+        for table in tables:
+            db.execute('DROP TABLE ' + table)
+    before = authority_hashes(path)
+    with pytest.raises(ValueError, match='authority schema'):
+        DurableIntakeFence(path)
+    assert authority_hashes(path) == before
+    with sqlite3.connect(path) as db:
+        names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert not names.intersection(tables)
+
+
+@pytest.mark.parametrize('suffix', ['-wal', '-shm', '-journal'])
+@pytest.mark.parametrize('content', [b'', b'uncertain retained authority'])
+def test_absent_main_with_any_sidecar_is_not_new(tmp_path, suffix, content):
+    path = tmp_path / 'intake.sqlite'
+    sidecar = Path(str(path) + suffix)
+    sidecar.write_bytes(content)
+    with pytest.raises(ValueError, match='retained sidecars'):
+        DurableIntakeFence(path)
+    assert not path.exists()
+    assert sidecar.read_bytes() == content
+
+
+def test_existing_empty_database_is_not_new(tmp_path):
+    path = tmp_path / 'intake.sqlite'
+    path.touch()
+    with pytest.raises(ValueError, match='authority schema'):
+        DurableIntakeFence(path)
+    assert path.read_bytes() == b''
+
+
+def crash_left_store(path, *, drop=()):
+    # Real process exit leaves committed WAL in place without connection.close.
+    program = """import json,os,sys
+from amplifier_operations.quiescence import DurableIntakeFence
+store=DurableIntakeFence(sys.argv[1]); store.acquire(json.loads(sys.argv[2]))
+with store.db:
+    for table in json.loads(sys.argv[3]): store.db.execute('DROP TABLE '+table)
+os._exit(0)
+"""
+    subprocess.run([sys.executable, '-I', '-B', '-c', program,
+                    str(path), json.dumps(CONTEXT),
+                    json.dumps(drop)], check=True)
+    assert Path(str(path) + '-wal').stat().st_size > 0
+
+
+@pytest.mark.parametrize('tables', [('fence',), ('releases',), ('fence', 'releases')])
+def test_readonly_refusal_preserves_crash_main_and_nonempty_wal(tmp_path, tables):
+    path = tmp_path / 'intake.sqlite'
+    crash_left_store(path, drop=tables)
+    before = authority_hashes(path)
+    assert set(before) == {'', '-wal'}
+    with pytest.raises(ValueError, match='authority schema'):
+        DurableIntakeFence(path)
+    assert authority_hashes(path) == before
+
+
+def test_valid_crash_wal_recovers_held_fence(tmp_path):
+    path = tmp_path / 'intake.sqlite'
+    crash_left_store(path)
+    gate = DurableIntakeFence(path)
+    try:
+        assert gate.fence == CONTEXT
+        assert gate.release({**CONTEXT, 'outcome': 'unknown'})['intakeClosed']
+    finally:
+        gate.close()
+
+
+def test_missing_main_preserves_actual_crash_wal(tmp_path):
+    path = tmp_path / 'intake.sqlite'
+    crash_left_store(path)
+    path.unlink()
+    before = authority_hashes(path)
+    with pytest.raises(ValueError, match='retained sidecars'):
+        DurableIntakeFence(path)
+    assert not path.exists()
+    assert authority_hashes(path) == before
+
+
+def test_legacy_two_table_schema_remains_compatible(tmp_path):
+    path = tmp_path / 'legacy.sqlite'
+    with sqlite3.connect(path) as db:
+        db.executescript("""CREATE TABLE fence(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
+        CREATE TABLE releases(fence TEXT PRIMARY KEY,value TEXT NOT NULL);""")
+    gate = DurableIntakeFence(path)
+    try:
+        assert gate.acquire(CONTEXT)['acquired']
+        assert gate.release({**CONTEXT, 'outcome': 'unchanged', 'proof': proof()})['released']
+    finally:
+        gate.close()
+
+
+@pytest.mark.parametrize('replacement', [
+    'CREATE TABLE fence(id INTEGER PRIMARY KEY CHECK(id=1),wrong TEXT NOT NULL)',
+    'CREATE VIEW fence AS SELECT 1 AS id, NULL AS value',
+])
+def test_existing_invalid_authority_shape_refuses_without_write(tmp_path, replacement):
+    path = tmp_path / 'intake.sqlite'
+    gate = DurableIntakeFence(path)
+    gate.close()
+    with sqlite3.connect(path) as db:
+        db.execute('DROP TABLE fence')
+        db.execute(replacement)
+    before = authority_hashes(path)
+    with pytest.raises(ValueError, match='authority schema'):
+        DurableIntakeFence(path)
+    assert authority_hashes(path) == before
+
+
+def test_schema_refusal_opens_only_readonly_and_closes_reader(tmp_path, monkeypatch):
+    path = tmp_path / 'intake.sqlite'
+    gate = DurableIntakeFence(path)
+    gate.close()
+    with sqlite3.connect(path) as db:
+        db.execute('DROP TABLE fence')
+    connect = sqlite3.connect
+    connections = []
+    def tracked(database, **kwargs):
+        assert str(database).endswith('?mode=ro')
+        connection = connect(database, **kwargs)
+        connections.append(connection)
+        return connection
+    monkeypatch.setattr(sqlite3, 'connect', tracked)
+    with pytest.raises(ValueError, match='authority schema'):
+        DurableIntakeFence(path)
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+        connections[0].execute('SELECT 1')
+
+
+def test_writer_failure_closes_connection_and_retains_new_file(tmp_path, monkeypatch):
+    path = tmp_path / 'intake.sqlite'
+    connect = sqlite3.connect
+    connections = []
+    def tracked(database, **kwargs):
+        connection = connect(database, **kwargs)
+        connections.append(connection)
+        return connection
+    def refuse_chmod(self, mode):
+        raise PermissionError('inert fixture permission refusal')
+    monkeypatch.setattr(sqlite3, 'connect', tracked)
+    monkeypatch.setattr(Path, 'chmod', refuse_chmod)
+    with pytest.raises(PermissionError):
+        DurableIntakeFence(path)
+    assert path.exists()
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+        connections[0].execute('SELECT 1')
