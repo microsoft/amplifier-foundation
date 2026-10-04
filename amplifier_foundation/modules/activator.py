@@ -30,6 +30,7 @@ from amplifier_foundation.modules.install_policy import (
 )
 from amplifier_foundation.paths.resolution import get_amplifier_home, parse_uri
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
+from amplifier_foundation.sources.policy import check_prepared_source, source_resolution_restricted
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +400,7 @@ class ModuleActivator:
         if not bundle_path or not bundle_path.exists():
             return
 
+        check_prepared_source(bundle_path)
         pyproject = bundle_path / "pyproject.toml"
         if not pyproject.exists():
             logger.debug(
@@ -885,6 +887,8 @@ class ModuleActivator:
         Should be called at the end of module activation to persist
         the install state to disk.
         """
+        if source_resolution_restricted() and not self.install_deps:
+            return  # No installation occurred; do not create an empty cache receipt.
         self._install_state.save()
 
 

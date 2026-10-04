@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFoundError
 
+from amplifier_foundation.sources.policy import check_prepared_source
+
 from amplifier_foundation.spawn_utils import ProviderPreference
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
 
@@ -174,6 +176,7 @@ class BundleModuleSource:
 
     def resolve(self) -> Path:
         """Return the pre-resolved module path."""
+        check_prepared_source(self._path)
         return self._path
 
 
@@ -262,6 +265,7 @@ class BundleModuleResolver:
                 f"Available modules: {list(self._paths.keys())}. "
                 f"Use async_resolve() for lazy activation support."
             )
+        check_prepared_source(path, source_hint=hint if isinstance(hint, str) else None)
         return BundleModuleSource(path)
 
     async def async_resolve(
@@ -285,12 +289,14 @@ class BundleModuleResolver:
         hint = profile_hint if profile_hint is not None else source_hint
         source_path = self._source_path(module_id, hint)
         if source_path is not None:
+            check_prepared_source(source_path, source_hint=hint)
             return BundleModuleSource(source_path)
         # Prepared bundles can outlive a cache checkout (for example when a
         # child is spawned after cache eviction). Reuse only a present path;
         # let the activator recover a missing checkout from the declared source.
         path = self._paths.get(module_id)
         if path is not None and path.exists():
+            check_prepared_source(path, source_hint=hint if isinstance(hint, str) else None)
             return BundleModuleSource(path)
 
         # Lazy activation path
@@ -311,6 +317,7 @@ class BundleModuleResolver:
             # Double-check after acquiring lock (another task may have activated)
             path = self._paths.get(module_id)
             if path is not None and path.exists():
+                check_prepared_source(path, source_hint=hint if isinstance(hint, str) else None)
                 return BundleModuleSource(path)
 
             logger.info(f"Lazy activating module '{module_id}' from '{hint}'")
@@ -338,7 +345,21 @@ class BundleModuleResolver:
             String path to module, or None if not found.
         """
         path = self._paths.get(module_id)
+        if path is not None:
+            check_prepared_source(path)
         return str(path) if path else None
+
+    def prepared_sources(self) -> tuple[tuple[str, str | None, Path], ...]:
+        """Snapshot prepared paths, including source-qualified provider variants.
+
+        This does not activate, fetch or attest imported code. A source hint of
+        None denotes the module-ID path; explicit provider variants retain the
+        exact effective preparation hint. Nested/lazy modules appear after they
+        are prepared, not before.
+        """
+        return tuple((module, None, path) for module, path in self._paths.items()) + tuple(
+            (module, hint, path) for (module, hint), path in self._source_paths.items()
+        )
 
 
 @dataclass
