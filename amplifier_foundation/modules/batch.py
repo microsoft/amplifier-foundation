@@ -73,7 +73,11 @@ class DependencyBatch:
     def add(self, activator, source):
         from .install_policy import installation_allowed
 
-        self._dependency_installation_allowed &= installation_allowed()
+        # A duplicate source may carry a stricter captured host policy than
+        # the activator retained by setdefault below. Never discard that denial.
+        self._dependency_installation_allowed &= installation_allowed() and getattr(
+            activator, "_dependency_installation_allowed", True
+        )
         if self.installed or self._install_task is not None:
             raise RuntimeError(
                 "An installing or completed dependency batch cannot be extended"

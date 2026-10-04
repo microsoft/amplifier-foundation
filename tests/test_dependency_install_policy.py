@@ -142,3 +142,25 @@ async def test_lazy_prepared_resolver_retains_protection(tmp_path, monkeypatch):
     with pytest.raises(ModuleNotFoundError, match='Dependency installation is prohibited'):
         await resolver.async_resolve('tool-lazy', source_hint='declared-source')
     launch.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('denied_first', [False, True])
+async def test_duplicate_source_retains_every_activator_prohibition(tmp_path, monkeypatch, denied_first):
+    root = source(tmp_path)
+    allowed = ModuleActivator(cache_dir=tmp_path/'allowed', refresh_dependencies=True)
+    with dependency_installation_policy(False):
+        denied = ModuleActivator(cache_dir=tmp_path/'denied', refresh_dependencies=True)
+    batch = DependencyBatch()
+    for activator in ((denied, allowed) if denied_first else (allowed, denied)):
+        batch.add(activator, root)
+    launch = Mock()
+    build = Mock(side_effect=AssertionError('Duplicate-source deny must precede build'))
+    monkeypatch.setattr(subprocess, 'run', launch)
+    monkeypatch.setattr('amplifier_foundation.sources.shared.build_view', build)
+    with pytest.raises(DependencyInstallationDenied):
+        await batch.install()
+    launch.assert_not_called()
+    build.assert_not_called()
+    assert not batch.installed
+    assert batch.install_count == 0
