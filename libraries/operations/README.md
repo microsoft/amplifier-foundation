@@ -208,3 +208,9 @@ receipts from each; this mechanism alone cannot certify an aggregate.
 commit before lost reply, restart, changed proof, legacy evidence, active work,
 pre-effect rollback and newer-fence preservation. Production authenticated Updates
 proofs, owner adapters, full composition and live adoption require separate review.
+
+Original conclusive admission evidence can settle even after a distinct newer
+fence was acquired: an exact pre-effect rollback returns `released`, and an
+original durable refusal returns `not-acquired`. The original abort receipt
+never clears or changes that newer fence. Generic release evidence remains
+insufficient for first admission-abort settlement.

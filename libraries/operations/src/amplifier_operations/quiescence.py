@@ -187,7 +187,6 @@ class DurableIntakeFence:
         if record.get('abort'):
             if record['abort']['proof']!=proof or record['abort']['receipt']['ownerId']!=owner_id:raise ValueError('Admission abort differs from its retained proof or owner')
             return dict(record['abort']['receipt'])
-        if self.fence is not None and self.fence!=context:raise ValueError('Another owner intake fence is held')
         acquired=record['acquisition'].get('acquired')
         if acquired is True:
             if self.fence!=context:
@@ -198,7 +197,7 @@ class DurableIntakeFence:
                 if not prior or prior.get('outcome')!='unchanged' or prior.get('proof')!={'kind':'admission-refused'}:raise ValueError('Original acquired fence has no pre-effect settlement evidence')
             status='released'
         elif acquired is False:
-            if self.fence is not None:raise ValueError('Refusal journal contradicts held intake')
+            if self.fence==context:raise ValueError('Refusal journal contradicts held intake')
             status='not-acquired'
         else:raise ValueError('Original acquisition remains unknown')
         receipt={k:context[k] for k in ('commandId','fenceId','instanceId','dataScope')}
@@ -207,7 +206,7 @@ class DurableIntakeFence:
         with self.db:
             self.db.execute('UPDATE releases SET value=? WHERE fence=?',(json.dumps(record),context['fenceId']))
             if self.fence==context:self.db.execute('DELETE FROM fence WHERE id=1')
-        self.fence=None;self._live_fence=None
+        if self.fence==context:self.fence=None;self._live_fence=None
         return dict(receipt)
     def release(self,value):
         context=self.context(value);outcome=value.get('outcome');proof=value.get('proof')

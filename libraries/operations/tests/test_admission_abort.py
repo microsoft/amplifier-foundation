@@ -55,7 +55,7 @@ def test_original_abort_retry_never_clears_a_new_fence(tmp_path):
 def test_refusal_cannot_release_a_different_current_fence(tmp_path):
  g=DurableIntakeFence(tmp_path/'intake.sqlite');g.acquire(C,pending=1)
  new={**C,'fenceId':'new-fence','commandId':'new-command'};g.acquire(new)
- with pytest.raises(ValueError,match='Another'):abort(g)
+ assert abort(g)['status']=='not-acquired'
  assert g.fence==new;g.close()
 
 
@@ -68,3 +68,23 @@ def test_original_custom_refusal_reason_is_durable_and_detached(tmp_path):
         assert gate.acquire(context)['reason'] == 'Local listeners are still serving'
     finally:
         gate.close()
+
+
+def test_first_abort_after_exact_pre_effect_rollback_keeps_newer_hold(tmp_path):
+ g=DurableIntakeFence(tmp_path/'intake.sqlite');g.acquire(C)
+ g.release({**C,'outcome':'unchanged','proof':{'kind':'admission-refused'}})
+ new={**C,'fenceId':'new-fence','commandId':'new-command'};g.acquire(new)
+ receipt=abort(g)
+ assert receipt['status']=='released' and g.fence==new
+ g.close();g=DurableIntakeFence(tmp_path/'intake.sqlite')
+ assert g.fence==new and abort(g)==receipt
+ g.close()
+
+def test_first_abort_after_generic_release_keeps_newer_hold_unknown(tmp_path):
+ g=DurableIntakeFence(tmp_path/'intake.sqlite');g.acquire(C)
+ generic={**{k:C[k] for k in ('commandId','fenceId','instanceId','dataScope')},'outcome':'unchanged','verified':True,'receiptId':'generic'}
+ g.release({**C,'outcome':'unchanged','proof':generic})
+ new={**C,'fenceId':'new-fence','commandId':'new-command'};g.acquire(new)
+ with pytest.raises(ValueError,match='pre-effect'):abort(g)
+ assert g.fence==new and g.admission_abort_receipt(C,owner_id='fixture-owner') is None
+ g.close()
