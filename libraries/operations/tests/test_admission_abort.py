@@ -57,3 +57,14 @@ def test_refusal_cannot_release_a_different_current_fence(tmp_path):
  new={**C,'fenceId':'new-fence','commandId':'new-command'};g.acquire(new)
  with pytest.raises(ValueError,match='Another'):abort(g)
  assert g.fence==new;g.close()
+
+
+def test_original_custom_refusal_reason_is_durable_and_detached(tmp_path):
+    gate = DurableIntakeFence(tmp_path / 'intake.sqlite3')
+    try:
+        context = dict(fenceId='refusal', commandId='command', purpose='distribution-update', instanceId='launch', dataScope='scope')
+        first = gate.acquire(context, pending=1, refusal_reason='Local listeners are still serving')
+        first['reason'] = 'caller mutation'
+        assert gate.acquire(context)['reason'] == 'Local listeners are still serving'
+    finally:
+        gate.close()

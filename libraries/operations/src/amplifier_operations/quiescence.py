@@ -133,9 +133,10 @@ class DurableIntakeFence:
                 raise ValueError('Service identity differs from acquired host context')
             context['serviceIdentity'] = service
         return context
-    def acquire(self,value,*,pending=0):
+    def acquire(self,value,*,pending=0,refusal_reason=None):
         context=self.context(value)
         if type(pending) is not int or pending<0:raise ValueError('Nonnegative active work count required')
+        if refusal_reason is not None and (not isinstance(refusal_reason,str) or not 1<=len(refusal_reason)<=200 or any(ord(c)<32 for c in refusal_reason)):raise ValueError('Bounded original refusal reason required')
         if self.fence:
             if self.fence!=context:raise ValueError('Owner intake already belongs to another exact fence')
             return {'acquired':True,'intakeClosed':True,'fenceId':context['fenceId']}
@@ -143,8 +144,8 @@ class DurableIntakeFence:
         if prior:
             if prior.get('kind')=='admission-v1' and prior.get('context')==context and prior.get('acquisition',{}).get('acquired') is False and not prior.get('abort'):
                 return dict(prior['acquisition'])
-            raise ValueError('A retained fence cannot acquire owner intake again')
-        result={'acquired':False,'executed':False,'reason':'Owner has active admitted work'} if self.calls or self.background or pending else {'acquired':True,'intakeClosed':True,'fenceId':context['fenceId']}
+            raise ValueError('A released fence cannot acquire owner intake again')
+        result={'acquired':False,'executed':False,'reason':refusal_reason or 'Owner has active admitted work'} if self.calls or self.background or pending else {'acquired':True,'intakeClosed':True,'fenceId':context['fenceId']}
         with self.db:
             # The existing releases table is the per-fence lifecycle journal.
             # Legacy rows remain intact; absence is never an acquisition receipt.
