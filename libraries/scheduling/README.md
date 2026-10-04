@@ -45,3 +45,23 @@ IDs and IDs belonging to another conversation return `None`; absence is never
 permission to replay an upstream command whose admission may still be pending.
 Run receipts are readable by their source and recorded destination conversation.
 The indexed single-row read rejects a receipt above 384 KiB while retaining it.
+
+### Startup authority
+
+All four tables (`schedules`, `schedule_runs`, `schedule_commands`, and
+`scheduler_lease`) are retained authority, including command results, unknown
+runs, due identities and lease ownership. Existing stores require their complete
+known schema through a bounded WAL-aware read-only check before a writable open.
+Missing or unsupported tables refuse startup; no empty command/run history is
+recreated. Fresh initialization requires no main file or WAL/SHM/rollback sidecar,
+including dangling symlinks. Refusal preserves the main and nonempty WAL;
+SQLite may update derived SHM. Derived indexes, including the due uniqueness
+index over original run rows, can be reconstructed. Concurrent store instances
+continue to coordinate through existing SQLite transactions and `scheduler_lease`;
+this adds no external process lease, recovery scan or callbacks. Callers own
+storage lifecycle serialization. This schema check cannot detect row erasure or
+external replacement with a complete valid schema.
+
+Main and existing sidecars must be regular files without symlinks before SQLite
+is called, so retained FIFOs cannot block startup. Callers serialize storage
+lifecycle changes; this is not an adversarial VFS or path-swap guarantee.

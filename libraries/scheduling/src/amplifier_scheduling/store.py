@@ -3,8 +3,11 @@ from contextlib import contextmanager
 import copy
 import hashlib
 import json
+import os
+import re
 from pathlib import Path
 import sqlite3
+import stat
 import uuid
 
 from .policy import due_occurrence
@@ -17,26 +20,63 @@ def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
+
+_TABLES = {'schedules': 'CREATE TABLE schedules(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, value TEXT '
+              'NOT NULL)',
+ 'schedule_runs': 'CREATE TABLE schedule_runs(id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL, '
+                  'session_id TEXT NOT NULL, due REAL NOT NULL, phase TEXT NOT NULL, value TEXT '
+                  'NOT NULL)',
+ 'schedule_commands': 'CREATE TABLE schedule_commands(id TEXT PRIMARY KEY, fingerprint TEXT NOT '
+                      'NULL, result TEXT NOT NULL)',
+ 'scheduler_lease': 'CREATE TABLE scheduler_lease(id INTEGER PRIMARY KEY, owner TEXT NOT NULL, '
+                    'expires REAL NOT NULL)'}
+
+def _open_authority(path):
+    """Validate retained authority read-only before opening a writer."""
+    path = Path(path).absolute()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for candidate in (path, *(Path(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal"))):
+        if os.path.lexists(candidate) and not stat.S_ISREG(candidate.lstat().st_mode):
+            raise ValueError("Authority database and sidecars must be regular files, without symlinks")
+    new = not os.path.lexists(path)
+    if new and any(os.path.lexists(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal")):
+        raise ValueError("Retained authority sidecar has no main database")
+    if not new:
+        reader = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        try:
+            names = tuple(_TABLES)
+            found = {name: (kind, sql) for name, kind, sql in reader.execute(
+                "SELECT name,type,substr(sql,1,4097) FROM sqlite_master WHERE name IN (" + ",".join("?" for _ in names) + ")", names)}
+            normalize = lambda sql: re.sub(r"\s+", "", sql).lower().replace("ifnotexists", "")
+            for name, expected in _TABLES.items():
+                actual = found.get(name)
+                if actual is None or actual[0] != "table" or not isinstance(actual[1], str) or len(actual[1]) >= 4097:
+                    raise ValueError("Missing or unsupported authority schema: " + name)
+                if normalize(actual[1]) != normalize(expected):
+                    raise ValueError("Unsupported authority schema: " + name)
+                reader.execute("SELECT * FROM " + name + " LIMIT 0")
+        finally:
+            reader.close()
+    else:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+    db = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=5, isolation_level=None)
+    try:
+        path.chmod(0o600)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=FULL")
+        if new:
+            db.executescript("BEGIN;" + ";".join(_TABLES.values()) + ";COMMIT;")
+        db.executescript("CREATE UNIQUE INDEX IF NOT EXISTS schedule_due ON schedule_runs(schedule_id,due);CREATE INDEX IF NOT EXISTS schedules_session ON schedules(session_id);CREATE INDEX IF NOT EXISTS schedules_due ON schedules(json_extract(value,'$.status'),json_extract(value,'$.nextDue'));CREATE INDEX IF NOT EXISTS schedule_runs_session ON schedule_runs(session_id,schedule_id,due DESC);CREATE INDEX IF NOT EXISTS schedule_runs_phase ON schedule_runs(phase);CREATE INDEX IF NOT EXISTS schedule_runs_destination ON schedule_runs(json_extract(value,'$.destinationSessionId'),due DESC);")
+    except BaseException:
+        db.close()
+        raise
+    return db
+
+
 class ScheduleStore:
     def __init__(self, path, *, owner=None, history_limit=None):
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, timeout=5, isolation_level=None)
-        path.chmod(0o600)
-        self.db.execute('PRAGMA journal_mode=WAL')
-        self.db.execute('PRAGMA synchronous=FULL')
-        self.db.executescript('''
-            CREATE TABLE IF NOT EXISTS schedules(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS schedule_runs(id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL, session_id TEXT NOT NULL, due REAL NOT NULL, phase TEXT NOT NULL, value TEXT NOT NULL);
-            CREATE UNIQUE INDEX IF NOT EXISTS schedule_due ON schedule_runs(schedule_id,due);
-            CREATE TABLE IF NOT EXISTS schedule_commands(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL);
-            CREATE INDEX IF NOT EXISTS schedules_session ON schedules(session_id);
-            CREATE INDEX IF NOT EXISTS schedules_due ON schedules(json_extract(value,'$.status'),json_extract(value,'$.nextDue'));
-            CREATE INDEX IF NOT EXISTS schedule_runs_session ON schedule_runs(session_id,schedule_id,due DESC);
-            CREATE INDEX IF NOT EXISTS schedule_runs_phase ON schedule_runs(phase);
-            CREATE INDEX IF NOT EXISTS schedule_runs_destination ON schedule_runs(json_extract(value,'$.destinationSessionId'),due DESC);
-            CREATE TABLE IF NOT EXISTS scheduler_lease(id INTEGER PRIMARY KEY, owner TEXT NOT NULL, expires REAL NOT NULL);
-        ''')
+        self.db = _open_authority(path)
         self.owner = owner or str(uuid.uuid4())
         self.history_limit = history_limit
         self.recovered = []
