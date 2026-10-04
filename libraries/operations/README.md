@@ -168,3 +168,43 @@ do not detect erased rows or a complete valid schema recreated externally.
 Main and existing sidecars must be regular files without symlinks before SQLite
 is called, so retained FIFOs cannot block startup. Callers serialize storage
 lifecycle changes; this is not an adversarial VFS or path-swap guarantee.
+
+### Optional pre-retirement distribution admission abort
+
+`DurableIntakeFence.ADMISSION_ABORT_VERSION == 1` declares
+`abort_admission(context_with_proof, owner_id=trusted_owner_id, pending=0)` and
+`admission_abort_receipt(context, owner_id=trusted_owner_id)`. Consumers authenticate
+the coordinator, retain exclusive lifetime process ownership, and count every active
+call, background effect and pending effect. These synchronous methods neither stop
+processes nor authorize a distribution update.
+
+For `distribution-update`, `acquire` journals its original acquisition or busy
+refusal atomically in the existing `releases` table under the original fence ID.
+A typed `admission-v1` record retains context, acquisition, ordinary release and
+abort proof/receipt. No new database or required table is introduced; original
+legacy release rows remain readable. An identical busy-refused fence stays refused
+after work finishes; only a separately authorized new fence can acquire. Legacy
+held/refused attempts without the new journal cannot obtain abort authority.
+
+Abort requires exactly the Host admission-abort proof fields `kind`, `verified`,
+`purpose`, `receiptId`, `commandId`, `fenceId`, `instanceId`, `dataScope`, with kind
+`distribution-admission-abort`, literal verified true, distribution-update purpose
+and all four original IDs. Ordinary running/release proof is insufficient. The
+caller must authenticate pre-retirement applicability; the mechanism checks bindings.
+A missing fence never proves not-acquired: that result needs the exact durable busy
+refusal. An acquired fence returns released only when it is held or an exact
+pre-effect admission-refused rollback is retained. Other ordinary release outcomes
+refuse this path. Active/background/pending work refuses settlement.
+
+The exact seven-field receipt contains the four original IDs, configured `ownerId`,
+`status` released or not-acquired, and a durable `receiptId`. The full proof and
+receipt are committed atomically with fence deletion. Lost replies and restart read
+the same receipt; changed proof, owner or identity refuses. Reading an old completed
+abort never clears a newer fence, and an aborted input cannot acquire again.
+Aggregate owners retain every attempted subowner identity and require conclusive
+receipts from each; this mechanism alone cannot certify an aggregate.
+
+[Admission abort tests](tests/test_admission_abort.py) cover acquisition/refusal
+commit before lost reply, restart, changed proof, legacy evidence, active work,
+pre-effect rollback and newer-fence preservation. Production authenticated Updates
+proofs, owner adapters, full composition and live adoption require separate review.

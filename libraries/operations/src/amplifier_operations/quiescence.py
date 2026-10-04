@@ -7,6 +7,7 @@ by the coordinator, never accepted directly from an untrusted action request.
 import json
 import os
 import sqlite3
+from uuid import uuid4
 from pathlib import Path
 
 _SERVICE_KEYS = ('installationId', 'dataScope', 'ownerId', 'instanceId', 'releaseDigest')
@@ -60,6 +61,7 @@ def _service_proof(proof, context, outcome):
 class DurableIntakeFence:
     # Consumers advertise service-stop only when this public contract is present.
     SERVICE_STOP_VERSION = 1
+    ADMISSION_ABORT_VERSION = 1
     def __init__(self,path):
         path = Path(path).absolute()
         # Callers already hold exclusive lifetime ownership of this partition.
@@ -137,11 +139,75 @@ class DurableIntakeFence:
         if self.fence:
             if self.fence!=context:raise ValueError('Owner intake already belongs to another exact fence')
             return {'acquired':True,'intakeClosed':True,'fenceId':context['fenceId']}
-        if self.db.execute('SELECT 1 FROM releases WHERE fence=?',(context['fenceId'],)).fetchone():raise ValueError('A released fence cannot acquire owner intake again')
-        if self.calls or self.background or pending:return {'acquired':False,'executed':False,'reason':'Owner has active admitted work'}
-        with self.db:self.db.execute('INSERT INTO fence VALUES(1,?)',(json.dumps(context),))
+        prior=self._record(context['fenceId'])
+        if prior:
+            if prior.get('kind')=='admission-v1' and prior.get('context')==context and prior.get('acquisition',{}).get('acquired') is False and not prior.get('abort'):
+                return dict(prior['acquisition'])
+            raise ValueError('A retained fence cannot acquire owner intake again')
+        result={'acquired':False,'executed':False,'reason':'Owner has active admitted work'} if self.calls or self.background or pending else {'acquired':True,'intakeClosed':True,'fenceId':context['fenceId']}
+        with self.db:
+            # The existing releases table is the per-fence lifecycle journal.
+            # Legacy rows remain intact; absence is never an acquisition receipt.
+            if context['purpose']=='distribution-update':
+                self.db.execute('INSERT INTO releases VALUES(?,?)',(context['fenceId'],json.dumps({'kind':'admission-v1','context':context,'acquisition':result})))
+            if result['acquired']:self.db.execute('INSERT INTO fence VALUES(1,?)',(json.dumps(context),))
+        if not result['acquired']:return result
         self.fence=context;self._live_fence=context
-        return {'acquired':True,'intakeClosed':True,'fenceId':context['fenceId']}
+        return result
+    def _record(self,fence_id):
+        row=self.db.execute('SELECT value FROM releases WHERE fence=?',(fence_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+    def admission_abort_receipt(self,value,*,owner_id):
+        context=self.context(value)
+        record=self._record(context['fenceId'])
+        if record and record.get('kind')=='admission-v1' and record.get('abort'):
+            if record['context']!=context or record['abort']['receipt']['ownerId']!=owner_id:raise ValueError('Exact retained admission abort identity required')
+            return dict(record['abort']['receipt'])
+        return None
+    def abort_admission(self,value,*,owner_id,pending=0):
+        """Settle a trusted pre-retirement distribution admission, never its effect.
+
+        Callers authenticate proof and count all active/pending work under their
+        exclusive process lock. Original acquisition/refusal must be journaled.
+        """
+        context=self.context(value)
+        if context['purpose']!='distribution-update':raise ValueError('Distribution admission abort required')
+        if not isinstance(owner_id,str) or not 1<=len(owner_id)<=200 or any(ord(c)<32 for c in owner_id):raise ValueError('Bounded trusted owner identity required')
+        if type(pending) is not int or pending<0:raise ValueError('Nonnegative active work count required')
+        if self.calls or self.background or pending:raise ValueError('Owner work is still in flight')
+        proof=value.get('proof')
+        expected={'kind','verified','purpose','receiptId','commandId','fenceId','instanceId','dataScope'}
+        if not isinstance(proof,dict) or set(proof)!=expected or proof.get('kind')!='distribution-admission-abort' or proof.get('verified') is not True or proof.get('purpose')!='distribution-update' or any(proof.get(k)!=context[k] for k in ('commandId','fenceId','instanceId','dataScope')):
+            raise ValueError('Exact distinct authenticated admission abort proof required')
+        if not isinstance(proof['receiptId'],str) or not 1<=len(proof['receiptId'])<=200 or any(ord(c)<32 for c in proof['receiptId']):raise ValueError('Bounded abort proof receipt identity required')
+        proof=json.loads(json.dumps(proof))
+        record=self._record(context['fenceId'])
+        if not record or record.get('kind')!='admission-v1' or record.get('context')!=context:raise ValueError('No exact original acquisition or refusal journal')
+        if record.get('abort'):
+            if record['abort']['proof']!=proof or record['abort']['receipt']['ownerId']!=owner_id:raise ValueError('Admission abort differs from its retained proof or owner')
+            return dict(record['abort']['receipt'])
+        if self.fence is not None and self.fence!=context:raise ValueError('Another owner intake fence is held')
+        acquired=record['acquisition'].get('acquired')
+        if acquired is True:
+            if self.fence!=context:
+                # A confirmed pre-effect rollback may already have removed the
+                # fence before its acknowledgement was lost. Other releases do
+                # not authenticate a pre-retirement abort.
+                prior=record.get('release')
+                if not prior or prior.get('outcome')!='unchanged' or prior.get('proof')!={'kind':'admission-refused'}:raise ValueError('Original acquired fence has no pre-effect settlement evidence')
+            status='released'
+        elif acquired is False:
+            if self.fence is not None:raise ValueError('Refusal journal contradicts held intake')
+            status='not-acquired'
+        else:raise ValueError('Original acquisition remains unknown')
+        receipt={k:context[k] for k in ('commandId','fenceId','instanceId','dataScope')}
+        receipt.update(ownerId=owner_id,status=status,receiptId=str(uuid4()))
+        record['abort']={'proof':proof,'receipt':receipt}
+        with self.db:
+            self.db.execute('UPDATE releases SET value=? WHERE fence=?',(json.dumps(record),context['fenceId']))
+            if self.fence==context:self.db.execute('DELETE FROM fence WHERE id=1')
+        self.fence=None;self._live_fence=None
+        return dict(receipt)
     def release(self,value):
         context=self.context(value);outcome=value.get('outcome');proof=value.get('proof')
         if context['purpose'] == 'service-stop' and proof != {'kind':'admission-refused'} and outcome != 'unknown':
@@ -152,8 +218,8 @@ class DurableIntakeFence:
             proof={key:proof.get(key) for key in ('verified','fenceId','commandId','outcome','instanceId','dataScope','receiptId')}
         receipt={'context':context,'outcome':outcome,'proof':proof}
         if self.fence is None:
-            row=self.db.execute('SELECT value FROM releases WHERE fence=?',(context['fenceId'],)).fetchone()
-            if row and json.loads(row[0])==receipt:return {'released':True,'intakeClosed':False}
+            prior=self._record(context['fenceId'])
+            if prior and (prior.get('release') if prior.get('kind')=='admission-v1' else prior)==receipt:return {'released':True,'intakeClosed':False}
             raise ValueError('No exact retained owner release receipt')
         if self.fence!=context:raise ValueError('Owner release does not identify the current fence')
         if outcome=='unknown':
@@ -167,7 +233,12 @@ class DurableIntakeFence:
             if not isinstance(proof.get('instanceId'),str) or (proof['instanceId']==context['instanceId'])!=(outcome=='unchanged'):raise ValueError('Release running instance does not match its outcome')
         if self.calls or self.background:raise ValueError('Owner work is still in flight')
         with self.db:
-            self.db.execute('INSERT OR IGNORE INTO releases VALUES(?,?)',(context['fenceId'],json.dumps(receipt)))
+            prior=self._record(context['fenceId'])
+            if prior and prior.get('kind')=='admission-v1':
+                if prior.get('abort'):raise ValueError('Original abort requires its distinct retained proof')
+                prior['release']=receipt
+                self.db.execute('UPDATE releases SET value=? WHERE fence=?',(json.dumps(prior),context['fenceId']))
+            else:self.db.execute('INSERT OR IGNORE INTO releases VALUES(?,?)',(context['fenceId'],json.dumps(receipt)))
             self.db.execute('DELETE FROM fence WHERE id=1')
         self.fence=None;self._live_fence=None;return {'released':True,'intakeClosed':False}
     def close(self):self.db.close()
