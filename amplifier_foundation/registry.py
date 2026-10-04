@@ -36,6 +36,7 @@ from amplifier_foundation.io.frontmatter import parse_frontmatter
 from amplifier_foundation.io.yaml import read_yaml
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.sources.resolver import SimpleSourceResolver
+from amplifier_foundation.sources.policy import admitted_source, SourceResolutionDenied
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle import Bundle as BundleType  # noqa: F401
@@ -220,6 +221,7 @@ class BundleRegistry:
             base_path=Path.cwd(),
         )
         # Future-based deduplication: cache loaded bundles and track in-progress loads
+        self._resolved_sources = {}
         self._loaded_bundles: dict[str, Bundle] = {}  # Cache of fully loaded bundles
         self._pending_loads: dict[str, asyncio.Future[Bundle]] = {}  # In-progress loads
         if read_persisted:
@@ -423,6 +425,13 @@ class BundleRegistry:
         base_uri = uri.split("#")[0] if "#" in uri else uri
         loading_chain = _loading_chain or frozenset()
 
+        # A cache hit must not bypass a newly installed host admission policy.
+        approved = admitted_source(uri, base_path=self._source_resolver.base_path)
+        if approved is not None and uri in self._loaded_bundles:
+            previous = self._resolved_sources.get(uri)
+            if previous is None or previous != approved:
+                raise SourceResolutionDenied("Cached bundle disagrees with its admitted binding")
+
         # 1. Check cache first (skip if refresh requested)
         if not refresh and uri in self._loaded_bundles:
             return self._loaded_bundles[uri]
@@ -435,7 +444,10 @@ class BundleRegistry:
 
         # 3. Check if another task is already loading this (diamond case) - await it
         if uri in self._pending_loads:
-            return await self._pending_loads[uri]
+            result = await self._pending_loads[uri]
+            if approved is not None and self._resolved_sources.get(uri) != approved:
+                raise SourceResolutionDenied("Pending bundle disagrees with its admitted binding")
+            return result
 
         # 4. Start new load with future for deduplication
         loop = asyncio.get_event_loop()
@@ -455,6 +467,7 @@ class BundleRegistry:
             if resolved is None:
                 raise BundleNotFoundError(f"Could not resolve URI: {uri}")
 
+            self._resolved_sources[uri] = resolved
             local_path = resolved.active_path
 
             # Load bundle from path

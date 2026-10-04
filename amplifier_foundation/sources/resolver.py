@@ -13,6 +13,7 @@ from .file import FileSourceHandler
 from .git import GitSourceHandler
 from .http import HttpSourceHandler
 from .protocol import SourceHandlerProtocol
+from .policy import admitted_source
 from .zip import ZipSourceHandler
 
 
@@ -72,6 +73,9 @@ class SimpleSourceResolver:
         Raises:
             BundleNotFoundError: If no handler can resolve the URI.
         """
+        admitted = admitted_source(uri, base_path=self.base_path)
+        if admitted is not None:
+            return admitted
         parsed = parse_uri(uri)
 
         for handler in self._handlers:
