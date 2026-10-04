@@ -44,7 +44,15 @@ Run `uv sync` and `uv run pytest`. Durable SQLite receipts preserve uncertainty 
 
 `amplifier_operations.quiescence.DurableIntakeFence` stores a held intake fence
 and exact release receipts in a caller-selected private SQLite file. Importing it
-creates no state. The caller must hold exclusive lifetime ownership of its process
+creates no state. Only a missing database with no WAL, SHM, or rollback-journal
+sidecars is initialized as new. Existing stores, including empty files, must
+retain both authoritative tables and their required columns. Startup validates
+through a WAL-aware read-only connection before opening a writer; missing schema
+refuses startup rather than recreating empty fence or release history. Refusal
+preserves the main database and pre-existing nonempty WAL; SQLite may update
+derived SHM coordination state. Valid original two-table stores and normal crash
+WAL recovery remain supported. This bounded check is not a general corruption
+recovery mechanism, and callers must retain uncertain evidence for review. The caller must hold exclusive lifetime ownership of its process
 partition, count admitted calls/background effects and detached work, and block new
 mutations while `fence` is set. `acquire(context, pending=...)` refuses active work
 without closing intake; otherwise it persists the fence before returning.

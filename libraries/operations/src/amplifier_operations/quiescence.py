@@ -5,6 +5,7 @@ A stored fence never expires or causes work to replay. Trusted proof is supplied
 by the coordinator, never accepted directly from an untrusted action request.
 """
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -60,13 +61,65 @@ class DurableIntakeFence:
     # Consumers advertise service-stop only when this public contract is present.
     SERVICE_STOP_VERSION = 1
     def __init__(self,path):
-        path=Path(path)
-        self.db=sqlite3.connect(path);path.chmod(0o600)
-        self.db.executescript('''PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;
-          CREATE TABLE IF NOT EXISTS fence(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
-          CREATE TABLE IF NOT EXISTS releases(fence TEXT PRIMARY KEY,value TEXT NOT NULL);''')
-        row=self.db.execute('SELECT value FROM fence WHERE id=1').fetchone();self.fence=json.loads(row[0]) if row else None
+        path = Path(path).absolute()
+        # Callers already hold exclusive lifetime ownership of this partition.
+        # Sidecars can retain committed authority after a crash. Never mistake
+        # an absent main file with retained sidecars for a genuinely new store.
+        new = not os.path.lexists(path)
+        if new and any(os.path.lexists(str(path) + suffix)
+                       for suffix in ('-wal', '-shm', '-journal')):
+            raise ValueError('Intake store has retained sidecars without its main database')
+        if not new:
+            # A writable connection can checkpoint WAL when closed, including
+            # after validation refuses startup. Validate with WAL-aware mode=ro
+            # before opening any writer; immutable=1 would ignore retained WAL.
+            reader = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+            try:
+                self._validate_schema(reader)
+                row = reader.execute('SELECT value FROM fence WHERE id=1').fetchone()
+                if row:
+                    json.loads(row[0])
+            finally:
+                reader.close()
+        else:
+            # Exclusive creation avoids accidentally initializing a file that
+            # appeared after classification. A failed startup retains evidence.
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+        db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True)
+        try:
+            path.chmod(0o600)
+            if new:
+                db.executescript("""CREATE TABLE fence(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
+                  CREATE TABLE releases(fence TEXT PRIMARY KEY,value TEXT NOT NULL);""")
+            db.execute('PRAGMA journal_mode=WAL')
+            db.execute('PRAGMA synchronous=FULL')
+            row = db.execute('SELECT value FROM fence WHERE id=1').fetchone()
+            self.fence = json.loads(row[0]) if row else None
+        except BaseException:
+            db.close()
+            raise
+        self.db = db
         self.calls=0;self.background=0;self._live_fence=None
+
+    @staticmethod
+    def _validate_schema(db):
+        # These columns are shared by the original and service-stop profiles.
+        # Existing authority is never repaired or inferred from an empty table.
+        expected = {
+            'fence': {'id': ('INTEGER', 0, 1), 'value': ('TEXT', 1, 0)},
+            'releases': {'fence': ('TEXT', 0, 1), 'value': ('TEXT', 1, 0)},
+        }
+        for table, columns in expected.items():
+            kind = db.execute('SELECT type FROM sqlite_master WHERE name=?', (table,)).fetchone()
+            actual = {row[1]: (row[2].upper(), row[3], row[5])
+                      for row in db.execute('PRAGMA table_info(' + table + ')')}
+            if kind != ('table',) or any(actual.get(name) != definition
+                                        for name, definition in columns.items()):
+                raise ValueError('Existing intake store is missing required authority schema')
+        # Ensure both retained tables are readable before a writable connection.
+        db.execute('SELECT fence,value FROM releases LIMIT 1').fetchone()
+
     def context(self,value):
         if not isinstance(value,dict):raise ValueError('Trusted quiescence mapping required')
         required=('fenceId','commandId','purpose','instanceId','dataScope')
