@@ -1,0 +1,50 @@
+{
+  "library": "operations",
+  "consumer": {
+    "module": "amplifier_operations",
+    "python": "3.13.16",
+    "nativeRuntimeInstalled": false,
+    "importCreatedState": false
+  },
+  "tests": {
+    "exitCode": 0,
+    "log": "tests.log"
+  },
+  "artifacts": [
+    {
+      "name": ".gitignore",
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+    },
+    {
+      "name": "amplifier_operations-0.1.0-py3-none-any.whl",
+      "sha256": "4e7827f3a492bf75d5d36d8da97f24ee2ac31457bcf37459a4e483cabfc115f2"
+    },
+    {
+      "name": "amplifier_operations-0.1.0.tar.gz",
+      "sha256": "b5e9bb49ab94cae826d7fea3ef49813fcbfa9e56d24828233e85ebe8a389b7a4"
+    }
+  ],
+  "scope": "Optional explicit held SQLite snapshot mechanism; libraries/operations only",
+  "sourceTests": {
+    "passed": 47,
+    "failed": 0,
+    "skipped": 0
+  },
+  "installedTests": {
+    "passed": 47,
+    "failed": 0,
+    "skipped": 0
+  },
+  "consumerCompatibility": {
+    "consumer": "amplifier-unified-operations candidate",
+    "pythonPassed": 56,
+    "nodeInstalledStdioPassed": 8,
+    "dependencyCheckPackages": 20
+  },
+  "acceptanceLimits": [
+    "Caller authenticates origin/private-content review and owns every real writer/lifetime lock.",
+    "SQLite shared-memory coordination may change; original database/WAL and canonical history remain preserved.",
+    "Restore is a new inactive destination; no activation, fence clearing, history rewrite or work replay.",
+    "No complete product backup, current runtime-code graph or live-host qualification claim."
+  ]
+}

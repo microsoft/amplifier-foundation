@@ -99,3 +99,36 @@ already completed exact release is a read of its durable receipt.
 The library does not authenticate proof, observe process exit, signal processes,
 launch replacements, or grant maintenance/native-admin permission. These remain
 caller responsibilities; no PID or missing endpoint is considered evidence.
+
+### Optional held SQLite snapshot set
+
+`amplifier_operations.snapshots.VERSION == 1` provides `capture_snapshot` and
+`restore_snapshot` for an explicit census of at most sixteen absolute SQLite
+paths. The caller supplies a synchronous `assert_held` callback covering every
+real writer for the entire operation, exclusive lifetime ownership, authenticated
+archive authority, and reviewed private-content permission. This callback is a
+trusted seam, not a grant of authority from the library. A digest binds reviewed
+bytes; it does not authenticate their origin.
+
+Capture uses SQLite's backup API to include committed WAL rows in independently
+validatable standalone images. It checks the database and WAL revisions across
+the entire census, runs image integrity checks, and seals a bounded manifest with
+image hashes, byte counts, and explicit missing stores. SQLite readers may update
+transient shared-memory coordination; database and WAL authority remain unchanged.
+Symlinks, shared hardlinks, unresolved journals, orphan WALs, concurrent revision
+changes and exceeded byte/time budgets refuse completion. Defaults are 64 MiB
+across images and thirty seconds. Parent namespace trust remains the caller's
+responsibility; this mechanism does not discover external storage or freeze other
+processes. Partial output is preserved for original-command inspection, and an
+existing destination refuses capture replay.
+
+Restore authenticates a caller-supplied manifest digest and checks all declared
+images before creating a new inactive destination. It preserves exact SQLite
+records, including durable fences and unknown outcomes. No existing destination
+is overwritten, receipt is rewritten, process starts, fence clears, or work is
+replayed. Activation, host identity, canonical native history, external stores,
+retained artifacts and signed runtime-code completeness belong to the existing
+application archive/recovery coordinator. A SQLite set alone is not a complete
+product backup or restoration. The [snapshot tests](tests/test_snapshots.py)
+exercise WAL preservation, independent restoration, retained fences, whole-census
+change detection, tamper/overwrite refusal and bounded partial failures.
