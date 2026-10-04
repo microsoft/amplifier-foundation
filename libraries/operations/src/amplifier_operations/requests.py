@@ -3,15 +3,18 @@
 import hashlib
 import json
 import time
+from .journal import _check_schema, _REQUESTS_SQL
 
 
 class OperationRequests:
     def __init__(self, journal):
         self.journal = journal
         with journal.lock, journal.db:
-            journal.db.execute(
-                "CREATE TABLE IF NOT EXISTS operation_requests (session_id TEXT NOT NULL, id TEXT NOT NULL, signature TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(session_id,id))"
-            )
+            present = journal.db.execute("SELECT 1 FROM sqlite_master WHERE name='operation_requests'").fetchone()
+            if not present and journal._new_requests_allowed:
+                journal.db.execute(_REQUESTS_SQL)
+            _check_schema(journal.db, require_requests=True, requests_only=True)
+            journal._new_requests_allowed = False
             journal.db.execute("CREATE INDEX IF NOT EXISTS operation_requests_state ON operation_requests(json_extract(value,'$.state'))")
             for sid, identity, value in journal.db.execute(
                 "SELECT session_id,id,value FROM operation_requests WHERE json_extract(value,'$.state')='admitting'"

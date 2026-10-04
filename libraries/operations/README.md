@@ -140,3 +140,31 @@ application archive/recovery coordinator. A SQLite set alone is not a complete
 product backup or restoration. The [snapshot tests](tests/test_snapshots.py)
 exercise WAL preservation, independent restoration, retained fences, whole-census
 change detection, tamper/overwrite refusal and bounded partial failures.
+
+### Journal and request startup authority
+
+`OperationJournal(path)` declares the standalone three-table profile:
+`operations`, `operation_events`, and `operation_output`. These retain original
+observations and output evidence; no canonical rebuild route is promised.
+Applications using admitted input receipts must declare
+`OperationJournal(path, require_requests=True)` before construction. This
+combined profile also requires `operation_requests` before any writable open or
+recovery. A present optional request table is validated even in the standalone
+profile. Existing standalone journals are never guessed to need a three-to-four
+table migration. For compatibility, `OperationRequests` may attach once to a
+new standalone journal in the same object's lifetime; that permission is consumed
+and cannot recreate a request table lost later in that lifetime.
+
+Existing stores are checked through bounded fixed-name schema metadata and
+zero-row table reads on a WAL-aware read-only connection. Missing, empty or
+unsupported authority refuses startup before a writer; original main and
+nonempty WAL are retained (derived SHM may change). Fresh creation requires the
+main and all WAL/SHM/rollback sidecars to be absent, including dangling symlinks.
+Only indexes can be rebuilt. Startup does not scan, hash, copy or replay history.
+The existing per-journal thread lock and SQLite transactions remain mechanisms;
+applications own process partitioning and lifecycle serialization. Schema checks
+do not detect erased rows or a complete valid schema recreated externally.
+
+Main and existing sidecars must be regular files without symlinks before SQLite
+is called, so retained FIFOs cannot block startup. Callers serialize storage
+lifecycle changes; this is not an adversarial VFS or path-swap guarantee.

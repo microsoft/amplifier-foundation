@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import sqlite3
+import stat
 import threading
 import time
 from pathlib import Path
@@ -12,30 +15,72 @@ from pathlib import Path
 ACTIVE = {"queued", "running", "cancel_requested"}
 TERMINAL = {"completed", "failed", "cancelled", "outcome_unknown", "interrupted"}
 
+_TABLES = {
+    "operations": "CREATE TABLE operations(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,value TEXT NOT NULL)",
+    "operation_events": "CREATE TABLE operation_events(operation_id TEXT NOT NULL,sequence INTEGER NOT NULL,event_id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(operation_id,sequence),UNIQUE(operation_id,event_id))",
+    "operation_output": "CREATE TABLE operation_output(operation_id TEXT NOT NULL,cursor INTEGER NOT NULL,bytes INTEGER NOT NULL,value TEXT NOT NULL,PRIMARY KEY(operation_id,cursor))",
+}
+_REQUESTS_SQL = "CREATE TABLE operation_requests(session_id TEXT NOT NULL,id TEXT NOT NULL,signature TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_id,id))"
+
+
+def _check_schema(db, *, require_requests=False, requests_only=False):
+    names = tuple(_TABLES) + ("operation_requests",)
+    found = {name: (kind, sql) for name, kind, sql in db.execute(
+        "SELECT name,type,substr(sql,1,4097) FROM sqlite_master WHERE name IN (?,?,?,?)", names
+    )}
+    expected = {} if requests_only else dict(_TABLES)
+    if require_requests or "operation_requests" in found:
+        expected["operation_requests"] = _REQUESTS_SQL
+    normalize = lambda sql: re.sub(r"\s+", "", sql).lower().replace("ifnotexists", "")
+    for name, sql in expected.items():
+        actual = found.get(name)
+        if (actual is None or actual[0] != "table" or not isinstance(actual[1], str)
+                or len(actual[1]) >= 4097 or normalize(actual[1]) != normalize(sql)):
+            raise ValueError("Existing operation store is missing required authority schema: " + name)
+        db.execute("SELECT * FROM " + name + " LIMIT 0")
+
 
 class OperationJournal:
-    def __init__(self, path, *, max_output_bytes=10_000_000):
-        self.path = Path(path)
+    def __init__(self, path, *, max_output_bytes=10_000_000, require_requests=False):
+        if type(require_requests) is not bool:
+            raise ValueError("require_requests must select a declared boolean profile")
+        self.path = Path(path).absolute()
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.db = sqlite3.connect(self.path, check_same_thread=False)
-        self.path.chmod(0o600)
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA synchronous=FULL")
-        self.db.executescript("""
-            CREATE TABLE IF NOT EXISTS operations (
-              id TEXT PRIMARY KEY, session_id TEXT NOT NULL, value TEXT NOT NULL);
+        for candidate in (self.path, *(Path(str(self.path) + suffix) for suffix in ("-wal", "-shm", "-journal"))):
+            if os.path.lexists(candidate) and not stat.S_ISREG(candidate.lstat().st_mode):
+                raise ValueError("Authority database and sidecars must be regular files, without symlinks")
+        new = not os.path.lexists(self.path)
+        if new and any(os.path.lexists(str(self.path) + suffix)
+                       for suffix in ("-wal", "-shm", "-journal")):
+            raise ValueError("Operation store retains sidecars without its main database")
+        if not new:
+            reader = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)
+            try:
+                _check_schema(reader, require_requests=require_requests)
+            finally:
+                reader.close()
+        else:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+        self.db = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True, check_same_thread=False)
+        try:
+            self.path.chmod(0o600)
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=FULL")
+            if new:
+                tables = list(_TABLES.values()) + ([_REQUESTS_SQL] if require_requests else [])
+                self.db.executescript("BEGIN;" + ";".join(tables) + ";COMMIT;")
+            self.db.executescript("""
             CREATE INDEX IF NOT EXISTS operations_session ON operations(session_id);
             CREATE INDEX IF NOT EXISTS operations_order ON operations(session_id,json_extract(value,'$.createdAt') DESC,id DESC);
             CREATE INDEX IF NOT EXISTS operations_state ON operations(json_extract(value,'$.state'));
-            CREATE TABLE IF NOT EXISTS operation_events (
-              operation_id TEXT NOT NULL, sequence INTEGER NOT NULL,
-              event_id TEXT NOT NULL, value TEXT NOT NULL,
-              PRIMARY KEY(operation_id, sequence), UNIQUE(operation_id, event_id));
-            CREATE TABLE IF NOT EXISTS operation_output (
-              operation_id TEXT NOT NULL, cursor INTEGER NOT NULL,
-              bytes INTEGER NOT NULL, value TEXT NOT NULL,
-              PRIMARY KEY(operation_id, cursor));
-        """)
+            """)
+        except BaseException:
+            self.db.close()
+            raise
+        # The request mechanism can attach to a genuinely new journal in this
+        # same lifetime. Existing standalone journals never imply migration.
+        self._new_requests_allowed = new and not require_requests
         self.lock = threading.RLock()
         self.max_output_bytes = max_output_bytes
 
