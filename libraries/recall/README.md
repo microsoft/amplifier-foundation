@@ -41,6 +41,30 @@ Authorization remains with the caller. Search filters do not grant access: reche
 
 Opening an old database preserves its original sources and FTS records without scanning or reindexing them. Legacy sources become searchable in the new index only after the caller explicitly ingests them; source logs are never changed. This library does not silently infer availability or consent from old metadata.
 
+## Authoritative startup
+
+Initialization is serialized by the caller within its owned store partition.
+Only an absent main database with no WAL, SHM, or rollback-journal sidecars is
+new. Existing stores validate memory notes, versions, and command receipts through
+a WAL-aware read-only connection before any writer or derived schema migration.
+Missing authority tables or required columns refuse startup instead of appearing
+empty or allowing an original command to mutate again. Refusal preserves the main
+database and pre-existing nonempty WAL; derived SHM coordination can change.
+
+The complete historical search-only profile remains supported: its original
+four-column `sources` table and four-column `messages` FTS5 table, including FTS
+shadow tables, with no memory tables or modern schema markers. This recognized
+profile gains memory storage without scanning or reindexing old source rows.
+If every memory table and every modern schema marker has been deleted so that the
+remaining metadata exactly matches this pre-marker profile, the two histories
+are indistinguishable; detecting that deletion is outside this bounded guard.
+
+Derived source/document/FTS initialization and documented column migrations
+remain available when memory authority is intact. Startup uses fixed schema
+metadata and zero-row readability checks, not memory scans, file hashes, copying,
+a persistent mirror, or recovery/replay. Normal crash WAL recovery is supported;
+this is not a broad database-corruption recovery mechanism.
+
 ## Versioned records
 
 Memory records support optimistic revision checks, durable command receipts, and bounded version reads. The caller chooses retention and text limits with `retain_versions` and `max_text_characters`; omitting them imposes no application policy. Deletion clears retained note text from versions and receipts. Consent, personalization defaults, daily model budgets, automated selection, suppression, and delivery policy belong to the integrating application and are not shipped in this package.
