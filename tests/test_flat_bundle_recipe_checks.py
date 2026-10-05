@@ -40,6 +40,7 @@ def _run(
         # Exercise the recipe's existing optional-PyYAML branch, not a copy of it.
         body = body.replace("import yaml", "raise ImportError('fixture without PyYAML')")
     env = dict(os.environ, VALIDATE_BUNDLE_REPO_PATH=str(repo_path))
+    env["AMPLIFIER_RECIPE_SCRATCH_DIR"] = str(repo_path)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO_ROOT), env.get("PYTHONPATH")]))
     proc = subprocess.run(
         [sys.executable, "-c", body], capture_output=True, text=True, env=env, timeout=30

@@ -100,5 +100,7 @@ amplifier-foundation/
 Version 0.3.0. The flat root composes Anchors plus the shared capability. The old
 `bundles/anchors-amp-dev/bundle.md` URI remains a compatibility wrapper, not a
 second implementation. The migration passes 227 focused composition, namespace,
-skill-precedence, prompt-contract and recipe checks. Live DTU qualification
-remains pending; local configuration checks do not establish live execution.
+skill-precedence, prompt-contract and recipe checks. The portable capability
+also passed real root and expert-spawn checks in an isolated non-Anchors host.
+That does not establish live acceptance of every Anchors entry point or a clean
+repository-wide recipe verdict.

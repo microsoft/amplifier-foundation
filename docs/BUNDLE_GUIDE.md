@@ -457,9 +457,10 @@ second copy of the base or capability to keep in sync. The nested
 `anchors-amp-dev:amplifier-dev-expert` alias is not retained.
 
 Instruction preservation, namespace resolution, and intended skill precedence
-need composition checks. Local migration qualification passes those checks;
-live DTU qualification remains pending. A structural description alone is not
-runtime evidence.
+need composition checks. Local migration qualification passes those checks.
+The portable capability also passed real expert-spawn checks in an isolated
+non-Anchors host. A structural description alone is not runtime evidence, and
+that bounded run does not establish acceptance of every complete host.
 
 The historical head-cost figures below precede the flat-root migration; no
 remeasurement of this layout is claimed here.

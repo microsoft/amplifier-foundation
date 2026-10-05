@@ -1,9 +1,18 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.17.0
+# Repository-Wide Bundle Validator Recipe v3.17.1
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.17.1 - A full Foundation run failed before quality-classification could
+#          start: its rendered command was 139,923 bytes (Linux argv limit).
+#          Discovery, individual validation, and tool placement now retain
+#          their full JSON in private payload files as well as recipe context.
+#          Bash consumers receive only paths via the supported env field.
+#          No results are truncated; missing files fail rather than pass.
+#          Start fresh qualification; do not resume an older run whose outputs
+#          predate the payload-file metadata. Preserve that run's provenance.
+#
 # v3.17.0 - Discover flat Markdown roots under bundles/ without treating their
 #          agent/context assets as manifests; retain nested bundle.md entries.
 #          Use namespace_root for their local context/agent cost measurements.
@@ -600,7 +609,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.17.0"
+version: "3.17.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -1390,7 +1399,20 @@ steps:
       import json
       import os
       import re
+      import tempfile
       from pathlib import Path
+
+      def emit_results(results):
+          # Unique private files survive for inspection/resume, never overwrite
+          # another run. Older engines fall back inside the current workspace.
+          root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+          if not root:
+              root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+          fd, payload_path = tempfile.mkstemp(prefix="discovery-", suffix=".json", dir=root)
+          with os.fdopen(fd, "w", encoding="utf-8") as payload:
+              json.dump(results, payload)
+          results["_payload_file"] = payload_path
+          print(json.dumps(results))
 
       def is_bundle_markdown(bundle_path: Path) -> bool:
           """Identify manifests, not agent/context assets under bundles/."""
@@ -1432,7 +1454,7 @@ steps:
                   "type": "path_error",
                   "message": f"Repository path does not exist: {repo_path}"
               })
-              print(json.dumps(results))
+              emit_results(results)
               return results
 
           if not path.is_dir():
@@ -1440,7 +1462,7 @@ steps:
                   "type": "path_error",
                   "message": f"Path is not a directory: {repo_path}"
               })
-              print(json.dumps(results))
+              emit_results(results)
               return results
 
           def get_bundle_details(bundle_path: Path) -> dict:
@@ -1532,7 +1554,7 @@ steps:
               "total_tokens": sum(d.get("size_tokens", 0) for d in results["bundle_details"].values())
           }
 
-          print(json.dumps(results))
+          emit_results(results)
           return results
 
       # The repo path arrives through the ENVIRONMENT, never interpolated into
@@ -1567,9 +1589,12 @@ steps:
 
   - id: "yaml-structure-lint"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import sys
       from pathlib import Path
 
@@ -1587,7 +1612,7 @@ steps:
           }))
           sys.exit(0)
 
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
 
       # Collect all bundle files from all categories
       all_bundle_files = []
@@ -1751,13 +1776,27 @@ steps:
 
   - id: "validate-all-bundles"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
+      import os
       import re
       import sys
+      import tempfile
       from pathlib import Path
+
+      def emit_results(results):
+          root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+          if not root:
+              root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+          fd, payload_path = tempfile.mkstemp(prefix="individual-", suffix=".json", dir=root)
+          with os.fdopen(fd, "w", encoding="utf-8") as payload:
+              json.dump(results, payload)
+          results["_payload_file"] = payload_path
+          print(json.dumps(results))
 
       env_check = json.loads('''{{env_check}}''')
       
@@ -1766,14 +1805,14 @@ steps:
       
       if not foundation_available:
           # v3.2.0: This is an environment limitation, NOT a bundle problem
-          print(json.dumps({
+          emit_results({
               "phase": "individual_validation",
               "skipped": True,
               "environment_limitation": True,  # v3.2.0: Flag this as env issue
               "reason": "amplifier_foundation not available - BundleRegistry validation skipped",
               "validation_mode": env_check.get("validation_mode", "structural_only"),
               "note": "Structural checks still performed; install amplifier_foundation for full validation"
-          }))
+          })
           sys.exit(0)
 
       from amplifier_foundation import BundleRegistry
@@ -1784,7 +1823,7 @@ steps:
           BundleValidationError
       )
 
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       
       async def validate_bundle(bundle_path: str, category: str) -> dict:
           """Validate a single bundle and return results."""
@@ -1898,7 +1937,7 @@ steps:
               if result.get("warnings"):
                   results["summary"]["by_category"][category]["warnings"] += len(result["warnings"])
 
-          print(json.dumps(results))
+          emit_results(results)
 
       asyncio.run(validate_all())
       EOF
@@ -2603,16 +2642,19 @@ steps:
 
   - id: "standalone-completeness-validation"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
+      import os
       import re
       import sys
       from pathlib import Path
 
       env_check = json.loads('''{{env_check}}''')
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
 
       results = {
           "phase": "standalone_completeness",
@@ -2832,16 +2874,19 @@ steps:
 
   - id: "experiments-validation"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
+      import os
       import re
       import sys
       from pathlib import Path
 
       env_check = json.loads('''{{env_check}}''')
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
 
       results = {
           "phase": "experiments_validation",
@@ -2971,9 +3016,12 @@ steps:
 
   - id: "context-sink-compliance"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       import sys
       from pathlib import Path
@@ -2982,7 +3030,7 @@ steps:
           """Estimate token count as len(content) // 4."""
           return len(content) // 4
 
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
 
       results = {
           "phase": "context_sink_compliance",
@@ -3154,15 +3202,20 @@ steps:
 
   - id: "tool-placement-analysis"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
+      VALIDATE_INDIVIDUAL_PAYLOAD: "{{individual_validation._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       import sys
+      import tempfile
       from pathlib import Path
 
-      discovery = json.loads('''{{discovery_results}}''')
-      individual = json.loads('''{{individual_validation}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
+      individual = json.loads(Path(os.environ["VALIDATE_INDIVIDUAL_PAYLOAD"]).read_text(encoding="utf-8"))
 
       results = {
           "phase": "tool_placement_analysis",
@@ -3422,6 +3475,13 @@ steps:
           "exclude_tools_config": results["inheritance_analysis"]["exclude_tools"]
       }
 
+      root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+      if not root:
+          root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+      fd, payload_path = tempfile.mkstemp(prefix="tools-", suffix=".json", dir=root)
+      with os.fdopen(fd, "w", encoding="utf-8") as payload:
+          json.dump(results, payload)
+      results["_payload_file"] = payload_path
       print(json.dumps(results))
       EOF
     output: "tool_placement_results"
@@ -5727,14 +5787,20 @@ steps:
 
   - id: "quality-classification"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
+      VALIDATE_INDIVIDUAL_PAYLOAD: "{{individual_validation._payload_file}}"
+      VALIDATE_TOOLS_PAYLOAD: "{{tool_placement_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import sys
+      from pathlib import Path
 
       # Parse all results
-      individual = json.loads('''{{individual_validation}}''')
-      discovery = json.loads('''{{discovery_results}}''')
+      individual = json.loads(Path(os.environ["VALIDATE_INDIVIDUAL_PAYLOAD"]).read_text(encoding="utf-8"))
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       packaging = json.loads('''{{packaging_check}}''')
       
       # v3.2.0: Parse environment check for environment status tracking
@@ -5782,11 +5848,7 @@ steps:
       except (json.JSONDecodeError, ValueError):
           context_sink = {"passed": True, "skipped": True}
 
-      tool_placement_raw = '''{{tool_placement_results}}'''
-      try:
-          tool_placement = json.loads(tool_placement_raw)
-      except (json.JSONDecodeError, ValueError):
-          tool_placement = {"passed": True, "skipped": True}
+      tool_placement = json.loads(Path(os.environ["VALIDATE_TOOLS_PAYLOAD"]).read_text(encoding="utf-8"))
 
       recipe_validation_raw = '''{{recipe_validation}}'''
       try:
@@ -6737,15 +6799,16 @@ steps:
 
   - id: "bundle-doc-freshness-check"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     depends_on: ["repo-discovery"]
     on_error: "continue"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
-      import json, re, sys
+      import json, os, re, sys
       from pathlib import Path
 
-      _discovery_raw = r"""{{discovery_results}}"""
-      discovery = json.loads(_discovery_raw)
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       repo_path = Path(discovery.get("repo_path", "")).resolve()
 
       # Check if amplifier_foundation.bundle_docs is available (installed package)
@@ -6946,11 +7009,13 @@ steps:
 
   - id: "bundle-overview-regen-write"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     depends_on: ["set-default-bundle-overview-enhanced-dot", "bundle-overview-regen-enhance"]
     on_error: "continue"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
-      import json, subprocess, re, sys
+      import json, os, subprocess, re, sys
       from pathlib import Path
 
       targets = json.loads(r"""{{bundle_overview_regen_targets}}""")
@@ -6959,8 +7024,7 @@ steps:
           sys.exit(0)
 
       overview_dot = targets["overview_dot"]
-      _discovery_raw = r"""{{discovery_results}}"""
-      discovery = json.loads(_discovery_raw)
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       repo_path = Path(discovery.get("repo_path", "")).resolve()
       bundle_path = repo_path / "bundle.dot"
       png_path = repo_path / "bundle.png"
