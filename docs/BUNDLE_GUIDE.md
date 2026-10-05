@@ -462,6 +462,23 @@ The portable capability also passed real expert-spawn checks in an isolated
 non-Anchors host. A structural description alone is not runtime evidence, and
 that bounded run does not establish acceptance of every complete host.
 
+### Validation payload lifetime
+
+`validate-bundle-repo.yaml` keeps large results in private payload files instead
+of interpolating them into shell arguments. Files use mode `0600`; when the
+runner supplies no scratch directory, the recipe creates a private
+`.validate-bundle-payloads-*` directory in its working directory.
+
+Keep those payloads while the run can resume or its evidence is being retained.
+Automatic deletion at final synthesis would make saved context paths unusable
+for inspection or recovery. The invoking caller owns archival and eventual
+cleanup once the run is no longer needed. The repository ignores fallback
+directories to prevent accidental publication; ignored does not mean cleaned.
+That ignore protects only this repository's tree. When validating another
+repository, supply `AMPLIFIER_RECIPE_SCRATCH_DIR` outside the target tree or add
+`.validate-bundle-payloads-*/` to that repository's ignore rules. POSIX mode
+checks do not establish Windows ACL protection.
+
 The historical head-cost figures below precede the flat-root migration; no
 remeasurement of this layout is claimed here.
 

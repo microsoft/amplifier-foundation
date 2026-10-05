@@ -10,6 +10,22 @@ it is being used to build.
 
 ## Install
 
+### Migration from the nested entry point
+
+The old root URI remains supported, but its added resource identifiers changed:
+
+| Former identifier | Replacement |
+|---|---|
+| `anchors-amp-dev:amplifier-dev-expert` | `amp-dev:amplifier-dev-expert` |
+| `anchors-amp-dev:context/amplifier-ecosystem.md` | `amp-dev:context/amplifier-dev/amplifier-ecosystem.md` |
+
+Update explicit delegate calls and context references. The old agent alias and
+context path are not compatibility exports. The wrappers and expert use the
+enclosing `foundation:` resource namespace; it must resolve to this candidate
+version or later, not a stale separately cached Foundation tree.
+
+### Select the complete root
+
 `anchors-amp-dev` is a registered bundle, so it can be selected by name:
 
 ```bash
@@ -99,8 +115,13 @@ amplifier-foundation/
 
 Version 0.3.0. The flat root composes Anchors plus the shared capability. The old
 `bundles/anchors-amp-dev/bundle.md` URI remains a compatibility wrapper, not a
-second implementation. The migration passes 227 focused composition, namespace,
-skill-precedence, prompt-contract and recipe checks. The portable capability
-also passed real root and expert-spawn checks in an isolated non-Anchors host.
-That does not establish live acceptance of every Anchors entry point or a clean
-repository-wide recipe verdict.
+second implementation. Local targeted qualification passes 232 checks. Separate
+`amplifier-tester` acceptance through official `amplifier-app-cli` passed 17
+bounded checks covering both flat roots and both compatibility entry points:
+real model responses, file and Bash tools, named-agent spawning, skills loading,
+candidate resource provenance, and retained streaming/simple runtimes.
+
+The portable capability also passed real root and expert-spawn checks in an
+isolated non-Anchors host. These observations do not establish a clean
+repository-wide recipe verdict; full validation failures and coverage limits
+remain separate evidence.

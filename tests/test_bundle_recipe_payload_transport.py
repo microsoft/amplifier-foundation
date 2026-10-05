@@ -20,6 +20,10 @@ SPOOLED = {
     "validate-all-bundles": "individual_validation",
     "tool-placement-analysis": "tool_placement_results",
 }
+POSIX_RECIPE_EXECUTION = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Executes Bash recipe steps and verifies POSIX file permissions; Windows ACLs are not qualified.",
+)
 
 
 def _render(template: str, context: dict) -> str:
@@ -72,6 +76,7 @@ def _classification_defaults(context: dict, step: dict) -> None:
     context["packaging_check"] = {"passed": True}
 
 
+@POSIX_RECIPE_EXECUTION
 def test_large_payloads_execute_producers_and_classifier_losslessly(tmp_path: Path) -> None:
     steps = _steps()
     repo = tmp_path / "repo"
@@ -131,6 +136,7 @@ def test_large_payloads_execute_producers_and_classifier_losslessly(tmp_path: Pa
     assert legacy_size > 128 * 1024
 
 
+@POSIX_RECIPE_EXECUTION
 def test_payload_files_are_unique_in_workspace_without_runtime_scratch(tmp_path: Path) -> None:
     context = {"repo_path": str(tmp_path)}
     step = _steps()["repo-discovery"]
@@ -144,6 +150,7 @@ def test_payload_files_are_unique_in_workspace_without_runtime_scratch(tmp_path:
 
 
 @pytest.mark.parametrize("contents", [None, "{broken json"])
+@POSIX_RECIPE_EXECUTION
 def test_classifier_refuses_missing_or_corrupt_payloads(tmp_path: Path, contents: str | None) -> None:
     context = {"repo_path": str(tmp_path)}
     steps = _steps()
