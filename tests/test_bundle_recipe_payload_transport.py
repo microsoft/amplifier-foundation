@@ -38,7 +38,7 @@ def _render(template: str, context: dict) -> str:
 
 
 def _steps() -> dict:
-    return {step["id"]: step for step in yaml.safe_load(RECIPE.read_text())["steps"]}
+    return {step["id"]: step for step in yaml.safe_load(RECIPE.read_text(encoding="utf-8"))["steps"]}
 
 
 def _run(step: dict, context: dict, cwd: Path, *, scratch: Path | None) -> dict:
@@ -59,7 +59,7 @@ def _run(step: dict, context: dict, cwd: Path, *, scratch: Path | None) -> dict:
     if step["id"] in SPOOLED:
         payload = Path(result["_payload_file"])
         assert stat.S_IMODE(payload.stat().st_mode) == 0o600
-        assert json.loads(payload.read_text()) == {
+        assert json.loads(payload.read_text(encoding="utf-8")) == {
             key: value for key, value in result.items() if key != "_payload_file"
         }
         assert payload.is_relative_to(cwd)
@@ -180,3 +180,17 @@ def test_every_bash_consumer_of_spooled_outputs_receives_paths_only() -> None:
             continue
         for variable in SPOOLED.values():
             assert "{{" + variable + "}}" not in step["command"], step["id"]
+
+
+def test_recipe_static_check_with_legacy_default_encoding(monkeypatch) -> None:
+    """Exercise the real UTF-8 recipe under a simulated legacy Windows default."""
+    read_text = Path.read_text
+
+    def legacy_read_text(path, encoding=None, errors=None, **kwargs):
+        if path == RECIPE and encoding is None:
+            encoding = "cp1252"
+        return read_text(path, encoding=encoding, errors=errors, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", legacy_read_text)
+    assert set(SPOOLED) <= _steps().keys()
+    test_every_bash_consumer_of_spooled_outputs_receives_paths_only()
