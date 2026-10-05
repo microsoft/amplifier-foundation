@@ -567,6 +567,14 @@ class BundleRegistry:
                             f"@{bundle.name}: -> {bundle.base_path}"
                         )
 
+            # Explicit resource roots do not depend on discovering a containing
+            # bundle. Local sources can be outside HOME or have a deliberately
+            # narrow admitted source_root; neither invalidates this declaration.
+            if bundle.name and bundle.base_path and bundle.namespace_root is not None:
+                bundle.source_base_paths[bundle.name] = (
+                    bundle.base_path / bundle.namespace_root
+                ).resolve()
+
             # Determine if this is a root bundle or nested bundle
             # A bundle is a nested bundle if we found a DIFFERENT root bundle above it
             is_root_bundle = True
@@ -1201,7 +1209,7 @@ class BundleRegistry:
         current = start.resolve()
         stop = stop.resolve()
 
-        while current >= stop:
+        while current.is_relative_to(stop):
             bundle_md = current / "bundle.md"
             bundle_yaml = current / "bundle.yaml"
 
