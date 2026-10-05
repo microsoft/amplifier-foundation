@@ -149,10 +149,13 @@ class FileSourceHandler:
         if current.is_file():
             current = current.parent
 
-        # Don't search above home directory or filesystem root
-        stop = Path.home()
+        # Sources may live outside an isolated HOME. Search their actual
+        # ancestry, bounded by HOME when inside it and the filesystem root
+        # otherwise. Source admission remains the resolver policy's authority.
+        home = Path.home().resolve()
+        stop = home if current.is_relative_to(home) else Path(current.anchor)
 
-        while current >= stop and current != current.parent:
+        while current.is_relative_to(stop) and current != current.parent:
             if (current / "bundle.md").exists() or (current / "bundle.yaml").exists():
                 return current
             current = current.parent
