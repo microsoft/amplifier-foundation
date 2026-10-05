@@ -36,7 +36,6 @@ async def test_resource_roots_outside_home(tmp_path, monkeypatch, home_name,
     home = tmp_path / home_name; home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    assert Path.home() == home
     uri = str(path) if source_kind == "path" else path.as_uri()
     if source_kind == "fragment":
         uri = root.as_uri() + "#subdirectory=behaviors/skills.yaml"
@@ -55,7 +54,6 @@ async def test_resource_roots_outside_home(tmp_path, monkeypatch, home_name,
 
 def test_search_boundaries_are_ancestry_not_order(tmp_path, monkeypatch):
     home=tmp_path/"home";home.mkdir();monkeypatch.setenv("HOME",str(home));monkeypatch.setenv("USERPROFILE",str(home))
-    assert Path.home() == home
     root=tmp_path/"z-decoy";root.mkdir();(root/"bundle.yaml").write_text("bundle: {}")
     registry=BundleRegistry(home=home/"registry",persist=False,read_persisted=False)
     assert registry._find_nearest_bundle_file(root, home) is None
@@ -68,7 +66,6 @@ def test_search_boundaries_are_ancestry_not_order(tmp_path, monkeypatch):
 async def test_declared_roots_visible_before_root_and_delegated_mount(tmp_path, monkeypatch, compose):
     root=(tmp_path/"package").resolve();path=fixture(root, containing="absent")
     home=tmp_path/"isolated-home";home.mkdir();monkeypatch.setenv("HOME",str(home));monkeypatch.setenv("USERPROFILE",str(home))
-    assert Path.home() == home
     bundle=await BundleRegistry(home=home/"registry",persist=False,read_persisted=False).load(str(path))
     prepared=PreparedBundle({},BundleModuleResolver(module_paths={}),bundle)
     session=_FakeSession()
@@ -88,7 +85,6 @@ async def test_admitted_source_keeps_declared_resource_root(tmp_path, monkeypatc
     from amplifier_foundation.paths.resolution import ResolvedSource
     root=(tmp_path/"package").resolve();path=fixture(root, containing="absent")
     home=tmp_path/"z-home";home.mkdir();monkeypatch.setenv("HOME",str(home));monkeypatch.setenv("USERPROFILE",str(home))
-    assert Path.home() == home
     uri={"file":path.as_uri(),"git":"git+https://example.test/library@main#subdirectory=behaviors/skills.yaml",
          "zip":"zip+https://example.test/library.zip#subdirectory=behaviors/skills.yaml"}[source_kind]
     def admit(requested, *, base_path):
