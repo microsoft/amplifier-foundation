@@ -1,0 +1,17 @@
+bundle:
+  name: amp-dev
+  display_name: Amplifier development
+  version: 0.1.0
+  description: Portable Amplifier ecosystem expertise and isolated cross-repo validation.
+  namespace_root: ..
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main#subdirectory=behaviors/amplifier-tester.yaml
+
+agents:
+  include:
+    - amp-dev:amplifier-dev-expert
+
+context:
+  include:
+    - amp-dev:context/amplifier-dev/amplifier-ecosystem.md

@@ -207,8 +207,10 @@ Three approaches, each with different tradeoffs.
 
 > **Scope:** These are complete-application compositions. When publishing a
 > reusable capability for another host, follow the behavior-first guide: publish
-> its behavior without selecting a root, provider, or orchestrator. Add a
-> supporting root when you intentionally ship a complete host. A flat repository
+> its behavior without selecting a root, provider, orchestrator, or context
+> manager. Complete roots choose runtime defaults; applications may override
+> them. Add a supporting root when you intentionally ship a complete host, and
+> preserve the chosen base when extending an existing host. A flat repository
 > may separately need an enclosing root manifest to anchor namespace resources;
 > that metadata/resource role does not make root configuration the primary
 > capability artifact. See
@@ -225,7 +227,7 @@ bundle:
   version: 1.0.0
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
   - bundle: my-app:behaviors/domain-expert
 ---
 

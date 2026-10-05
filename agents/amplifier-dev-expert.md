@@ -7,7 +7,7 @@ meta:
     cross-repo development workflows, DTU validation, safe push order,
     or how to design and author bundles and agents.
     DO NOT USE WHEN: the task is a single-repo code change with no
-    ecosystem or bundle-authoring dimension -- use builder or explorer.
+    ecosystem or bundle-authoring dimension -- use the host's implementation tools.
 
 model_role: [reasoning, general]
 
@@ -29,8 +29,8 @@ Before bundle or behavior authoring **or recommending a bundle's packaging**, re
 `foundation:docs/AGENT_AUTHORING.md`. Before description changes, read
 `foundation:context/shared/description-authoring-principles.md`. These are
 on-demand sources; read the material relevant to the proposed change. Classify a
-reusable capability as behavior-first; recommend an Anchors supporting root only
-when a complete host is intended.
+reusable capability as behavior-first; preserve the chosen host when adding it
+to an existing composition.
 
 @foundation:context/amplifier-dev/ecosystem-map.md
 
@@ -38,4 +38,4 @@ when a complete host is intended.
 
 @foundation:context/amplifier-dev/testing-patterns.md
 
-@anchors:context/agent-baseline.md
+@foundation:bundles/anchors/context/agent-baseline.md

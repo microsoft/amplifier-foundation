@@ -48,7 +48,9 @@ Includes are loaded in parallel with circular dependency detection.
 ### Behavior-first and supporting-root patterns
 
 A reusable capability is a behavior partial. It contributes only the capability;
-the host chooses its root, provider, orchestrator, and instruction:
+the host chooses its root, provider, orchestrator, context manager, and
+instruction. Complete roots choose runtime defaults; applications may override
+them:
 
 ```yaml
 bundle:
@@ -60,17 +62,25 @@ agents:
 ```
 
 A complete host may offer a thin supporting root that composes the behavior. New
-complete hosts can compose Anchors:
+complete hosts can compose Anchors; adding a capability to an existing host does
+not require replacing that host:
 
 ```yaml
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
   - bundle: recipes:behaviors/recipes
 ```
 
 The root preserves `@anchors:context/system.md` when it has its own instruction
 body. Existing selected legacy roots remain valid. A root can also anchor
 repo-level namespaced resources, so behavior-first is not a root ban.
+
+For example, `bundles/anchors-amp-dev.md` composes `bundles/anchors.md` plus
+`behaviors/amp-dev.yaml`. All Amplifier-development additions belong to that
+runtime-neutral behavior, including the `amp-dev:amplifier-dev-expert` agent and
+Tester behavior. Another host can compose the same capability without Anchors.
+The flat Anchors manifest uses `namespace_root: anchors`, relative to its
+containing `bundles/` directory, to retain the existing `anchors:` assets.
 
 ### Behaviors
 

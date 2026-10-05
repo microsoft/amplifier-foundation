@@ -1,8 +1,8 @@
 # Anchors + Amplifier-Ecosystem Knowledge
 
-The [`anchors`](../anchors/) bundle plus one layer: knowledge of the Amplifier
-ecosystem itself — repo dependency order, cross-repo validation in a Digital
-Twin Universe, and bundle/agent authoring.
+The [`anchors`](../anchors.md) bundle plus one portable capability: knowledge of
+the Amplifier ecosystem itself — repo dependency order, cross-repo validation in
+a Digital Twin Universe, and bundle/agent authoring.
 
 Both bundles are for software development. The difference is not what kind of
 work they do, it is what they *know*: this one additionally knows the ecosystem
@@ -20,34 +20,35 @@ Or add it explicitly by URI (single-quote to prevent shell expansion of the `#`
 fragment; the `.md` suffix is required):
 
 ```bash
-amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors-amp-dev/bundle.md' --name anchors-amp-dev
+amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors-amp-dev.md' --name anchors-amp-dev
 amplifier bundle use anchors-amp-dev
 ```
 
 ## What it is, mechanically
 
-`bundle.md` is about 25 lines and declares no runtime of its own. It has two
-includes and a two-line body:
+The canonical `bundles/anchors-amp-dev.md` declares no runtime of its own. Its
+includes and instruction body are:
 
 ```yaml
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  - bundle: foundation:bundles/anchors.md
+  - bundle: foundation:behaviors/amp-dev.yaml
 ```
 
 ```
 @anchors:context/system.md
-
-@anchors-amp-dev:context/amplifier-ecosystem.md
 ```
 
-Everything else — `session:`, `tools:`, `hooks:`, the six agents, the behaviors
-— comes from the anchors include. There is no second copy to keep in sync, and
-`tests/test_anchors_bundles_dry.py` fails if one reappears.
+Anchors owns the runtime, standard tools, hooks, and six engineering agents.
+The `amp-dev` behavior owns **all** Amplifier-development additions, including
+the tester capability; the variant does not repeat any of them. Complete roots
+choose orchestrator and context-manager defaults, and applications may override
+them. The behavior chooses neither.
 
-The body order is load-bearing: instruction `@mention`s lead the system prompt
-and are emitted in body order (#359), so the principles come first and the
-ecosystem layer second.
+The explicit body preserves the Anchors principles: a root's body replaces
+included bodies, and instruction `@mention`s lead the context block (#359).
+The ecosystem instruction accumulates through the behavior's `context.include`,
+so it is not repeated in the root body.
 
 ## The principle core (from anchors)
 
@@ -59,29 +60,45 @@ ecosystem layer second.
 
 | Addition | Notes |
 |---|---|
-| `context/amplifier-ecosystem.md` | Three ecosystem principles (dependency order, prove cross-repo changes in a DTU, safe push order) and how to touch session data safely. Appended to the anchors system prompt, not a replacement for it. |
-| `amplifier-dev-expert` agent | Authority for multi-repo development, push order, DTU validation, and bundle/agent authoring. Loads the shared anchors baseline and three ecosystem docs from `@foundation:context/amplifier-dev/` on spawn; conditionally reads `foundation:docs/BUNDLE_GUIDE.md`, `foundation:docs/AGENT_AUTHORING.md`, or `foundation:context/shared/description-authoring-principles.md` for the relevant authoring change without eagerly loading full docs. |
-| `amplifier-tester` include | Cross-repo validation in a Digital Twin Universe (pulls in `digital-twin-universe` and `gitea` transitively). |
+| `context/amplifier-dev/amplifier-ecosystem.md` | Short ecosystem instructions: dependency order, cross-repo DTU validation, safe push order, behavior-first packaging, and safe session-data handling. Accumulates through the behavior, not a replacement for the host's instruction. |
+| `amp-dev:amplifier-dev-expert` | Lean authority for multi-repo development and bundle/agent authoring, relocated to `agents/amplifier-dev-expert.md`. Loads the shared baseline as a Foundation resource and three ecosystem reference docs on spawn; reads relevant authoring guides on demand. It does not require Anchors runtime or named agents. |
+| Tester behavior | Includes `amplifier-bundle-amplifier-tester`'s `behaviors/amplifier-tester.yaml`, providing tester setup/validator, DTU profile-builder, and DTU/Gitea skills and awareness transitively. |
 
-The three ecosystem docs live in exactly one place — the repo root's
-`context/amplifier-dev/`. The `foundation:` namespace resolves inside this
-bundle's sessions because this bundle is nested inside the amplifier-foundation
-repo, and the registry registers the enclosing root bundle's namespace at load
-time; no `foundation` include is needed or wanted.
+The behavior's `namespace_root: ..` maps `amp-dev:` to the repository root.
+The enclosing `bundle.md` anchors the `foundation:` resource namespace without
+composing the Foundation runtime. The ecosystem docs and expert each have one
+canonical copy at repository level. The former
+`anchors-amp-dev:amplifier-dev-expert` alias is **not** retained; use
+`amp-dev:amplifier-dev-expert`.
+
+Existing hosts can compose just
+`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/amp-dev.yaml`
+without adopting Anchors. Tool configuration lists accumulate parent-first:
+this root loads Anchors before the capability, so include order affects skill
+search precedence. Test the intended precedence rather than assuming reordered
+includes produce a byte-identical mount plan.
 
 ## Files
 
 ```
-anchors-amp-dev/
-├── README.md                        # this file
-├── bundle.md                        # ~25 lines: two includes, one agent, two mentions
-├── agents/
-│   └── amplifier-dev-expert.md      # the ecosystem authority
-└── context/
-    └── amplifier-ecosystem.md       # the ecosystem layer appended to anchors' system.md
+amplifier-foundation/
+├── bundles/
+│   ├── anchors.md                  # complete Anchors host
+│   ├── anchors-amp-dev.md          # Anchors + amp-dev behavior
+│   └── anchors-amp-dev/
+│       ├── README.md               # this file
+│       └── bundle.md               # compatibility wrapper
+├── behaviors/amp-dev.yaml          # complete portable amp-dev capability
+├── agents/amplifier-dev-expert.md   # lean ecosystem authority
+└── context/amplifier-dev/
+    ├── amplifier-ecosystem.md      # short operating instruction
+    └── …                           # canonical ecosystem reference docs
 ```
 
 ## Status
 
-Version 0.2.0. Previously a full copy of the anchors tree with an added agent;
-now a thin include, so the evaluated anchors text is the only copy of it.
+Version 0.3.0. The flat root composes Anchors plus the shared capability. The old
+`bundles/anchors-amp-dev/bundle.md` URI remains a compatibility wrapper, not a
+second implementation. The migration passes 227 focused composition, namespace,
+skill-precedence, prompt-contract and recipe checks. Live DTU qualification
+remains pending; local configuration checks do not establish live execution.

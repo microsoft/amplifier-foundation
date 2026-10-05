@@ -20,6 +20,7 @@ ANCHORS_DIR = REPO_ROOT / "bundles" / "anchors"
 AMP_DEV_DIR = REPO_ROOT / "bundles" / "anchors-amp-dev"
 BASELINE_PATH = ANCHORS_DIR / "context" / "agent-baseline.md"
 BASELINE_MENTION = "@anchors:context/agent-baseline.md"
+AMP_DEV_BASELINE_MENTION = "@foundation:bundles/anchors/context/agent-baseline.md"
 
 ANCHORS_AGENTS = (
     "architect",
@@ -42,7 +43,9 @@ async def _prepared_catalog(
     catalog's source body, while avoiding network access to its runtime modules.
     """
     return await prepare_agent_catalog(
-        tmp_path, monkeypatch, bundle_dir.joinpath("bundle.md").as_uri()
+        tmp_path, monkeypatch,
+        (REPO_ROOT / "bundles/anchors.md" if bundle_dir == ANCHORS_DIR
+         else REPO_ROOT / "behaviors/amp-dev.yaml").as_uri()
     )
 
 
@@ -62,7 +65,8 @@ async def _catalogs(
     }
     return (
         agents,
-        {"anchors": anchors, "anchors-amp-dev": amp_dev},
+        {**anchors_prepared._build_bundles_for_resolver(anchors),
+         **amp_dev_prepared._build_bundles_for_resolver(amp_dev)},
         {"anchors": anchors_prepared, "anchors-amp-dev": amp_dev_prepared},
     )
 
@@ -78,15 +82,16 @@ async def test_every_named_agent_body_points_once_to_the_shared_baseline(
 
     assert set(agents) == {
         *(f"anchors:{name}" for name in ANCHORS_AGENTS),
-        "anchors-amp-dev:amplifier-dev-expert",
+        "amp-dev:amplifier-dev-expert",
     }
     for name in ALL_AGENTS:
         catalog_name = (
             f"anchors:{name}"
             if name in ANCHORS_AGENTS
-            else "anchors-amp-dev:amplifier-dev-expert"
+            else "amp-dev:amplifier-dev-expert"
         )
-        assert agents[catalog_name]["instruction"].count(BASELINE_MENTION) == 1
+        mention = BASELINE_MENTION if name in ANCHORS_AGENTS else AMP_DEV_BASELINE_MENTION
+        assert agents[catalog_name]["instruction"].count(mention) == 1
 
 
 @pytest.mark.asyncio
@@ -104,7 +109,7 @@ async def test_real_mention_loader_expands_the_baseline_once_per_agent(
         catalog_name = (
             f"anchors:{name}"
             if name in ANCHORS_AGENTS
-            else "anchors-amp-dev:amplifier-dev-expert"
+            else "amp-dev:amplifier-dev-expert"
         )
         expanded = await expand_mentions_in_instruction(
             agents[catalog_name]["instruction"], resolver=resolver
@@ -148,7 +153,7 @@ async def test_child_prompt_does_not_eagerly_load_local_sentinels(
         prepared_catalogs["anchors"].bundle.instruction,
         prepared_catalogs["anchors-amp-dev"].bundle.instruction,
     ]
-    assert all(BASELINE_MENTION not in instruction for instruction in root_instructions)
+    assert all(BASELINE_MENTION not in (instruction or "") for instruction in root_instructions)
 
     agents_sentinel = "fixture AGENTS sentinel must not be loaded"
     scratch_sentinel = "fixture SCRATCH sentinel must not be loaded"
@@ -181,7 +186,7 @@ async def test_amp_dev_authoring_references_are_conditional_not_eager_docs(
     agents, _namespace_bundles, _prepared_catalogs = await _catalogs(
         tmp_path, monkeypatch
     )
-    instruction = agents["anchors-amp-dev:amplifier-dev-expert"]["instruction"]
+    instruction = agents["amp-dev:amplifier-dev-expert"]["instruction"]
 
     for reference in (
         "`foundation:docs/BUNDLE_GUIDE.md`",
@@ -193,7 +198,7 @@ async def test_amp_dev_authoring_references_are_conditional_not_eager_docs(
         "@foundation:context/amplifier-dev/ecosystem-map.md",
         "@foundation:context/amplifier-dev/dev-workflows.md",
         "@foundation:context/amplifier-dev/testing-patterns.md",
-        BASELINE_MENTION,
+        AMP_DEV_BASELINE_MENTION,
     ]
 
 
@@ -255,10 +260,11 @@ async def test_amp_dev_readme_include_example_matches_runtime_source_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The documented include order is parsed and compared to the loaded bundle."""
-    _prepared, bundle = await _prepared_catalog(tmp_path, monkeypatch, AMP_DEV_DIR)
+    includes = yaml.safe_load(
+        (REPO_ROOT / "bundles/anchors-amp-dev.md").read_text().split("---", 2)[1])["includes"]
     readme = (AMP_DEV_DIR / "README.md").read_text(encoding="utf-8")
     match = re.search(r"```yaml\n(?P<yaml>includes:\n.*?\n)```", readme, re.DOTALL)
     assert match, "README must contain a YAML includes example"
     documented = yaml.safe_load(match.group("yaml"))["includes"]
 
-    assert documented == bundle.includes
+    assert documented == includes

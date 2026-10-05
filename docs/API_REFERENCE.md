@@ -174,7 +174,7 @@ from amplifier_foundation import load_bundle
 
 base = await load_bundle(
     "git+https://github.com/microsoft/amplifier-foundation@main"
-    "#subdirectory=bundles/anchors/bundle.md"
+    "#subdirectory=bundles/anchors.md"
 )
 overlay = await load_bundle("./local-overlay.md")
 composed = base.compose(overlay)

@@ -162,28 +162,21 @@ class TestAmpDevIsAThinVariant:
         A duplicate block here is how the two bundles' orchestrator, context
         window, tool roster or hook set drift apart without anyone editing both.
         """
-        frontmatter = _frontmatter(AMP_DEV_DIR / "bundle.md")
-        declared = [k for k in ("session", "tools", "hooks") if k in frontmatter]
+        frontmatter = _frontmatter(BUNDLES_DIR / "anchors-amp-dev.md")
+        declared = [k for k in ("session", "tools", "hooks", "agents", "context") if k in frontmatter]
         assert not declared, (
-            f"bundles/anchors-amp-dev/bundle.md re-declares {declared}; these "
-            "must come from the anchors include so there is exactly one source "
-            "of truth for the runtime."
+            f"bundles/anchors-amp-dev.md re-declares {declared}; inherit the "
+            "host from Anchors and the entire capability from amp-dev."
         )
 
-    def test_includes_anchors_by_full_url(self) -> None:
-        """The anchors include is a full URL with a #subdirectory= fragment."""
-        includes = _frontmatter(AMP_DEV_DIR / "bundle.md").get("includes") or []
+    def test_includes_own_anchors_and_shared_behavior(self) -> None:
+        """Same-repository includes resolve through the containing namespace."""
+        includes = _frontmatter(BUNDLES_DIR / "anchors-amp-dev.md").get("includes") or []
         sources = [
             entry.get("bundle") if isinstance(entry, dict) else entry
             for entry in includes
         ]
-        matching = [s for s in sources if isinstance(s, str) and ANCHORS_INCLUDE_RE.match(s)]
-        assert matching, (
-            "bundles/anchors-amp-dev/bundle.md must include anchors by full URL "
-            "(git+https://github.com/microsoft/amplifier-foundation@main"
-            "#subdirectory=bundles/anchors/bundle.md). "
-            f"Found includes: {sources}"
-        )
+        assert sources == ["foundation:bundles/anchors.md", "foundation:behaviors/amp-dev.yaml"]
 
 
 class TestNoParallelCopies:

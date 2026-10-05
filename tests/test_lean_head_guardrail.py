@@ -76,7 +76,7 @@ DELEGATE_MODULE_DIR = REPO_ROOT / "modules" / "tool-delegate"
 OWNED_HEAD_BUDGET_CHARS = {
     # Required cwd-AGENTS auto-loading rule costs +12 chars.
     "bundles/anchors/context/system.md": 1154,
-    "bundles/anchors-amp-dev/context/amplifier-ecosystem.md": 1300,
+    "context/amplifier-dev/amplifier-ecosystem.md": 1300,
     "delegate:preamble": 938,
 }
 
@@ -85,7 +85,7 @@ OWNED_HEAD_BUDGET_CHARS = {
 # red-before run has something to point at.
 OWNED_HEAD_STOCK_CHARS = {
     "bundles/anchors/context/system.md": 1358,
-    "bundles/anchors-amp-dev/context/amplifier-ecosystem.md": 1432,
+    "context/amplifier-dev/amplifier-ecosystem.md": 1432,
     "delegate:preamble": 1190,
 }
 
@@ -116,7 +116,7 @@ REQUIRED_RULES = {
         "Generated with Amplifier",
         "Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.com>",
     ],
-    "bundles/anchors-amp-dev/context/amplifier-ecosystem.md": [
+    "context/amplifier-dev/amplifier-ecosystem.md": [
         "development OF the Amplifier ecosystem",
         "dependency order",
         "core → foundation → modules → bundles → apps",
@@ -127,8 +127,8 @@ REQUIRED_RULES = {
         "100k tokens",
         # Restored during this change -- present in stock, absent from the v1
         # span (which was authored against an older, smaller stock text).
-        "context-intelligence:session-navigator",
-        "context-intelligence:graph-analyst",
+        "available Context Intelligence agents",
+        "session-navigation capability",
         "scripts/amplifier-session.py",
         "there is no `amplifier session repair` subcommand",
     ],

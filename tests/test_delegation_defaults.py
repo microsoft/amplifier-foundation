@@ -14,7 +14,7 @@ ROOT = Path(__file__).parent.parent
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "source", ["bundles/anchors/bundle.md", "behaviors/agents.yaml"]
+    "source", ["bundles/anchors.md", "behaviors/agents.yaml"]
 )
 async def test_public_delegate_configs_do_not_enable_limits(tmp_path, monkeypatch, source):
     prepared, _bundle = await prepare_agent_catalog(
