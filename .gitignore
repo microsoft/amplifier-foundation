@@ -41,6 +41,9 @@ dist/
 build/
 output/
 
+# Private full-result payloads retained for validation receipts and resume.
+.validate-bundle-payloads-*/
+
 # Logs
 logs/
 *.log

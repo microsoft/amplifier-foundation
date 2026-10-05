@@ -9,6 +9,12 @@
 # CHANGELOG
 # =============================================================================
 #
+# v2.5.0:
+#   - Reject session.orchestrator and session.context in behavior targets;
+#     complete roots own runtime defaults and applications may override them.
+#     Missing PyYAML is an explicit unverified failure.
+#   - Active supporting-root guidance uses bundles/anchors.md.
+#
 # v2.4.0 (2026-09-18):
 #   - NEW FEATURE: accepts `bundle_type: "behavior"` from validate-bundle and
 #     reports it as a composable partial. Behavior validation assesses
@@ -104,7 +110,7 @@ description: |
   Behavior partials are valid targets: assess their composability and hygiene,
   not standalone session completeness. New complete hosts should normally use
   Anchors as their supporting base and compose capabilities explicitly.
-version: "2.4.0"
+version: "2.5.0"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "single", "dependency-tracing", "yaml-lint"]
 
@@ -141,14 +147,19 @@ steps:
       try:
           import yaml
       except ImportError:
-          # If PyYAML unavailable, skip lint (trace-dependencies will also need it)
+          # Without a YAML parser, runtime-selector hygiene cannot be certified.
           print(json.dumps({
               "phase": "yaml_structure_lint",
-              "skipped": True,
-              "passed": True,
-              "reason": "PyYAML not available"
+              "unverified": True,
+              "passed": False,
+              "errors": [{
+                  "type": "yaml_parser_unavailable",
+                  "severity": "ERROR",
+                  "message": "PyYAML not available; bundle structure cannot be verified",
+                  "fix": "Install PyYAML in the recipe interpreter and rerun validation."
+              }]
           }))
-          sys.exit(0)
+          sys.exit(1)
 
       def lint_bundle_yaml_structure(bundle_path: str) -> dict:
           """Check for silent-failure structural bugs in bundle YAML."""
@@ -214,6 +225,19 @@ steps:
 
           if not isinstance(yaml_data, dict):
               return results
+
+          # Behaviors add capabilities, never choose the host's runtime defaults.
+          session = yaml_data.get("session", {})
+          if "{{bundle_type}}" == "behavior" and isinstance(session, dict):
+              for field in ("orchestrator", "context"):
+                  if field in session:
+                      results["errors"].append({
+                          "type": f"has_session_{field}",
+                          "severity": "ERROR",
+                          "message": f"Behavior defines session.{field} - runtime defaults belong to the host",
+                          "fix": f"Move session.{field} to a complete root or /bundles/ composition; applications may override it."
+                      })
+                      results["passed"] = False
 
           # ── Bug 1: includes: nested under bundle: instead of top-level ──
           bundle_section = yaml_data.get("bundle")
@@ -851,18 +875,19 @@ steps:
       **Verdict:** PASS | FAIL | PASS WITH WARNINGS
       
       **IMPORTANT: If structure_lint.passed == false, the verdict MUST be FAIL.**
-      Structure lint errors indicate silently-dropped includes — the bundle will not
-      work as intended. These are the highest priority issues to fix.
+      Structure lint errors indicate silently-dropped includes or behavior-owned
+      runtime defaults. These are the highest priority issues to fix.
 
       **Classify by bundle type before judging completeness:**
       - If `{{bundle_type}}` is `behavior`, this is a composable partial. Judge its
         declaration, includes, and context contribution. Do NOT require a provider,
-        `session.orchestrator`, or full session configuration: those belong to the
-        installing host. A behavior should remain independently composable.
+        `session.orchestrator`, `session.context`, or full session configuration:
+        those belong to the installing host. Reject either runtime selector in a
+        behavior; it should remain independently composable.
       - If it is `standalone` or `root`, report whether its declared composition
         supplies the appropriate runnable session surface. For a newly authored
         complete host, recommend the Anchors supporting base
-        (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md`)
+        (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md`)
         and explicit capability behaviors; keep intentionally selected legacy roots
         as reported configuration, not an automatic failure.
 

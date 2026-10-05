@@ -27,7 +27,7 @@ async def main():
     # Load Anchors as the complete-host base and a Foundation provider partial.
     anchors = await load_bundle(
         "git+https://github.com/microsoft/amplifier-foundation@main"
-        "#subdirectory=bundles/anchors/bundle.md"
+        "#subdirectory=bundles/anchors.md"
     )
     provider = await load_bundle(
         "git+https://github.com/microsoft/amplifier-foundation@main"
@@ -120,13 +120,21 @@ This repo also contains reference bundle content for common configurations:
 |------|---------|
 | `behaviors/` | Reusable capability behaviors — the primary authoring and sharing surface |
 | `bundle.md` | Legacy selected Foundation root, retained for compatible complete compositions |
-| `bundles/anchors/` | Recommended supporting root for a new complete host |
+| `bundles/anchors.md` | Recommended supporting root for a new complete host; assets stay in `bundles/anchors/` |
+| `bundles/anchors-amp-dev.md` | Anchors plus the portable `behaviors/amp-dev.yaml` capability |
 | `providers/` | Provider configurations (anthropic, openai, azure-openai, gemini, ollama) |
 | `agents/` | Reusable agent definitions |
 | `context/` | Shared context files |
 | `bundles/` | Complete bundle examples |
 
 **Note**: This content is just files - discovered and loaded like any other bundle. See [PATTERNS.md](docs/PATTERNS.md) for usage examples.
+
+`behaviors/amp-dev.yaml` adds the lean `amp-dev:amplifier-dev-expert`, short
+ecosystem instructions, and the Amplifier Tester behavior without selecting an
+orchestrator or context manager. Existing hosts can compose that capability
+without adopting Anchors. The old `bundles/anchors/bundle.md` and
+`bundles/anchors-amp-dev/bundle.md` paths remain compatibility wrappers; the former
+`anchors-amp-dev:amplifier-dev-expert` agent alias is not retained.
 
 ## Examples
 

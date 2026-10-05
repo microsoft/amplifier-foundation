@@ -14,7 +14,7 @@ still producing disciplined, delegation-aware behavior.
 ## Install
 
 ```bash
-amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md' --name anchors
+amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md' --name anchors
 amplifier bundle use anchors
 ```
 
@@ -77,26 +77,30 @@ for them.
 Every module, tool, hook, and behavior is referenced by its full
 `git+https://...` source URL rather than a `foundation:` namespace. The bundle's
 own agents and context are referenced through its own `anchors:`
-namespace. It does not depend on the `amplifier-foundation` bundle being composed
-or registered -- it just happens to live in this repo's `bundles/` folder, and
-can be lifted out without rewiring.
+namespace. The canonical manifest is `bundles/anchors.md`; its
+`namespace_root: anchors` is relative to the manifest's containing `bundles/`
+directory, so assets still resolve under `bundles/anchors/`. It does not require
+the Foundation runtime to be composed. Keep the manifest and its asset directory
+together when relocating it.
 
 ## Files
 
 ```
-anchors/
-├── README.md                 # this file
-├── bundle.md      # bundle entrypoint (session / tools / hooks / agents)
-├── agents/
-│   ├── explorer.md           # multi-file recon
-│   ├── architect.md          # design / spec / review
-│   ├── builder.md            # implementation from spec
-│   ├── debugger.md           # hypothesis-driven bug fixing
-│   ├── git-ops.md            # git / gh operations
-│   └── researcher.md         # external research
-└── context/
-    ├── system.md             # the behavioral principles + operating rules
-    └── agent-baseline.md     # shared, spawn-only agent conduct baseline
+bundles/
+├── anchors.md                 # canonical session / tools / hooks / agents
+└── anchors/
+    ├── README.md              # this file
+    ├── bundle.md              # compatibility wrapper for anchors.md
+    ├── agents/
+    │   ├── explorer.md        # multi-file recon
+    │   ├── architect.md       # design / spec / review
+    │   ├── builder.md         # implementation from spec
+    │   ├── debugger.md        # hypothesis-driven bug fixing
+    │   ├── git-ops.md         # git / gh operations
+    │   └── researcher.md      # external research
+    └── context/
+        ├── system.md          # behavioral principles + operating rules
+        └── agent-baseline.md  # shared, spawn-only agent conduct baseline
 ```
 
 ## Spawned-agent conventions
@@ -111,11 +115,17 @@ boundary is not permission to ignore rules that apply after discovery.
 
 Promoted out of an `experiments/` prototype to a published bundle by 70a84d0
 (#259); `anchors-amp-dev` followed in 78d0abe (#273). The prototype trees were
-deleted once promotion made them stale copies -- read `bundles/anchors/` and
-`bundles/anchors-amp-dev/` for the live text, and those two commits (or
+deleted once promotion made them stale copies -- read `bundles/anchors.md` and
+`bundles/anchors-amp-dev.md` for the live manifests, and those two commits (or
 `git log --diff-filter=D -- experiments/behavioral-anchor`) for the originals.
 
-Version 0.2.0 -- the evaluated (#327) principle and agent text, and the source of
-the runtime that `anchors-amp-dev` includes. The principle set and tool/agent
-roster are a starting point and will be adjusted as observation shows what helps
-or hurts.
+Version 0.3.0 -- the flat manifest retains the evaluated (#327) principle and
+agent text, and is the source of the runtime that `anchors-amp-dev` includes.
+The principle set and tool/agent roster are a starting point and will be adjusted
+as observation shows what helps or hurts.
+
+`bundles/anchors/bundle.md` remains a compatibility entry point. The complete
+Anchors root chooses `loop-streaming` and `context-simple`; reusable behaviors do
+not choose either runtime, and applications may override those defaults.
+Validation of the flat-root migration is pending; the historical evaluations
+above do not qualify this new layout.

@@ -1,9 +1,30 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.16.1
+# Repository-Wide Bundle Validator Recipe v3.17.1
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.17.1 - A full Foundation run failed before quality-classification could
+#          start: its rendered command was 139,923 bytes (Linux argv limit).
+#          Discovery, individual validation, and tool placement now retain
+#          their full JSON in private payload files as well as recipe context.
+#          Bash consumers receive only paths via the supported env field.
+#          No results are truncated; missing files fail rather than pass.
+#          Start fresh qualification; do not resume an older run whose outputs
+#          predate the payload-file metadata. Preserve that run's provenance.
+#
+# v3.17.0 - Discover flat Markdown roots under bundles/ without treating their
+#          agent/context assets as manifests; retain nested bundle.md entries.
+#          Use namespace_root for their local context/agent cost measurements.
+#          Own-namespace assets take precedence over competing repo-root assets;
+#          foreign namespaces retain repo-root-first resolution.
+#          Explicit agents.include lists count only resolvable selected agents,
+#          not unrelated definitions in a shared namespace resource directory.
+#        - Behaviors cannot select session.context or session.orchestrator.
+#          Runnable roots own both defaults; applications may override them.
+#          Missing PyYAML is an explicit unverified failure, not a regex pass.
+#        - Active supporting-root guidance uses bundles/anchors.md.
+#
 # v3.16.1 - MODE COMMAND DETECTION MUST NOT PROMOTE PATH TOKENS.
 #        - The slash-command matcher treated a mode name after a glob or
 #          template component (`*/<mode>` / `}/<mode>`) as an invocation, and
@@ -588,7 +609,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.16.1"
+version: "3.17.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -1377,7 +1398,30 @@ steps:
       VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import os
+      import re
+      import tempfile
       from pathlib import Path
+
+      def emit_results(results):
+          # Unique private files survive for inspection/resume, never overwrite
+          # another run. Older engines fall back inside the current workspace.
+          root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+          if not root:
+              root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+          fd, payload_path = tempfile.mkstemp(prefix="discovery-", suffix=".json", dir=root)
+          with os.fdopen(fd, "w", encoding="utf-8") as payload:
+              json.dump(results, payload)
+          results["_payload_file"] = payload_path
+          print(json.dumps(results))
+
+      def is_bundle_markdown(bundle_path: Path) -> bool:
+          """Identify manifests, not agent/context assets under bundles/."""
+          try:
+              content = bundle_path.read_text(encoding="utf-8")
+          except OSError:
+              return False
+          frontmatter = re.match(r"\A---[ \t]*\r?\n(.*?)\r?\n---(?:\r?\n|$)", content, re.DOTALL)
+          return bool(frontmatter and re.search(r"^bundle[ \t]*:", frontmatter.group(1), re.MULTILINE))
 
       def estimate_tokens(content: str) -> int:
           """Estimate token count as len(content) // 4."""
@@ -1410,7 +1454,7 @@ steps:
                   "type": "path_error",
                   "message": f"Repository path does not exist: {repo_path}"
               })
-              print(json.dumps(results))
+              emit_results(results)
               return results
 
           if not path.is_dir():
@@ -1418,7 +1462,7 @@ steps:
                   "type": "path_error",
                   "message": f"Path is not a directory: {repo_path}"
               })
-              print(json.dumps(results))
+              emit_results(results)
               return results
 
           def get_bundle_details(bundle_path: Path) -> dict:
@@ -1461,6 +1505,8 @@ steps:
               if dir_path.exists() and dir_path.is_dir():
                   for item in dir_path.iterdir():
                       if item.is_file() and item.suffix in [".md", ".yaml", ".yml"]:
+                          if category == "standalone" and item.suffix == ".md" and item.name != "bundle.md" and not is_bundle_markdown(item):
+                              continue
                           results["bundles_found"][category].append(str(item))
                           results["bundle_details"][str(item)] = get_bundle_details(item)
                       elif item.is_dir():
@@ -1470,6 +1516,13 @@ steps:
                               if sub_bundle.exists():
                                   results["bundles_found"][category].append(str(sub_bundle))
                                   results["bundle_details"][str(sub_bundle)] = get_bundle_details(sub_bundle)
+                  if category == "standalone":
+                      for item in sorted(dir_path.rglob("*.md")):
+                          if item.name != "bundle.md" and not is_bundle_markdown(item):
+                              continue
+                          if str(item) not in results["bundles_found"][category]:
+                              results["bundles_found"][category].append(str(item))
+                              results["bundle_details"][str(item)] = get_bundle_details(item)
 
           # Map repo structure
           results["repo_structure"] = {
@@ -1501,7 +1554,7 @@ steps:
               "total_tokens": sum(d.get("size_tokens", 0) for d in results["bundle_details"].values())
           }
 
-          print(json.dumps(results))
+          emit_results(results)
           return results
 
       # The repo path arrives through the ENVIRONMENT, never interpolated into
@@ -1536,9 +1589,12 @@ steps:
 
   - id: "yaml-structure-lint"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import sys
       from pathlib import Path
 
@@ -1556,7 +1612,7 @@ steps:
           }))
           sys.exit(0)
 
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
 
       # Collect all bundle files from all categories
       all_bundle_files = []
@@ -1720,13 +1776,27 @@ steps:
 
   - id: "validate-all-bundles"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
+      import os
       import re
       import sys
+      import tempfile
       from pathlib import Path
+
+      def emit_results(results):
+          root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+          if not root:
+              root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+          fd, payload_path = tempfile.mkstemp(prefix="individual-", suffix=".json", dir=root)
+          with os.fdopen(fd, "w", encoding="utf-8") as payload:
+              json.dump(results, payload)
+          results["_payload_file"] = payload_path
+          print(json.dumps(results))
 
       env_check = json.loads('''{{env_check}}''')
       
@@ -1735,14 +1805,14 @@ steps:
       
       if not foundation_available:
           # v3.2.0: This is an environment limitation, NOT a bundle problem
-          print(json.dumps({
+          emit_results({
               "phase": "individual_validation",
               "skipped": True,
               "environment_limitation": True,  # v3.2.0: Flag this as env issue
               "reason": "amplifier_foundation not available - BundleRegistry validation skipped",
               "validation_mode": env_check.get("validation_mode", "structural_only"),
               "note": "Structural checks still performed; install amplifier_foundation for full validation"
-          }))
+          })
           sys.exit(0)
 
       from amplifier_foundation import BundleRegistry
@@ -1753,7 +1823,7 @@ steps:
           BundleValidationError
       )
 
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       
       async def validate_bundle(bundle_path: str, category: str) -> dict:
           """Validate a single bundle and return results."""
@@ -1867,7 +1937,7 @@ steps:
               if result.get("warnings"):
                   results["summary"]["by_category"][category]["warnings"] += len(result["warnings"])
 
-          print(json.dumps(results))
+          emit_results(results)
 
       asyncio.run(validate_all())
       EOF
@@ -1881,7 +1951,7 @@ steps:
   # PHASE 2.1: Behavior Hygiene Validation (NEW in v3.0.0)
   # Validates bundles in /behaviors/ against hygiene rules:
   # - No includes to root bundles (anti-pattern)
-  # - No session.orchestrator (behavior shouldn't be standalone)
+  # - No session.orchestrator or session.context (host-owned runtime defaults)
   # - No providers (behavior shouldn't define providers)
   # - context.include total tokens < 2000 (ERROR) / < 1000 (WARNING)
   # - context.include file count <= 3 (WARNING if >3)
@@ -1923,39 +1993,11 @@ steps:
                   import yaml
                   return yaml.safe_load(yaml_content) or {}
               except ImportError:
-                  # Fallback: basic regex parsing for key fields
-                  result = {}
-                  
-                  # Check for session.orchestrator
-                  if re.search(r'^\s*orchestrator:', yaml_content, re.MULTILINE):
-                      result["session"] = {"orchestrator": True}
-                  
-                  # Check for providers
-                  if re.search(r'^providers:', yaml_content, re.MULTILINE):
-                      result["providers"] = [{}]
-                  
-                  # Check for includes
-                  includes_match = re.search(r'^includes:\s*\n((?:\s+-.*\n)*)', yaml_content, re.MULTILINE)
-                  if includes_match:
-                      includes_section = includes_match.group(1)
-                      result["includes"] = re.findall(r'-\s*bundle:\s*(.+)', includes_section)
-                  
-                  # Check context.include
-                  context_match = re.search(r'^context:\s*\n((?:\s+.*\n)*)', yaml_content, re.MULTILINE)
-                  if context_match:
-                      context_section = context_match.group(1)
-                      include_match = re.search(r'include:\s*\n((?:\s+-.*\n)*)', context_section)
-                      if include_match:
-                          includes = re.findall(r'-\s*(.+)', include_match.group(1))
-                          result["context"] = {"include": includes}
-                  
-                  # Check tools
-                  tools_match = re.search(r'^tools:\s*\n((?:\s+-.*\n)*)', yaml_content, re.MULTILINE)
-                  if tools_match:
-                      tools_section = tools_match.group(1)
-                      result["tools"] = [{}] * len(re.findall(r'-\s*module:', tools_section))
-                  
-                  return result
+                  # Regex cannot certify YAML (flow mappings and aliases are valid).
+                  return {
+                      "error": "PyYAML not available; behavior hygiene cannot be verified",
+                      "parser_unavailable": True
+                  }
               
           except Exception as e:
               return {"error": str(e)}
@@ -2091,11 +2133,23 @@ steps:
               bundle_data = parse_yaml_bundle(behavior_path)
               
               if "error" in bundle_data:
-                  results["warnings"].append({
-                      "behavior": behavior_name,
-                      "type": "parse_error",
-                      "message": f"Could not parse behavior: {bundle_data['error']}"
-                  })
+                  if bundle_data.get("parser_unavailable"):
+                      results["unverified"] = True
+                      results["errors"].append({
+                          "behavior": behavior_name,
+                          "type": "yaml_parser_unavailable",
+                          "severity": "ERROR",
+                          "message": bundle_data["error"],
+                          "fix": "Install PyYAML in the recipe interpreter and rerun validation."
+                      })
+                      detail["unverified"] = True
+                      detail["issues"].append("yaml_parser_unavailable")
+                  else:
+                      results["warnings"].append({
+                          "behavior": behavior_name,
+                          "type": "parse_error",
+                          "message": f"Could not parse behavior: {bundle_data['error']}"
+                      })
                   detail["parse_error"] = bundle_data["error"]
                   results["behavior_details"].append(detail)
                   continue
@@ -2119,17 +2173,19 @@ steps:
                           })
                           detail["issues"].append("includes_root_bundle")
 
-              # Rule 2: Check for session.orchestrator (ERROR)
+              # Rule 2: Runtime defaults belong to complete roots, not behaviors (ERROR).
               session = bundle_data.get("session", {})
-              if isinstance(session, dict) and session.get("orchestrator"):
-                  results["errors"].append({
-                      "behavior": behavior_name,
-                      "type": "has_session_orchestrator",
-                      "message": "Behavior defines session.orchestrator - behaviors should not be standalone",
-                      "severity": "ERROR",
-                      "fix": "Remove session.orchestrator. If this needs to be standalone, move to /bundles/"
-                  })
-                  detail["issues"].append("has_session_orchestrator")
+              if isinstance(session, dict):
+                  for field in ("orchestrator", "context"):
+                      if field in session:
+                          results["errors"].append({
+                              "behavior": behavior_name,
+                              "type": f"has_session_{field}",
+                              "message": f"Behavior defines session.{field} - runtime defaults belong to the host",
+                              "severity": "ERROR",
+                              "fix": f"Move session.{field} to a complete root or /bundles/ composition; applications may override it."
+                          })
+                          detail["issues"].append(f"has_session_{field}")
 
               # Rule 3: Check for providers (ERROR)
               providers = bundle_data.get("providers", [])
@@ -2586,16 +2642,19 @@ steps:
 
   - id: "standalone-completeness-validation"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
+      import os
       import re
       import sys
       from pathlib import Path
 
       env_check = json.loads('''{{env_check}}''')
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
 
       results = {
           "phase": "standalone_completeness",
@@ -2757,7 +2816,7 @@ steps:
                           "fix": (
                               "Add session configuration or compose the Anchors supporting base "
                               "(git+https://github.com/microsoft/amplifier-foundation@main"
-                              "#subdirectory=bundles/anchors/bundle.md) or another intentionally "
+                              "#subdirectory=bundles/anchors.md) or another intentionally "
                               "selected complete host."
                           )
                       })
@@ -2815,16 +2874,19 @@ steps:
 
   - id: "experiments-validation"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import asyncio
       import json
+      import os
       import re
       import sys
       from pathlib import Path
 
       env_check = json.loads('''{{env_check}}''')
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
 
       results = {
           "phase": "experiments_validation",
@@ -2954,9 +3016,12 @@ steps:
 
   - id: "context-sink-compliance"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       import sys
       from pathlib import Path
@@ -2965,7 +3030,7 @@ steps:
           """Estimate token count as len(content) // 4."""
           return len(content) // 4
 
-      discovery = json.loads('''{{discovery_results}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
 
       results = {
           "phase": "context_sink_compliance",
@@ -3137,15 +3202,20 @@ steps:
 
   - id: "tool-placement-analysis"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
+      VALIDATE_INDIVIDUAL_PAYLOAD: "{{individual_validation._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import re
       import sys
+      import tempfile
       from pathlib import Path
 
-      discovery = json.loads('''{{discovery_results}}''')
-      individual = json.loads('''{{individual_validation}}''')
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
+      individual = json.loads(Path(os.environ["VALIDATE_INDIVIDUAL_PAYLOAD"]).read_text(encoding="utf-8"))
 
       results = {
           "phase": "tool_placement_analysis",
@@ -3405,6 +3475,13 @@ steps:
           "exclude_tools_config": results["inheritance_analysis"]["exclude_tools"]
       }
 
+      root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+      if not root:
+          root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+      fd, payload_path = tempfile.mkstemp(prefix="tools-", suffix=".json", dir=root)
+      with os.fdopen(fd, "w", encoding="utf-8") as payload:
+          json.dump(results, payload)
+      results["_payload_file"] = payload_path
       print(json.dumps(results))
       EOF
     output: "tool_placement_results"
@@ -4687,21 +4764,21 @@ steps:
               return content, ""
           return m.group(1), content[m.end():]
 
-      def resolve(repo, base_dir, ref):
+      def resolve(repo, base_dir, ref, own_namespace=None):
           """Resolve a context reference inside THIS repo, or None.
 
-          Same shape as behavior-hygiene's resolver (v3.14.0): strip an optional
-          '@', and for a `<namespace>:<path>` ref also try the path part against
-          the repo root and the referring file's own directory.
+          Own-namespace paths prefer the declared resource directory. Foreign
+          references keep repo-root-first lookup (e.g. foundation:context/...).
           """
           ref = ref.strip().lstrip("@")
           if ref.startswith(("http://", "https://", "git+")):
               return None
           candidates = []
           if ":" in ref:
-              _, _, rest = ref.partition(":")
+              namespace, _, rest = ref.partition(":")
               if rest and not rest.startswith("//"):
-                  candidates += [repo / rest, base_dir / rest]
+                  bases = (base_dir, repo) if namespace == own_namespace else (repo, base_dir)
+                  candidates += [base / rest for base in bases]
           candidates += [base_dir / ref, repo / ref]
           for c in candidates:
               try:
@@ -4775,7 +4852,7 @@ steps:
 
       # --- Every context file a bundle or behavior pulls into the head --------
       bundle_files = []
-      for pattern in ("bundle.md", "bundles/*.yaml", "bundles/*.md", "bundles/*/bundle.md", "behaviors/*.yaml", "behaviors/*.md"):
+      for pattern in ("bundle.md", "bundles/*.yaml", "bundles/**/*.md", "behaviors/*.yaml", "behaviors/*.md"):
           bundle_files += list(path.glob(pattern))
       seen_refs = {}
       for bf in sorted(set(bundle_files)):
@@ -4783,6 +4860,9 @@ steps:
               continue
           content = read(bf)
           fm_text, body = frontmatter_and_body(content)
+          if bf.suffix == ".md" and bf.name != "bundle.md" and bf.relative_to(path).parts[0] == "bundles":
+              if not FRONTMATTER_RE.match(content) or not re.search(r"^bundle[ \t]*:", fm_text, re.MULTILINE):
+                  continue
           if not body and bf.suffix in (".yaml", ".yml"):
               fm_text, body = content, ""
           refs = []
@@ -4790,6 +4870,9 @@ steps:
               data = yaml.safe_load(fm_text)
           except Exception:
               data = None
+          meta = data.get("bundle", {}) if isinstance(data, dict) else {}
+          namespace_root = meta.get("namespace_root") if isinstance(meta, dict) else None
+          resource_dir = bf.parent / namespace_root if isinstance(namespace_root, str) else bf.parent
           if isinstance(data, dict):
               ctx = data.get("context")
               if isinstance(ctx, dict):
@@ -4800,7 +4883,7 @@ steps:
                   refs += [str(x) for x in ctx if isinstance(x, str)]
           refs += [f"{ns}:{p}" for ns, p in MENTION_RE.findall(body)]
           for ref in refs:
-              target = resolve(path, bf.parent, ref)
+              target = resolve(path, resource_dir, ref, meta.get("name") if isinstance(meta, dict) else None)
               if target is None:
                   continue
               rel = target.relative_to(path).as_posix() if str(target).startswith(str(path)) else str(target)
@@ -5011,15 +5094,16 @@ steps:
               return content, ""
           return m.group(1), content[m.end():]
 
-      def resolve(repo, base_dir, ref):
+      def resolve(repo, base_dir, ref, own_namespace=None):
           ref = ref.strip().lstrip("@")
           if ref.startswith(("http://", "https://", "git+")):
               return None
           candidates = []
           if ":" in ref:
-              _, _, rest = ref.partition(":")
+              namespace, _, rest = ref.partition(":")
               if rest and not rest.startswith("//"):
-                  candidates += [repo / rest, base_dir / rest]
+                  bases = (base_dir, repo) if namespace == own_namespace else (repo, base_dir)
+                  candidates += [base / rest for base in bases]
           candidates += [base_dir / ref, repo / ref]
           for c in candidates:
               try:
@@ -5093,7 +5177,7 @@ steps:
               repo_skill_count += 1
 
       bundle_files = []
-      for pattern in ("bundle.md", "bundles/*.yaml", "bundles/*.md", "bundles/*/bundle.md", "behaviors/*.yaml", "behaviors/*.md"):
+      for pattern in ("bundle.md", "bundles/*.yaml", "bundles/**/*.md", "behaviors/*.yaml", "behaviors/*.md"):
           bundle_files += list(path.glob(pattern))
 
       for bf in sorted(set(bundle_files)):
@@ -5101,12 +5185,18 @@ steps:
               continue
           content = read(bf)
           fm_text, body = frontmatter_and_body(content)
+          if bf.suffix == ".md" and bf.name != "bundle.md" and bf.relative_to(path).parts[0] == "bundles":
+              if not FRONTMATTER_RE.match(content) or not re.search(r"^bundle[ \t]*:", fm_text, re.MULTILINE):
+                  continue
           if not body and bf.suffix in (".yaml", ".yml"):
               fm_text, body = content, ""
           try:
               data = yaml.safe_load(fm_text)
           except Exception:
               data = None
+          meta = data.get("bundle", {}) if isinstance(data, dict) else {}
+          namespace_root = meta.get("namespace_root") if isinstance(meta, dict) else None
+          resource_dir = bf.parent / namespace_root if isinstance(namespace_root, str) else bf.parent
 
           refs = []
           if isinstance(data, dict):
@@ -5123,23 +5213,43 @@ steps:
           resolved_refs = []
           unresolved_refs = []
           for ref in refs:
-              target = resolve(path, bf.parent, ref)
+              target = resolve(path, resource_dir, ref, meta.get("name") if isinstance(meta, dict) else None)
               if target is None:
                   unresolved_refs.append(ref)
                   continue
               context_chars += len(read(target))
               resolved_refs.append(ref)
 
-          bundle_dir = bf.parent
+          bundle_dir = resource_dir
           agents_dir = (path / "agents") if bundle_dir == path else (bundle_dir / "agents")
           agent_chars = 0
           agent_count = 0
-          if agents_dir.is_dir():
-              for f in sorted(agents_dir.glob("*.md")):
-                  d = agent_description(f)
-                  if isinstance(d, str) and d.strip():
-                      agent_chars += len(d)
-                      agent_count += 1
+          agents = data.get("agents") if isinstance(data, dict) else None
+          agent_includes = agents.get("include") if isinstance(agents, dict) else None
+          if isinstance(agent_includes, list):
+              agent_files = []
+              for ref in agent_includes:
+                  if not isinstance(ref, str):
+                      continue
+                  namespace, separator, name = ref.partition(":")
+                  name = name if separator else ref
+                  filename = name if name.endswith(".md") else f"{name}.md"
+                  if separator:
+                      target = resolve(path, resource_dir, f"{namespace}:agents/{filename}", meta.get("name") if isinstance(meta, dict) else None)
+                  else:
+                      target = agents_dir / filename
+                  if target is not None and target.is_file():
+                      agent_files.append(target)
+                  else:
+                      unresolved_refs.append(ref)
+          else:
+              # Compatibility for fixtures/manifests with no explicit roster.
+              agent_files = list(agents_dir.glob("*.md")) if agents_dir.is_dir() else []
+          for f in sorted(set(agent_files)):
+              d = agent_description(f)
+              if isinstance(d, str) and d.strip():
+                  agent_chars += len(d)
+                  agent_count += 1
 
           mounts_skills, visible = mounts_visible_skills(data)
           skill_chars = repo_skill_chars if (mounts_skills and visible) else 0
@@ -5447,7 +5557,7 @@ steps:
                       "primary capability path. If a complete host is needed, use "
                       "the Anchors supporting base "
                       "`git+https://github.com/microsoft/amplifier-foundation@main"
-                      "#subdirectory=bundles/anchors/bundle.md` with explicit "
+                      "#subdirectory=bundles/anchors.md` with explicit "
                       "registration/selection, or set root_bundle_repo: \"true\" "
                       "for a genuine root-product repository."
                   )
@@ -5538,7 +5648,8 @@ steps:
   # instruction files) belongs below the frontmatter. WARNING level (not
   # ERROR) -- a large fraction of the current ecosystem trips this check.
   #
-  # Scope: bundle.md and agents/*.md. Mode files (modes/*.md) are NOT covered.
+  # Scope: bundle.md, bundles/**/*.md manifests, and agents/*.md.
+  # Agent/context assets are not promoted to bundles. Modes are NOT covered.
   # The mode-validation step above checks a mode's frontmatter description
   # budget and its advertising references -- it does not inspect the body for
   # prose. Extending this check to modes is deliberately left for a follow-up.
@@ -5550,6 +5661,7 @@ steps:
       VALIDATE_BUNDLE_REPO_PATH="{{repo_path}}" "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import os
+      import re
       import sys
       from pathlib import Path
 
@@ -5589,9 +5701,19 @@ steps:
           "warnings": []
       }
 
-      # Find all bundle.md files (root + nested behaviors/providers/etc.) and
-      # agent definition files anywhere in the repo.
+      # Keep legacy bundle.md entries and add flat complete-root manifests,
+      # without sweeping context assets into the system-instruction check.
       bundle_files = list(path.rglob("bundle.md"))
+      for f in path.glob("bundles/**/*.md"):
+          if f.name == "bundle.md":
+              continue
+          try:
+              content = f.read_text(encoding="utf-8")
+          except OSError:
+              continue
+          frontmatter = re.match(r"\A---[ \t]*\r?\n(.*?)\r?\n---(?:\r?\n|$)", content, re.DOTALL)
+          if frontmatter and re.search(r"^bundle[ \t]*:", frontmatter.group(1), re.MULTILINE):
+              bundle_files.append(f)
       agent_files = list(path.rglob("*/agents/*.md")) + list(path.glob("agents/*.md"))
 
       # Test fixtures are deliberately synthetic -- they exist to exercise the
@@ -5612,7 +5734,7 @@ steps:
       if not unique_files:
           results["skipped"] = True
           results["passed"] = True
-          results["reason"] = "No bundle.md or agents/*.md files found"
+          results["reason"] = "No Markdown bundle manifests or agents/*.md files found"
           print(json.dumps(results))
           sys.exit(0)
 
@@ -5665,14 +5787,20 @@ steps:
 
   - id: "quality-classification"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
+      VALIDATE_INDIVIDUAL_PAYLOAD: "{{individual_validation._payload_file}}"
+      VALIDATE_TOOLS_PAYLOAD: "{{tool_placement_results._payload_file}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import sys
+      from pathlib import Path
 
       # Parse all results
-      individual = json.loads('''{{individual_validation}}''')
-      discovery = json.loads('''{{discovery_results}}''')
+      individual = json.loads(Path(os.environ["VALIDATE_INDIVIDUAL_PAYLOAD"]).read_text(encoding="utf-8"))
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       packaging = json.loads('''{{packaging_check}}''')
       
       # v3.2.0: Parse environment check for environment status tracking
@@ -5720,11 +5848,7 @@ steps:
       except (json.JSONDecodeError, ValueError):
           context_sink = {"passed": True, "skipped": True}
 
-      tool_placement_raw = '''{{tool_placement_results}}'''
-      try:
-          tool_placement = json.loads(tool_placement_raw)
-      except (json.JSONDecodeError, ValueError):
-          tool_placement = {"passed": True, "skipped": True}
+      tool_placement = json.loads(Path(os.environ["VALIDATE_TOOLS_PAYLOAD"]).read_text(encoding="utf-8"))
 
       recipe_validation_raw = '''{{recipe_validation}}'''
       try:
@@ -6556,7 +6680,7 @@ steps:
 
       1. **Behavior Hygiene (ERROR if violated):**
          - Behaviors must NOT include root bundles (context bloat anti-pattern)
-         - Behaviors must NOT have session.orchestrator (not standalone)
+         - Behaviors must NOT select session.orchestrator or session.context (host-owned runtime defaults)
          - Behaviors must NOT define providers
          - context.include tokens must be <2000 (ERROR) / <1000 (WARNING)
          - Behaviors should have ≤3 context.include files
@@ -6675,15 +6799,16 @@ steps:
 
   - id: "bundle-doc-freshness-check"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     depends_on: ["repo-discovery"]
     on_error: "continue"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
-      import json, re, sys
+      import json, os, re, sys
       from pathlib import Path
 
-      _discovery_raw = r"""{{discovery_results}}"""
-      discovery = json.loads(_discovery_raw)
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       repo_path = Path(discovery.get("repo_path", "")).resolve()
 
       # Check if amplifier_foundation.bundle_docs is available (installed package)
@@ -6884,11 +7009,13 @@ steps:
 
   - id: "bundle-overview-regen-write"
     type: "bash"
+    env:
+      VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
     depends_on: ["set-default-bundle-overview-enhanced-dot", "bundle-overview-regen-enhance"]
     on_error: "continue"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
-      import json, subprocess, re, sys
+      import json, os, subprocess, re, sys
       from pathlib import Path
 
       targets = json.loads(r"""{{bundle_overview_regen_targets}}""")
@@ -6897,8 +7024,7 @@ steps:
           sys.exit(0)
 
       overview_dot = targets["overview_dot"]
-      _discovery_raw = r"""{{discovery_results}}"""
-      discovery = json.loads(_discovery_raw)
+      discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       repo_path = Path(discovery.get("repo_path", "")).resolve()
       bundle_path = repo_path / "bundle.dot"
       png_path = repo_path / "bundle.png"
@@ -7319,7 +7445,7 @@ steps:
       - If skipped == true: "README install-instructions convention check: skipped (<reason from info>)"
       - For each finding of type readme_recommends_root_bundle:
         - [NEEDS WORK] the finding's message (README's primary capability install is not a canonical behavior URI)
-        - The fix: lead with `amplifier bundle add "<repo>#subdirectory=behaviors/<name>.yaml" --app`. A new complete host can explicitly register/select the Anchors supporting base (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md`); root_bundle_repo: "true" remains for a genuine root-product repo.
+        - The fix: lead with `amplifier bundle add "<repo>#subdirectory=behaviors/<name>.yaml" --app`. A new complete host can explicitly register/select the Anchors supporting base (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md`); root_bundle_repo: "true" remains for a genuine root-product repo.
       - For each finding of type readme_missing_app_flag:
         - [NEEDS WORK] the finding's message (behavior installation commands missing --app)
         - The fix: add --app to each behavior `amplifier bundle add` command. Do not add it merely to register/select a supporting root.
