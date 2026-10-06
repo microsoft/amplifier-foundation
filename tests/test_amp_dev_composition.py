@@ -1,4 +1,5 @@
 """Real registry composition and resources of the nested-only host roots."""
+import io
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -22,6 +23,10 @@ ADDED_AGENTS = {
     "amp-dev:amplifier-dev-expert", "amplifier-tester:setup-digital-twin",
     "amplifier-tester:validator", "digital-twin-universe:dtu-profile-builder",
 }
+
+
+def read_utf8(path):
+    return path.read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -93,6 +98,49 @@ async def prompt(bundle, cwd, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("eol", [b"\n", b"\r\n"], ids=["LF", "CRLF"])
+async def test_prompt_oracle_uses_utf8_with_cp1252_default(tmp_path, monkeypatch, eol):
+    """The shared expected reader must match runtime UTF-8, not the locale."""
+    system = tmp_path / "system.md"
+    ecosystem = tmp_path / "ecosystem.md"
+    system_text = "Host system\n"
+    ecosystem_text = "# Ecosystem\ncore → foundation → modules → bundles → apps\n"
+    for path, text in ((system, system_text), (ecosystem, ecosystem_text)):
+        path.write_bytes(text.encode("utf-8").replace(b"\n", eol))
+
+    bundle = Bundle(
+        name="fixture", base_path=tmp_path, instruction="@fixture:system.md",
+        source_base_paths={"fixture": tmp_path},
+        _pending_context={
+            "fixture:ecosystem.md": "fixture:ecosystem.md",
+            "fixture:system.md": "fixture:system.md",
+        },
+    )
+    bundle.resolve_pending_context()
+    assert bundle.context == {
+        "fixture:ecosystem.md": ecosystem, "fixture:system.md": system,
+    }
+    prepared = PreparedBundle({}, BundleModuleResolver(module_paths={}), bundle)
+    session = MagicMock()
+    session.coordinator.hooks.emit = AsyncMock()
+    with monkeypatch.context() as locale_default:
+        # Simulate a legacy default even when the interpreter enables UTF-8 mode.
+        # Explicit codecs, including the runtime's UTF-8 reads, stay unchanged.
+        locale_default.setattr(io, "text_encoding", lambda encoding, stacklevel=2:
+                               "cp1252" if encoding is None else encoding)
+        head = await prepared.create_system_prompt_factory(session, session_cwd=tmp_path)()
+        expected_system = read_utf8(system)
+        expected_ecosystem = read_utf8(ecosystem)
+        assert head.count(expected_system) == 1
+        assert head.count(expected_ecosystem) == 1
+        assert head.index(expected_system) < head.index(expected_ecosystem)
+        assert (expected_system, expected_ecosystem) == (system_text, ecosystem_text)
+        implicit_ecosystem = ecosystem.read_text()
+        assert implicit_ecosystem != ecosystem_text
+        assert head.count(implicit_ecosystem) == 0
+
+
+@pytest.mark.asyncio
 async def test_behavior_is_portable_and_preserves_both_host_runtimes(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     behavior = await registry(tmp_path / "registry").load(str(ROOT / "behaviors/amp-dev.yaml"))
@@ -115,15 +163,15 @@ async def test_behavior_is_portable_and_preserves_both_host_runtimes(tmp_path, m
     assert resources.resolve("@foundation:bundles/anchors/context/agent-baseline.md") == ROOT / "bundles/anchors/context/agent-baseline.md"
     assert resources.resolve("@amp-dev:context/amplifier-dev/amplifier-ecosystem.md") == ROOT / "context/amplifier-dev/amplifier-ecosystem.md"
     expert = behavior.agents["amp-dev:amplifier-dev-expert"]
-    assert "@anchors:" not in (ROOT / "agents/amplifier-dev-expert.md").read_text()
+    assert "@anchors:" not in read_utf8(ROOT / "agents/amplifier-dev-expert.md")
     assert "provider_preferences" not in expert
     skills = next(row for row in behavior.tools if row["module"] == "tool-skills")["config"]["skills"]
     assert any("amplifier-bundle-gitea@" in path for path in skills)
     assert any("amplifier-bundle-digital-twin-universe@" in path for path in skills)
     head = await prompt(combined, tmp_path, monkeypatch)
     assert head.startswith(host.instruction)
-    assert head.count((ROOT / "context/amplifier-dev/amplifier-ecosystem.md").read_text()) == 1
-    assert (ROOT / "bundles/anchors/context/system.md").read_text() not in head
+    assert head.count(read_utf8(ROOT / "context/amplifier-dev/amplifier-ecosystem.md")) == 1
+    assert read_utf8(ROOT / "bundles/anchors/context/system.md") not in head
 
 
 @pytest.mark.asyncio
@@ -193,13 +241,13 @@ async def test_nested_roots_compose_source_local_without_cycles(
         assert resolver(amp_dev).resolve(f"@foundation:{reference}") == ROOT / reference
     assert not any(name.startswith("foundation:") for name in amp_dev.agents)
     assert str(ROOT) not in loader._loaded_bundles and ROOT.as_uri() not in loader._loaded_bundles
-    system = (ROOT / "bundles/anchors/context/system.md").read_text()
-    ecosystem = (ROOT / "context/amplifier-dev/amplifier-ecosystem.md").read_text()
+    system = read_utf8(ROOT / "bundles/anchors/context/system.md")
+    ecosystem = read_utf8(ROOT / "context/amplifier-dev/amplifier-ecosystem.md")
     head = await prompt(amp_dev, tmp_path, monkeypatch)
     assert head.count(system) == 1
     assert head.count(ecosystem) == 1
     assert head.index(system) < head.index(ecosystem)
-    assert (ROOT / "bundles/anchors/context/agent-baseline.md").read_text() not in head
+    assert read_utf8(ROOT / "bundles/anchors/context/agent-baseline.md") not in head
     assert not caplog.records, [(row.name, row.getMessage()) for row in caplog.records]
 
 
@@ -279,7 +327,7 @@ async def test_nested_reload_repairs_stale_self_edges_and_preserves_unrelated_re
 
 
 def test_behavior_contains_entire_delta_without_root_inclusion():
-    behavior = yaml.safe_load((ROOT / "behaviors/amp-dev.yaml").read_text())
+    behavior = yaml.safe_load(read_utf8(ROOT / "behaviors/amp-dev.yaml"))
     assert not {"session", "providers"} & behavior.keys()
     assert behavior["includes"] == [{"bundle":
         "git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main#subdirectory=behaviors/amplifier-tester.yaml"}]
