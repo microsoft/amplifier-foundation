@@ -11,13 +11,13 @@ import yaml
 
 REPO_ROOT = Path(__file__).parent.parent
 GUIDE = REPO_ROOT / "docs" / "BUNDLE_GUIDE.md"
-ANCHORS_MANIFEST = REPO_ROOT / "bundles" / "anchors.md"
+ANCHORS_MANIFEST = REPO_ROOT / "bundles" / "anchors" / "bundle.md"
 README = REPO_ROOT / "README.md"
 APPLICATION_GUIDE = REPO_ROOT / "docs" / "APPLICATION_INTEGRATION_GUIDE.md"
 API_REFERENCE = REPO_ROOT / "docs" / "API_REFERENCE.md"
 ANCHORS_URI = (
     "git+https://github.com/microsoft/amplifier-foundation@main"
-    "#subdirectory=bundles/anchors.md"
+    "#subdirectory=bundles/anchors/bundle.md"
 )
 
 

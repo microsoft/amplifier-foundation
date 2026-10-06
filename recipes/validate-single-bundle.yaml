@@ -9,6 +9,10 @@
 # CHANGELOG
 # =============================================================================
 #
+# v2.5.1 (2026-10-06):
+#   - BUGFIX: Active Anchors guidance still named the removed flat entry point.
+#     Use bundles/anchors/bundle.md; validation logic unchanged.
+#
 # v2.5.0:
 #   - Reject session.orchestrator and session.context in behavior targets;
 #     complete roots own runtime defaults and applications may override them.
@@ -110,7 +114,7 @@ description: |
   Behavior partials are valid targets: assess their composability and hygiene,
   not standalone session completeness. New complete hosts should normally use
   Anchors as their supporting base and compose capabilities explicitly.
-version: "2.5.0"
+version: "2.5.1"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "single", "dependency-tracing", "yaml-lint"]
 
@@ -887,7 +891,7 @@ steps:
       - If it is `standalone` or `root`, report whether its declared composition
         supplies the appropriate runnable session surface. For a newly authored
         complete host, recommend the Anchors supporting base
-        (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md`)
+        (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md`)
         and explicit capability behaviors; keep intentionally selected legacy roots
         as reported configuration, not an automatic failure.
 

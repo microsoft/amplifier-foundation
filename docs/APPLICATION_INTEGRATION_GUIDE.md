@@ -227,7 +227,7 @@ bundle:
   version: 1.0.0
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-app:behaviors/domain-expert
 ---
 

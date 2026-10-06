@@ -67,7 +67,7 @@ not require replacing that host:
 
 ```yaml
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: recipes:behaviors/recipes
 ```
 
@@ -75,12 +75,15 @@ The root preserves `@anchors:context/system.md` when it has its own instruction
 body. Existing selected legacy roots remain valid. A root can also anchor
 repo-level namespaced resources, so behavior-first is not a root ban.
 
-For example, `bundles/anchors-amp-dev.md` composes `bundles/anchors.md` plus
+For example, `bundles/anchors-amp-dev/bundle.md` composes `bundles/anchors/bundle.md` plus
 `behaviors/amp-dev.yaml`. All Amplifier-development additions belong to that
 runtime-neutral behavior, including the `amp-dev:amplifier-dev-expert` agent and
 Tester behavior. Another host can compose the same capability without Anchors.
-The flat Anchors manifest uses `namespace_root: anchors`, relative to its
-containing `bundles/` directory, to retain the existing `anchors:` assets.
+The Anchors manifest sits beside its `agents/` and `context/` assets, so its
+directory is the `anchors:` resource root without a namespace override. The
+variant also keeps its namespace at its manifest directory, with no variant
+assets or namespace override. Self-namespaced relative includes select its base
+and capability from the same repository, including on direct local loads.
 
 ### Behaviors
 

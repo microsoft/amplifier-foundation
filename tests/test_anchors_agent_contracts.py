@@ -44,7 +44,7 @@ async def _prepared_catalog(
     """
     return await prepare_agent_catalog(
         tmp_path, monkeypatch,
-        (REPO_ROOT / "bundles/anchors.md" if bundle_dir == ANCHORS_DIR
+        (ANCHORS_DIR / "bundle.md" if bundle_dir == ANCHORS_DIR
          else REPO_ROOT / "behaviors/amp-dev.yaml").as_uri()
     )
 
@@ -261,7 +261,7 @@ async def test_amp_dev_readme_include_example_matches_runtime_source_order(
 ) -> None:
     """The documented include order is parsed and compared to the loaded bundle."""
     includes = yaml.safe_load(
-        (REPO_ROOT / "bundles/anchors-amp-dev.md").read_text().split("---", 2)[1])["includes"]
+        (AMP_DEV_DIR / "bundle.md").read_text().split("---", 2)[1])["includes"]
     readme = (AMP_DEV_DIR / "README.md").read_text(encoding="utf-8")
     match = re.search(r"```yaml\n(?P<yaml>includes:\n.*?\n)```", readme, re.DOTALL)
     assert match, "README must contain a YAML includes example"

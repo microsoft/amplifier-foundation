@@ -69,15 +69,6 @@ AGENT_SCAN_EXCLUDED_PARTS = {
     "docs",
 }
 
-# The anchors include must be a full git URL with a #subdirectory= fragment, not
-# a bare `anchors` name. A bare name resolves only where the CLI happens to have
-# registered that namespace; the full URL keeps the bundle liftable, which is
-# the "self-contained by design" convention the anchors README states.
-ANCHORS_INCLUDE_RE = re.compile(
-    r"^git\+https://github\.com/microsoft/amplifier-foundation@[^#]+"
-    r"#subdirectory=bundles/anchors(?:/bundle\.md)?$"
-)
-
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 
 
@@ -162,21 +153,37 @@ class TestAmpDevIsAThinVariant:
         A duplicate block here is how the two bundles' orchestrator, context
         window, tool roster or hook set drift apart without anyone editing both.
         """
-        frontmatter = _frontmatter(BUNDLES_DIR / "anchors-amp-dev.md")
+        frontmatter = _frontmatter(AMP_DEV_DIR / "bundle.md")
         declared = [k for k in ("session", "tools", "hooks", "agents", "context") if k in frontmatter]
         assert not declared, (
-            f"bundles/anchors-amp-dev.md re-declares {declared}; inherit the "
+            f"bundles/anchors-amp-dev/bundle.md re-declares {declared}; inherit the "
             "host from Anchors and the entire capability from amp-dev."
         )
 
     def test_includes_own_anchors_and_shared_behavior(self) -> None:
         """Same-repository includes resolve through the containing namespace."""
-        includes = _frontmatter(BUNDLES_DIR / "anchors-amp-dev.md").get("includes") or []
+        frontmatter = _frontmatter(AMP_DEV_DIR / "bundle.md")
+        assert "namespace_root" not in frontmatter["bundle"]
+        includes = frontmatter.get("includes") or []
         sources = [
             entry.get("bundle") if isinstance(entry, dict) else entry
             for entry in includes
         ]
-        assert sources == ["foundation:bundles/anchors.md", "foundation:behaviors/amp-dev.yaml"]
+        assert sources == [
+            "anchors-amp-dev:../anchors/bundle.md",
+            "anchors-amp-dev:../../behaviors/amp-dev.yaml",
+        ]
+
+    def test_nested_manifests_are_the_only_entrypoints(self) -> None:
+        assert not (BUNDLES_DIR / "anchors.md").exists()
+        assert not (BUNDLES_DIR / "anchors-amp-dev.md").exists()
+        assert "namespace_root" not in _frontmatter(ANCHORS_DIR / "bundle.md")["bundle"]
+        for directory in (ANCHORS_DIR, AMP_DEV_DIR):
+            frontmatter = _frontmatter(directory / "bundle.md")
+            assert frontmatter["bundle"]["version"] == "0.3.0"
+            assert (directory / "bundle.md").read_text().split("---", 2)[2].strip() == (
+                "@anchors:context/system.md"
+            )
 
 
 class TestNoParallelCopies:

@@ -1,7 +1,8 @@
 # Anchors Bundle
 
-The CLI's current default runtime bundle and the recommended supporting root for a
-new complete host. It remains a lean experimental bundle that shapes the agent's
+The lean base host included by the CLI's default `anchors-amp-dev` bundle and the
+recommended supporting root for a new complete host. It remains a lean
+experimental bundle that shapes the agent's
 conduct with a short, explicit set of **behavioral principles** placed at the very
 top of the system prompt -- rather than encoding behavior across large rule
 documents.
@@ -14,12 +15,13 @@ still producing disciplined, delegation-aware behavior.
 ## Install
 
 ```bash
-amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md' --name anchors
+amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors' --name anchors
 amplifier bundle use anchors
 ```
 
-Single-quote the URI to prevent shell expansion of the `#` fragment. The `.md`
-suffix is required.
+Single-quote the URI to prevent shell expansion of the `#` fragment. The directory
+selects `bundle.md`; an explicit `#subdirectory=bundles/anchors/bundle.md` also
+names the same manifest.
 
 ## The idea
 
@@ -77,20 +79,18 @@ for them.
 Every module, tool, hook, and behavior is referenced by its full
 `git+https://...` source URL rather than a `foundation:` namespace. The bundle's
 own agents and context are referenced through its own `anchors:`
-namespace. The canonical manifest is `bundles/anchors.md`; its
-`namespace_root: anchors` is relative to the manifest's containing `bundles/`
-directory, so assets still resolve under `bundles/anchors/`. It does not require
-the Foundation runtime to be composed. Keep the manifest and its asset directory
-together when relocating it.
+namespace. The canonical manifest is `bundles/anchors/bundle.md`; its containing
+directory is the asset root, so no `namespace_root` override is needed. It does
+not require the Foundation runtime to be composed. Keep the manifest and its
+agents and context together when relocating it.
 
 ## Files
 
 ```
 bundles/
-├── anchors.md                 # canonical session / tools / hooks / agents
 └── anchors/
     ├── README.md              # this file
-    ├── bundle.md              # compatibility wrapper for anchors.md
+    ├── bundle.md              # canonical session / tools / hooks / agents
     ├── agents/
     │   ├── explorer.md        # multi-file recon
     │   ├── architect.md       # design / spec / review
@@ -115,17 +115,17 @@ boundary is not permission to ignore rules that apply after discovery.
 
 Promoted out of an `experiments/` prototype to a published bundle by 70a84d0
 (#259); `anchors-amp-dev` followed in 78d0abe (#273). The prototype trees were
-deleted once promotion made them stale copies -- read `bundles/anchors.md` and
-`bundles/anchors-amp-dev.md` for the live manifests, and those two commits (or
+deleted once promotion made them stale copies -- read `bundles/anchors/bundle.md`
+and `bundles/anchors-amp-dev/bundle.md` for the live manifests, and those two commits (or
 `git log --diff-filter=D -- experiments/behavioral-anchor`) for the originals.
 
-Version 0.3.0 -- the flat manifest retains the evaluated (#327) principle and
+Version 0.3.0 -- the nested manifest retains the historically evaluated (#327) principle and
 agent text, and is the source of the runtime that `anchors-amp-dev` includes.
 The principle set and tool/agent roster are a starting point and will be adjusted
 as observation shows what helps or hurts.
 
-`bundles/anchors/bundle.md` remains a compatibility entry point. The complete
-Anchors root chooses `loop-streaming` and `context-simple`; reusable behaviors do
-not choose either runtime, and applications may override those defaults.
-Validation of the flat-root migration is pending; the historical evaluations
-above do not qualify this new layout.
+The nested manifest is the only entry point, not a compatibility wrapper. The
+complete Anchors root chooses `loop-streaming` and `context-simple`; reusable
+behaviors do not choose either runtime, and applications may override those
+defaults. The historical evaluations above do not qualify this nested-only
+layout.

@@ -407,8 +407,8 @@ def test_the_engineered_bundles_stay_under_the_threshold() -> None:
     """anchors is the bundle the head-cost work actually engineered. It must pass."""
     result = run_repo_step("bundle-head-cost", REPO_ROOT)
     by_file = {d["file"]: d for d in result["bundle_details"]}
-    anchors = by_file["bundles/anchors.md"]
-    amp_dev = by_file["bundles/anchors-amp-dev.md"]
+    anchors = by_file["bundles/anchors/bundle.md"]
+    amp_dev = by_file["bundles/anchors-amp-dev/bundle.md"]
     assert anchors["head_chars"] < HEAD_COST_WARN_CHARS
     assert amp_dev["head_chars"] < HEAD_COST_WARN_CHARS
 
@@ -417,7 +417,7 @@ def test_visibility_disabled_skills_are_excluded_but_still_reported() -> None:
     """Turning skill visibility off is a real lever; the report must show what it bought."""
     result = run_repo_step("bundle-head-cost", REPO_ROOT)
     anchors = next(
-        d for d in result["bundle_details"] if d["file"] == "bundles/anchors.md"
+        d for d in result["bundle_details"] if d["file"] == "bundles/anchors/bundle.md"
     )
     assert anchors["skill_description_chars"] == 0
     assert anchors["skill_description_chars_excluded"] > 0

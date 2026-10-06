@@ -1,9 +1,12 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.17.1
+# Repository-Wide Bundle Validator Recipe v3.17.2
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.17.2 (2026-10-06) - BUGFIX: Active Anchors guidance still named the removed
+#          flat entry point. Use bundles/anchors/bundle.md; discovery unchanged.
+#
 # v3.17.1 - A full Foundation run failed before quality-classification could
 #          start: its rendered command was 139,923 bytes (Linux argv limit).
 #          Discovery, individual validation, and tool placement now retain
@@ -609,7 +612,7 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.17.1"
+version: "3.17.2"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
@@ -2816,7 +2819,7 @@ steps:
                           "fix": (
                               "Add session configuration or compose the Anchors supporting base "
                               "(git+https://github.com/microsoft/amplifier-foundation@main"
-                              "#subdirectory=bundles/anchors.md) or another intentionally "
+                              "#subdirectory=bundles/anchors/bundle.md) or another intentionally "
                               "selected complete host."
                           )
                       })
@@ -5557,7 +5560,7 @@ steps:
                       "primary capability path. If a complete host is needed, use "
                       "the Anchors supporting base "
                       "`git+https://github.com/microsoft/amplifier-foundation@main"
-                      "#subdirectory=bundles/anchors.md` with explicit "
+                      "#subdirectory=bundles/anchors/bundle.md` with explicit "
                       "registration/selection, or set root_bundle_repo: \"true\" "
                       "for a genuine root-product repository."
                   )
@@ -7445,7 +7448,7 @@ steps:
       - If skipped == true: "README install-instructions convention check: skipped (<reason from info>)"
       - For each finding of type readme_recommends_root_bundle:
         - [NEEDS WORK] the finding's message (README's primary capability install is not a canonical behavior URI)
-        - The fix: lead with `amplifier bundle add "<repo>#subdirectory=behaviors/<name>.yaml" --app`. A new complete host can explicitly register/select the Anchors supporting base (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md`); root_bundle_repo: "true" remains for a genuine root-product repo.
+        - The fix: lead with `amplifier bundle add "<repo>#subdirectory=behaviors/<name>.yaml" --app`. A new complete host can explicitly register/select the Anchors supporting base (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md`); root_bundle_repo: "true" remains for a genuine root-product repo.
       - For each finding of type readme_missing_app_flag:
         - [NEEDS WORK] the finding's message (behavior installation commands missing --app)
         - The fix: add --app to each behavior `amplifier bundle add` command. Do not add it merely to register/select a supporting root.

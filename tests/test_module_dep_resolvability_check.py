@@ -201,7 +201,7 @@ class TestVersionAndChangelog:
         accumulate.
         """
         data, _ = recipe_data
-        assert data["version"] == "3.17.1"
+        assert data["version"] == "3.17.2"
 
     def test_changelog_has_v3_11_0_entry(self, recipe_data):
         _, content = recipe_data
