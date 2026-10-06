@@ -68,7 +68,7 @@ CATALOGS = (
     ),
     (
         "anchors:git-ops",
-        "bundles/anchors.md",
+        "bundles/anchors/bundle.md",
         Path("bundles/anchors/agents/git-ops.md"),
         Path("agents/git-ops.md"),
     ),
@@ -84,8 +84,8 @@ def _agent_source(path: Path) -> tuple[str, str]:
 async def _prepared_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subdirectory: str
 ):
-    """Prepare canonical declarations without includes; recursive wrapper
-    equivalence is covered by test_amp_dev_composition with the local candidate.
+    """Prepare canonical declarations without includes; recursive composition
+    is covered by test_amp_dev_composition with the local candidate.
     """
     uri = CATALOG_ROOT.as_uri()
     if subdirectory != ".":
@@ -150,7 +150,7 @@ async def test_anchors_prepared_catalog_excludes_foundation_git_ops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Anchors' independently live catalog does not inherit Foundation's one."""
-    prepared = await _prepared_catalog(tmp_path, monkeypatch, "bundles/anchors.md")
+    prepared = await _prepared_catalog(tmp_path, monkeypatch, "bundles/anchors/bundle.md")
 
     assert "anchors:git-ops" in prepared.mount_plan["agents"]
     assert "foundation:git-ops" not in prepared.mount_plan["agents"]

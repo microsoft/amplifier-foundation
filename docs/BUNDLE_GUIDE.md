@@ -86,7 +86,7 @@ bundle:
   description: Runnable composition for my capability
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-capability:behaviors/my-capability
 ---
 
@@ -109,11 +109,11 @@ off; the app CLI composes its full skills behavior for its own sessions. Add
 additional behaviors explicitly when a complete host needs them. Do not infer
 other runtime semantics from a manifest field name.
 
-The canonical Anchors manifest is `bundles/anchors.md`. Its
-`bundle.namespace_root: anchors` is relative to the containing `bundles/`
-directory, preserving `anchors:agents/` and `anchors:context/` resources in the
-existing asset directory. `bundles/anchors/bundle.md` remains a compatibility
-wrapper; new compositions should name the flat manifest.
+The canonical Anchors manifest is `bundles/anchors/bundle.md`. Its containing
+directory is the asset root for `anchors:agents/` and `anchors:context/`, so it
+needs no `namespace_root` override. A directory URI ending in
+`#subdirectory=bundles/anchors` selects the same manifest. There are no flat
+Anchors manifests or compatibility wrappers.
 
 Foundation library imports, `foundation:` documentation namespaces, provider
 partials, and selected legacy Foundation roots remain valid. Behavior-first does
@@ -362,7 +362,7 @@ its supporting root composes the behavior and preserves the Anchors instruction:
 bundle:
   name: my-capability
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-capability:behaviors/my-capability
 ---
 
@@ -436,14 +436,14 @@ Legitimate awareness content, in practice:
 
 ### The thin-variant pattern (worked example)
 
-`bundles/anchors.md` and `bundles/anchors-amp-dev.md` in this repository are the
+`bundles/anchors/bundle.md` and `bundles/anchors-amp-dev/bundle.md` in this repository are the
 worked example. The variant composes one complete base and one portable
 capability:
 
 ```yaml
 includes:
-  - bundle: foundation:bundles/anchors.md
-  - bundle: foundation:behaviors/amp-dev.yaml
+  - bundle: anchors-amp-dev:../anchors/bundle.md
+  - bundle: anchors-amp-dev:../../behaviors/amp-dev.yaml
 ```
 
 Its body preserves `@anchors:context/system.md`. All Amplifier-development
@@ -452,15 +452,21 @@ additions live in `behaviors/amp-dev.yaml`: the lean
 behavior with its transitive DTU/Gitea capability. The behavior selects no runtime
 and includes no Anchors root. Another complete host can compose the same
 capability while keeping its own base, runtime, and instruction. There is no
-second copy of the base or capability to keep in sync. The nested
-`bundles/anchors-amp-dev/bundle.md` path is a compatibility wrapper; the old
+second copy of the base or capability to keep in sync. The variant keeps its
+`anchors-amp-dev:` namespace at the manifest directory, without a `namespace_root`
+override or variant assets. Its relative includes normalize to the base and
+capability in the same repository, preserving the selected Git ref. This keeps
+direct local directory and manifest loads source-local without separately
+registering Foundation. The
+nested path is canonical, not a compatibility wrapper; the old
 `anchors-amp-dev:amplifier-dev-expert` alias is not retained.
 
 Instruction preservation, namespace resolution, and intended skill precedence
-need composition checks. Local migration qualification passes those checks.
-The portable capability also passed real expert-spawn checks in an isolated
-non-Anchors host. A structural description alone is not runtime evidence, and
-that bounded run does not establish acceptance of every complete host.
+need composition checks. Historical flat-root migration qualification passed
+those checks, and the portable capability passed real expert-spawn checks in an
+isolated non-Anchors host. Those observations do not qualify the nested-only
+layout. A structural description alone is not runtime evidence, and that
+bounded run does not establish acceptance of every complete host.
 
 ### Validation payload lifetime
 
@@ -479,7 +485,7 @@ repository, supply `AMPLIFIER_RECIPE_SCRATCH_DIR` outside the target tree or add
 `.validate-bundle-payloads-*/` to that repository's ignore rules. POSIX mode
 checks do not establish Windows ACL protection.
 
-The historical head-cost figures below precede the flat-root migration; no
+The historical head-cost figures below precede the flat-root and nested-only migrations; no
 remeasurement of this layout is claimed here.
 
 Measured head cost (`validate-bundle-repo.yaml` Phase 2.86): anchors **2,483
@@ -572,7 +578,7 @@ Bundle repos follow **conventions** that enable maximum reusability and composit
 
 **Supporting root** (`/bundle.md`): An optional complete runnable composition. When present, it establishes the usual enclosing namespace layout and includes its own behavior. It is structurally a root bundle, but it is not the reusable capability's required entry point.
 
-**Standalone bundles** (`/bundles/*.yaml` or `/bundles/*.md`): Pre-composed variants ready to use as-is. They can combine a base with a provider or capability choice. Examples: `with-anthropic.yaml`, `anchors-amp-dev.md`. These are structurally "nested bundles" (loaded via `namespace:bundles/foo`) but conventionally "standalone" because they're complete and ready to use.
+**Standalone bundles** (`/bundles/*.yaml`, `/bundles/*.md`, or `/bundles/<name>/bundle.md`): Pre-composed variants ready to use as-is. They can combine a base with a provider or capability choice. Examples: `with-anthropic.yaml`, `anchors-amp-dev/bundle.md`. These are structurally "nested bundles" (loaded via `namespace:bundles/foo`) but conventionally "standalone" because they're complete and ready to use.
 
 **Behavior bundles** (`/behaviors/*.yaml`): The reusable capability this repo provides. When someone wants to add your capability to their existing host, they include this behavior. It contains agents, context, and optionally capability-specific tools or hooks; it does not choose the host's root, provider, orchestrator, context manager, or root instruction.
 
@@ -591,7 +597,7 @@ bundle:
   version: 1.0.0
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-capability:behaviors/my-capability  # DRY: include own behavior
 ```
 
@@ -867,7 +873,7 @@ bundle:
   description: Provides X capability
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-capability:behaviors/my-capability
 ---
 
@@ -1085,7 +1091,7 @@ Use this self-referential git URL form even when the module lives in the bundle'
 ```yaml
 # DON'T DO THIS when a supporting root already provides the complete host
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 
 tools:
   - module: tool-filesystem     # The supporting root has this!
@@ -1496,7 +1502,7 @@ bundle:
   description: What this bundle provides
 
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
   - bundle: my-bundle:behaviors/x   # Include behaviors
 
 # Only declare additional tools NOT inherited from Anchors
@@ -1556,7 +1562,7 @@ can also select Anchors as its base:
 
 ```yaml
 includes:
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors.md  # Supporting root only
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md  # Supporting root only
   - bundle: git+https://github.com/org/capability@main#subdirectory=behaviors/feature.yaml
   - bundle: my-bundle:behaviors/foo       # Behavior within the same repository
 ```
@@ -1814,7 +1820,7 @@ includes:
 Put reusable capability configuration in `behaviors/`. If a complete host is also
 useful, keep its root thin: compose the chosen base plus the behavior and
 explicitly preserve that base's instruction in its own body. For a new Anchors
-host, use `bundles/anchors.md` and `@anchors:context/system.md`; an existing host
+host, use `bundles/anchors/bundle.md` and `@anchors:context/system.md`; an existing host
 keeps its own base. Neither orchestrator nor context-manager selection belongs
 in the capability behavior.
 

@@ -1,6 +1,6 @@
 # Anchors + Amplifier-Ecosystem Knowledge
 
-The [`anchors`](../anchors.md) bundle plus one portable capability: knowledge of
+The [`anchors`](../anchors/bundle.md) bundle plus one portable capability: knowledge of
 the Amplifier ecosystem itself — repo dependency order, cross-repo validation in
 a Digital Twin Universe, and bundle/agent authoring.
 
@@ -10,9 +10,10 @@ it is being used to build.
 
 ## Install
 
-### Migration from the nested entry point
+### Resource identifiers
 
-The old root URI remains supported, but its added resource identifiers changed:
+The nested root is canonical. Its added resource identifiers use the portable
+capability's namespace:
 
 | Former identifier | Replacement |
 |---|---|
@@ -20,9 +21,9 @@ The old root URI remains supported, but its added resource identifiers changed:
 | `anchors-amp-dev:context/amplifier-ecosystem.md` | `amp-dev:context/amplifier-dev/amplifier-ecosystem.md` |
 
 Update explicit delegate calls and context references. The old agent alias and
-context path are not compatibility exports. The wrappers and expert use the
-enclosing `foundation:` resource namespace; it must resolve to this candidate
-version or later, not a stale separately cached Foundation tree.
+context path are not compatibility exports. The expert uses the enclosing
+`foundation:` resource namespace for documentation, not its runtime. There are
+no flat manifests or compatibility wrappers.
 
 ### Select the complete root
 
@@ -33,22 +34,27 @@ amplifier bundle use anchors-amp-dev
 ```
 
 Or add it explicitly by URI (single-quote to prevent shell expansion of the `#`
-fragment; the `.md` suffix is required):
+fragment):
 
 ```bash
-amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors-amp-dev.md' --name anchors-amp-dev
+amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors-amp-dev' --name anchors-amp-dev
 amplifier bundle use anchors-amp-dev
 ```
 
 ## What it is, mechanically
 
-The canonical `bundles/anchors-amp-dev.md` declares no runtime of its own. Its
-includes and instruction body are:
+The canonical `bundles/anchors-amp-dev/bundle.md` declares no runtime of its own.
+The directory URI selects that manifest; an explicit
+`#subdirectory=bundles/anchors-amp-dev/bundle.md` also works. Its own namespace
+stays at the manifest directory, without a `namespace_root` override or variant
+assets. Self-namespaced relative includes select the base and capability from the
+same repository, including direct local file/directory loads without separately
+registering Foundation. Its includes and instruction body are:
 
 ```yaml
 includes:
-  - bundle: foundation:bundles/anchors.md
-  - bundle: foundation:behaviors/amp-dev.yaml
+  - bundle: anchors-amp-dev:../anchors/bundle.md
+  - bundle: anchors-amp-dev:../../behaviors/amp-dev.yaml
 ```
 
 ```
@@ -99,11 +105,11 @@ includes produce a byte-identical mount plan.
 ```
 amplifier-foundation/
 ├── bundles/
-│   ├── anchors.md                  # complete Anchors host
-│   ├── anchors-amp-dev.md          # Anchors + amp-dev behavior
+│   ├── anchors/
+│   │   └── bundle.md               # complete Anchors host, alongside its assets
 │   └── anchors-amp-dev/
 │       ├── README.md               # this file
-│       └── bundle.md               # compatibility wrapper
+│       └── bundle.md               # Anchors + amp-dev behavior
 ├── behaviors/amp-dev.yaml          # complete portable amp-dev capability
 ├── agents/amplifier-dev-expert.md   # lean ecosystem authority
 └── context/amplifier-dev/
@@ -113,15 +119,17 @@ amplifier-foundation/
 
 ## Status
 
-Version 0.3.0. The flat root composes Anchors plus the shared capability. The old
-`bundles/anchors-amp-dev/bundle.md` URI remains a compatibility wrapper, not a
-second implementation. Local targeted qualification passes 232 checks. Separate
-`amplifier-tester` acceptance through official `amplifier-app-cli` passed 17
-bounded checks covering both flat roots and both compatibility entry points:
+Version 0.3.0. The nested root composes canonical nested Anchors plus the shared
+capability, without a second implementation or flat entry point.
+
+**Historical qualification (before the nested-only layout):** Local targeted
+qualification passed 232 checks. Separate `amplifier-tester` acceptance through
+official `amplifier-app-cli` passed 17 bounded checks covering the then-flat roots
+and compatibility entry points:
 real model responses, file and Bash tools, named-agent spawning, skills loading,
 candidate resource provenance, and retained streaming/simple runtimes.
 
-The portable capability also passed real root and expert-spawn checks in an
-isolated non-Anchors host. These observations do not establish a clean
-repository-wide recipe verdict; full validation failures and coverage limits
-remain separate evidence.
+The portable capability also historically passed real root and expert-spawn
+checks in an isolated non-Anchors host. These observations do not qualify the
+nested-only layout or establish a clean repository-wide recipe verdict; full
+validation failures and coverage limits remain separate evidence.
