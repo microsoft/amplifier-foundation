@@ -468,7 +468,7 @@ class SessionHistoryStore:
 
         pending = intent_path(path)
         if pending.exists():
-            with path.open("rb") as stream:
+            with path.open("r+b") as stream:
                 import os
 
                 os.fsync(stream.fileno())

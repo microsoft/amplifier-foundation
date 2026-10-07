@@ -170,6 +170,10 @@ def indexed(path: Path) -> TranscriptIndex:
 
 
 def _sync_directory(path: Path) -> None:
+    # Windows does not expose directory fsync through the CRT. File contents
+    # are still flushed through writable handles before each atomic replace.
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -279,7 +283,7 @@ def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
     _remember(TranscriptIndex(backup.absolute(), backup_stamp, backup_rows, True))
     current.check()
     _write_atomic(pending, '{"version":1}\n')
-    with pending.open("rb") as stream:
+    with pending.open("r+b") as stream:
         os.fsync(stream.fileno())
     _sync_directory(path.parent)
     # Failures deliberately retain intent + complete backup for read recovery.
