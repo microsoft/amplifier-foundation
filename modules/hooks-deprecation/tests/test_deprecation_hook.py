@@ -1,6 +1,7 @@
 """Tests for the deprecation hook module."""
 
 import logging
+import os
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -162,7 +163,7 @@ class TestFindSourceFiles:
         assert results == []
 
     def test_scans_nested_yaml_files(self, tmp_path):
-        """Finds bundle references in nested .amplifier/ subdirectories."""
+        """Finds bundle references in nested directories under .amplifier/bundles/."""
         amp_dir = tmp_path / ".amplifier" / "bundles"
         amp_dir.mkdir(parents=True)
         config = amp_dir / "my-config.yaml"
@@ -1301,3 +1302,76 @@ class TestObservabilityRegistration:
             await mount(coordinator, {})
 
         assert coordinator.register_contributor_calls == []
+
+
+class TestFindSourceFilesAuthoredOnly:
+    """Only authored config is evidence: top-level settings files and bundles/."""
+
+    def _amp(self, tmp_path):
+        amp = tmp_path / ".amplifier"
+        amp.mkdir()
+        return amp
+
+    def test_ignores_tool_managed_state(self, tmp_path):
+        amp = self._amp(tmp_path)
+        (amp / "settings.yaml").write_text("bundle:\n  app: [lsp-python]\n")
+        noise = {
+            "cache/dep/x.yaml",  # resolved modules (#344)
+            "projects/-p/sessions/s1/metadata.yaml",  # session storage
+            "team-knowledge/kb/capabilities/lsp-python.yaml",  # a bundle's data store
+            "evaluation/run1/config.yaml",
+            "resolve/instance.yaml",  # a subdir's top level
+            ".hidden/x.yaml",
+        }
+        for rel in noise:
+            f = amp / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("lsp-python\n")
+        assert find_source_files("lsp-python", [tmp_path]) == [
+            str(amp / "settings.yaml")
+        ]
+
+    def test_finds_nested_authored_bundles_within_depth(self, tmp_path):
+        amp = self._amp(tmp_path)
+        shallow = amp / "bundles" / "team" / "profile.yaml"
+        deep = amp / "bundles" / "a" / "b" / "c" / "d" / "e" / "far.yaml"
+        for f in (shallow, deep):
+            f.parent.mkdir(parents=True)
+            f.write_text("includes: [lsp-python]\n")
+        assert find_source_files("lsp-python", [tmp_path]) == [str(shallow)]
+
+    def test_skips_cache_and_git_under_bundles(self, tmp_path):
+        amp = self._amp(tmp_path)
+        for rel in ("bundles/cache/x.yaml", "bundles/.git/x.yaml"):
+            f = amp / rel
+            f.parent.mkdir(parents=True)
+            f.write_text("lsp-python\n")
+        assert find_source_files("lsp-python", [tmp_path]) == []
+
+    def test_other_hidden_dirs_under_bundles_still_scanned(self, tmp_path):
+        amp = self._amp(tmp_path)
+        f = amp / "bundles" / ".team" / "x.yaml"
+        f.parent.mkdir(parents=True)
+        f.write_text("lsp-python\n")
+        assert find_source_files("lsp-python", [tmp_path]) == [str(f)]
+
+    def test_symlink_loop_under_bundles_is_skipped(self, tmp_path):
+        amp = self._amp(tmp_path)
+        bundles = amp / "bundles"
+        bundles.mkdir()
+        (amp / "settings.yaml").write_text("lsp-python\n")
+        loop = bundles / "loop.yaml"
+        try:
+            os.symlink(loop, loop)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable")
+        assert find_source_files("lsp-python", [tmp_path]) == [
+            str(amp / "settings.yaml")
+        ]
+
+    def test_cwd_equal_to_home_reports_each_file_once(self, tmp_path):
+        amp = self._amp(tmp_path)
+        (amp / "settings.local.yaml").write_text("lsp-python\n")
+        assert find_source_files("lsp-python", [tmp_path, tmp_path]) == [
+            str(amp / "settings.local.yaml")
+        ]
