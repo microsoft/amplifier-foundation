@@ -158,16 +158,26 @@ class SessionHistoryStore:
             "transcript_backup": self.transcript_path.with_suffix(".jsonl.backup"),
             "metadata": self.metadata_path,
             "metadata_backup": self.metadata_path.with_suffix(".json.backup"),
+            "transcript_append": self.transcript_path.with_name(
+                "transcript.jsonl.append-pending"
+            ),
         }
 
     def _recover(
         self, path: Path, source: str, reader: Callable[[Path], Any], empty: Any
     ) -> Any:
-        present = False
+        from .jsonl import intent_path
+
+        pending = source == "transcript" and intent_path(path).exists()
+        present = pending
+        if pending:
+            self.diagnostics.append(HistoryDiagnostic("interrupted_append", source))
         for candidate, label in (
             (path, source),
             (path.with_suffix(path.suffix + ".backup"), source + "_backup"),
         ):
+            if pending and candidate == path:
+                continue
             try:
                 value = reader(candidate)
             except FileNotFoundError:
@@ -205,6 +215,18 @@ class SessionHistoryStore:
         """Load metadata with the same strict, read-only recovery contract."""
         self.diagnostics = []
         return self._recover(self.metadata_path, "metadata", _read_metadata, {})
+
+    def indexed_messages(self):
+        """Open a validated revision with lazy bodies and rebuildable lookups.
+
+        The first access scans once; subsequent reads use offsets. No index is
+        written into history. CLI replacement or in-place changes invalidate it.
+        Missing history returns an empty list; interrupted appends use backup.
+        """
+        from .jsonl import indexed
+
+        self.diagnostics = []
+        return self._recover(self.transcript_path, "transcript", indexed, [])
 
     def load(self, *, include_events: bool = True) -> SessionHistory:
         """Load an in-memory view, reporting files changed during the read.
@@ -416,6 +438,11 @@ class SessionHistoryStore:
         # Validate existing state before changing either file. Never rotate a
         # damaged primary over the only readable backup. The return value means
         # preserve that backup when replacing the damaged primary.
+        from .jsonl import intent_path
+
+        if path == self.transcript_path and intent_path(path).exists():
+            self._recover(path, "transcript", reader, [])
+            return True
         try:
             reader(path)
         except FileNotFoundError:
@@ -437,6 +464,16 @@ class SessionHistoryStore:
             _write_atomic(path, content)
         else:
             write_with_backup(path, content)
+        from .jsonl import _sync_directory, intent_path
+
+        pending = intent_path(path)
+        if pending.exists():
+            with path.open("r+b") as stream:
+                import os
+
+                os.fsync(stream.fileno())
+            pending.unlink()
+            _sync_directory(path.parent)
 
     def save(
         self,
@@ -446,6 +483,7 @@ class SessionHistoryStore:
         preserve_system: bool = False,
         sanitizer: Callable[[Any], dict[str, Any]] | None = None,
         merge_metadata: bool = False,
+        incremental: bool = False,
     ) -> None:
         """Validate both payloads, then replace native files with CLI backups.
 
@@ -453,6 +491,10 @@ class SessionHistoryStore:
         policy; JSON-serializable provider continuation fields survive untouched.
         No logger, event log, checkpoint, or additional session body is written.
         """
+        if incremental:
+            return self._save_incremental(
+                messages, metadata, preserve_system, sanitizer, merge_metadata
+            )
         transcript_content = self._messages_content(
             messages, preserve_system, sanitizer
         )
@@ -471,6 +513,58 @@ class SessionHistoryStore:
             )
             self._write_prepared(
                 self.metadata_path, metadata_content, preserve_metadata_backup
+            )
+
+    def _save_incremental(
+        self, messages, metadata, preserve_system, sanitizer, merge_metadata
+    ):
+        from .jsonl import append_messages, indexed, intent_path
+
+        if not isinstance(messages, list):
+            raise ValueError("messages must be a list")  # noqa: TRY004 - validation API
+        values = []
+        for message in messages:
+            original = (
+                message
+                if isinstance(message, dict)
+                else message.model_dump()
+                if hasattr(message, "model_dump")
+                else None
+            )
+            if not _valid_message(original):
+                raise ValueError("Each message must be an object with a nonempty role")
+            if not preserve_system and original["role"] in ("system", "developer"):
+                continue
+            value = sanitizer(message) if sanitizer else original
+            if not _valid_message(value):
+                raise ValueError(
+                    "Message sanitizer must return an object with a nonempty role"
+                )
+            values.append(value)
+        # Validate all rows before any source mutation, including an invalid
+        # late row after an otherwise matching prefix. Hashes are computed by
+        # append_messages; encoding here would duplicate large-history work.
+        with metadata_lock(self.session_dir):
+            if merge_metadata:
+                metadata = checkpoint_metadata(self.load_metadata(), metadata)
+            metadata_content = self._metadata_content(metadata)
+            preserve_metadata = self._prepare_write(self.metadata_path, _read_metadata)
+            # Validation and comparison in append_messages are read-only until
+            # the entire append has been encoded. Replacement validates below.
+            if not append_messages(self.transcript_path, values):
+                content = self._messages_content(values, True, None)
+                pending = intent_path(self.transcript_path)
+                if pending.exists():
+                    # Never rotate an incomplete primary over its good backup.
+                    self._recover(self.transcript_path, "transcript", indexed, [])
+                    preserve_backup = True
+                else:
+                    preserve_backup = self._prepare_write(self.transcript_path, indexed)
+                self._write_prepared(self.transcript_path, content, preserve_backup)
+                if pending.exists():
+                    pending.unlink()
+            self._write_prepared(
+                self.metadata_path, metadata_content, preserve_metadata
             )
 
     def save_messages(
@@ -535,6 +629,50 @@ def _tool_ids(message: dict[str, Any], *, results: bool) -> set[str]:
     return found
 
 
+def _prompt_digest(text: str) -> bytes:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).digest()
+
+
+def event_association_record(event: dict[str, Any]) -> dict[str, Any]:
+    """Retain only association evidence, hashing rather than retaining prompts.
+
+    The bytes fingerprint is an internal lookup field, never a JSON event-log
+    field. It cannot be supplied by a serialized event in place of prompt text.
+    Original payloads stay in CI and remain available by the host's offsets.
+    """
+    data = event.get("data", {})
+    selected = {
+        key: data[key]
+        for key in ("tool_call_id", "call_id", "message_id", "purpose", "origin_module")
+        if key in data
+    }
+    if event.get("event") == "prompt:submit" and isinstance(data.get("prompt"), str):
+        selected["_prompt_digest"] = _prompt_digest(data["prompt"])
+    return {**event, "data": selected}
+
+
+def _association_facts(message, index=None):
+    metadata = (
+        message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    )
+    completed = _tool_ids(message, results=True)
+    real_user = (
+        is_real_user_message(message)
+        and not metadata.get("ephemeral")
+        and not completed
+    )
+    content = message.get("content")
+    return (
+        bool(real_user),
+        _prompt_digest(content) if real_user and isinstance(content, str) else None,
+        message.get("message_id") or metadata.get("message_id"),
+        _tool_ids(message, results=False),
+        completed,
+    )
+
+
 def associate_events(
     messages: list[dict[str, Any]], events: list[dict[str, Any]]
 ) -> list[EventAssociation]:
@@ -550,30 +688,30 @@ def associate_events(
     message_ids: dict[str, set[int]] = defaultdict(set)
     turns: dict[int, int | None] = {}
     turn_anchors: dict[int, int] = {}
-    human: list[tuple[int, str]] = []
+    human: list[tuple[int, bytes]] = []
     turn: int | None = None
-    for index, message in enumerate(messages):
-        metadata = (
-            message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-        )
-        if (
-            is_real_user_message(message)
-            and not metadata.get("ephemeral")
-            and not _tool_ids(message, results=True)
-        ):
+    from .jsonl import TranscriptIndex
+
+    facts = (
+        messages.project("associations-v1", _association_facts)
+        if isinstance(messages, TranscriptIndex)
+        else map(_association_facts, messages)
+    )
+    for index, fact in enumerate(facts):
+        real_user, prompt, identity, declared, completed = fact
+        if real_user:
             turn = 0 if turn is None else turn + 1
             turn_anchors[turn] = index
-            if isinstance(message.get("content"), str):
-                human.append((index, message["content"]))
+            if prompt is not None:
+                human.append((index, prompt))
         turns[index] = turn
-        identity = message.get("message_id") or metadata.get("message_id")
         if isinstance(identity, str):
             message_ids[identity].add(index)
-        for identity in _tool_ids(message, results=False):
+        for identity in declared:
             declarations[identity].add(index)
-        for identity in _tool_ids(message, results=True):
+        for identity in completed:
             results[identity].add(index)
-    prompts: list[tuple[int, str]] = []
+    prompts: list[tuple[int, bytes]] = []
     auxiliary: set[int] = set()
     for index, event in enumerate(events):
         data = event.get("data", {})
@@ -586,10 +724,20 @@ def associate_events(
             auxiliary.add(index)
         if (
             event.get("event") == "prompt:submit"
-            and isinstance(data.get("prompt"), str)
+            and (
+                isinstance(data.get("prompt"), str)
+                or isinstance(data.get("_prompt_digest"), bytes)
+            )
             and event.get("session_id")
         ):
-            prompts.append((index, data["prompt"]))
+            prompts.append(
+                (
+                    index,
+                    _prompt_digest(data["prompt"])
+                    if isinstance(data.get("prompt"), str)
+                    else data["_prompt_digest"],
+                )
+            )
     prompt_matches: dict[int, int] = {}
     if [text for _, text in human] == [text for _, text in prompts]:
         prompt_matches = {
@@ -597,8 +745,8 @@ def associate_events(
             for (event_index, _), (message_index, _) in zip(prompts, human, strict=True)
         }
     else:
-        human_by_text: dict[str, list[int]] = defaultdict(list)
-        event_by_text: dict[str, list[int]] = defaultdict(list)
+        human_by_text: dict[bytes, list[int]] = defaultdict(list)
+        event_by_text: dict[bytes, list[int]] = defaultdict(list)
         for index, text in human:
             human_by_text[text].append(index)
         for index, text in prompts:
