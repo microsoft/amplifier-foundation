@@ -24,11 +24,29 @@ def stamp(path):
     if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:raise ValueError('Snapshot source must be an unlinked regular file')
     return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
 
-def revision(path):
+def source_digest(path,remaining,bounded):
+    bounded();before=stamp(path)
+    if before is None:return None
+    if before[2]>remaining[0]:raise ValueError('Snapshot sources exceed byte budget')
+    remaining[0]-=before[2]
+    digest=hashlib.sha256();read=0
+    with path.open('rb') as stream:
+        opened=os.fstat(stream.fileno())
+        if (opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns,opened.st_ctime_ns)!=before:raise ValueError('Source store changed before verification')
+        while block:=stream.read(65536):
+            bounded();read+=len(block)
+            if read>before[2]:raise ValueError('Source store grew during verification')
+            digest.update(block)
+    if read!=before[2] or stamp(path)!=before:raise ValueError('Source store changed during verification')
+    # SQLite can change WAL ctime while opening a read-only connection. Compare
+    # identity, size, mtime and bytes between sweeps, not that metadata timestamp.
+    return before[:4],digest.hexdigest()
+
+def revision(path,remaining,bounded):
     journal=checked(Path(str(path)+'-journal'));wal=Path(str(path)+'-wal')
     stamp(Path(str(path)+'-shm'))
     if journal.exists():raise ValueError('Unresolved SQLite journal; preserve original')
-    database=stamp(path);side=stamp(wal)
+    database=source_digest(path,remaining,bounded);side=source_digest(wal,remaining,bounded)
     if database is None and side is not None:raise ValueError('Orphan SQLite WAL; preserve original')
     return database,side
 
@@ -69,7 +87,7 @@ def integrity(path,bounded):
         if db.execute('PRAGMA quick_check').fetchone()!=('ok',):raise ValueError('Snapshot image integrity failed')
     finally:db.close()
 
-def capture_snapshot(sources,directory,*,assert_held,max_bytes=DEFAULT_MAX_BYTES):
+def capture_snapshot(sources,directory,*,assert_held,max_bytes=DEFAULT_MAX_BYTES,max_source_bytes=None):
     """Caller supplies the complete explicit store census and held writer guard.
 
     Missing stores are explicit. The caller owns lifetime locking, authorization,
@@ -77,14 +95,18 @@ def capture_snapshot(sources,directory,*,assert_held,max_bytes=DEFAULT_MAX_BYTES
     after failure; an existing destination never permits capture replay.
     """
     remaining=budget(max_bytes);bounded=guard(assert_held)
+    # WAL frames can exceed the compact backup. Each source sweep has an explicit
+    # aggregate bound, and every hash chunk shares the capture's held-lock deadline.
+    source_limit=budget(max_source_bytes if max_source_bytes is not None else min(4*max_bytes,1024*1024*1024))
     if not isinstance(sources,dict) or not 1<=len(sources)<=MAX_STORES or any(not isinstance(key,str) or not IDENTITY.fullmatch(key) for key in sources):raise ValueError('At most 16 explicit distinct store identities required')
     paths={key:checked(value) for key,value in sources.items()}
     if len(set(paths.values()))!=len(paths):raise ValueError('Source stores must be distinct')
     directory=checked(directory)
     if any(directory==path or path in directory.parents for path in paths.values()):raise ValueError('Snapshot destination cannot replace source authority')
-    before={key:revision(path) for key,path in paths.items()}
+    source_remaining=[source_limit]
+    before={key:revision(path,source_remaining,bounded) for key,path in paths.items()}
     directory.mkdir(mode=0o700,parents=True,exist_ok=False)
-    entries=[]
+    entries=[];source_remaining=[source_limit]
     for key,path in sorted(paths.items()):
         bounded()
         if before[key][0] is None:entries.append({'id':key,'status':'missing'});continue
@@ -103,10 +125,11 @@ def capture_snapshot(sources,directory,*,assert_held,max_bytes=DEFAULT_MAX_BYTES
             target.execute('PRAGMA journal_mode=DELETE');target.execute('PRAGMA synchronous=FULL')
         finally:target.close();source.close()
         integrity(image,bounded);sha,size=file_digest(image,remaining,bounded);remaining-=size;sync(image)
-        if revision(path)!=before[key]:raise ValueError('Source store changed while writers were held')
+        if revision(path,source_remaining,bounded)!=before[key]:raise ValueError('Source store changed while writers were held')
         entries.append({'id':key,'status':'captured','file':image.name,'sha256':sha,'bytes':size})
     bounded()
-    if any(revision(path)!=before[key] for key,path in paths.items()):raise ValueError('Source store set changed during capture')
+    source_remaining=[source_limit]
+    if any(revision(path,source_remaining,bounded)!=before[key] for key,path in paths.items()):raise ValueError('Source store set changed during capture')
     manifest={'schema':'amplifier-sqlite-snapshot-set','version':VERSION,'stores':entries,'activationProvided':False}
     raw=canonical(manifest)
     if len(raw)>MAX_MANIFEST:raise ValueError('Snapshot manifest exceeds bound')
