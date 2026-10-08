@@ -122,10 +122,15 @@ Capture uses SQLite's backup API to include committed WAL rows in independently
 validatable standalone images. It checks the database and WAL revisions across
 the entire census, runs image integrity checks, and seals a bounded manifest with
 image hashes, byte counts, and explicit missing stores. SQLite readers may update
-transient shared-memory coordination; database and WAL authority remain unchanged.
+transient shared-memory coordination and WAL change-time metadata; database and
+WAL identity, size, modification time and SHA-256 content must remain unchanged.
 Symlinks, shared hardlinks, unresolved journals, orphan WALs, concurrent revision
 changes and exceeded byte/time budgets refuse completion. Defaults are 64 MiB
-across images and thirty seconds. Parent namespace trust remains the caller's
+across images and thirty seconds. Source verification uses at most three bounded
+sweeps of the declared databases and WALs. Each sweep defaults to four times the
+image budget, capped at 1 GiB, or an explicit `max_source_bytes` (1 KiB–1 GiB).
+Every 64 KiB hash chunk checks the held writer guard and the same deadline.
+Parent namespace trust remains the caller's
 responsibility; this mechanism does not discover external storage or freeze other
 processes. Partial output is preserved for original-command inspection, and an
 existing destination refuses capture replay.

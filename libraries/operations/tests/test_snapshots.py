@@ -1,4 +1,4 @@
-import hashlib,json,sqlite3
+import hashlib,json,sqlite3,os
 from pathlib import Path
 import pytest
 from amplifier_operations.snapshots import capture_snapshot,restore_snapshot
@@ -80,3 +80,42 @@ def test_sqlite_shared_memory_link_refuses_before_capture(tmp_path):
     with pytest.raises(ValueError,match='symbolic'):
         capture_snapshot({'store':source},tmp_path/'snapshot',assert_held=lambda:None)
     assert elsewhere.read_bytes()==b'preserved bytes' and not (tmp_path/'snapshot').exists()
+
+def test_ctime_only_change_during_backup_is_not_a_writer(tmp_path):
+    source=tmp_path/'source.sqlite3';db=store(source)
+    wal=Path(str(source)+'-wal');original=wal.read_bytes();before=wal.stat();changed=False
+    def held():
+        nonlocal changed
+        if not changed and (tmp_path/'snapshot/store.sqlite3').exists():
+            wal.chmod(0o600 if before.st_mode&0o777!=0o600 else 0o640);changed=True
+    result=capture_snapshot({'store':source},tmp_path/'snapshot',assert_held=held)
+    assert changed and result['stores'][0]['status']=='captured'
+    assert wal.read_bytes()==original and wal.stat().st_mtime_ns==before.st_mtime_ns
+    assert wal.stat().st_ctime_ns!=before.st_ctime_ns
+    db.close()
+
+def test_content_change_with_preserved_size_and_mtime_refuses(tmp_path):
+    from amplifier_operations.snapshots import revision
+    source=tmp_path/'source.sqlite3';db=store(source);wal=Path(str(source)+'-wal')
+    before=revision(source,[1024*1024],lambda:None);info=wal.stat();raw=wal.read_bytes()
+    wal.write_bytes(raw[:-1]+bytes([raw[-1]^1]));os.utime(wal,ns=(info.st_atime_ns,info.st_mtime_ns))
+    assert revision(source,[1024*1024],lambda:None)!=before
+    wal.write_bytes(raw);db.close()
+
+def test_source_census_has_aggregate_byte_bound_before_destination(tmp_path):
+    first=tmp_path/'a.sqlite3';second=tmp_path/'b.sqlite3';a=store(first);b=store(second)
+    one=first.stat().st_size+Path(str(first)+'-wal').stat().st_size
+    with pytest.raises(ValueError,match='sources exceed byte budget'):
+        capture_snapshot({'a':first,'b':second},tmp_path/'snapshot',assert_held=lambda:None,max_source_bytes=one)
+    assert not (tmp_path/'snapshot').exists()
+    a.close();b.close()
+
+def test_source_hash_rechecks_guard_for_each_chunk(tmp_path):
+    from amplifier_operations.snapshots import revision
+    source=tmp_path/'source.sqlite3';source.write_bytes(b'x'*200000);calls=0
+    def lost():
+        nonlocal calls
+        calls+=1
+        if calls==3:raise ValueError('writer guard lost')
+    with pytest.raises(ValueError,match='guard lost'):revision(source,[1024*1024],lost)
+    assert calls==3
