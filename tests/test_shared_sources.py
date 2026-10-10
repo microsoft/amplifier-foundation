@@ -242,3 +242,33 @@ async def test_bundle_root_package_recognition_uses_generation_binding(
     newer = await store.bind(cache, url, "main", second, existing=repo)
     assert bundle_root_declares_module(newer, [module], cache_dir=cache)
     assert not bundle_root_declares_module(root, [module], cache_dir=cache)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('subpath', ['', '#subdirectory=bundle.md'])
+async def test_shared_reader_waits_for_legacy_cache_writer(tmp_path, subpath):
+    import asyncio
+
+    from filelock import FileLock
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.git import GitSourceHandler
+
+    store = SharedSourceStore(tmp_path / 'store')
+    cache = tmp_path / 'cache'
+    uri = 'git+https://example.invalid/repo@main' + subpath
+    legacy = GitSourceHandler()._get_cache_path(parse_uri(uri), cache)
+    cache.mkdir()
+    # The legacy Git handler holds this sibling lock while a clone populates
+    # the cache. The directory exists before its bundle has been checked out.
+    with FileLock(legacy.with_name(f'.{legacy.name}.lock')):
+        legacy.mkdir()
+        pending = asyncio.create_task(store.resolve(uri, cache))
+        try:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(pending), timeout=0.1)
+        finally:
+            (legacy / 'bundle.md').write_text('complete bundle')
+    result = await asyncio.wait_for(pending, timeout=5)
+    assert result.source_root == legacy
+    assert (result.source_root / 'bundle.md').read_text() == 'complete bundle'
+    assert result.active_path == (legacy / 'bundle.md' if subpath else legacy)

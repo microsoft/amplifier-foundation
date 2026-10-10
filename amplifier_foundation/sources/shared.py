@@ -220,10 +220,17 @@ class SharedSourceStore:
             binding_root(cache) / ".source-bindings" / (source_id(url, ref) + ".json")
         )
         path.parent.mkdir(parents=True, exist_ok=True)
-        async with AsyncFileLock(path.with_suffix(".lock")):
+        legacy = handler._get_cache_path(parsed, Path(cache))
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        # A legacy resolver may still be cloning into this directory. Its
+        # sibling writer lock is distinct from our generation-binding lock.
+        # Acquire both before inspecting or returning the legacy checkout.
+        async with (
+            AsyncFileLock(path.with_suffix(".lock")),
+            AsyncFileLock(legacy.with_name(f".{legacy.name}.lock")),
+        ):
             # Binding scopes coalesce bundles/skills, but legacy directories
             # retain the handler's original cache path and any edits there.
-            legacy = handler._get_cache_path(parsed, Path(cache))
             if (
                 legacy.exists()
                 and (
