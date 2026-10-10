@@ -39,9 +39,14 @@ if name == "owner":
     git._run_git_network_op = paused_clone
 
 (signals / f"{name}-started").touch()
-result = asyncio.run(
-    getattr(git.GitSourceHandler(), operation)(parse_uri(uri), Path(cache))
-)
+if operation == "shared":
+    from amplifier_foundation.sources.shared import SharedSourceStore
+
+    result = asyncio.run(SharedSourceStore(signals / "store").resolve(uri, Path(cache)))
+else:
+    result = asyncio.run(
+        getattr(git.GitSourceHandler(), operation)(parse_uri(uri), Path(cache))
+    )
 print(
     json.dumps(
         {

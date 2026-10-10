@@ -44,7 +44,8 @@ def repository(path):
 
 
 @pytest.mark.parametrize("operation", ["resolve", "update"])
-def test_processes_share_one_completed_clone(tmp_path, operation):
+@pytest.mark.parametrize("follower_operation", ["resolve", "shared"])
+def test_processes_share_one_completed_clone(tmp_path, operation, follower_operation):
     uri = repository(tmp_path / "remote")
     other_uri = repository(tmp_path / "other")
     cache = tmp_path / "cache"
@@ -76,7 +77,7 @@ def test_processes_share_one_completed_clone(tmp_path, operation):
     try:
         owner = start(uri, "owner", operation)
         wait_for(signals / "cloning")
-        follower = start(uri, "follower", "resolve")
+        follower = start(uri, "follower", follower_operation)
         wait_for(signals / "follower-started")
         # A different repository must remain usable while this clone is held.
         unrelated = start(other_uri, "unrelated", "resolve")
