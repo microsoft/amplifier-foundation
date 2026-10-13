@@ -6,9 +6,10 @@ incompatibility. Exceptions are failures, never permission to try another accoun
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from .spawn_utils import ProviderPreference
 

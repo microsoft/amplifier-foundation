@@ -3,9 +3,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
 from amplifier_foundation.operation_routing import (
-    OPERATION_ROUTING_PROTOCOL, OperationRoutingError, prepare_operation,
+    OPERATION_ROUTING_PROTOCOL,
+    OperationRoutingError,
+    prepare_operation,
 )
 from amplifier_foundation.spawn_utils import ProviderPreference
 
