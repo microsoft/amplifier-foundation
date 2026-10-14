@@ -316,6 +316,13 @@ meta:
 
 When both `model_role` and `provider_preferences` are present, `provider_preferences` takes priority.
 
+### Proposed operation-aware consumption
+
+The [optional operation-role contract](../contracts/model-role-consumption.v1.md)
+and [technical note](MODEL-ROLE-CONSUMPTION.md) describe a draft extension for
+bounded operations with additional capability requirements. They do not change
+the existing agent-resolution or inheritance behavior documented above.
+
 ---
 
 ## Sub-Agent Access Control with `agents`
