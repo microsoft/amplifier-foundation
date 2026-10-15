@@ -1,10 +1,10 @@
 # Operation-aware model-role consumption (DRAFT 2026-10-13)
 
-Technical note for [MR](../contracts/model-role-consumption.v1.md). The current
-source candidate implements the optional helper described here; this is not a
-shipped-API or deployment claim. The contract remains draft and unfrozen.
-Combined offline qualification is pending. No whole-repository vision, required
-Core interface or strategy policy is changed by this note.
+Technical note for [MR](../contracts/model-role-consumption.v1.md). Foundation
+implements the optional helper described here; the experimental contract remains
+draft and unfrozen. Availability in this repository does not establish adoption
+by a host or every resolver. No whole-repository vision, required Core interface
+or strategy policy is changed by this note.
 
 ## Existing boundary
 
@@ -70,6 +70,14 @@ prepared.assert_current(coordinator)
 Preparation does not execute the operation or replace the host's admission
 checks. Durable effect identity and saved results remain the caller's job.
 
+The frozen `PreparedOperation` dataclass prevents field reassignment, not
+mutation of its nested plan or preference configuration. Copies isolate these
+values from the preparer's originals; they are not tamper-proof authorization
+tokens. Callers must not change a prepared request or plan. The provider owns
+validation of request, credential/account scope, plan integrity and single-use
+execution. `assert_current()` checks only mounted-object identity and the
+availability capability, not those provider-owned guarantees.
+
 ## Negotiate the resolver extension
 
 An operation-aware resolver advertises:
@@ -87,6 +95,11 @@ preparation. The resolver owns candidate order, scope, substitutions and final
 commitment. It must return a one-element preference list whose exact final
 selection has been accepted once. Returning an unprepared or altered preference,
 multiple winners, or the same selection prepared more than once is refused.
+
+A resolver must propagate an exception from `accept`, not catch it and continue
+to another account. This is a trusted in-process protocol: the current helper
+does not sandbox a resolver or record a permanent failure if it swallows the
+callback's exception. Providers and hosts still enforce execution admission.
 
 If the protocol attribute is present but unsupported, or `resolve_for` is not
 callable, the helper refuses with `unsupported_resolver`. It never probes a
@@ -107,11 +120,23 @@ be nonempty and `config`, when present, must be a mapping.
 
 When available, the coordinator's synchronous `provider.check_available`
 capability is called with `provider_id` during preparation and again by
-`assert_current()`. False refuses selection;
-an async availability result is invalid. `assert_current()` also refuses if the
-mounted object at that key changed. These checks do not establish entitlement.
+`assert_current()`. Hosts should follow the shared
+[return-or-raise convention](provider-failure-policy.md#applying-a-selected-childs-provider-preferences):
+return normally when available and raise an actionable exception otherwise.
+The operation helper propagates that exception without trying another account.
+As an operation-only defensive check, it also refuses the literal value `False`;
+this is **not** a portable way for a host to report unavailability to other
+consumers. An async availability result is invalid. `assert_current()` also
+refuses if the mounted object at that key changed. These checks do not establish
+entitlement or change ordinary child-spawn fallback policy.
 The helper has no catalogue cache; consumers that cache evidence must key it by
 exact binding and catalogue kind, never provider family alone.
+
+`OperationRoutingError.code` identifies the helper's explicit refusals. It is
+not a complete exception taxonomy: host/preparer exceptions propagate, and
+malformed preferences or synchronous resolver implementations can raise
+`TypeError`. Consumers must not translate any such exception into compatibility,
+an empty result or permission to try an undeclared alternative.
 
 Candidate incompatibility can advance within declared permitted order before
 execution. An unavailable account, denied scope or broken capability contract is
@@ -132,7 +157,7 @@ resolution before/after, test ambiguous same-family mounts, missing/old extensio
 versions, catalogue errors and no generation during preparation. Do not claim a
 passing extension from a documentation example or a single production strategy.
 
-The source helper and interoperability fixtures are candidate implementation,
-not evidence that every MR clause has passed. Retain exact dependency versions
-and observed results separately. This documentation update reports no new test
+The source helper and interoperability fixtures do not establish that every MR
+clause has passed for every consumer. Retain exact dependency versions and
+observed results separately. This documentation update reports no new test
 execution or live operation and does not freeze the contract.

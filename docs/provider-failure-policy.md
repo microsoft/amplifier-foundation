@@ -75,3 +75,18 @@ Without this capability, legacy no-match behavior remains unchanged.
 This is a host boundary, not an automatic health probe. The host owns safe
 error text, per-session account state, revalidation, and applying this policy on
 each root/resumed/child session. Never publish provider secrets in exceptions.
+
+## Optional bounded-operation consumers
+
+[`prepare_operation`](MODEL-ROLE-CONSUMPTION.md) reuses the same synchronous
+capability but has a deliberately different consumer failure policy. A raised
+availability error aborts operation preparation; it does not advance to another
+account. Only an explicit incompatibility result (`None`) from the operation
+preparer allows progression through declared candidates.
+
+That helper also rejects a literal `False` return as a defensive operation-only
+check. Do not use `False` to report unavailability in shared host implementations:
+the existing child-preference consumer treats a normal return as available.
+Return normally for availability and raise for unavailability, then let each
+consumer apply its documented failure policy. Neither consumer performs a paid
+health probe, establishes entitlement, or replaces execution-time admission.
