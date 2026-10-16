@@ -37,6 +37,15 @@ fields are preserved, including provider-specific continuation state. A host
 that already sanitizes messages can pass `sanitizer=its_sanitize_message`.
 Redaction and choosing which data to persist are application policy.
 
+For consumers with byte-position message references, `save(...,
+preserve_prefix=True)` keeps the exact bytes of unchanged leading transcript
+rows, including older JSON escaping, whitespace and CRLF endings. Changed rows
+and the remainder use normal replacement. A missing final newline is added only
+when another row follows. This opt-in path retains atomic replacement and the
+original backup; it does not enable incremental append or change read behavior.
+Equality includes every message field. Any normalization of runtime-only fields
+must be an explicit host policy before calling this API.
+
 `save` defaults to replacing metadata. Runtime checkpoints should opt into
 `merge_metadata=True` to preserve current naming and unknown fields.
 `save_messages` and `save_metadata` support incremental persistence; explicit
