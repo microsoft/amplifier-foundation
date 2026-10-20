@@ -11,7 +11,7 @@ file I/O. Entries must already be parsed and annotated with ``line_num`` keys
 from __future__ import annotations
 
 import json
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from .messages import is_real_user_message
 
@@ -33,6 +33,7 @@ class DiagnosisResult(TypedDict):
     orphaned_tool_ids: list[str]
     misplaced_tool_ids: list[str]
     incomplete_turns: list[IncompleteTurn]
+    unresolved_tool_ids: NotRequired[list[str]]
     recommended_action: (
         str  # "none" | "repair" | "rewind" (rewind reserved for future use)
     )
@@ -45,7 +46,10 @@ class DiagnosisResult(TypedDict):
 SYNTHETIC_TOOL_RESULT_CONTENT: str = json.dumps(
     {
         "error": "unknown_error",
-        "message": "Tool execution was interrupted and no result was captured.",
+        "message": (
+            "No result was recorded; actual execution outcome is unknown. "
+            "Verify independent evidence before repeating an action."
+        ),
     }
 )
 
@@ -55,8 +59,8 @@ SYNTHETIC_ASSISTANT_RESPONSE: dict = {
         {
             "type": "text",
             "text": (
-                "The previous tool calls were interrupted. "
-                "This response was automatically repaired."
+                "Derived repair notice: this transcript was automatically repaired. "
+                "This notice does not establish any tool's execution outcome."
             ),
         }
     ],
@@ -69,39 +73,128 @@ SYNTHETIC_ASSISTANT_RESPONSE: dict = {
 
 
 def build_tool_index(entries: list[dict]) -> dict:
-    """Build an index of tool_use IDs and tool_result IDs from parsed entries.
+    """Index top-level compatibility calls and canonical tool_call blocks.
 
-    Returns:
-        {
-            'tool_uses': {'<id>': {'line_num': N, 'tool_name': '...', 'entry_index': M}},
-            'tool_results': {'<id>': {'line_num': N, 'entry_index': M}},
-        }
+    The legacy ``tool_uses`` / ``tool_results`` keys retain their entry_index,
+    line_num and tool_name fields. Repeated IDs retain the FIRST occurrence,
+    not a last-wins association. Internal batches and unresolved IDs let the
+    diagnosis/repair engines reject unsafe associations without changing messages.
+    An empty unresolved ID denotes a call/result with no usable ID.
     """
     tool_uses: dict[str, dict] = {}
     tool_results: dict[str, dict] = {}
+    call_batches: dict[int, list[str]] = {}
+    unresolved: set[str] = set()
 
     for idx, entry in enumerate(entries):
-        # Extract tool_use IDs from assistant messages with tool_calls
-        if entry.get("role") == "assistant" and "tool_calls" in entry:
-            for tool_call in entry["tool_calls"]:
-                call_id = tool_call.get("id", "")
-                tool_name = tool_call.get(
-                    "tool", tool_call.get("function", {}).get("name", "")
+        content = entry.get("content")
+        blocks = content if isinstance(content, list) else []
+        if entry.get("role") == "assistant":
+            top_calls = entry.get("tool_calls") or []
+            block_calls = [
+                b
+                for b in blocks
+                if isinstance(b, dict) and b.get("type") == "tool_call"
+            ]
+            signatures: dict[str, tuple] = {}
+            for calls in (top_calls, block_calls):
+                seen: set[str] = set()
+                for call in calls:
+                    call_id = call.get("id") or call.get("tool_call_id") or ""
+                    function = call.get("function") or {}
+                    name = (
+                        call.get("tool") or call.get("name") or function.get("name", "")
+                    )
+                    arguments = call.get(
+                        "input", call.get("arguments", function.get("arguments", {}))
+                    )
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except ValueError:
+                            pass
+                    try:
+                        # Python equality conflates True/1 and 1/1.0. Preserve
+                        # JSON types when comparing mirrored call declarations.
+                        normalized = json.dumps(
+                            arguments,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        )
+                    except (TypeError, ValueError):
+                        unresolved.add(call_id)
+                        normalized = None
+                    signature = (name, normalized)
+                    if not call_id or call_id in seen:
+                        unresolved.add(call_id)
+                    seen.add(call_id)
+                    if call_id in signatures:
+                        # One equivalent mirror in each representation is one call.
+                        if signatures[call_id] != signature:
+                            unresolved.add(call_id)
+                        continue
+                    signatures[call_id] = signature
+                    if call_id in tool_uses:
+                        unresolved.add(call_id)
+                    tool_uses.setdefault(
+                        call_id,
+                        {
+                            "line_num": entry.get("line_num"),
+                            "tool_name": name,
+                            "entry_index": idx,
+                        },
+                    )
+            if signatures:
+                call_batches[idx] = list(signatures)
+
+        elif entry.get("role") == "tool":
+            result_blocks = [
+                b
+                for b in blocks
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+            ]
+            top_id = entry.get("tool_call_id")
+            block_ids = [b.get("tool_call_id") or "" for b in result_blocks]
+            result_ids = list(dict.fromkeys(([top_id] if top_id else []) + block_ids))
+            if not result_ids:
+                result_ids = [""]
+            if len(result_blocks) > 1 or len(result_ids) > 1 or "" in result_ids:
+                # Never split a multi-result message or choose between conflicting IDs.
+                unresolved.update(result_ids)
+            for result_id in result_ids:
+                if result_id in tool_results:
+                    unresolved.add(result_id)
+                tool_results.setdefault(
+                    result_id,
+                    {
+                        "line_num": entry.get("line_num"),
+                        "entry_index": idx,
+                    },
                 )
-                tool_uses[call_id] = {
-                    "line_num": entry.get("line_num"),
-                    "tool_name": tool_name,
-                    "entry_index": idx,
-                }
 
-        # Extract tool_result IDs from tool role messages
-        elif entry.get("role") == "tool" and "tool_call_id" in entry:
-            tool_results[entry["tool_call_id"]] = {
-                "line_num": entry.get("line_num"),
-                "entry_index": idx,
-            }
+    for result_id, result_info in tool_results.items():
+        use_info = tool_uses.get(result_id)
+        if use_info is None or result_info["entry_index"] <= use_info["entry_index"]:
+            unresolved.add(result_id)
+        elif any(
+            use_info["entry_index"] < other_idx < result_info["entry_index"]
+            for other_idx in call_batches
+        ):
+            # Crossing an unrelated call batch is not a safe automatic association.
+            unresolved.add(result_id)
 
-    return {"tool_uses": tool_uses, "tool_results": tool_results}
+    # A parallel batch is indivisible for repair, including its unsafe siblings.
+    for ids in call_batches.values():
+        if unresolved.intersection(ids):
+            unresolved.update(ids)
+
+    return {
+        "tool_uses": tool_uses,
+        "tool_results": tool_results,
+        "_call_batches": call_batches,
+        "unresolved_tool_ids": sorted(unresolved),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +212,7 @@ def _has_intervening_disruption(
         between = entries[between_idx]
         if is_real_user_message(between):
             return True
-        if between.get("role") == "assistant" and "tool_calls" not in between:
+        if between.get("role") == "assistant":
             return True
     return False
 
@@ -133,6 +226,7 @@ def diagnose_transcript(entries: list[dict]) -> DiagnosisResult:
         orphaned_tool_ids: list of tool_use IDs with no matching tool_result
         misplaced_tool_ids: list of tool_use IDs whose results are out of order
         incomplete_turns: list of IncompleteTurn dicts with 'after_line' and 'missing'
+        unresolved_tool_ids: optional IDs whose evidence cannot be safely associated
         recommended_action: "none" | "repair" ("rewind" reserved for future use)
     """
     index = build_tool_index(entries)
@@ -141,9 +235,12 @@ def diagnose_transcript(entries: list[dict]) -> DiagnosisResult:
     orphaned_tool_ids: list[str] = []
     misplaced_tool_ids: list[str] = []
     incomplete_turns: list[IncompleteTurn] = []
+    unresolved = set(index["unresolved_tool_ids"])
 
     # --- Failure mode 1: missing tool results ---
     for tc_id in index["tool_uses"]:
+        if tc_id in unresolved:
+            continue
         if tc_id not in index["tool_results"]:
             orphaned_tool_ids.append(tc_id)
     if orphaned_tool_ids:
@@ -153,6 +250,8 @@ def diagnose_transcript(entries: list[dict]) -> DiagnosisResult:
     # A tool_result is misplaced if a real user message or a different assistant
     # turn appears between the tool_use and its result.
     for tc_id, use_info in index["tool_uses"].items():
+        if tc_id in unresolved:
+            continue
         if tc_id not in index["tool_results"]:
             continue  # already caught as orphan
         result_info = index["tool_results"][tc_id]
@@ -165,24 +264,18 @@ def diagnose_transcript(entries: list[dict]) -> DiagnosisResult:
         failure_modes.append("ordering_violation")
 
     # --- Failure mode 3: incomplete assistant turns ---
-    # Walk through entries looking for assistant messages with tool_calls.
+    # Walk through indexed assistant call batches, including canonical blocks.
     # For each, verify that after all its tool_results there is a final
     # assistant text response before the next real user message.
     orphaned_set = set(orphaned_tool_ids)
     misplaced_set = set(misplaced_tool_ids)
-    for tc_id, use_info in index["tool_uses"].items():
-        # Only check with the first tool_call in each assistant message
-        # to avoid duplicate detection for multi-tool calls.
-        assistant_idx = use_info["entry_index"]
-        assistant_entry = entries[assistant_idx]
-        first_tc_id = assistant_entry.get("tool_calls", [{}])[0].get("id")
-        if tc_id != first_tc_id:
+    for assistant_idx, all_tc_ids in index["_call_batches"].items():
+        if unresolved.intersection(all_tc_ids):
             continue
 
         # Skip if ALL tool_calls from this message are orphaned/misplaced
-        # (step 5 of repair handles those).  For partial orphans, continue
+        # (batch repair handles those). For partial orphans, continue
         # to FM3 detection so the incomplete turn is caught in one pass.
-        all_tc_ids = [tc["id"] for tc in assistant_entry.get("tool_calls", [])]
         if all(tid in orphaned_set or tid in misplaced_set for tid in all_tc_ids):
             continue
 
@@ -223,11 +316,13 @@ def diagnose_transcript(entries: list[dict]) -> DiagnosisResult:
 
     if incomplete_turns:
         failure_modes.append("incomplete_assistant_turn")
+    if unresolved:
+        failure_modes.append("unresolved_tool_association")
 
     status = "broken" if failure_modes else "healthy"
     recommended = "repair" if failure_modes else "none"
 
-    return {
+    diagnosis: DiagnosisResult = {
         "status": status,
         "failure_modes": failure_modes,
         "orphaned_tool_ids": orphaned_tool_ids,
@@ -235,6 +330,9 @@ def diagnose_transcript(entries: list[dict]) -> DiagnosisResult:
         "incomplete_turns": incomplete_turns,
         "recommended_action": recommended,
     }
+    if unresolved:
+        diagnosis["unresolved_tool_ids"] = sorted(unresolved)
+    return diagnosis
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +341,7 @@ def diagnose_transcript(entries: list[dict]) -> DiagnosisResult:
 
 
 def _make_synthetic_tool_result(tool_call_id: str, tool_name: str) -> dict:
-    """Create a synthetic tool result for an orphaned or misplaced tool call."""
+    """Create an explicitly unknown placeholder for an actually missing result."""
     return {
         "role": "tool",
         "tool_call_id": tool_call_id,
@@ -276,12 +374,12 @@ def _strip_line_num(entry: dict) -> dict:
 
 
 def repair_transcript(entries: list[dict], diagnosis: DiagnosisResult) -> list[dict]:
-    """Apply the COMPLETE repair strategy to a parsed transcript.
+    """Repair safe tool batches without discarding or rewriting original evidence.
 
-    Returns a new list of entries (without ``line_num`` keys) with:
-    - synthetic tool results injected for orphaned/misplaced tool calls
-    - synthetic assistant responses where needed
-    - misplaced tool results removed
+    Return a new list without internal ``line_num`` keys. Affected batches gather
+    whole original result messages next to their declaring call, then fill only
+    genuinely missing results. Non-result messages keep their relative order;
+    relocation is NOT chronology-preserving. Unsafe associations remain broken.
     """
     # 1. Healthy transcripts are returned unchanged (minus line_num).
     if diagnosis["status"] == "healthy":
@@ -290,6 +388,10 @@ def repair_transcript(entries: list[dict], diagnosis: DiagnosisResult) -> list[d
     orphaned_set = set(diagnosis["orphaned_tool_ids"])
     misplaced_set = set(diagnosis["misplaced_tool_ids"])
     broken_set = orphaned_set | misplaced_set
+    index = build_tool_index(entries)
+    unresolved = set(index["unresolved_tool_ids"]) | set(
+        diagnosis.get("unresolved_tool_ids", [])
+    )
     # Use entry indices (stable) for matching, with line_num fallback for
     # diagnosis results produced before after_index was added.
     incomplete_after_indices = {
@@ -299,56 +401,67 @@ def repair_transcript(entries: list[dict], diagnosis: DiagnosisResult) -> list[d
         t["after_line"] for t in diagnosis["incomplete_turns"] if "after_index" not in t
     }
 
-    # 2. Build skip_indices — entry indices of misplaced tool results.
+    # 2. Pre-gather WHOLE batches before emitting or skipping any original.
+    batches: dict[int, list[dict]] = {}
     skip_indices: set[int] = set()
-    for idx, entry in enumerate(entries):
-        if entry.get("role") == "tool" and entry.get("tool_call_id") in misplaced_set:
-            skip_indices.add(idx)
+    closing_result_indices: set[int] = set()
+    for call_idx, ids in index["_call_batches"].items():
+        if unresolved.intersection(ids):
+            continue
+        existing_indices = sorted(
+            index["tool_results"][tid]["entry_index"]
+            for tid in ids
+            if tid in index["tool_results"]
+        )
+        if not broken_set.intersection(ids):
+            if existing_indices:
+                closing_result_indices.add(existing_indices[-1])
+            continue
+        batch = [_strip_line_num(entries[i]) for i in existing_indices]
+        for tid in ids:
+            if tid not in index["tool_results"]:
+                batch.append(
+                    _make_synthetic_tool_result(
+                        tid, index["tool_uses"][tid]["tool_name"]
+                    )
+                )
+        batches[call_idx] = batch
+        # Skip only originals actually re-emitted as part of this batch.
+        skip_indices.update(existing_indices)
 
-    # 3–6. Walk entries, applying repairs.
+    # 3. Emit messages and close only AFTER the whole result batch.
     result: list[dict] = []
     for idx, entry in enumerate(entries):
-        # 3. Skip misplaced tool results.
         if idx in skip_indices:
             continue
 
         result.append(_strip_line_num(entry))
 
-        # 4. After assistant messages with tool_calls: inject synthetic
-        #    results for orphaned / misplaced tool_call IDs.
-        if entry.get("role") == "assistant" and "tool_calls" in entry:
-            tool_calls = entry["tool_calls"]
-            all_tc_ids = [tc["id"] for tc in tool_calls]
-            broken_in_msg = [tc for tc in tool_calls if tc["id"] in broken_set]
-
-            for tc in broken_in_msg:
-                tc_id = tc["id"]
-                tc_name = tc.get("tool", tc.get("function", {}).get("name", ""))
-                result.append(_make_synthetic_tool_result(tc_id, tc_name))
-
-            # 5. If ALL tool_calls from this message were broken AND
-            #    the next non-skipped entry is a real user message (or end
-            #    of transcript): inject a synthetic assistant response.
-            if len(broken_in_msg) == len(all_tc_ids) and all_tc_ids:
-                next_entry = None
-                for future_idx in range(idx + 1, len(entries)):
-                    if future_idx not in skip_indices:
-                        next_entry = entries[future_idx]
-                        break
-                if next_entry is None or is_real_user_message(next_entry):
-                    result.append(_make_synthetic_assistant_response())
-
-        # 6. After tool results at incomplete turn positions: inject synthetic
-        #    assistant response.  Match by entry index (stable) with line_num
-        #    fallback for old diagnosis results.
-        elif entry.get("role") == "tool" and (
+        close_here = False
+        if idx in batches:
+            result.extend(batches[idx])
+            close_here = True
+        # Unchanged batches close at their actual last result. Retain the
+        # line_num fallback for diagnoses produced before after_index existed.
+        elif idx in closing_result_indices and (
             idx in incomplete_after_indices
             or (
                 incomplete_after_lines
                 and entry.get("line_num") in incomplete_after_lines
             )
         ):
-            result.append(_make_synthetic_assistant_response())
+            close_here = True
+        if close_here:
+            next_entry = next(
+                (
+                    entries[i]
+                    for i in range(idx + 1, len(entries))
+                    if i not in skip_indices
+                ),
+                None,
+            )
+            if next_entry is None or is_real_user_message(next_entry):
+                result.append(_make_synthetic_assistant_response())
 
     return result
 
@@ -385,14 +498,18 @@ def rewind_transcript(entries: list[dict], diagnosis: DiagnosisResult) -> list[d
         if tc_id in index["tool_uses"]:
             issue_indices.append(index["tool_uses"][tc_id]["entry_index"])
 
-    # Incomplete turns → walk back to find assistant with tool_calls
+    for tc_id in diagnosis.get("unresolved_tool_ids", []):
+        for key in ("tool_uses", "tool_results"):
+            if tc_id in index[key]:
+                issue_indices.append(index[key][tc_id]["entry_index"])
+
+    # Incomplete turns → walk back to find the indexed assistant call batch.
     for turn in diagnosis["incomplete_turns"]:
         after_index = turn.get("after_index")
         if after_index is not None:
             # Use entry index directly (stable, no line_num dependency)
             for back_idx in range(after_index, -1, -1):
-                e = entries[back_idx]
-                if e.get("role") == "assistant" and "tool_calls" in e:
+                if back_idx in index["_call_batches"]:
                     issue_indices.append(back_idx)
                     break
         else:
@@ -401,8 +518,7 @@ def rewind_transcript(entries: list[dict], diagnosis: DiagnosisResult) -> list[d
             for idx in range(len(entries) - 1, -1, -1):
                 if entries[idx].get("line_num") == after_line:
                     for back_idx in range(idx, -1, -1):
-                        e = entries[back_idx]
-                        if e.get("role") == "assistant" and "tool_calls" in e:
+                        if back_idx in index["_call_batches"]:
                             issue_indices.append(back_idx)
                             break
                     break

@@ -462,7 +462,7 @@ class TestRepairTranscript:
             assert "error" in tr["content"]
 
     def test_injects_synthetic_assistant_response(self):
-        """Synthetic assistant response contains 'repaired' or 'interrupted'."""
+        """Synthetic assistant response is a repair notice, not an execution fact."""
         entries = [
             {"role": "user", "content": "Do stuff", "line_num": 1},
             {
@@ -498,10 +498,11 @@ class TestRepairTranscript:
             text = " ".join(block.get("text", "") for block in content)
         else:
             text = str(content)
-        assert "repaired" in text.lower() or "interrupted" in text.lower()
+        assert "repaired" in text.lower()
+        assert "interrupted" not in text.lower()
 
-    def test_removes_misplaced_results_and_injects_correct_ones(self):
-        """Misplaced tool_result removed; synthetic injected in correct position."""
+    def test_relocates_misplaced_original_result(self):
+        """The complete original tool_result is placed after its declaring call."""
         entries = [
             {"role": "user", "content": "Hi", "line_num": 1},
             {
@@ -535,13 +536,11 @@ class TestRepairTranscript:
             "recommended_action": "repair",
         }
         result = repair_transcript(entries, diagnosis)
-        # Original misplaced result must be removed
-        all_contents = [e.get("content", "") for e in result]
-        assert "original_result" not in all_contents
-        # Synthetic tool result in correct position
         tool_results = [e for e in result if e.get("role") == "tool"]
-        assert len(tool_results) == 1
-        assert "error" in tool_results[0]["content"]
+        expected = {
+            key: value for key, value in entries[3].items() if key != "line_num"
+        }
+        assert tool_results == [expected]
         # Position check: tool result right after assistant with tool_calls
         for i, e in enumerate(result):
             if e.get("role") == "assistant" and "tool_calls" in e:
@@ -773,6 +772,51 @@ class TestCLI:
         assert diag_result.returncode == 0
         data = json.loads(diag_result.stdout)
         assert data["status"] == "healthy"
+
+    def test_repair_disk_roundtrip_preserves_late_parallel_receipt(self, tmp_path):
+        """The actual repair script persists the original payload, not a substitute."""
+        receipt = {
+            "role": "tool",
+            "tool_call_id": "observed",
+            "name": "action",
+            "content": [{"type": "text", "text": "REAL-RESULT"}],
+            "metadata": {"receipt": 7, "_seq": 4},
+            "cost": {"total": 0.25},
+            "signature": "opaque",
+            "extra": ["preserve"],
+        }
+        call = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "opaque", "signature": "signed"}
+            ],
+            "tool_calls": [_tc("observed", "action"), _tc("missing", "other")],
+        }
+        lines = [
+            {"role": "user", "content": "Start"},
+            call,
+            {"role": "user", "content": "Stop"},
+            receipt,
+        ]
+        _write_transcript(tmp_path, lines)
+        result = _run_cli(str(tmp_path), "--repair")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(result.stdout)["verification"]["status"] == "healthy"
+        path = tmp_path / "transcript.jsonl"
+        written = path.read_text(encoding="utf-8")
+        rows = [json.loads(line) for line in written.splitlines()]
+        assert rows[1:3] == [call, receipt]
+        assert len([row for row in rows if row["role"] == "tool"]) == 2
+        assert rows[3]["tool_call_id"] == "missing"
+        assert "outcome is unknown" in json.loads(rows[3]["content"])["message"]
+        assert rows[4]["role"] == "assistant"
+        again = _run_cli(str(tmp_path), "--repair")
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert path.read_text(encoding="utf-8") == written
+        (backup_path,) = tmp_path.glob("transcript.jsonl.bak-pre-repair-*")
+        assert [
+            json.loads(line) for line in backup_path.read_text().splitlines()
+        ] == lines
 
     def test_rewind_creates_backups(self, tmp_path):
         """--rewind creates backups for both transcript.jsonl and events.jsonl."""
