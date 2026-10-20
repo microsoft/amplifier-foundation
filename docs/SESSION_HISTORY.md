@@ -148,3 +148,23 @@ legacy root events file and are not CI-log migration mechanisms.
 This separation permits future event reconstruction experiments without changing
 which source currently owns resumed conversation state. It also permits either
 host to adopt the shared interface before any event-only migration is considered.
+
+## Transcript repair policy
+
+`diagnose_transcript` indexes top-level compatibility tool calls and canonical
+`tool_call` content blocks. Equivalent mirrors in one message count once.
+`repair_transcript` gathers an unambiguous affected parallel batch immediately
+after its declaring call. It preserves each original result message and its full
+payload, metadata, signatures, cost, and extra fields (except internal `line_num`).
+Non-result messages keep their relative order, but **placement can change
+chronology**. This is not a chronology-preserving reconstruction.
+
+Only actually missing results receive placeholders: no result was recorded, and
+the execution outcome is unknown. Derived assistant repair notices do not assert
+interruption or execution failure. Reused/conflicting call IDs, duplicate results,
+unbound or premature results, unsafe cross-batch associations, and multi-result
+messages that cannot be placed whole remain explicitly broken and unresolved;
+their original evidence is preserved, not split, relabeled, or replaced.
+Association diagnostics stay in the returned index/diagnosis, not new message
+metadata; existing sequence metadata is not rewritten. Hosts must inspect the
+post-repair diagnosis. Repair is not a universal dispatch guard.
