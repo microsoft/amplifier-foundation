@@ -854,13 +854,6 @@ class DelegateTool:
     async def _finish_execution(self, result, record, hooks):
         """The same return-contract and attribution owner for original/resumed legs."""
         contract, cleaned = self._parse_return_contract(result.get("output", ""))
-        if hooks:
-            await hooks.emit("delegate:agent_completed", {
-                "agent": record["agent"], "sub_session_id": record["child_session_id"],
-                "parent_session_id": record["parent_session_id"], "success": True,
-                "tool_call_id": record["tool_call_id"], "parallel_group_id": record["parallel_group_id"],
-                **_return_contract_event_fields(contract),
-            })
         metadata = dict(result.get("metadata") or {})
         call_budget = record.get("call_budget")
         if call_budget is not None:
@@ -876,7 +869,17 @@ class DelegateTool:
                   "metadata": metadata, "contract": contract}
         if record.get("provider_routing"):
             output["provider_routing"] = record["provider_routing"]
-        return ToolResult(success=True, output=output)
+        completed = ToolResult(success=True, output=output)
+        # Construct the complete result before publishing completion. A malformed
+        # result must not leave a successful event followed by a conversion error.
+        if hooks:
+            await hooks.emit("delegate:agent_completed", {
+                "agent": record["agent"], "sub_session_id": record["child_session_id"],
+                "parent_session_id": record["parent_session_id"], "success": True,
+                "tool_call_id": record["tool_call_id"], "parallel_group_id": record["parallel_group_id"],
+                **_return_contract_event_fields(contract),
+            })
+        return completed
 
     async def resume_execution(self, continuation):
         """Continue a held delegation; never start/replay a delegate tool input.
@@ -901,9 +904,54 @@ class DelegateTool:
             remaining = self.timeout if remaining is None else min(self.timeout, remaining)
         if remaining is not None and remaining <= 0:
             raise RuntimeError("Delegation deadline is exhausted; execution was not resumed")
-        result = await self._await_suspendable_child(
-            resume(continuation), record, timeout=remaining)
-        return await self._finish_execution(result, record, self.coordinator.hooks)
+        hooks = self.coordinator.hooks
+        identity = {
+            "agent": record["agent"], "session_id": record["child_session_id"],
+            "parent_session_id": record["parent_session_id"],
+            "tool_call_id": record["tool_call_id"],
+            "parallel_group_id": record["parallel_group_id"],
+        }
+        started = time.monotonic()
+        try:
+            result = await self._await_suspendable_child(
+                resume(continuation), record, timeout=remaining)
+            if not isinstance(result, dict) or result.get("session_id") != record["child_session_id"]:
+                raise ValueError("Resumed child result has a different or missing session identity")
+            # Validate metadata before entering the completion-publication path.
+            dict(result.get("metadata") or {})
+        except asyncio.CancelledError:
+            if hooks:
+                await hooks.emit("delegate:agent_cancelled", identity)
+            raise
+        except _DelegateTimeoutExpired:
+            elapsed_s = round(time.monotonic() - started, 3)
+            partial = await self._collect_partial(record["child_session_id"])
+            recovery = ("Child cancellation cleanup is still in progress; do not resume "
+                        "this session until cleanup and persistence complete.")
+            message = (f"Resumed agent '{record['agent']}' timed out after {remaining}s "
+                       f"(remaining delegate deadline; elapsed {elapsed_s}s). {recovery}")
+            metadata = {"timeout_seconds": remaining, "elapsed_s": elapsed_s,
+                        "resumable": False, "resume_status": "pending_child_cleanup",
+                        "recovery_message": recovery}
+            if hooks:
+                await hooks.emit("delegate:error", {
+                    **identity, "error": message, "error_type": "delegate_timeout",
+                    "status": TIMEOUT_STATUS, **metadata,
+                    **_partial_event_fields(partial, elapsed_s),
+                })
+            return ToolResult(success=False, output={
+                "session_id": record["child_session_id"], "agent": record["agent"],
+                "status": TIMEOUT_STATUS, **_partial_output_fields(partial),
+                "metadata": metadata,
+            }, error={"message": message})
+        except Exception as error:
+            message = f"Agent execution resume failed ({type(error).__name__}): {str(error) or '(no detail)'}"
+            if hooks:
+                await hooks.emit("delegate:error", {**identity, "error": message})
+            return ToolResult(success=False, error={"message": message})
+        # Publication failure is an unknown acknowledgment, not a reason to
+        # retry the child or the event. The host retains its consumed claim.
+        return await self._finish_execution(result, record, hooks)
 
     def _cancel_and_detach_child(self, child_task: asyncio.Task[Any]) -> None:
         """Cancel a child while retaining it strongly until terminal cleanup."""

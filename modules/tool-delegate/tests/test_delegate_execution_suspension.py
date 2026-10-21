@@ -120,3 +120,153 @@ async def test_ordinary_cancellation_is_not_a_suspend_receipt():
     with pytest.raises(asyncio.CancelledError):
         await tool._await_suspendable_child(cancelled(), {"tool_call_id": "original-call"})
     assert len(captures) == 1 and isinstance(captures[0], asyncio.CancelledError)
+
+
+def continuation():
+    return {"delegation": {
+        "version": 1, "engine": "tool-delegate", "parent_session_id": "parent",
+        "child_session_id": "child", "tool_call_id": "original-call",
+        "agent": "worker", "parallel_group_id": "original-group",
+        "timeout_remaining": 10,
+    }}
+
+
+def events(tool, name):
+    return [call.args[1] for call in tool.coordinator.hooks.emit.call_args_list
+            if call.args[0] == name]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["wrong-child", "missing-child", "bad-metadata"])
+async def test_invalid_resume_result_never_publishes_completion(bad):
+    tool, capabilities = make_tool()
+    result = {"session_id": "child", "output": "finished"}
+    if bad == "wrong-child":
+        result["session_id"] = "another-child"
+    elif bad == "missing-child":
+        del result["session_id"]
+    else:
+        result["metadata"] = 7
+    resume = AsyncMock(return_value=result)
+    capabilities["session.execution_resume"] = resume
+    held = continuation()
+    returned = await tool.resume_execution(held)
+    assert returned.success is False
+    assert events(tool, "delegate:agent_completed") == []
+    assert events(tool, "delegate:error")[0]["session_id"] == "child"
+    resume.assert_awaited_once_with(held)
+
+
+@pytest.mark.asyncio
+async def test_resumed_child_failure_returns_attributed_error():
+    tool, capabilities = make_tool()
+    resume = AsyncMock(side_effect=RuntimeError("child failed"))
+    capabilities["session.execution_resume"] = resume
+    result = await tool.resume_execution(continuation())
+    assert result.success is False
+    assert "child failed" in result.error["message"]
+    assert events(tool, "delegate:agent_completed") == []
+    error, = events(tool, "delegate:error")
+    assert error["tool_call_id"] == "original-call"
+    assert error["session_id"] == "child"
+    resume.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resumed_timeout_keeps_completed_sibling():
+    tool, capabilities = make_tool()
+    held = continuation()
+    held["delegation"]["timeout_remaining"] = 0.01
+    cleaned = asyncio.Event()
+
+    async def waiting(frame):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+
+    capabilities["session.execution_resume"] = waiting
+
+    async def sibling():
+        return "settled sibling"
+
+    results = await asyncio.gather(sibling(), tool.resume_execution(held))
+    await asyncio.wait_for(cleaned.wait(), 1)
+    assert results[0] == "settled sibling"
+    result = results[1]
+    assert result.success is False and result.output["status"] == "timeout"
+    assert result.output["session_id"] == "child"
+    assert result.output["metadata"]["timeout_seconds"] == 0.01
+    assert result.output["metadata"]["resumable"] is False
+    assert events(tool, "delegate:agent_completed") == []
+    assert events(tool, "delegate:error")[0]["error_type"] == "delegate_timeout"
+
+
+@pytest.mark.asyncio
+async def test_resumed_cancellation_propagates_with_attribution():
+    tool, capabilities = make_tool()
+    resume = AsyncMock(side_effect=asyncio.CancelledError())
+    capabilities["session.execution_resume"] = resume
+    with pytest.raises(asyncio.CancelledError):
+        await tool.resume_execution(continuation())
+    assert events(tool, "delegate:agent_completed") == []
+    cancelled, = events(tool, "delegate:agent_cancelled")
+    assert cancelled["tool_call_id"] == "original-call"
+    assert cancelled["session_id"] == "child"
+    resume.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["stopped", "unknown prior claim", "already consumed"])
+async def test_host_admission_refusal_is_not_retried(reason):
+    tool, capabilities = make_tool()
+    resume, spawn = AsyncMock(side_effect=RuntimeError(reason)), AsyncMock()
+    capabilities.update({"session.execution_resume": resume, "session.spawn": spawn})
+    held = continuation()
+    result = await tool.resume_execution(held)
+    assert not result.success
+    resume.assert_awaited_once_with(held)
+    spawn.assert_not_called()
+    assert events(tool, "delegate:agent_completed") == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_completion_ack_does_not_retry_child_or_event():
+    tool, capabilities = make_tool()
+    resume = AsyncMock(return_value={"session_id": "child", "output": "finished"})
+    capabilities["session.execution_resume"] = resume
+    observed = []
+
+    async def emit(name, data):
+        observed.append((name, data))
+        raise OSError("acknowledgment unknown")
+
+    tool.coordinator.hooks.emit = emit
+    with pytest.raises(OSError, match="acknowledgment unknown"):
+        await tool.resume_execution(continuation())
+    resume.assert_awaited_once()
+    assert len(observed) == 1 and observed[0][0] == "delegate:agent_completed"
+    # This is deliberately not retried: the host owns the consumed claim.
+
+
+@pytest.mark.asyncio
+async def test_repeated_suspension_keeps_child_and_remaining_deadline():
+    tool, capabilities = make_tool()
+    held = continuation()
+
+    class Owner:
+        def capture(self, error, record):
+            if isinstance(error, ChildSuspended):
+                return DelegationSuspended({"delegation": record, "child": "second-boundary"})
+            return None
+
+    capabilities.update({"session.execution_resume": AsyncMock(side_effect=ChildSuspended()),
+                         "session.suspension": Owner()})
+    with pytest.raises(DelegationSuspended) as paused:
+        await tool.resume_execution(held)
+    record = paused.value.continuation["delegation"]
+    assert record["child_session_id"] == "child"
+    assert record["tool_call_id"] == "original-call"
+    assert 0 < record["timeout_remaining"] <= 10
+    assert events(tool, "delegate:agent_completed") == []
+    assert events(tool, "delegate:error") == []
