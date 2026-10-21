@@ -129,6 +129,9 @@ def test_baseline_preserves_the_approved_operating_rules() -> None:
         "Investigate before acting",
         "smallest change justified by the task and evidence",
         "caller-authorized scope",
+        "contracts of tools mounted in your session",
+        "within both task authorization and session permissions",
+        "Return capability or authority gaps to the delegating caller",
         "Report verified evidence honestly",
         "say blocked or not verified",
         "defensive-security work only; refuse malicious work and protect secrets",
@@ -176,6 +179,28 @@ async def test_child_prompt_does_not_eagerly_load_local_sentinels(
     assert agents_sentinel not in child_prompt
     assert scratch_sentinel not in child_prompt
     assert child_prompt.count(BASELINE_PATH.read_text(encoding="utf-8")) == 1
+    assert "within both task authorization and session permissions" in child_prompt
+    assert "When delegating, pass the selected interface" not in child_prompt
+
+
+@pytest.mark.asyncio
+async def test_root_prompt_contains_execution_and_handoff_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared, _bundle = await _prepared_catalog(tmp_path, monkeypatch, ANCHORS_DIR)
+    session = MagicMock()
+    session.coordinator.hooks.emit = AsyncMock()
+    prompt = await prepared.create_system_prompt_factory(
+        session, session_cwd=tmp_path
+    )()
+    for marker in (
+        "Choose a mounted capability that directly supports the task",
+        "When delegating, pass the selected interface",
+        "required evidence, and reporting destination",
+        "Confirm completion from observed results",
+    ):
+        assert prompt.count(marker) == 1
+    assert "# Agent Baseline" not in prompt
 
 
 @pytest.mark.asyncio
