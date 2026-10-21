@@ -301,3 +301,23 @@ than compressing unrelated prompt text. The owned-head total is now 3,392 chars
 against the unchanged 3,980-char stock: a current saving of 588 chars versus the
 original 600. Historical experimental results above are unchanged; no vendor
 cache metrics were rerun.
+
+## Addendum — 2026-10-21
+
+The approved execution/handoff guidance adds 445 chars to
+`bundles/anchors/context/system.md`: 1,154 → 1,599. It makes capability selection,
+task scope, output destinations, delegated evidence, parent-owned actions, and
+observed completion explicit. Keep these rules rather than remove unrelated
+instructions to preserve the old size. The exact source-size budget is 1,599,
+with no extra headroom. The three artifact budget ceilings total 3,837 chars
+against the unchanged 3,980-char stock, preserving a minimum budgeted saving
+of 143 chars. Unchanged components can remain below their existing ceilings;
+this is budget accounting, not a fresh source or live-session head census.
+
+PR #448's initial [CI run](https://github.com/microsoft/amplifier-foundation/actions/runs/39691151047)
+failed the unchanged 1,154-char budget in all six Ubuntu/Windows Python
+3.11–3.13 jobs; all ten Anchors contract tests passed. This addendum and the
+census assertions account for the intended growth. Historical fixtures,
+experimental results, and frozen quality bounds above remain unchanged.
+Character counts are not token costs; no new vendor-cost, cache, or
+task-success measurement is claimed.

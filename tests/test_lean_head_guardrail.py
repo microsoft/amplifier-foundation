@@ -74,8 +74,9 @@ DELEGATE_MODULE_DIR = REPO_ROOT / "modules" / "tool-delegate"
 # above what shipped would let the head regrow up to it silently, which is the
 # whole failure mode.
 OWNED_HEAD_BUDGET_CHARS = {
-    # Required cwd-AGENTS auto-loading rule costs +12 chars.
-    "bundles/anchors/context/system.md": 1154,
+    # cwd-AGENTS costs +12 chars; explicit execution/handoff rules add +445.
+    # This is the measured source size, not headroom or a new cost measurement.
+    "bundles/anchors/context/system.md": 1599,
     "context/amplifier-dev/amplifier-ecosystem.md": 1300,
     "delegate:preamble": 938,
 }
@@ -244,14 +245,14 @@ class TestGuardrailAHeadCensus:
         )
 
     def test_the_owned_head_is_smaller_than_it_was(self) -> None:
-        """The saving is a number in the repo, not a claim in a commit message."""
+        """The budget ceilings preserve a minimum saving against stock."""
         lean = sum(OWNED_HEAD_BUDGET_CHARS.values())
         stock = sum(OWNED_HEAD_STOCK_CHARS.values())
         assert lean < stock, f"lean {lean} is not below stock {stock}"
-        assert stock - lean == 588, (
-            f"The current saving moved: {stock - lean} chars, expected 588 "
-            "after the original measured 600-char saving absorbed the required "
-            "cwd-AGENTS rule. Update the budget and DONE-NOTE together, or the "
+        assert stock - lean == 143, (
+            f"The minimum budgeted saving moved: {stock - lean} chars, expected 143 "
+            "after the original 600-char saving absorbed 12 chars for cwd-AGENTS "
+            "and 445 for explicit execution/handoff rules. Update the budget and DONE-NOTE together, or the "
             "current census and this repo disagree."
         )
 
