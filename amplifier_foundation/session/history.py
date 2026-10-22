@@ -459,11 +459,12 @@ class SessionHistoryStore:
         return False
 
     @staticmethod
-    def _write_prepared(path: Path, content: str, preserve_backup: bool) -> None:
+    def _write_prepared(path: Path, content: str | bytes, preserve_backup: bool) -> None:
+        options = {"mode": "wb"} if isinstance(content, bytes) else {}
         if preserve_backup:
-            _write_atomic(path, content)
+            _write_atomic(path, content, **options)
         else:
-            write_with_backup(path, content)
+            write_with_backup(path, content, **options)
         from .jsonl import _sync_directory, intent_path
 
         pending = intent_path(path)
@@ -484,13 +485,19 @@ class SessionHistoryStore:
         sanitizer: Callable[[Any], dict[str, Any]] | None = None,
         merge_metadata: bool = False,
         incremental: bool = False,
+        preserve_prefix: bool = False,
     ) -> None:
         """Validate both payloads, then replace native files with CLI backups.
 
         Default role filtering matches CLI. Other sanitization/redaction is host
         policy; JSON-serializable provider continuation fields survive untouched.
         No logger, event log, checkpoint, or additional session body is written.
+        preserve_prefix retains the exact encoding of unchanged leading rows so
+        byte-based references survive a normal continuation. The caller still
+        holds session execution ownership. Changed rows use normal replacement.
         """
+        if type(preserve_prefix) is not bool:
+            raise ValueError("preserve_prefix must be boolean")
         if incremental:
             return self._save_incremental(
                 messages, metadata, preserve_system, sanitizer, merge_metadata
@@ -508,12 +515,52 @@ class SessionHistoryStore:
             preserve_metadata_backup = self._prepare_write(
                 self.metadata_path, _read_metadata
             )
+            if preserve_prefix and not preserve_transcript_backup:
+                transcript_content = self._retain_prefix(transcript_content)
             self._write_prepared(
                 self.transcript_path, transcript_content, preserve_transcript_backup
             )
             self._write_prepared(
                 self.metadata_path, metadata_content, preserve_metadata_backup
             )
+
+    def _retain_prefix(self, content: str) -> bytes:
+        """Reuse only validated equal rows; never borrow from a recovered file."""
+        from .jsonl import encode
+
+        encoded = content.encode("utf-8")
+        if not self.transcript_path.exists():
+            return encoded
+        before = file_stamp(self.transcript_path)
+        lines = encoded.splitlines(keepends=True)
+        # Binary I/O preserves CRLF and the old writer's JSON whitespace/escaping.
+        with self.transcript_path.open("rb") as stream:
+            for index, line in enumerate(lines):
+                old = stream.readline()
+                whitespace = []
+                while old and not old.strip():
+                    whitespace.append(old)
+                    old = stream.readline()
+                if whitespace:
+                    lines[index] = b"".join(whitespace) + line
+                if not old:
+                    break
+                if encode(json.loads(old)) != encode(json.loads(line)):
+                    break
+                lines[index] = b"".join(whitespace) + old
+                if not old.endswith(b"\n"):
+                    if index + 1 < len(lines):
+                        lines[index] += b"\n"
+                    break
+            else:
+                # Keep trailing blank lines for an unchanged transcript, but
+                # never retain rows intentionally removed by the caller.
+                trailing = stream.read()
+                if not trailing.strip():
+                    lines.append(trailing)
+        if file_stamp(self.transcript_path) != before:
+            raise ValueError("Session history changed while preserving its prefix")
+        return b"".join(lines)
 
     def _save_incremental(
         self, messages, metadata, preserve_system, sanitizer, merge_metadata

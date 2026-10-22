@@ -129,6 +129,72 @@ def test_model_dump_input_is_supported(store):
     assert store.load_messages() == [USER]
 
 
+def test_atomic_continuation_preserves_legacy_prefix_and_exact_backup(store):
+    messages = [USER, {"role": "assistant", "content": "café ✅"}]
+    store.save(messages, {"name": "original"})
+    raw = "".join(json.dumps(row, separators=(",", ":")) + "\r\n" for row in messages).encode()
+    store.transcript_path.write_bytes(raw)
+    tail = {"role": "user", "content": "Continue"}
+    store.save([*messages, tail], {"name": "continued"}, preserve_prefix=True)
+    assert store.transcript_path.read_bytes().startswith(raw)
+    assert store.transcript_path.with_suffix(".jsonl.backup").read_bytes() == raw
+    assert store.load_messages() == [*messages, tail]
+    before = store.transcript_path.read_bytes()
+    store.save([*messages, tail], {"name": "metadata"}, preserve_prefix=True)
+    assert store.transcript_path.read_bytes() == before
+    changed = {**messages[1], "content": "Edited"}
+    store.save([USER, changed, tail], {}, preserve_prefix=True)
+    assert store.transcript_path.read_bytes().startswith(raw.splitlines(keepends=True)[0])
+    assert store.load_messages() == [USER, changed, tail]
+
+
+def test_preserve_prefix_never_hides_changed_metadata_or_invalid_tail(store):
+    store.save([USER, ANSWER], {})
+    before = store.transcript_path.read_bytes()
+    with pytest.raises(ValueError):
+        store.save([USER, ANSWER, {"role": "user", "content": float("nan")}], {}, preserve_prefix=True)
+    assert store.transcript_path.read_bytes() == before
+    changed = {**USER, "metadata": {"_seq": 2}}
+    store.save([changed, ANSWER], {}, preserve_prefix=True)
+    assert store.load_messages() == [changed, ANSWER]
+    assert store.transcript_path.read_bytes() != before
+    with pytest.raises(ValueError):
+        store.save([USER], {}, preserve_prefix="yes")
+
+
+def test_preserve_prefix_does_not_reuse_damaged_primary(store):
+    store.save([USER], {})
+    store.save([USER, ANSWER], {})
+    store.transcript_path.write_text('{"role": "assistant", broken\n')
+    backup = store.transcript_path.with_suffix(".jsonl.backup").read_bytes()
+    store.save([USER, ANSWER], {}, preserve_prefix=True)
+    assert store.load_messages() == [USER, ANSWER]
+    assert store.transcript_path.with_suffix(".jsonl.backup").read_bytes() == backup
+
+
+def test_preserve_prefix_accepts_legacy_blank_lines(store):
+    store.save([USER, ANSWER], {})
+    raw = ("\n" + json.dumps(USER) + "\n\n" + json.dumps(ANSWER) + "\n\n").encode()
+    store.transcript_path.write_bytes(raw)
+    tail = {"role": "user", "content": "New"}
+    store.save([USER, ANSWER, tail], {}, preserve_prefix=True)
+    assert store.transcript_path.read_bytes().startswith(raw)
+    assert store.load_messages() == [USER, ANSWER, tail]
+
+
+@pytest.mark.parametrize("ending", [b"", b"\n\n\r\n"])
+def test_preserve_prefix_keeps_legacy_eof_and_separates_continuation(store, ending):
+    store.save([USER, ANSWER], {})
+    raw = (json.dumps(USER) + "\r\n" + json.dumps(ANSWER)).encode() + ending
+    store.transcript_path.write_bytes(raw)
+    store.save([USER, ANSWER], {}, preserve_prefix=True)
+    assert store.transcript_path.read_bytes() == raw
+    tail = {"role": "user", "content": "Continue after old EOF"}
+    store.save([USER, ANSWER, tail], {}, preserve_prefix=True)
+    assert store.transcript_path.read_bytes().startswith(raw)
+    assert store.load_messages() == [USER, ANSWER, tail]
+
+
 @pytest.mark.parametrize(
     "messages",
     [
