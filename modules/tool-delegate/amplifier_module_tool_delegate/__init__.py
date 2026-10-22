@@ -83,6 +83,7 @@ from amplifier_foundation import ProviderPreference
 from amplifier_foundation.tracing import generate_sub_session_id
 
 logger = logging.getLogger(__name__)
+_USE_CONFIGURED_DEADLINE = object()
 
 # Default cap on preserved partial text (characters). A straggler can have
 # produced megabytes; the point is to hand the caller the recoverable tail,
@@ -798,7 +799,7 @@ class DelegateTool:
         ]
 
     async def _await_child_with_deadline(
-        self, child_coro: Coroutine[Any, Any, Any]
+        self, child_coro: Coroutine[Any, Any, Any], *, timeout=_USE_CONFIGURED_DEADLINE
     ) -> Any:
         """Await a child while releasing the parent at the configured deadline.
 
@@ -808,14 +809,15 @@ class DelegateTool:
         consumed by a callback. A cancellation of this parent task follows the
         same cleanup path but is re-raised unchanged.
         """
-        if self.timeout is None:
+        timeout = self.timeout if timeout is _USE_CONFIGURED_DEADLINE else timeout
+        if timeout is None:
             return await child_coro
 
         child_task = asyncio.create_task(child_coro)
         try:
             done, _ = await asyncio.wait(
                 (child_task,),
-                timeout=float(self.timeout),
+                timeout=float(timeout),
                 return_when=asyncio.ALL_COMPLETED,
             )
         except asyncio.CancelledError:
@@ -827,6 +829,129 @@ class DelegateTool:
 
         self._cancel_and_detach_child(child_task)
         raise _DelegateTimeoutExpired
+
+    async def _await_suspendable_child(self, child_coro, record, *, timeout=_USE_CONFIGURED_DEADLINE):
+        """Keep delegation's completion owner across a native host suspension.
+
+        The optional public host capability recognizes only its own proven
+        suspension exception. Ordinary errors/cancellation retain their paths.
+        The tool never imports a particular orchestrator or serializes a frame.
+        """
+        remaining = self.timeout if timeout is _USE_CONFIGURED_DEADLINE else timeout
+        started = time.monotonic()
+        try:
+            return await self._await_child_with_deadline(child_coro, timeout=remaining)
+        except BaseException as error:
+            owner = self.coordinator.get_capability("session.suspension")
+            if owner is not None:
+                retained = {**record, "timeout_remaining": (None if remaining is None else
+                    max(0.0, remaining - (time.monotonic() - started)))}
+                suspended = owner.capture(error, retained)
+                if suspended is not None:
+                    raise suspended from None
+            raise
+
+    async def _finish_execution(self, result, record, hooks):
+        """The same return-contract and attribution owner for original/resumed legs."""
+        contract, cleaned = self._parse_return_contract(result.get("output", ""))
+        metadata = dict(result.get("metadata") or {})
+        call_budget = record.get("call_budget")
+        if call_budget is not None:
+            enforced = "llm_call_budget" in metadata
+            metadata["budget_enforced"] = enforced
+            if not enforced:
+                logger.warning("Delegate requested an LLM-call budget of %s for agent %r, "
+                               "but the child's orchestrator reported no budget telemetry. "
+                               "Layer 1 bounding is NOT active; only the child deadline applies.",
+                               call_budget, record["agent"])
+        output = {"response": cleaned, "session_id": result["session_id"], "agent": record["agent"],
+                  "turn_count": result.get("turn_count", 1), "status": result.get("status", "success"),
+                  "metadata": metadata, "contract": contract}
+        if record.get("provider_routing"):
+            output["provider_routing"] = record["provider_routing"]
+        completed = ToolResult(success=True, output=output)
+        # Construct the complete result before publishing completion. A malformed
+        # result must not leave a successful event followed by a conversion error.
+        if hooks:
+            await hooks.emit("delegate:agent_completed", {
+                "agent": record["agent"], "sub_session_id": record["child_session_id"],
+                "parent_session_id": record["parent_session_id"], "success": True,
+                "tool_call_id": record["tool_call_id"], "parallel_group_id": record["parallel_group_id"],
+                **_return_contract_event_fields(contract),
+            })
+        return completed
+
+    async def resume_execution(self, continuation):
+        """Continue a held delegation; never start/replay a delegate tool input.
+
+        ``session.execution_resume`` owns exact child identity and current
+        admission. This method owns deadline, result contract and attribution.
+        The engine must invoke it under the original tool-call identity.
+        """
+        record = continuation.get("delegation", {})
+        if (record.get("version") != 1 or record.get("engine") != "tool-delegate"
+                or record.get("parent_session_id") != self.coordinator.session_id):
+            raise ValueError("Delegation continuation belongs to a different owner")
+        dispatch = (getattr(self.coordinator, "_tool_dispatch_contexts", {}).get(asyncio.current_task())
+                    or getattr(self.coordinator, "_tool_dispatch_context", {}) or {})
+        if record.get("tool_call_id") != dispatch.get("tool_call_id", ""):
+            raise ValueError("Delegation continuation has a different tool-call identity")
+        resume = self.coordinator.get_capability("session.execution_resume")
+        if not callable(resume):
+            raise RuntimeError("The host cannot resume this child execution")
+        remaining = record.get("timeout_remaining")
+        if self.timeout is not None:
+            remaining = self.timeout if remaining is None else min(self.timeout, remaining)
+        if remaining is not None and remaining <= 0:
+            raise RuntimeError("Delegation deadline is exhausted; execution was not resumed")
+        hooks = self.coordinator.hooks
+        identity = {
+            "agent": record["agent"], "session_id": record["child_session_id"],
+            "parent_session_id": record["parent_session_id"],
+            "tool_call_id": record["tool_call_id"],
+            "parallel_group_id": record["parallel_group_id"],
+        }
+        started = time.monotonic()
+        try:
+            result = await self._await_suspendable_child(
+                resume(continuation), record, timeout=remaining)
+            if not isinstance(result, dict) or result.get("session_id") != record["child_session_id"]:
+                raise ValueError("Resumed child result has a different or missing session identity")
+            # Validate metadata before entering the completion-publication path.
+            dict(result.get("metadata") or {})
+        except asyncio.CancelledError:
+            if hooks:
+                await hooks.emit("delegate:agent_cancelled", identity)
+            raise
+        except _DelegateTimeoutExpired:
+            elapsed_s = round(time.monotonic() - started, 3)
+            partial = await self._collect_partial(record["child_session_id"])
+            recovery = ("Child cancellation cleanup is still in progress; do not resume "
+                        "this session until cleanup and persistence complete.")
+            message = (f"Resumed agent '{record['agent']}' timed out after {remaining}s "
+                       f"(remaining delegate deadline; elapsed {elapsed_s}s). {recovery}")
+            metadata = {"timeout_seconds": remaining, "elapsed_s": elapsed_s,
+                        "resumable": False, "resume_status": "pending_child_cleanup",
+                        "recovery_message": recovery}
+            if hooks:
+                await hooks.emit("delegate:error", {
+                    **identity, "error": message, "error_type": "delegate_timeout",
+                    "status": TIMEOUT_STATUS, **metadata,
+                    **_partial_event_fields(partial, elapsed_s),
+                })
+            return ToolResult(success=False, output={
+                "session_id": record["child_session_id"], "agent": record["agent"],
+                "status": TIMEOUT_STATUS, **_partial_output_fields(partial),
+                "metadata": metadata,
+            }, error={"message": message})
+        except Exception as error:
+            message = f"Agent execution resume failed ({type(error).__name__}): {str(error) or '(no detail)'}"
+            if hooks:
+                await hooks.emit("delegate:error", {**identity, "error": message})
+            return ToolResult(success=False, error={"message": message})
+        # Publication failure is an unknown acknowledgment, not a reason to
+        # retry the child or the event. The host retains its consumed claim.
+        return await self._finish_execution(result, record, hooks)
 
     def _cancel_and_detach_child(self, child_task: asyncio.Task[Any]) -> None:
         """Cancel a child while retaining it strongly until terminal cleanup."""
@@ -2270,100 +2395,15 @@ class DelegateTool:
                 self_delegation_depth=child_self_delegation_depth,
                 session_metadata=session_metadata,
             )
-            result = await self._await_child_with_deadline(spawn_coro)
-
-            # Structured delegation return contract: parse the sub-agent's
-            # response once (no-op when the feature is disabled -- see
-            # _parse_return_contract). Reused below for both the completion
-            # telemetry and the annotated output.
-            contract, cleaned_response = self._parse_return_contract(
-                result.get("output", "")
-            )
-
-            # Emit delegate:agent_completed event
-            if hooks:
-                await hooks.emit(
-                    "delegate:agent_completed",
-                    {
-                        "agent": agent_name,
-                        "sub_session_id": sub_session_id,
-                        "parent_session_id": parent_session_id,
-                        "success": True,
-                        "tool_call_id": tool_call_id,
-                        "parallel_group_id": parallel_group_id,
-                        **_return_contract_event_fields(contract),
-                    },
-                )
-
-            # Negotiated-feature seam (spec: 298-replacement §4.4). A budget
-            # was requested (call_budget is not None) but the child's
-            # orchestrator reported no llm_call_budget telemetry -- either
-            # it doesn't implement max_iterations at all (e.g. a
-            # third-party orchestrator, or loop-basic), or it silently
-            # ignored the config key. Layer 1 bounding is NOT active for
-            # this delegation in that case; only the wall-clock backstop
-            # (settings.timeout) applies. Silence is the failure mode this
-            # spec exists to eliminate, so make it loud rather than let the
-            # caller believe a budget is enforced when it is not.
-            result_metadata = result.get("metadata") or {}
-            budget_enforced = True
-            if call_budget is not None:
-                budget_enforced = "llm_call_budget" in result_metadata
-                if not budget_enforced:
-                    logger.warning(
-                        "Delegate requested an LLM-call budget of %s for agent "
-                        "%r, but the child's orchestrator reported no budget "
-                        "telemetry. Layer 1 bounding is NOT active for this "
-                        "delegation; only the %ss wall-clock backstop applies.",
-                        call_budget,
-                        agent_name,
-                        self.timeout,
-                    )
-
-            # Build provider routing summary (only when routing was requested)
-            # Always include both keys for a stable dict shape — consumers
-            # can safely read provider_routing["model_role"] without KeyError.
-            provider_routing = None
-            if raw_model_role or provider_preferences:
-                provider_routing = {
-                    "model_role": raw_model_role or None,
-                    "resolved": (
-                        [p.to_dict() for p in provider_preferences]
-                        if provider_preferences
-                        else None
-                    ),
-                }
-
-            # Merge the budget_enforced flag into the metadata bag we
-            # forward, without mutating the child's own returned dict.
-            output_metadata = dict(result_metadata)
-            if call_budget is not None:
-                output_metadata["budget_enforced"] = budget_enforced
-
-            # Return output with session_id for multi-turn capability.
-            # "response" is `cleaned_response` -- byte-identical to
-            # result["output"] whenever the feature is disabled, parsing
-            # failed, or strip_block is off; the fenced json block is only
-            # ever removed from it on a successful, flag-enabled parse (see
-            # _parse_return_contract). "contract" is purely additive.
-            session_id_result = result["session_id"]
-            return ToolResult(
-                success=True,
-                output={
-                    "response": cleaned_response,
-                    "session_id": session_id_result,
-                    "agent": agent_name,
-                    "turn_count": result.get("turn_count", 1),
-                    "status": result.get("status", "success"),
-                    "metadata": output_metadata,
-                    "contract": contract,
-                    **(
-                        {"provider_routing": provider_routing}
-                        if provider_routing
-                        else {}
-                    ),
-                },
-            )
+            record = {"version": 1, "engine": "tool-delegate", "agent": agent_name,
+                      "child_session_id": sub_session_id, "parent_session_id": parent_session_id,
+                      "tool_call_id": tool_call_id, "parallel_group_id": parallel_group_id,
+                      "call_budget": call_budget,
+                      "provider_routing": ({"model_role": raw_model_role or None,
+                          "resolved": [p.to_dict() for p in provider_preferences] if provider_preferences else None}
+                          if raw_model_role or provider_preferences else None)}
+            result = await self._await_suspendable_child(spawn_coro, record)
+            return await self._finish_execution(result, record, hooks)
 
         except asyncio.CancelledError:
             # Parent session cancelled — emit diagnostic event then re-raise.
@@ -2683,48 +2723,11 @@ class DelegateTool:
                 instruction=effective_instruction,
                 **resume_routing,
             )
-            result = await self._await_child_with_deadline(resume_coro)
-
-            # Structured delegation return contract (see the spawn path for
-            # the full explanation) -- computed once, reused for telemetry
-            # and the annotated output below.
-            contract, cleaned_response = self._parse_return_contract(
-                result.get("output", "")
-            )
-
-            # Emit delegate:agent_completed event
-            if hooks:
-                await hooks.emit(
-                    "delegate:agent_completed",
-                    {
-                        "agent": agent_name,
-                        "sub_session_id": full_session_id,
-                        "parent_session_id": parent_session_id,
-                        "success": True,
-                        "tool_call_id": tool_call_id,
-                        "parallel_group_id": parallel_group_id,
-                        **_return_contract_event_fields(contract),
-                    },
-                )
-
-            # Return output with session info. "response" is `cleaned_response`
-            # -- see the spawn path's comment for the exact byte-identity
-            # guarantee this preserves in the disabled/non-conformant paths.
-            # `agent_name` was already resolved above (before the try block)
-            # via `_resolve_agent_for_session` -- no re-derivation here.
-            session_id_result = result["session_id"]
-            return ToolResult(
-                success=True,
-                output={
-                    "response": cleaned_response,
-                    "session_id": session_id_result,
-                    "agent": agent_name,
-                    "turn_count": result.get("turn_count", 1),
-                    "status": result.get("status", "success"),
-                    "metadata": result.get("metadata", {}),
-                    "contract": contract,
-                },
-            )
+            record = {"version": 1, "engine": "tool-delegate", "agent": agent_name,
+                      "child_session_id": full_session_id, "parent_session_id": parent_session_id,
+                      "tool_call_id": tool_call_id, "parallel_group_id": parallel_group_id}
+            result = await self._await_suspendable_child(resume_coro, record)
+            return await self._finish_execution(result, record, hooks)
 
         except ValueError as e:
             # Session ID resolution error
