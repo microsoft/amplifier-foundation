@@ -323,7 +323,7 @@ async def test_publication_obeys_write_enabled_rename_contract(
     renamed = []
 
     def darwin_rename(path, target):
-        if path.name.startswith(".source-"):
+        if path.name.startswith(".source-") or path.name == "checkout":
             assert path.stat().st_mode & stat.S_IWUSR
             assert not (path / "skills").stat().st_mode & 0o222
             renamed.append(path)
@@ -418,7 +418,9 @@ async def test_publication_failure_removes_only_owned_tree(
     rename, chmod = Path.rename, Path.chmod
 
     def fail_rename(path, destination):
-        if point == "rename" and path.name.startswith(".source-"):
+        if point == "rename" and (
+            path.name.startswith(".source-") or path.name == "checkout"
+        ):
             raise original
         return rename(path, destination)
 
@@ -672,3 +674,92 @@ async def test_shared_source_module_activation_cold_and_reused(
         assert len(clones) == 1
     finally:
         sys.modules.pop("shared_cache_fixture", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("point", ["clone-failure", "cancel", "seal", "success"])
+async def test_full_clone_fallback_replaces_checkout_not_cleanup_custody(
+    tmp_path, monkeypatch, repository, point
+):
+    from amplifier_foundation.sources import git as git_source
+
+    if point == "seal" and os.name == "nt":
+        pytest.skip("POSIX post-rename root seal")
+    repo, revision = repository
+    url = repo.as_uri()
+    store = SharedSourceStore(tmp_path / "store")
+    target = store.checkout(url, revision)
+    network = git_source._run_git_network_op
+    git_subprocess = git_source._run_git_subprocess
+    remove = git_source.rmtree_robust
+    chmod = Path.chmod
+    reached, release = threading.Event(), threading.Event()
+    identities = []
+    original = OSError("injected fallback " + point)
+
+    def refuse_shallow(args, **kwargs):
+        if "fetch" in args:
+            raise subprocess.CalledProcessError(128, args, stderr="SHA unavailable")
+        return git_subprocess(args, **kwargs)
+
+    def retain_first_inode(path, **kwargs):
+        if path.name == "checkout":
+            info = path.stat()
+            identities.append((info.st_dev, info.st_ino))
+            # Keep the old inode allocated so recreation must use a different
+            # inode. Git still sees the same absent destination as after rmtree.
+            path.rename(path.with_name("discarded-first-attempt"))
+            return
+        return remove(path, **kwargs)
+
+    def full_clone(args, **kwargs):
+        assert "clone" in args
+        path = Path(args[-1])
+        network(args, **kwargs)  # Real local full clone, then real checkout.
+        info = path.stat()
+        identities.append((info.st_dev, info.st_ino))
+        if point == "clone-failure":
+            raise original
+        if point == "cancel":
+            reached.set()
+            assert release.wait(5)
+
+    def fail_seal(path, mode, *args, **kwargs):
+        if point == "seal" and path == target and mode == 0o555:
+            raise original
+        return chmod(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(git_source, "_run_git_subprocess", refuse_shallow)
+        patch.setattr(git_source, "_run_git_network_op", full_clone)
+        patch.setattr(git_source, "rmtree_robust", retain_first_inode)
+        patch.setattr(Path, "chmod", fail_seal)
+        if point == "cancel":
+            task = asyncio.create_task(store.ensure(url, revision))
+            try:
+                await wait_for_thread(reached)
+                task.cancel()
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(task), timeout=0.05)
+                task.cancel()
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(task), timeout=0.05)
+            finally:
+                release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif point == "success":
+            assert await store.ensure(url, revision) == target
+        else:
+            with pytest.raises(OSError) as caught:
+                await store.ensure(url, revision)
+            assert caught.value is original
+            assert not getattr(original, "__notes__", [])
+    assert len(identities) == 2 and identities[0] != identities[1]
+    assert not list(target.parent.glob(".source-*"))
+    if point != "success":
+        assert not target.exists()
+    # Fresh ensure succeeds after failure/cancellation, never adopts a residue.
+    assert await store.ensure(url, revision) == target
+    assert store.verify(url, revision) == target
+    assert not list(target.parent.glob(".source-*"))

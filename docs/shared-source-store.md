@@ -23,8 +23,11 @@ reject it, and another `ensure()` waits for the writer. Windows retains its
 seal-before-rename ordering; directory attributes there are not POSIX access
 controls. Existing completed objects and bindings keep their format.
 
-Failed publication removes only the owned stage (or its renamed, incomplete
-inode), restoring directory permissions without following symlinks. Cleanup
+Git clones into a child of an owned staging directory, so its full-clone
+fallback can replace the checkout inode without replacing cleanup custody.
+Failed publication removes only that stable staging directory (or the verified
+checkout's renamed, incomplete inode), restoring directory permissions without
+following symlinks. Cleanup
 failure is attached to the primary exception rather than replacing it; an
 incomplete residue is retained and rejected, not silently adopted or repaired.
 Cancellation drains the active I/O, including repeated cancellation, before

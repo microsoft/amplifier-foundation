@@ -153,10 +153,14 @@ class SharedSourceStore:
         async with AsyncFileLock(target.with_name("." + revision + ".lock")):
             if target.exists():
                 return await asyncio.to_thread(self.verify, url, revision)
-            stage = Path(tempfile.mkdtemp(prefix=".source-", dir=target.parent))
-            stage_stat = stage.stat()
-            identity = (stage_stat.st_dev, stage_stat.st_ino)
-            cleanup = stage
+            staging = Path(tempfile.mkdtemp(prefix=".source-", dir=target.parent))
+            staging_stat = staging.stat()
+            staging_identity = (staging_stat.st_dev, staging_stat.st_ino)
+            # Git's full-clone fallback deletes/recreates its destination. Keep
+            # custody of a stable parent instead of adopting a replacement inode
+            # after a failed or cancelled clone.
+            stage = staging / "checkout"
+            incomplete = None
             failure = None
             try:
                 from .git import GitSourceHandler
@@ -179,7 +183,7 @@ class SharedSourceStore:
                     )
 
                 def publish():
-                    nonlocal cleanup
+                    nonlocal incomplete
 
                     # copytree copies the source root's mode, including a seal
                     # when adopting an already immutable checkout.
@@ -219,6 +223,8 @@ class SharedSourceStore:
                     for path in stage.rglob("*"):
                         if not path.is_symlink():
                             path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+                    stage_stat = stage.stat()
+                    identity = (stage_stat.st_dev, stage_stat.st_ino)
                     if os.name == "nt":
                         # Windows directory attributes are not POSIX permissions.
                         # Retain its existing fully sealed rename ordering.
@@ -226,16 +232,19 @@ class SharedSourceStore:
                         stage.rename(target)
                     else:
                         stage.rename(target)
-                        cleanup = target  # Only this writer's renamed inode.
+                        incomplete = identity  # Only this writer's renamed inode.
                         target.chmod(0o555)
-                    cleanup = None  # A completed object survives cancellation.
+                    incomplete = None  # A completed object survives cancellation.
 
                 await complete_io(publish)
             except BaseException as error:
                 failure = error
                 raise
             finally:
-                if cleanup is not None:
+                cleanup_paths = [(staging, staging_identity)]
+                if incomplete is not None:
+                    cleanup_paths.insert(0, (target, incomplete))
+                for cleanup, identity in cleanup_paths:
                     try:
                         await complete_io(_remove_owned_stage, cleanup, identity)
                     except BaseException as error:
