@@ -282,20 +282,58 @@ async def test_shared_reader_waits_for_legacy_cache_writer(tmp_path, subpath):
     assert result.active_path == (legacy / 'bundle.md' if subpath else legacy)
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="Actual macOS rename contract")
-def test_darwin_write_disabled_directory_rename(tmp_path):
-    """Real OS control, not an emulation or a claim about Linux/Windows."""
-    writable = tmp_path / "writable"
+@pytest.fixture
+def hfs_volume(tmp_path):
+    """A private native filesystem fixture; no sudo or persistent host changes."""
+    if sys.platform != "darwin":
+        pytest.skip("Actual macOS HFS+ rename contract")
+    image = tmp_path / "shared-source.dmg"
+    mount = tmp_path / "volume"
+    mount.mkdir()
+    subprocess.run(
+        ["hdiutil", "create", "-size", "32m", "-fs", "HFS+",
+         "-volname", "SharedSourceTest", str(image)],
+        check=True,
+    )
+    subprocess.run(
+        ["hdiutil", "attach", "-nobrowse", "-owners", "on",
+         "-mountpoint", str(mount), str(image)],
+        check=True,
+    )
+    try:
+        yield mount
+    finally:
+        # A teardown failure must remain a test error, not silent leaked custody.
+        subprocess.run(["hdiutil", "detach", str(mount)], check=True)
+
+
+@pytest.mark.asyncio
+async def test_darwin_write_disabled_directory_rename(hfs_volume, repository):
+    """Apple documents the restriction for HFS+; current APFS need not reject it."""
+    writable = hfs_volume / "writable"
     writable.mkdir()
-    writable.rename(tmp_path / "success")
-    sealed = tmp_path / "sealed"
+    writable.rename(hfs_volume / "success")
+    sealed = hfs_volume / "sealed"
     sealed.mkdir()
     sealed.chmod(0o555)
     try:
         with pytest.raises(PermissionError) as caught:
-            sealed.rename(tmp_path / "must-not-publish")
+            sealed.rename(hfs_volume / "must-not-publish")
         assert caught.value.errno == errno.EACCES
         assert sealed.exists()
+        # Exercise the corrected implementation on the SAME filesystem, not
+        # just a manually reordered pair of syscalls.
+        repo, revision = repository
+        store = SharedSourceStore(hfs_volume / "store")
+        url = "https://example.invalid/repo"
+        target = await store.ensure(url, revision, existing=repo)
+        assert store.verify(url, revision) == target
+        assert await store.ensure(url, revision) == target
+        assert (target / "skills/SKILL.md").read_text() == "skill"
+        for path in (target, *target.rglob("*")):
+            if not path.is_symlink():
+                assert not path.stat().st_mode & 0o222
+        assert not list(target.parent.glob(".source-*"))
     finally:
         if sealed.exists():
             sealed.chmod(0o700)
