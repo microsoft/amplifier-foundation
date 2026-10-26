@@ -697,10 +697,10 @@ async def test_full_clone_fallback_replaces_checkout_not_cleanup_custody(
     identities = []
     original = OSError("injected fallback " + point)
 
-    def refuse_shallow(args, **kwargs):
+    def refuse_shallow(args, *positional, **kwargs):
         if "fetch" in args:
             raise subprocess.CalledProcessError(128, args, stderr="SHA unavailable")
-        return git_subprocess(args, **kwargs)
+        return git_subprocess(args, *positional, **kwargs)
 
     def retain_first_inode(path, **kwargs):
         if path.name == "checkout":
