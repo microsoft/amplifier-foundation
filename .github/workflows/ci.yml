@@ -59,6 +59,25 @@ jobs:
           shasum -a 256 uv.lock amplifier_foundation/sources/shared.py
           uv sync --locked
           uv run --no-sync python --version
+      - name: Old-source contract discriminator (expected failure, not native reproduction)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin 8d26eceb9b7cafe6e93346f8f4294596bd45dcd1
+          mkdir -p "$RUNNER_TEMP/shared-source-old"
+          cp -R amplifier_foundation "$RUNNER_TEMP/shared-source-old/"
+          git show 8d26eceb9b7cafe6e93346f8f4294596bd45dcd1:amplifier_foundation/sources/shared.py > "$RUNNER_TEMP/shared-source-old/amplifier_foundation/sources/shared.py"
+          cd "$RUNNER_TEMP/shared-source-old"
+          shasum -a 256 amplifier_foundation/sources/shared.py
+          export PYTHONPATH="$RUNNER_TEMP/shared-source-old"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -c "from pathlib import Path; import amplifier_foundation.sources.shared as s; print(s.__file__); assert Path(s.__file__).resolve() == Path('amplifier_foundation/sources/shared.py').resolve()"
+          set +e
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest "$GITHUB_WORKSPACE/tests/test_shared_sources.py::test_publication_obeys_write_enabled_rename_contract" --import-mode=importlib -q --tb=long > "$RUNNER_TEMP/old-source-result.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/old-source-result.txt"
+          test "$result" -eq 1
+          grep -F 'assert path.stat().st_mode & stat.S_IWUSR' "$RUNNER_TEMP/old-source-result.txt"
       - name: Source publication and native rename controls
         run: uv run --no-sync pytest tests/test_shared_sources.py tests/test_gap_rmtree_readonly.py -q --tb=short -rA
       - name: Install exact wheel and check outside the source tree

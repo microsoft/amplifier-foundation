@@ -16,7 +16,8 @@ The Git status API inspects the binding without cloning or replacing it.
 On POSIX, publication freezes the verified stage's descendants, renames its
 still-writable root, then seals that root while retaining the per-object writer
 lock. This ordering supports macOS filesystems that reject renaming write-disabled
-directories (Apple documents this for HFS+; current APFS need not reject it).
+directories (Apple's archived documentation describes this restriction, but
+macOS 26.6.2 CI allowed the rename on both its default volume and HFS+).
 A root with write bits is incomplete: `verify()` and cached status
 reject it, and another `ensure()` waits for the writer. Windows retains its
 seal-before-rename ordering; directory attributes there are not POSIX access
