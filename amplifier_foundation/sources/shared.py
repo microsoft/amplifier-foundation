@@ -28,11 +28,45 @@ from amplifier_foundation.sources.git import _with_longpaths
 async def complete_io(function, *args, **kwargs):
     """Do not release a source writer lock while a cancelled thread is writing."""
     task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            # A second cancellation must not cancel the drain or release custody.
+            cancelled = cancelled or error
+        except BaseException:
+            break  # Retrieve the thread's exception below.
     try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
+        result = task.result()
+    except BaseException as error:
+        if cancelled is not None:
+            cancelled.add_note(f"Source I/O failed while settling cancellation: {error!r}")
+            raise cancelled from error
         raise
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
+def _remove_owned_stage(path, identity):
+    """Remove only our failed stage, including directories frozen before failure."""
+    from ._rmtree import rmtree_robust
+
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(current.st_mode) or (
+        current.st_dev, current.st_ino
+    ) != identity:
+        raise OSError(f"Source cleanup ownership changed; retained {path}")
+    # POSIX unlink needs a writable parent, not a writable file. Walk top-down
+    # without following symlinks, and leave external symlink destinations alone.
+    for root, _, _ in os.walk(path, followlinks=False):
+        directory = Path(root)
+        directory.chmod(stat.S_IMODE(directory.stat().st_mode) | 0o700)
+    rmtree_robust(path)
 
 
 def binding_root(cache):
@@ -95,6 +129,11 @@ class SharedSourceStore:
 
     def verify(self, url, revision):
         target = self.checkout(url, revision)
+        # On POSIX the final root seal is the completion point. Some macOS
+        # filesystems reject a write-disabled rename, so the path briefly exists
+        # while the writer still holds its lock and is sealing it.
+        if os.name != "nt" and target.stat().st_mode & 0o222:
+            raise ValueError("Shared source publication is incomplete")
         metadata = json.loads((target / ".amplifier_cache_meta.json").read_text())
         if (
             source_id(metadata.get("git_url", ""), "") != source_id(url, "")
@@ -114,7 +153,15 @@ class SharedSourceStore:
         async with AsyncFileLock(target.with_name("." + revision + ".lock")):
             if target.exists():
                 return await asyncio.to_thread(self.verify, url, revision)
-            stage = Path(tempfile.mkdtemp(prefix=".source-", dir=target.parent))
+            staging = Path(tempfile.mkdtemp(prefix=".source-", dir=target.parent))
+            staging_stat = staging.stat()
+            staging_identity = (staging_stat.st_dev, staging_stat.st_ino)
+            # Git's full-clone fallback deletes/recreates its destination. Keep
+            # custody of a stable parent instead of adopting a replacement inode
+            # after a failed or cancelled clone.
+            stage = staging / "checkout"
+            incomplete = None
+            failure = None
             try:
                 from .git import GitSourceHandler
 
@@ -136,6 +183,11 @@ class SharedSourceStore:
                     )
 
                 def publish():
+                    nonlocal incomplete
+
+                    # copytree copies the source root's mode, including a seal
+                    # when adopting an already immutable checkout.
+                    stage.chmod(0o700)
                     atomic(
                         stage / ".amplifier_cache_meta.json",
                         {
@@ -171,15 +223,36 @@ class SharedSourceStore:
                     for path in stage.rglob("*"):
                         if not path.is_symlink():
                             path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
-                    stage.chmod(0o555)
-                    stage.rename(target)
+                    stage_stat = stage.stat()
+                    identity = (stage_stat.st_dev, stage_stat.st_ino)
+                    if os.name == "nt":
+                        # Windows directory attributes are not POSIX permissions.
+                        # Retain its existing fully sealed rename ordering.
+                        stage.chmod(0o555)
+                        stage.rename(target)
+                    else:
+                        stage.rename(target)
+                        incomplete = identity  # Only this writer's renamed inode.
+                        target.chmod(0o555)
+                    incomplete = None  # A completed object survives cancellation.
 
                 await complete_io(publish)
+            except BaseException as error:
+                failure = error
+                raise
             finally:
-                if stage.exists():
-                    from ._rmtree import rmtree_robust
-
-                    await complete_io(rmtree_robust, stage)
+                cleanup_paths = [(staging, staging_identity)]
+                if incomplete is not None:
+                    cleanup_paths.insert(0, (target, incomplete))
+                for cleanup, identity in cleanup_paths:
+                    try:
+                        await complete_io(_remove_owned_stage, cleanup, identity)
+                    except BaseException as error:
+                        if failure is None:
+                            raise
+                        failure.add_note(
+                            f"Source cleanup failed; inspect {cleanup}: {error!r}"
+                        )
         return target
 
     async def bind(self, cache, url, ref, revision, *, existing=None):

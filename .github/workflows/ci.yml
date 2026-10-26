@@ -39,3 +39,57 @@ jobs:
       # which tests run changes here; only whether the log says their names.
       - name: Run tests
         run: uv run pytest tests/ -q --tb=short -rA
+
+  macos-shared-sources:
+    name: Shared source publication (macOS, Python 3.13)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+      - name: Prepare locked dependencies and record platform
+        run: |
+          sw_vers
+          uname -m
+          id -u
+          git rev-parse HEAD
+          shasum -a 256 uv.lock amplifier_foundation/sources/shared.py
+          uv sync --locked
+          uv run --no-sync python --version
+      - name: Old-source contract discriminator (expected failure, not native reproduction)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin 8d26eceb9b7cafe6e93346f8f4294596bd45dcd1
+          mkdir -p "$RUNNER_TEMP/shared-source-old"
+          cp -R amplifier_foundation "$RUNNER_TEMP/shared-source-old/"
+          git show 8d26eceb9b7cafe6e93346f8f4294596bd45dcd1:amplifier_foundation/sources/shared.py > "$RUNNER_TEMP/shared-source-old/amplifier_foundation/sources/shared.py"
+          cd "$RUNNER_TEMP/shared-source-old"
+          shasum -a 256 amplifier_foundation/sources/shared.py
+          export PYTHONPATH="$RUNNER_TEMP/shared-source-old"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -c "from pathlib import Path; import amplifier_foundation.sources.shared as s; print(s.__file__); assert Path(s.__file__).resolve() == Path('amplifier_foundation/sources/shared.py').resolve()"
+          set +e
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest "$GITHUB_WORKSPACE/tests/test_shared_sources.py::test_publication_obeys_write_enabled_rename_contract" --import-mode=importlib -q --tb=long > "$RUNNER_TEMP/old-source-result.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/old-source-result.txt"
+          test "$result" -eq 1
+          grep -E '^>[[:space:]]+assert path.stat\(\).st_mode & stat.S_IWUSR$' "$RUNNER_TEMP/old-source-result.txt"
+          grep -E '^E[[:space:]]+AssertionError:' "$RUNNER_TEMP/old-source-result.txt"
+      - name: Source publication and native rename controls
+        run: uv run --no-sync pytest tests/test_shared_sources.py tests/test_gap_rmtree_readonly.py -q --tb=short -rA
+      - name: Install exact wheel and check outside the source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv build --wheel
+          shasum -a 256 dist/*.whl
+          uv pip install --python .venv/bin/python --reinstall --no-deps dist/*.whl
+          mkdir -p "$RUNNER_TEMP/shared-source-installed"
+          cp tests/test_shared_sources.py tests/test_gap_rmtree_readonly.py "$RUNNER_TEMP/shared-source-installed/"
+          cd "$RUNNER_TEMP/shared-source-installed"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -I -c "from pathlib import Path; import amplifier_foundation as f; p = Path(f.__file__).resolve(); print(p); assert 'site-packages' in p.parts"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -I -m pytest . --import-mode=importlib -o asyncio_mode=strict -o asyncio_default_fixture_loop_scope=function -q --tb=short -rA
