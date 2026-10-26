@@ -129,8 +129,8 @@ class SharedSourceStore:
 
     def verify(self, url, revision):
         target = self.checkout(url, revision)
-        # On POSIX the final root seal is the completion point. macOS cannot
-        # rename a write-disabled directory, so the path can briefly exist
+        # On POSIX the final root seal is the completion point. Some macOS
+        # filesystems reject a write-disabled rename, so the path briefly exists
         # while the writer still holds its lock and is sealing it.
         if os.name != "nt" and target.stat().st_mode & 0o222:
             raise ValueError("Shared source publication is incomplete")

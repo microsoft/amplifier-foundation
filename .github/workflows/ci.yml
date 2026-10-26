@@ -77,7 +77,8 @@ jobs:
           set -e
           cat "$RUNNER_TEMP/old-source-result.txt"
           test "$result" -eq 1
-          grep -F 'assert path.stat().st_mode & stat.S_IWUSR' "$RUNNER_TEMP/old-source-result.txt"
+          grep -E '^>[[:space:]]+assert path.stat\(\).st_mode & stat.S_IWUSR$' "$RUNNER_TEMP/old-source-result.txt"
+          grep -E '^E[[:space:]]+AssertionError:' "$RUNNER_TEMP/old-source-result.txt"
       - name: Source publication and native rename controls
         run: uv run --no-sync pytest tests/test_shared_sources.py tests/test_gap_rmtree_readonly.py -q --tb=short -rA
       - name: Install exact wheel and check outside the source tree
