@@ -7,7 +7,7 @@ Foundation provides:
 - **@Mention System** - Parse and resolve `@namespace:path` references in instructions
 - **Utilities** - YAML/frontmatter I/O, dict merging, path handling, caching
 - **Shared session history** - CLI-compatible transcripts and metadata with optional Context Intelligence activity enrichment
-- **Session ownership** - POSIX-local exclusive root-session locking
+- **Session ownership** - POSIX-local exclusive root-session locking; bounded Windows/local-NTFS ownership and safe reads (no Windows checkpoint or transfer-fence mutations)
 - **Reference Content** - Reusable providers, agents, behaviors, and context files
 - **Optional application libraries** - Independently installed scheduling, operations, worktrees, and Recall mechanisms; see [`libraries/`](libraries/README.md). These are not loaded by the base Foundation package.
 
@@ -162,6 +162,13 @@ See [`examples/README.md`](examples/README.md) for the full catalog of 20+ examp
 | [SHARED_SESSION_STATE.md](docs/SHARED_SESSION_STATE.md) | Safe same-host shared-checkpoint participation |
 
 **Code is authoritative**: Each source file has comprehensive docstrings. Use `help(ClassName)` or read source directly.
+
+Windows session ownership is an initial mechanism slice, not complete Windows
+runtime support. It uses `LockFileEx` and private Windows ACLs without changing
+the state layout. Authoritative checkpoint writes/deletes and transfer-fence
+changes/commit confirmation are refused until namespace persistence is qualified.
+Cooperative handoff remains POSIX-only. See the
+[supported boundary](docs/SHARED_SESSION_STATE.md#windows-first-slice).
 
 ## For Bundle Authors
 
