@@ -68,6 +68,116 @@ def test_win64_struct_layout_does_not_depend_on_host_long_width():
         assert C.sizeof(win.SECURITY_ATTRIBUTES) == 24
 
 
+def test_rename_info_abi_uses_win32_utf16_and_pointer_sized_handle():
+    assert win.FILE_RENAME_INFO.FileName.offset == (20 if C.sizeof(win.HANDLE) == 8 else 12)
+    assert win.FILE_RENAME_INFO.RootDirectory.offset == (8 if C.sizeof(win.HANDLE) == 8 else 4)
+    assert C.sizeof(win.FILE_RENAME_INFO) == (24 if C.sizeof(win.HANDLE) == 8 else 16)
+    assert C.sizeof(dict(win.FILE_RENAME_INFO._fields_)["FileName"]._type_) == 2
+
+
+@pytest.mark.parametrize("error", [0, 1, 5, 50, 87, 120])
+def test_owner_rename_uses_posix_replace_flags_and_preserves_native_failure(monkeypatch, error):
+    api = win._API.__new__(win._API)
+    handle = (1 << 40) if C.sizeof(win.HANDLE) == 8 else 123
+    target = PureWindowsPath("C:\\private-\N{SNOWMAN}-\U0001f680\\owner.json")
+    calls = []
+
+    def rename(actual, info_class, buffer, size):
+        assert actual == handle
+        assert info_class == 22  # FileRenameInfoEx, NOT FileRenameInfo (3).
+        info = C.cast(buffer, C.POINTER(win.FILE_RENAME_INFO)).contents
+        assert info.Flags == 3  # REPLACE_IF_EXISTS | POSIX_SEMANTICS only.
+        assert not info.RootDirectory
+        raw = C.string_at(C.cast(buffer, win.PVOID).value + win.FILE_RENAME_INFO.FileName.offset,
+                          info.FileNameLength)
+        assert raw == str(target).encode("utf-16-le")
+        assert size >= win.FILE_RENAME_INFO.FileName.offset + len(raw)
+        calls.append("renamed")
+        return not error
+
+    failure = OSError("native rename failure")
+    failure.winerror = error
+    api.SetFileInformationByHandle = rename
+    monkeypatch.setattr(C, "get_last_error", lambda: error, raising=False)
+    monkeypatch.setattr(C, "WinError", lambda code: failure, raising=False)
+    if error:
+        with pytest.raises(OSError) as caught:
+            api.replace_owner(handle, target)
+        assert caught.value is failure
+        if error in {1, 50, 87, 120}:
+            assert any("FileRenameInfoEx" in note for note in caught.value.__notes__)
+        else:
+            assert not getattr(caught.value, "__notes__", [])  # Access denied stays access denied.
+    else:
+        api.replace_owner(handle, target)
+    assert calls == ["renamed"]  # No fallback, retry or delete/truncate path.
+
+
+def test_rename_api_binding_uses_pointer_width_handle_and_fixed_win32_arguments(monkeypatch):
+    class Function:
+        pass
+
+    class DLL:
+        def __init__(self):
+            self.functions = {}
+
+        def __getattr__(self, name):
+            return self.functions.setdefault(name, Function())
+
+    kernel = DLL()
+    monkeypatch.setattr(win, "os", _WindowsOS())
+    monkeypatch.setattr(C, "WinDLL", lambda *a, **kw: kernel, raising=False)
+    monkeypatch.setattr(win._API, "_user_sid", lambda self: "S-1-5-21-1-2-3-1000")
+    api = win._API()
+    assert api.SetFileInformationByHandle.restype is win.BOOL
+    assert api.SetFileInformationByHandle.argtypes == [win.HANDLE, C.c_int, win.PVOID, win.DWORD]
+
+
+@pytest.mark.parametrize("name", ["session.lock", "checkpoint.json", "transfer-fence.json"])
+def test_posix_replace_helper_cannot_target_lock_or_authority(name):
+    api = win._API.__new__(win._API)
+    with pytest.raises(ValueError, match="advisory"):
+        api.replace_owner(123, PureWindowsPath(r"C:\state") / name)
+
+
+@pytest.mark.parametrize("owner_temporary", [False, True])
+def test_delete_access_is_only_requested_for_explicit_owner_temporary(monkeypatch, owner_temporary):
+    from contextlib import contextmanager
+
+    api = win._API.__new__(win._API)
+
+    @contextmanager
+    def security(**kwargs):
+        assert kwargs == {"directory": False}
+        yield win.SECURITY_ATTRIBUTES()
+
+    def create(path, access, share, descriptor, disposition, flags, template):
+        assert bool(access & 0x10000) is owner_temporary
+        assert access & win._WRITE
+        assert share == 3 and disposition == 1  # CREATE_NEW, deny delete sharing.
+        return 123
+
+    api.private_security, api.CreateFileW = security, create
+    api.SetHandleInformation = lambda *a: 1
+    api.info = lambda *a, **kw: None
+    path = PureWindowsPath(r"C:\state") / (".owner-" + "a" * 32 + ".tmp")
+    assert api.open(path, exclusive=True, write=True, owner_temporary=owner_temporary) == 123
+
+
+@pytest.mark.parametrize("name,kwargs", [
+    ("session.lock", {"exclusive": True, "write": True}),
+    ("owner.json", {"exclusive": True, "write": True}),
+    (".owner-invalid.tmp", {"exclusive": True, "write": True}),
+    (".owner-" + "a" * 32 + ".tmp", {"exclusive": True}),
+    (".owner-" + "a" * 32 + ".tmp", {"write": True}),
+    (".owner-" + "a" * 32 + ".tmp", {"exclusive": True, "write": True, "directory": True}),
+])
+def test_owner_temporary_delete_access_cannot_be_requested_for_other_objects(name, kwargs):
+    api = win._API.__new__(win._API)
+    with pytest.raises(ValueError, match="owner temporary"):
+        api.open(PureWindowsPath(r"C:\state") / name, owner_temporary=True, **kwargs)
+
+
 @pytest.mark.parametrize("directory", [False, True])
 @pytest.mark.parametrize("error", [0, 2, 5])
 def test_creation_supplies_private_descriptor_before_createfile_and_clears_inherit(directory, error, monkeypatch):
@@ -373,8 +483,10 @@ def test_posix_directory_helper_refuses_windows_before_creating(tmp_path, monkey
 
 
 @pytest.mark.parametrize("failure", [None, "write", "flush", "replace"])
-def test_owner_publication_completes_partial_writes_or_never_replaces(failure):
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_owner_publication_completes_partial_writes_or_never_replaces(failure, cleanup_failure):
     events, written = [], bytearray()
+    error = PermissionError(f"{failure} failed")
 
     class API:
         ok = staticmethod(win._API.ok)
@@ -385,12 +497,12 @@ def test_owner_publication_completes_partial_writes_or_never_replaces(failure):
                 error = FileNotFoundError()
                 error.winerror = 2
                 raise error
-            assert kwargs == {"exclusive": True, "write": True}
+            assert kwargs == {"exclusive": True, "write": True, "owner_temporary": True}
             return 123
 
         def WriteFile(self, handle, buffer, length, count, overlapped):
             if failure == "write":
-                raise PermissionError("write failed")
+                raise error
             size = min(2, length)
             written.extend(C.string_at(buffer, size))
             C.cast(count, win.PDWORD)[0] = size
@@ -398,22 +510,28 @@ def test_owner_publication_completes_partial_writes_or_never_replaces(failure):
 
         def FlushFileBuffers(self, handle):
             if failure == "flush":
-                raise PermissionError("flush failed")
+                raise error
             events.append("flushed")
             return 1
 
         def close(self, handle):
             events.append(("closed", handle))
+            if failure and cleanup_failure:
+                raise OSError("close cleanup failed")
 
-        def MoveFileExW(self, source, target, flags):
-            assert target.endswith("owner.json") and flags == 1
+        def replace_owner(self, handle, target):
+            assert target.name == "owner.json" and handle == 123
+            assert written == data and events == ["flushed"]  # Still-open source, flushed first.
             if failure == "replace":
-                raise PermissionError("replace failed")
+                raise error
             events.append("replaced")
-            return 1
 
         def DeleteFileW(self, path):
+            assert PureWindowsPath(path).name.startswith(".owner-")
+            assert path != str(ownership.directory / "owner.json")
             events.append("temporary-deleted")
+            if cleanup_failure:
+                raise OSError("delete cleanup failed")
             return 1
 
     ownership = win.Ownership.__new__(win.Ownership)
@@ -421,13 +539,19 @@ def test_owner_publication_completes_partial_writes_or_never_replaces(failure):
     ownership.check = lambda: None
     data = b'{"app":"complete-owner","active":true}'
     if failure:
-        with pytest.raises(PermissionError):
+        with pytest.raises(PermissionError) as caught:
             ownership.publish_owner(data)
+        assert caught.value is error
+        if cleanup_failure:
+            assert len(error.__notes__) == 2
+            assert any("close cleanup failed" in note for note in error.__notes__)
+            assert any("delete cleanup failed" in note for note in error.__notes__)
         assert "replaced" not in events and events[-1] == "temporary-deleted"
+        assert events.count(("closed", 123)) == 1
     else:
         ownership.publish_owner(data)
         assert written == data
-        assert events == ["flushed", ("closed", 123), "replaced"]
+        assert events == ["flushed", "replaced", ("closed", 123)]
 
 
 def test_safe_read_rejects_acl_before_reading_any_foreign_bytes(monkeypatch):
@@ -889,6 +1013,7 @@ def test_native_retained_exact_identity_contends_and_rejects_case_alias_and_rena
 def test_native_open_advisory_reader_cannot_block_release_or_successor_publication(native_store):
     store = native_store
     first = store.acquire(app="first")
+    original = first.owner
     api = first._windows.api
     reader = api.open(store._owner_path, advisory_read=True)
     try:
@@ -897,6 +1022,9 @@ def test_native_open_advisory_reader_cannot_block_release_or_successor_publicati
         try:
             assert json.loads(store._owner_path.read_bytes())["app"] == "successor"
             api.validate_acl(reader, private=True)  # Detached old snapshot remains safe.
+            buffer, count = C.create_string_buffer(65536), win.DWORD()
+            api.ok(api.ReadFile(reader, buffer, len(buffer), C.byref(count), None))
+            assert json.loads(buffer.raw[:count.value]) == original
         finally:
             successor.release()
     finally:

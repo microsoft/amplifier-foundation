@@ -36,6 +36,13 @@ class SECURITY_ATTRIBUTES(C.Structure):
     _fields_ = [("nLength", DWORD), ("lpSecurityDescriptor", PVOID), ("bInheritHandle", BOOL)]
 
 
+class FILE_RENAME_INFO(C.Structure):
+    # FileRenameInfoEx uses the DWORD Flags arm of the initial union, not BOOL.
+    # WCHAR is always UTF-16, even on a POSIX host testing this ABI layout.
+    _fields_ = [("Flags", DWORD), ("RootDirectory", HANDLE),
+                ("FileNameLength", DWORD), ("FileName", WORD * 1)]
+
+
 class FILETIME(C.Structure):
     _fields_ = [("low", DWORD), ("high", DWORD)]
 
@@ -131,7 +138,7 @@ class _API:
             "ReadFile": (BOOL, [HANDLE, PVOID, DWORD, PDWORD, PVOID]),
             "WriteFile": (BOOL, [HANDLE, PVOID, DWORD, PDWORD, PVOID]),
             "FlushFileBuffers": (BOOL, [HANDLE]),
-            "MoveFileExW": (BOOL, [C.c_wchar_p, C.c_wchar_p, DWORD]),
+            "SetFileInformationByHandle": (BOOL, [HANDLE, C.c_int, PVOID, DWORD]),
             "DeleteFileW": (BOOL, [C.c_wchar_p]),
             "LocalFree": (PVOID, [PVOID]),
             "OpenProcessToken": (BOOL, [HANDLE, DWORD, C.POINTER(HANDLE)]),
@@ -258,12 +265,18 @@ class _API:
         return info
 
     def open(self, path: Path, *, directory: bool = False, create: bool = False,
-             exclusive: bool = False, write: bool = False, advisory_read: bool = False) -> int:
+             exclusive: bool = False, write: bool = False, advisory_read: bool = False,
+             owner_temporary: bool = False) -> int:
         if advisory_read and (path.name != "owner.json" or directory or create or exclusive or write):
             raise ValueError("delete-sharing is restricted to a replaceable advisory owner reader")
+        if owner_temporary and (directory or create or advisory_read or not exclusive or not write
+                                or not re.fullmatch(r"\.owner-[0-9a-f]{32}\.tmp", path.name)):
+            raise ValueError("rename access is restricted to a new private owner temporary file")
         access = _READ_CONTROL | _ATTRIBUTES | (0 if directory else _READ)
         if write:
             access |= _WRITE
+        if owner_temporary:
+            access |= 0x10000  # DELETE on this source handle, not the stable lock.
         with self.private_security(directory=directory) as security:
             # Pins deny deletion/rename. Sharing restrictions do NOT cover
             # FILE_WRITE_ATTRIBUTES: traversal ACL checks prevent untrusted
@@ -285,6 +298,33 @@ class _API:
             return handle
         except BaseException:
             self.close(handle)
+            raise
+
+    def replace_owner(self, handle: int, path: Path) -> None:
+        """Supersede only advisory owner.json, keeping existing readers valid.
+
+        FileRenameInfoEx + REPLACE_IF_EXISTS | POSIX_SEMANTICS is available from
+        Windows 10 1607. Unlike MoveFileExW, it explicitly allows an open target:
+        old handles keep reading the old file, new opens see the complete new
+        file. The source stays open with DELETE access through the rename.
+        https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+        """
+        if path.name != "owner.json":
+            raise ValueError("POSIX replacement is restricted to advisory owner.json")
+        encoded = str(_absolute(path)).encode("utf-16-le")
+        buffer = C.create_string_buffer(C.sizeof(FILE_RENAME_INFO) + len(encoded))
+        info = FILE_RENAME_INFO.from_buffer(buffer)
+        info.Flags = 3  # FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
+        info.FileNameLength = len(encoded)  # Bytes, excluding any NUL terminator.
+        C.memmove(C.addressof(buffer) + FILE_RENAME_INFO.FileName.offset, encoded, len(encoded))
+        # RootDirectory is NULL: the absolute target is in the same pinned
+        # directory/volume as our freshly created source. No copy/delete fallback.
+        try:
+            self.ok(self.SetFileInformationByHandle(handle, 22, buffer, len(buffer)))  # FileRenameInfoEx
+        except OSError as exc:
+            if exc.winerror in {1, 50, 87, 120}:
+                exc.add_note("Advisory replacement requires Windows 10 1607+ local NTFS with "
+                             "FileRenameInfoEx POSIX semantics; no legacy fallback is attempted.")
             raise
 
 
@@ -478,7 +518,7 @@ class Ownership:
             finally:
                 self.api.close(existing)
         temporary = self.directory / f".owner-{uuid.uuid4().hex}.tmp"
-        handle = self.api.open(temporary, exclusive=True, write=True)
+        handle = self.api.open(temporary, exclusive=True, write=True, owner_temporary=True)
         try:
             written = 0
             while written < len(encoded):
@@ -489,16 +529,21 @@ class Ownership:
                     raise OSError("zero-length Windows owner write")
                 written += count.value
             self.api.ok(self.api.FlushFileBuffers(handle))
-        except BaseException:
-            self.api.close(handle)
-            self.api.ok(self.api.DeleteFileW(str(temporary)))
+            self.api.replace_owner(handle, path)
+        except BaseException as exc:
+            # Preserve the actual write/flush/rename failure even when cleanup
+            # also fails. Report retained temporary-file cleanup as exception
+            # notes, never as a successful publication or a masked native error.
+            try:
+                self.api.close(handle)
+            except OSError as cleanup:
+                exc.add_note(f"Owner temporary handle close failed: {cleanup}")
+            try:
+                self.api.ok(self.api.DeleteFileW(str(temporary)))
+            except OSError as cleanup:
+                exc.add_note(f"Owner temporary file cleanup failed ({temporary}): {cleanup}")
             raise
         self.api.close(handle)
-        try:
-            self.api.ok(self.api.MoveFileExW(str(temporary), str(path), 1))  # REPLACE_EXISTING
-        except BaseException:
-            self.api.ok(self.api.DeleteFileW(str(temporary)))
-            raise
 
     def close(self) -> None:
         # Closing releases LockFileEx even on failure paths and process death.

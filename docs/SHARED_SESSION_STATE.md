@@ -33,7 +33,14 @@ beside native history and does not implement remote transfer or authentication.
 ## Windows first slice
 
 The Windows backend uses Python 3.11+ standard-library `ctypes`, with explicit
-pointer-sized Win32 signatures. It introduces no new dependency, state root,
+pointer-sized Win32 signatures. Advisory atomic replacement requires Windows 10
+version 1607 or later (including Windows 11), local NTFS, and support for
+`SetFileInformationByHandle(FileRenameInfoEx)` with
+`REPLACE_IF_EXISTS | POSIX_SEMANTICS`. Existing owner readers retain the old
+complete file; subsequent opens see the new complete file. Unsupported rename
+semantics fail explicitly, with no delete-first, truncate, legacy-move fallback
+or wait for readers to close. This is atomic visibility, not a namespace
+durability acknowledgment. The backend introduces no new dependency, state root,
 layout, application lock, lease or takeover protocol.
 
 | Operation | Windows boundary |
