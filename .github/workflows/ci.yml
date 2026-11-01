@@ -66,26 +66,36 @@ jobs:
       # The script builds ONE non-editable candidate wheel, then resolves the
       # pinned consumers independently. Agent's Core==2.0.1 is not compatible
       # with the CLI/Unified Core>=2.0.2 graph. Never combine those environments.
-      # The disposable Windows runner uses a unique short drive-root work path
-      # for ALL wheel/build/cache/venv paths. No LongPaths registry change.
+      # Short paths stay on the runner temp volume used by native pytest, not
+      # an assumed C: volume whose existing ACL may violate traversal policy.
+      - name: Select compact Windows fixture location
+        id: windows-root
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $driveRoot = [System.IO.Path]::GetPathRoot($env:RUNNER_TEMP)
+          if ($driveRoot -notmatch '^[A-Za-z]:\\$') { throw 'Expected a local runner temp drive' }
+          $work = Join-Path $driveRoot ("ic-" + $env:GITHUB_RUN_ID + "-" + $env:GITHUB_RUN_ATTEMPT)
+          "work=$work" >> $env:GITHUB_OUTPUT
+
       - name: Build candidate and install isolated consumer graphs
-        run: python -I -X utf8 tests/installed_consumer_compat.py --prepare --work "${{ matrix.os == 'windows-2025' && format('C:/ic-{0}-{1}', github.run_id, github.run_attempt) || format('{0}/installed-consumers', runner.temp) }}"
+        run: python -I -X utf8 tests/installed_consumer_compat.py --prepare --work "${{ steps.windows-root.outputs.work || format('{0}/installed-consumers', runner.temp) }}"
 
       - name: Qualify installed SDK and CLI persistence
         if: ${{ always() && !cancelled() }}
-        run: python -I -X utf8 tests/installed_consumer_compat.py --run --work "${{ matrix.os == 'windows-2025' && format('C:/ic-{0}-{1}', github.run_id, github.run_attempt) || format('{0}/installed-consumers', runner.temp) }}"
+        run: python -I -X utf8 tests/installed_consumer_compat.py --run --work "${{ steps.windows-root.outputs.work || format('{0}/installed-consumers', runner.temp) }}"
 
       # Rescan the saved, normalized JSON. Failure withholds the entire upload;
       # never publish raw private state, command output, or exception messages.
       - name: Check public evidence before upload
         id: public-evidence
         if: ${{ always() && !cancelled() }}
-        run: python -I -X utf8 tests/installed_consumer_compat.py --check-public --work "${{ matrix.os == 'windows-2025' && format('C:/ic-{0}-{1}', github.run_id, github.run_attempt) || format('{0}/installed-consumers', runner.temp) }}"
+        run: python -I -X utf8 tests/installed_consumer_compat.py --check-public --work "${{ steps.windows-root.outputs.work || format('{0}/installed-consumers', runner.temp) }}"
 
       - name: Retain installed-consumer evidence
         if: ${{ always() && steps.public-evidence.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: installed-consumers-${{ matrix.os }}-py313-x64
-          path: ${{ matrix.os == 'windows-2025' && format('C:/ic-{0}-{1}', github.run_id, github.run_attempt) || format('{0}/installed-consumers', runner.temp) }}/evidence/*.json
+          path: ${{ steps.windows-root.outputs.work || format('{0}/installed-consumers', runner.temp) }}/evidence/*.json
           if-no-files-found: error

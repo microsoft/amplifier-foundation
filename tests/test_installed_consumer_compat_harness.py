@@ -6,12 +6,17 @@ its bounded test plumbing, not Windows behavior or consumer compatibility.
 
 import ast
 from asyncio import CancelledError
+import base64
+from contextlib import nullcontext
 import copy
+import functools
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import re
-from types import SimpleNamespace, coroutine
+from types import SimpleNamespace, coroutine, MethodType, ModuleType
+import zlib
 
 import pytest
 import yaml
@@ -130,14 +135,16 @@ def test_separate_native_and_ubuntu_jobs_keep_pins_and_failure_evidence():
     runtime = job["steps"][-3]
     assert "always()" in runtime["if"]
     assert "python -I -X utf8 tests/installed_consumer_compat.py --run" in runtime["run"]
-    work_expression = (
-        "${{ matrix.os == 'windows-2025' && format('C:/ic-{0}-{1}', github.run_id, github.run_attempt)"
-        " || format('{0}/installed-consumers', runner.temp) }}"
-    )
+    work_expression = "${{ steps.windows-root.outputs.work || format('{0}/installed-consumers', runner.temp) }}"
     for step in job["steps"]:
         if "installed_consumer_compat.py" in step.get("run", ""):
             assert f'--work "{work_expression}"' in step["run"]
     assert upload["with"]["path"] == work_expression + "/evidence/*.json"
+    selection = next(step for step in job["steps"] if step.get("id") == "windows-root")
+    assert selection["if"] == "${{ runner.os == 'Windows' }}"
+    assert selection["shell"] == "pwsh"
+    assert "[System.IO.Path]::GetPathRoot($env:RUNNER_TEMP)" in selection["run"]
+    assert "Join-Path $driveRoot" in selection["run"] and "C:" not in selection["run"]
 
 
 def test_only_explicit_candidate_override_and_distinct_core_graphs():
@@ -158,10 +165,11 @@ def test_mocks_are_only_permitted_seams_and_network_tripwire():
     for node in ast.walk(TREE):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "setattr":
             patches.append(ast.unparse(node.args[1] if len(node.args) == 3 else node.args[0]))
-    assert patches == [
+    assert sorted(patches) == sorted([
+        "'_get_commit_date_from_api'",
         "'_provider_factory'", "'_provider_factory'", "'_create_bundle_session'",
         "'amplifier_app_cli.commands.init.check_first_run'", "'listen'",
-    ]
+    ])
     assert "HeldSession.write" not in TEXT
     assert "register_release_handler.__code__" in TEXT
     assert 'frame.f_locals.get("registration")' in TEXT
@@ -701,6 +709,7 @@ def installed_model(harness, tmp_path, monkeypatch):
         "amplifier-agent": harness.AGENT_REV, "amplifier-agent-engine": harness.ENGINE_REV,
         "amplifier-app-cli": harness.CLI_REV, "amplifier-module-context-simple": harness.CONTEXT_REV,
         "amplifier-module-loop-streaming": harness.LOOP_REV,
+        "urllib3": None,
     }.items():
         direct = None if name == "amplifier-core" else (
             {"url": wheel.as_uri(), "archive_info": {}} if name == "amplifier-foundation" else {
@@ -902,7 +911,7 @@ def test_public_windows_mixed_separators_preserve_specific_environment_alias(har
 
 
 def test_short_windows_setup_path_budget_keeps_cache_temp_and_both_envs_compact(harness):
-    work = harness.PureWindowsPath("C:/ic-41358043348-1")
+    work = harness.PureWindowsPath("D:/ic-41358043348-1")
     env = {"TEMP": str(work / "p/t"), "UV_CACHE_DIR": str(work / "p/c")}
     budget = harness.setup_path_budget(work, env)
     assert budget["within_planning_budget"]
@@ -979,7 +988,7 @@ def test_runtime_home_uses_adapter_for_missing_home_before_config_payload(harnes
     created = []
     preflighted = []
 
-    def preflight(path):
+    def preflight(path, **kwargs):
         assert not path.exists()
         preflighted.append(path)
         return {"existing_chain_validated": True, "owned_leaf_missing": True}
@@ -1047,7 +1056,7 @@ def test_private_creation_failure_reports_role_category_not_sid_or_path(
                 raise RuntimeError("unsafe traversal /home/synthetic-private-sentinel") from cause
         path.mkdir(mode=0o700)
     monkeypatch.setattr(harness, "private_directory", adapter)
-    monkeypatch.setattr(harness, "private_ancestor_preflight", lambda path: {
+    monkeypatch.setattr(harness, "private_ancestor_preflight", lambda path, **kwargs: {
         "existing_chain_validated": True, "owned_leaf_missing": True,
     })
     report = {}
@@ -1068,7 +1077,7 @@ def test_unsafe_existing_ancestor_is_refused_before_private_creation(harness, tm
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("AMPLIFIER_HOME", str(home / ".amplifier"))
     calls = []
-    def refuse(path):
+    def refuse(path, **kwargs):
         raise RuntimeError("Windows state requires trusted ownership and a non-null DACL")
     monkeypatch.setattr(harness, "private_ancestor_preflight", refuse)
     monkeypatch.setattr(harness, "private_directory", lambda path: calls.append(path))
@@ -1167,8 +1176,9 @@ def test_swallowed_socket_attempt_keeps_overall_qualification_failed_after_passe
 
     monkeypatch.setattr(harness, "agent_roundtrip", roundtrip)
     monkeypatch.setattr(harness, "cli_roundtrip", roundtrip)
+    monkeypatch.setattr(harness, "cli_display_offline", lambda *args: nullcontext())
     monkeypatch.setattr(harness.asyncio, "wait_for", wait_for)
-    report = {"checks": {}}
+    report = {"checks": {}, "provenance": {}}
     with pytest.raises(harness.HarnessPolicyError):
         _drive(harness.qualify(tmp_path, consumer, report))
     assert all(value["status"] == "passed" for value in report["checks"].values())
@@ -1496,3 +1506,582 @@ def test_error_record_bounds_exception_chain_and_frame_evidence_without_raw_symb
     assert "recurse" not in json.dumps(record)
     assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in json.dumps(record)
     harness.assert_public(harness.public_value(record, {}))
+
+
+@pytest.mark.parametrize("temp,work", [
+    (r"D:\a\_temp", r"D:\ic-41360155483-1"),
+    (r"E:\runner\temp", r"e:\ic-41360155483-2"),
+    (r"C:\runner\temp", r"C:\ic-41360155483-3"),
+])
+def test_short_work_location_uses_actual_runner_temp_drive_not_assumed_drive(harness, temp, work):
+    harness.validate_windows_work_drive(work, temp)
+    root = harness.PureWindowsPath(work)
+    assert harness.setup_path_budget(root, {
+        "TEMP": str(root / "p/t"), "UV_CACHE_DIR": str(root / "p/c"),
+    })["within_planning_budget"]
+    assert source("main").index("validate_windows_work_drive(") < source("main").index("work.mkdir(")
+
+
+@pytest.mark.parametrize("temp,work", [
+    (r"D:\a\_temp", r"C:\ic-41360155483-1"), ("", r"D:\ic-41360155483-1"),
+    (r"\\server\share\temp", r"\\server\share\ic-41360155483-1"),
+    ("relative-temp", r"D:\ic-41360155483-1"),
+])
+def test_short_work_wrong_or_unknown_runner_drive_refused(harness, temp, work):
+    with pytest.raises(harness.HarnessPolicyError):
+        harness.validate_windows_work_drive(work, temp)
+
+
+@pytest.fixture
+def native_acl_model(harness):
+    """Actual production ACL validator with in-memory API data, never Win32 calls."""
+    root = ROOT / "amplifier_foundation/session/_windows_ownership.py"
+    tree = ast.parse(root.read_text(encoding="utf-8"))
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "_API")
+    validator = copy.deepcopy(next(node for node in cls.body
+                                  if isinstance(node, ast.FunctionDef) and node.name == "validate_acl"))
+    validator.body = [node for node in validator.body if not isinstance(node, ast.ImportFrom)]
+
+    class Value:
+        def __init__(self, value=None):
+            self.value = value
+
+        def __bool__(self):
+            return bool(self.value)
+
+    api = SimpleNamespace(sid="S-1-synthetic-current", opens=[], closes=[], frees=[], current=None)
+    ace_type = type("AceLayout", (), {"sid": SimpleNamespace(offset=8)})
+    authorities = {"S-1-synthetic-system"}
+    # One C-root foreign mutation ACE; the runner-temp-drive model has current-user access.
+    def aces():
+        sid = "S-1-SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" if api.current.drive.upper() == "C:" else api.sid
+        return [SimpleNamespace(kind=0, flags=0, size=20, mask=256, sid=sid)]
+
+    def security(handle, kind, flags, owner, unused_group, dacl, unused_sacl, descriptor):
+        assert kind == 1 and flags == 5
+        api.current = handle
+        owner.value, dacl.value, descriptor.value = 1, 2, 3
+        return 0
+
+    def control(descriptor, flags, revision):
+        flags.value = 0x1000
+        return True
+
+    def information(dacl, info, size, kind):
+        assert kind == 2
+        info.count = len(aces())
+        return True
+
+    def get_ace(dacl, index, pointer):
+        pointer.value = 1000 + index * 100
+        return True
+
+    def sid_text(pointer):
+        if pointer.value == 1:
+            return api.sid
+        return aces()[(pointer.value - 1008) // 100].sid
+
+    def opened(path, *, directory):
+        assert directory
+        api.opens.append(path)
+        if path.name == "home":
+            raise FileNotFoundError()
+        return path
+
+    win = SimpleNamespace(
+        C=SimpleNamespace(byref=lambda value: value, sizeof=lambda value: 20,
+                          POINTER=lambda value: value,
+                          cast=lambda pointer, kind: SimpleNamespace(
+                              contents=aces()[(pointer.value - 1000) // 100],
+                          )),
+        PVOID=Value, WORD=Value, DWORD=Value,
+        ACL_INFO=lambda: SimpleNamespace(count=0), ACE=ace_type,
+        _OS_AUTHORITIES=authorities, _absolute=lambda path: path, _API=lambda: api,
+    )
+    api.GetSecurityInfo, api.GetSecurityDescriptorControl = security, control
+    api.GetAclInformation, api.GetAce, api.sid_text = information, get_ace, sid_text
+    api.LocalFree = lambda descriptor: api.frees.append(descriptor.value)
+    api.open, api.close = opened, lambda handle: api.closes.append(handle)
+    api.ok = lambda result: result if result else (_ for _ in ()).throw(OSError())
+    namespace = {
+        "C": win.C, "PVOID": Value, "WORD": Value, "DWORD": Value, "ACL_INFO": win.ACL_INFO,
+        "ACE": ace_type, "_OS_AUTHORITIES": authorities,
+        "_TRAVERSAL_MUTATION": 0x500D0156 & ~4, "_MUTATION": 0x500D0156,
+        "SharedStateError": RuntimeError,
+    }
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[validator], type_ignores=[])),
+                 "production-acl-validator-probe", "exec"), namespace)
+    api.validate_acl = MethodType(namespace["validate_acl"], api)
+    return win, api
+
+
+def test_native_ancestor_diagnostic_isolates_foreign_drive_ace_with_no_private_names(
+    harness, tmp_path, native_acl_model,
+):
+    win, api = native_acl_model
+    report = harness.windows_ancestor_evidence(harness.PureWindowsPath("C:/ic/run/home"), win)
+    assert report["validation"].startswith("diagnostic only")
+    assert len(report["components"]) == 1
+    drive = report["components"][0]
+    assert drive["role"] == "drive" and drive["depth"] == 0 and drive["status"] == "refused"
+    assert drive["acl"]["owner"]["class"] == "current-user"
+    ace = drive["acl"]["aces"][0]
+    assert ace["kind"] == 0 and ace["flags"] == 0 and ace["mask"] == 256
+    assert ace["principal"]["class"] == "other" and len(ace["principal"]["sid_sha256"]) == 64
+    assert api.closes == list(reversed(api.opens)) and api.frees == [3, 3]
+    assert "S-1-" not in json.dumps(report)
+    harness.save_public_json(tmp_path, "cli.json", report)
+    assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in (tmp_path / "evidence/cli.json").read_text()
+    assert harness.check_public(tmp_path) == 0
+
+
+def test_native_ancestor_model_accepts_valid_temp_drive_and_reports_missing_leaf_only(
+    harness, native_acl_model,
+):
+    win, api = native_acl_model
+    report = harness.windows_ancestor_evidence(harness.PureWindowsPath("D:/ic/run/home"), win)
+    components = report["components"]
+    assert components[0] == {"depth": 0, "role": "drive", "status": "validated"}
+    assert all(component["status"] == "validated" for component in components[:-1])
+    assert components[-1] == {"depth": 3, "role": "owned-leaf", "status": "missing"}
+    assert api.closes == list(reversed(api.opens[:-1]))
+    assert len(api.frees) == len(components) - 1
+    # Diagnostics contain no directory creation, ACL repair, fallback or accepted-path state.
+    assert not any("acl" in component for component in components)
+    assert "C:" not in json.dumps(report) and "D:" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("diagnostic_fault", [False, True])
+def test_readonly_ancestor_diagnostics_never_replace_or_accept_original_preflight_refusal(
+    harness, native_acl_model, diagnostic_fault,
+):
+    win, api = native_acl_model
+    original = RuntimeError("Windows state DACL grants foreign access")
+    def pinned(*args, **kwargs):
+        assert kwargs["create"] is False
+        raise original
+    win._pinned = pinned
+    method = copy.deepcopy(FUNCTIONS["private_ancestor_preflight"])
+    class OmitImport(ast.NodeTransformer):
+        def visit_ImportFrom(self, node):
+            return None
+    method = OmitImport().visit(method)
+    def diagnostic(path, actual_win):
+        if diagnostic_fault:
+            raise OSError("SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f")
+        return harness.windows_ancestor_evidence(path, actual_win)
+    namespace = {"os": SimpleNamespace(name="nt"), "win": win, "Path": Path,
+                 "windows_ancestor_evidence": diagnostic}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[])),
+                 "private-preflight-probe", "exec"), namespace)
+    evidence = {}
+    with pytest.raises(RuntimeError) as refused:
+        namespace["private_ancestor_preflight"](
+            harness.PureWindowsPath("C:/ic/run/home"), failure_evidence=evidence,
+        )
+    assert refused.value is original  # Not a new acceptance or diagnostic exception.
+    if diagnostic_fault:
+        assert evidence == {"validation": "diagnostic unavailable; original refusal retained"}
+    else:
+        assert evidence["components"][0]["status"] == "refused"
+        assert api.opens == [harness.PureWindowsPath("C:/")]
+        assert api.closes == api.opens
+    assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in json.dumps(evidence)
+    harness.assert_public(harness.public_value(evidence, {}))
+
+
+# Compressed, byte-exact PUBLIC source fixtures, not installed consumers. Keeping
+# original future imports/line numbers lets code hashes attest real bodies.
+# urllib3 2.8.0 PyPI wheel (SHA 0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3),
+# member urllib3/util/connection.py. CLI utils/version.py at CLI_REV on GitHub.
+_IPV6_FIXTURE = """
+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
+eKz2DW+HSfICitzfq6t1NQ==
+"""
+_CLI_VERSION_FIXTURE = """
+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
+"""
+
+
+@pytest.fixture
+def public_bodies(harness):
+    ipv6 = zlib.decompress(base64.b64decode(_IPV6_FIXTURE))
+    version = zlib.decompress(base64.b64decode(_CLI_VERSION_FIXTURE))
+    assert harness.hashlib.sha256(ipv6).hexdigest() == harness.IPV6_SOURCE_SHA256
+    assert harness.hashlib.sha256(version).hexdigest() == harness.CLI_VERSION_SOURCE_SHA256
+    return ipv6, version
+
+
+def _model_ipv6_fingerprints(source):
+    """Test-interpreter bytecode only; never change real CPython 3.13 admission."""
+    module = compile(source, "public-ipv6-model", "exec", dont_inherit=True)
+    probe = next(code for code in module.co_consts
+                 if type(code) is type(module) and code.co_name == "_has_ipv6")
+    return hashlib.sha256(probe.co_code).hexdigest(), hashlib.sha256(module.co_code).hexdigest()
+
+
+def test_runtime_ipv6_fingerprints_and_cpython313_gate_are_not_model_relaxed():
+    constants = {
+        node.targets[0].id: ast.literal_eval(node.value)
+        for node in TREE.body if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in {"IPV6_PROBE_CODE_SHA256", "IPV6_MODULE_CODE_SHA256"}
+    }
+    assert constants == {
+        "IPV6_PROBE_CODE_SHA256": "16f32caf75b2fb5bb67d19a82fb3240074695863f4d1baa41f7812a8b55b5829",
+        "IPV6_MODULE_CODE_SHA256": "fc158648bd87c9bf71909fc523043351fcba012708865dbb216869755cfb9ff7",
+    }
+    assert "sys.version_info[:2] != (3, 13)" in source("require_runner")
+    assert "platform.python_implementation()" in source("require_runner")
+
+
+@pytest.fixture
+def ipv6_model(harness, public_bodies, tmp_path, monkeypatch):
+    """Portable fake model; fixed runtime fingerprints are CPython 3.13-only."""
+    source = public_bodies[0]
+    # All six normal pytest legs run this model. Compile the already byte-verified
+    # public source on THEIR interpreter rather than demanding 3.13 bytecode
+    # from Python 3.11/3.12. monkeypatch restores both constants after each test.
+    probe_sha, module_sha = _model_ipv6_fingerprints(source)
+    monkeypatch.setattr(harness, "IPV6_PROBE_CODE_SHA256", probe_sha)
+    monkeypatch.setattr(harness, "IPV6_MODULE_CODE_SHA256", module_sha)
+    prefix = tmp_path / "env"
+    # This path is just a synthetic audit identifier, not a runtime-version claim.
+    path = prefix / "lib/python3.13/site-packages/urllib3/util/connection.py"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(source)
+    monkeypatch.setattr(harness.sys, "prefix", str(prefix))
+    evidence = {"distributions": {"urllib3": {
+        "version": "2.8.0", "files": {"urllib3/util/connection.py": {
+            "path": str(path), "sha256": harness.IPV6_SOURCE_SHA256,
+        }},
+    }}}
+    state = SimpleNamespace(close=True, closes=0, sockets=[], filename=str(path), sha=source,
+                            version="2.8.0", address=None, family=harness.socket.AF_INET6,
+                            kind=harness.socket.SOCK_STREAM, phase="agent_roundtrip", metadata_hash=None,
+                            ipv6_available=True)
+
+    def run():
+        path.write_bytes(state.sha)
+        data = copy.deepcopy(evidence)
+        data["distributions"]["urllib3"]["version"] = state.version
+        if state.metadata_hash is not None:
+            data["distributions"]["urllib3"]["files"]["urllib3/util/connection.py"]["sha256"] = state.metadata_hash
+        sources = harness.CallerSources(data)
+        report = {}
+        guard = harness.SocketGuard(tmp_path, "agent", report, sources)
+        guard.phase = state.phase
+        module = ModuleType("urllib3.util.connection")
+        monkeypatch.setitem(harness.sys.modules, "urllib3.util.connection", module)
+        real_getframe = harness.sys._getframe
+        default_import = __import__
+
+        class FakeSocket:
+            def __init__(self, family):
+                assert family == harness.socket.AF_INET6
+                self.family, self.type, self.fd = state.family, state.kind, 19
+                state.sockets.append(self)
+
+            def bind(self, address):
+                # CPython's real bind invokes the audit callback in C (no
+                # Python bind frame). Model that one bridge, retaining actual
+                # executing _has_ipv6/module frames from the exact source body.
+                probe = real_getframe(1)
+                audit = SimpleNamespace(f_code=harness.SocketGuard.audit.__code__,
+                                        f_lineno=0, f_back=probe)
+                with monkeypatch.context() as bridge:
+                    bridge.setattr(harness.sys, "_getframe", lambda depth=0: audit)
+                    guard.audit("socket.bind", (self, state.address if state.address is not None else address))
+
+            def close(self):
+                state.closes += 1
+                if state.close:
+                    self.fd = -1
+
+            def fileno(self):
+                return self.fd
+
+        def imports(name, *args, **kwargs):
+            if name == "socket":
+                return SimpleNamespace(socket=FakeSocket, AF_INET6=harness.socket.AF_INET6,
+                                       has_ipv6=state.ipv6_available)
+            if name == "exceptions":
+                return SimpleNamespace(LocationParseError=ValueError)
+            if name == "timeout":
+                return SimpleNamespace(_DEFAULT_TIMEOUT=None, _TYPE_TIMEOUT=None)
+            return default_import(name, *args, **kwargs)
+
+        module.__dict__["__builtins__"] = dict(vars(__import__("builtins")), __import__=imports)
+        module.__dict__["__package__"] = "urllib3.util"
+        exec(compile(state.sha, state.filename, "exec", dont_inherit=True), module.__dict__)
+        return guard, report, module, path
+
+    return run, state
+
+
+def test_exact_public_ipv6_import_body_is_blocked_retained_closed_and_accounted(
+    harness, ipv6_model, tmp_path,
+):
+    run, state = ipv6_model
+    guard, report, module, _ = run()
+    assert guard.attempts == ["socket.bind"]
+    assert module.HAS_IPV6 is False and state.closes == 1 and state.sockets[0].fd == -1
+    receipt = report["expected_blocked_capability_probes"][0]
+    assert receipt["status"] == "pending-post-import-verification"
+    assert guard.blocked_details[0]["policy_classification"].endswith("pending-verification")
+    assert guard.blocked_details[0]["address"]["classification"] == "ip-loopback"
+    guard.verify_policy()
+    assert receipt["status"] == "verified-blocked" and receipt["attempt_index"] == 0
+    assert guard.blocked_details[0]["policy_classification"] == "verified-expected-blocked-capability-probe"
+    assert receipt["bind_allowed"] is False and receipt["socket_closed"] and receipt["has_ipv6_false"]
+    harness.save_public_json(tmp_path, "agent.json", report)
+    saved = json.loads((tmp_path / "evidence/agent.json").read_text())
+    assert saved["blocked_socket_operations"] == ["socket.bind"]  # No erased attempt/no zero claim.
+    assert harness.check_public(tmp_path) == 0
+
+
+def test_no_ipv6_system_makes_no_probe_and_does_not_manufacture_an_attempt(harness, ipv6_model):
+    run, state = ipv6_model
+    state.ipv6_available = False
+    guard, report, module, _ = run()
+    guard.verify_policy()
+    assert module.HAS_IPV6 is False and state.sockets == [] and state.closes == 0
+    assert guard.attempts == [] and report["expected_blocked_capability_probes"] == []
+
+
+@pytest.mark.parametrize("fault", [
+    "wrong-version", "wrong-record-hash", "mutated-source", "wrong-address", "nonzero-port",
+    "wrong-family", "wrong-kind", "wrong-phase", "different-call-site", "not-closed",
+    "module-mutated", "source-mutated-after-import", "repeat", "extra-dns",
+    "wrong-probe-fingerprint", "wrong-module-fingerprint",
+])
+def test_capability_probe_accounting_refuses_every_nonmatching_or_unsettled_case(
+    harness, ipv6_model, fault, monkeypatch,
+):
+    run, state = ipv6_model
+    if fault == "wrong-version":
+        state.version = "2.8.1"
+    elif fault == "wrong-record-hash":
+        state.metadata_hash = "0" * 64
+    elif fault == "mutated-source":
+        state.sha += b"\n# changed source\n"
+    elif fault == "wrong-address":
+        state.address = ("::2", 0)
+    elif fault == "nonzero-port":
+        state.address = ("::1", 1)
+    elif fault == "wrong-family":
+        state.family = harness.socket.AF_INET
+    elif fault == "wrong-kind":
+        state.kind = harness.socket.SOCK_DGRAM
+    elif fault == "wrong-phase":
+        state.phase = "between-checks"
+    elif fault == "different-call-site":
+        state.filename = "unverified-private-source.py"
+    elif fault == "not-closed":
+        state.close = False
+    elif fault == "wrong-probe-fingerprint":
+        monkeypatch.setattr(harness, "IPV6_PROBE_CODE_SHA256", "0" * 64)
+    elif fault == "wrong-module-fingerprint":
+        monkeypatch.setattr(harness, "IPV6_MODULE_CODE_SHA256", "0" * 64)
+    guard, report, module, path = run()
+    if fault == "module-mutated":
+        module.HAS_IPV6 = True
+    elif fault == "source-mutated-after-import":
+        path.write_bytes(b"# changed source after bind\n")
+    elif fault == "repeat":
+        with pytest.raises(harness.HarnessPolicyError):
+            guard.audit("socket.bind", (state.sockets[0], ("::1", 0)))
+    elif fault == "extra-dns":
+        with pytest.raises(harness.HarnessPolicyError):
+            guard.audit("socket.getaddrinfo", ("synthetic.invalid", 443))
+    assert guard.attempts[0] == "socket.bind" and module.HAS_IPV6 is not None
+    with pytest.raises(harness.HarnessPolicyError):
+        guard.verify_policy()
+    assert len(guard.attempts) == (2 if fault in {"repeat", "extra-dns"} else 1)
+    assert len(report["expected_blocked_capability_probes"]) <= 1
+
+
+@pytest.fixture
+def display_model(harness, public_bodies, tmp_path, monkeypatch):
+    """Only public stdlib version helper module executes, no real CLI imports."""
+    source = public_bodies[1]
+    prefix = tmp_path / "env"
+    path = prefix / "lib/python3.13/site-packages/amplifier_app_cli/utils/version.py"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(source)
+    monkeypatch.setattr(harness.sys, "prefix", str(prefix))
+    for name in list(harness.sys.modules):
+        if name == "amplifier_app_cli" or name.startswith("amplifier_app_cli."):
+            monkeypatch.delitem(harness.sys.modules, name)
+    # Ensure the canonical preload is cleaned from THIS unit test only.
+    monkeypatch.setitem(harness.sys.modules, "amplifier_app_cli.utils.version", None)
+    monkeypatch.delitem(harness.sys.modules, "amplifier_app_cli.utils.version")
+    direct = {"url": harness.CLI_REPO_URL, "vcs_info": {"commit_id": harness.CLI_REV}}
+    distribution = SimpleNamespace(read_text=lambda name: json.dumps(direct))
+    monkeypatch.setattr(harness.metadata, "distribution", lambda name: distribution)
+    proof = {"distributions": {"amplifier-app-cli": {
+        "direct_url": copy.deepcopy(direct), "files": {"amplifier_app_cli/utils/version.py": {
+            "path": str(path), "sha256": harness.CLI_VERSION_SOURCE_SHA256,
+        }},
+    }}}
+    http_calls = []
+    def no_http(*args, **kwargs):
+        http_calls.append("unexpected-HTTP")
+        raise AssertionError("No HTTP/DNS permitted by optional-display fixture")
+    monkeypatch.setitem(harness.sys.modules, "httpx", SimpleNamespace(get=no_http))
+    return proof, direct, path, http_calls
+
+
+def test_exact_public_version_body_uses_one_offline_lookup_and_real_metadata_fallback(
+    harness, display_model, tmp_path,
+):
+    proof, direct, path, http = display_model
+    detail = {}
+    with harness.cli_display_offline(detail, proof):
+        module = harness.sys.modules["amplifier_app_cli.utils.version"]
+        assert "amplifier_app_cli" not in harness.sys.modules  # Eager parent not yet imported.
+        info = module.get_version_info()  # Same real function called by main initialization.
+        assert info.sha == harness.CLI_REV[:7] and info.is_local is False and not info.has_changes
+        assert module.get_version() == f"{info.date}-{harness.CLI_REV[:7]}"
+        assert module.get_version_info() is info  # Real cache avoids repeat helper call.
+        assert module.__file__ == str(path) and harness.digest(path) == harness.CLI_VERSION_SOURCE_SHA256
+    result = detail["commit_date_display"]
+    assert http == [] and result["calls"] == 1 and result["arguments_verified"]
+    assert result["version_sha"] == harness.CLI_REV[:7]
+    assert result["metadata_unchanged"] and result["helper_restored"] and result["status"] == "verified"
+    assert module._get_commit_date_from_api.__code__.co_name == "_get_commit_date_from_api"
+    assert proof["distributions"]["amplifier-app-cli"]["direct_url"] == direct
+    harness.save_public_json(tmp_path, "cli.json", detail)
+    assert harness.check_public(tmp_path) == 0
+
+
+@pytest.mark.parametrize("fault", [
+    "wrong-url", "wrong-sha", "repeat", "never-called", "mutated-metadata", "storage-failure",
+    "readback-failure", "unexpected-network",
+])
+def test_optional_date_double_refuses_identity_errors_and_does_not_mask_storage_failure(
+    harness, display_model, fault,
+):
+    proof, direct, _, http = display_model
+    detail = {}
+    original = RuntimeError("synthetic persistence failure")
+    guard = harness.SocketGuard(Path("."), "cli", {})
+    with pytest.raises((harness.HarnessPolicyError, AssertionError, RuntimeError)) as failed:
+        with harness.cli_display_offline(detail, proof):
+            module = harness.sys.modules["amplifier_app_cli.utils.version"]
+            if fault == "wrong-url":
+                module._get_commit_date_from_api("https://example.invalid/other", harness.CLI_REV)
+            elif fault == "wrong-sha":
+                module._get_commit_date_from_api(harness.CLI_REPO_URL, "0" * 40)
+            elif fault == "repeat":
+                module._get_commit_date_from_api(harness.CLI_REPO_URL, harness.CLI_REV)
+                module._get_commit_date_from_api(harness.CLI_REPO_URL, harness.CLI_REV)
+            elif fault != "never-called":
+                module.get_version_info()
+                if fault == "mutated-metadata":
+                    direct["vcs_info"]["commit_id"] = "0" * 40
+                elif fault == "unexpected-network":
+                    guard.audit("socket.getaddrinfo", (b"synthetic-private-host.invalid", 443))
+                else:
+                    raise original
+    if fault in {"storage-failure", "readback-failure"}:
+        assert failed.value is original
+    if fault == "unexpected-network":
+        assert type(failed.value) is harness.HarnessPolicyError
+        assert guard.attempts == ["socket.getaddrinfo"]
+        with pytest.raises(harness.HarnessPolicyError):
+            guard.verify_policy()
+    assert detail["commit_date_display"]["status"] == "armed"
+    assert detail["commit_date_display"]["helper_restored"]
+    assert http == []  # Even bad inputs never fall through to real HTTP.
+
+
+def test_commit_date_fixture_wraps_full_real_cli_check_not_just_startup():
+    qualify = FUNCTIONS["qualify"]
+    # Source guard complements actual public-body tests: existing execute_single
+    # and load oracles stay inside the helper context, not replaced by doubles.
+    stack = next(node for node in ast.walk(qualify) if isinstance(node, ast.With)
+                 and any(isinstance(item.context_expr, ast.Call)
+                         and isinstance(item.context_expr.func, ast.Name)
+                         and item.context_expr.func.id == "ExitStack" for item in node.items))
+    text = ast.get_source_segment(TEXT, stack)
+    assert text.index("cli_display_offline(") < text.index("result = check(detail)")
+    assert "await asyncio.wait_for(result, timeout=90)" in text
+    assert "guard.verify_ipv6_probe()" in text
+    assert len(calls("cli_roundtrip", "execute_single")) == 2
+    assert len(calls("cli_roundtrip", "load")) == 2
+    assert 'assert_conversation(transcript, [QUOTE, SECOND])' in source("cli_roundtrip")
+    assert "doctor" not in {node.value for node in ast.walk(qualify) if isinstance(node, ast.Constant)}
+
+
+@pytest.mark.parametrize("fault", ["source", "package-already-imported", "audit-sha", "audit-url"])
+def test_display_import_boundary_fails_closed_before_startup_on_unverified_inputs(
+    harness, display_model, monkeypatch, fault,
+):
+    proof, _, path, http = display_model
+    if fault == "source":
+        path.write_bytes(b"# wrong source\n")
+    elif fault == "package-already-imported":
+        monkeypatch.setitem(harness.sys.modules, "amplifier_app_cli", ModuleType("amplifier_app_cli"))
+    elif fault == "audit-sha":
+        proof["distributions"]["amplifier-app-cli"]["direct_url"]["vcs_info"]["commit_id"] = "0" * 40
+    else:
+        proof["distributions"]["amplifier-app-cli"]["direct_url"]["url"] = "https://example.invalid"
+    with pytest.raises(AssertionError):
+        with harness.cli_display_offline({}, proof):
+            raise AssertionError("Should not enter unverified fixture")
+    assert http == []

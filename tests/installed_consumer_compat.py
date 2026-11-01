@@ -4,14 +4,17 @@ Run with CPython 3.13 x64 in the isolated GitHub job, from the candidate checkou
   python -I -X utf8 tests/installed_consumer_compat.py --prepare --work <runner-temp>/compat
   python -I -X utf8 tests/installed_consumer_compat.py --run --work <runner-temp>/compat
 
-Only provider, bundle assembly and first-run setup are doubles. History, leases,
-resume and settings writes are real installed code. A refused operation is a
+Only provider, bundle assembly, first-run setup and the optional CLI commit-date
+display lookup are doubles. History, leases,
+resume and settings writes are real installed code. An unexplained refusal is a
 failure, never a skip. This is not a live-provider, default-bundle, clean-install,
 Unified, or checkpoint/transfer-fence qualification. No memory bridge is needed.
 Windows fixtures create private directories BEFORE use through the production
 adapter; this does not qualify consumers' default directory creation policy.
 POSIX CLI startup may use its exact private same-user release endpoint; all
-other sockets remain prohibited. Public evidence is normalized and rescanned
+other sockets remain prohibited. One exact urllib3 import-time capability bind
+may be accounted as expected only AFTER it was blocked and cleanup verified.
+Public evidence is normalized and rescanned
 before upload; private operational paths are never read back from public JSON.
 """
 
@@ -19,7 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import ExitStack, asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 import copy
 import hashlib
 import importlib
@@ -51,6 +54,11 @@ ENGINE_REV = "1da05aa81fa2239d9044b375f21f75ed0e46c89f"  # SDK's v0.25.0
 CLI_REV = "631c4bdbcf3dcd2da20456ad6ccef386e778c101"
 CONTEXT_REV = "c7ec55db96888200ba619adedc857278daf787c5"
 LOOP_REV = "dd916499344671e0209d4951bc025777e3e891fd"
+IPV6_SOURCE_SHA256 = "2633bbdb69731e5ccb5cf4e4afd65605d86c7979cc5633126f50c92d5ad74a74"
+IPV6_PROBE_CODE_SHA256 = "16f32caf75b2fb5bb67d19a82fb3240074695863f4d1baa41f7812a8b55b5829"
+IPV6_MODULE_CODE_SHA256 = "fc158648bd87c9bf71909fc523043351fcba012708865dbb216869755cfb9ff7"
+CLI_VERSION_SOURCE_SHA256 = "6eda6dd35a4bb1e694da4f1e7c4786f4ac9e8086a59512e57c8cee1d1fe71543"
+CLI_REPO_URL = "https://github.com/microsoft/amplifier-app-cli"
 QUOTE = "Préférer le café à Zürich et conserver 日本語."
 SECOND = "Conserver aussi les notes de Montréal."
 ANSWERS = ["Réponse café 日本語.", "Réponse Montréal conservée."]
@@ -361,7 +369,7 @@ def clean_environment(root: Path, *, runtime: bool = False) -> dict[str, str]:
     """
     allowed = {
         "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
-        "SYSTEMDRIVE", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
+        "SYSTEMDRIVE", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "RUNNER_TEMP",
     }
     env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
     names = ["t", "config", "c", "appdata", "localappdata"]
@@ -407,6 +415,14 @@ def setup_path_budget(work: Path | PureWindowsPath, env: dict) -> dict:
         "planning_budget_characters": 259, "within_planning_budget": within,
         "qualification": "bounded fixture path plan; not a measured dependency maximum",
     }
+
+
+def validate_windows_work_drive(work, runner_temp: str) -> None:
+    """Reject a compact root on a different or nonlocal runner-temp volume."""
+    runner_drive = PureWindowsPath(runner_temp).drive
+    if (not re.fullmatch(r"[A-Za-z]:", runner_drive)
+            or PureWindowsPath(work).drive.lower() != runner_drive.lower()):
+        raise HarnessPolicyError("Work root must use the runner temporary drive")
 
 
 def setup_path_observation(work: Path, env: dict) -> dict:
@@ -589,7 +605,7 @@ def candidate_install_proof(wheel: Path, expected_sha256: str, foundation) -> di
 def installed_audit(wheel: Path, expected_sha256: str, consumer: str, result: dict) -> None:
     """Full selected-distribution hashes/metadata, exact VCS IDs, no editable imports."""
     names = ["amplifier-foundation", "amplifier-core"]
-    names += ["amplifier-agent", "amplifier-agent-engine"] if consumer == "agent" else [
+    names += ["amplifier-agent", "amplifier-agent-engine", "urllib3"] if consumer == "agent" else [
         "amplifier-app-cli", "amplifier-module-context-simple", "amplifier-module-loop-streaming",
     ]
     result.update({"distributions": {}, "all_distributions": []})
@@ -649,6 +665,70 @@ def scripted_factory(work: Path):
     return module.ScriptedFactory
 
 
+@contextmanager
+def cli_display_offline(detail: dict, provenance: dict):
+    """Preload the REAL installed version module, then double ONE helper.
+
+    Importing amplifier_app_cli (even project_utils) eagerly initializes main,
+    before a normal dotted monkeypatch could reach this helper. This stdlib-only
+    installed file can be loaded under its canonical name without importing its
+    parent. Subsequent ordinary package/main imports use these same unmodified
+    module bytes. No doctor route, initializer/version replacement or HTTP mock.
+    """
+    import pytest
+
+    proof = detail["commit_date_display"] = {
+        "seam": "optional commit-date display lookup offline double",
+        "calls": 0, "status": "armed", "helper_restored": False,
+    }
+    distribution = provenance["distributions"]["amplifier-app-cli"]
+    direct = distribution["direct_url"]
+    assert direct["vcs_info"]["commit_id"] == CLI_REV
+    assert direct["url"] == CLI_REPO_URL
+    name = "amplifier_app_cli.utils.version"
+    assert not any(key == "amplifier_app_cli" or key.startswith("amplifier_app_cli.")
+                   for key in sys.modules), "CLI imported before optional-display fixture was armed"
+    evidence = distribution["files"]["amplifier_app_cli/utils/version.py"]
+    path = Path(evidence["path"])
+    assert path.is_relative_to(Path(sys.prefix)) and "site-packages" in path.parts
+    assert digest(path) == evidence["sha256"] == CLI_VERSION_SOURCE_SHA256
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # dataclass requires the real canonical module.
+    try:
+        spec.loader.exec_module(module)  # No CLI parent, HTTP or consumer launch here.
+    except BaseException:
+        del sys.modules[name]
+        raise
+    original = module._get_commit_date_from_api
+
+    def offline_date(git_url, commit_sha):
+        proof["calls"] += 1
+        if proof["calls"] != 1 or git_url != CLI_REPO_URL or commit_sha != CLI_REV:
+            raise HarnessPolicyError("Unexpected optional commit-date display lookup")
+        proof["arguments_verified"] = True
+        return None  # Real get_version_info supplies its normal fallback date.
+
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(module, "_get_commit_date_from_api", offline_date)
+            yield
+            assert proof["calls"] == 1 and proof["arguments_verified"]
+            # Verify cached real version output; do not spoof SHA/date/display.
+            info = module.get_version_info()
+            assert info.sha == CLI_REV[:7] and info.is_local is False and info.has_changes is False
+            assert info.date and info.display == f"{info.date}-{CLI_REV[:7]}"
+            assert module.get_version() == info.display
+            assert json.loads(metadata.distribution("amplifier-app-cli").read_text("direct_url.json")) == direct
+            proof.update({"status": "verified", "version_sha": info.sha,
+                          "metadata_unchanged": True, "fallback_date_retained": True})
+    finally:
+        # Keep normal loaded modules/cache; restore only the approved helper.
+        # Removing cached modules would replay startup.
+        proof["helper_restored"] = module._get_commit_date_from_api is original
+
+
 def private_directory(path: Path) -> None:
     """Never repair an existing ACL. Create missing private directories natively."""
     if os.name == "nt":
@@ -660,13 +740,102 @@ def private_directory(path: Path) -> None:
         path.mkdir(parents=True, mode=0o700, exist_ok=True)
 
 
-def private_ancestor_preflight(path: Path) -> dict:
+def windows_acl_evidence(api, handle, win) -> dict:
+    """Read-only bounded ACL summary; no SID, path, or ACL prose leaves this function."""
+    owner, dacl, descriptor = win.PVOID(), win.PVOID(), win.PVOID()
+    error = api.GetSecurityInfo(handle, 1, 5, win.C.byref(owner), None,
+                                win.C.byref(dacl), None, win.C.byref(descriptor))
+    if error:
+        return {"read_error": int(error)}
+    try:
+        def principal(sid):
+            return {
+                "class": "current-user" if sid == api.sid else
+                "os-authority" if sid in win._OS_AUTHORITIES else
+                "owner-rights" if sid == "S-1-3-4" else "other",
+                "sid_sha256": hashlib.sha256(sid.encode("ascii")).hexdigest(),
+            }
+
+        result = {"owner": principal(api.sid_text(owner)), "dacl_present": bool(dacl), "aces": []}
+        if dacl:
+            info = win.ACL_INFO()
+            api.ok(api.GetAclInformation(dacl, win.C.byref(info), win.C.sizeof(info), 2))
+            result["ace_count"] = info.count
+            result["aces_capped"] = info.count > 32
+            for index in range(min(info.count, 32)):
+                pointer = win.PVOID()
+                api.ok(api.GetAce(dacl, index, win.C.byref(pointer)))
+                ace = win.C.cast(pointer, win.C.POINTER(win.ACE)).contents
+                entry = {"kind": int(ace.kind), "flags": int(ace.flags)}
+                if ace.kind in {0, 1} and ace.size >= win.C.sizeof(win.ACE):
+                    entry["mask"] = int(ace.mask)
+                    entry["principal"] = principal(api.sid_text(win.PVOID(pointer.value + win.ACE.sid.offset)))
+                else:
+                    entry["principal"] = {"class": "unsupported-layout"}
+                result["aces"].append(entry)
+        return result
+    finally:
+        api.LocalFree(descriptor)
+
+
+def windows_ancestor_evidence(path: Path, win) -> dict:
+    """Locate an existing invalid component with production validation, no mutation.
+
+    This diagnostic runs only after the normal production preflight refused.
+    It never makes a failed path acceptable. All opened ancestors remain held
+    until inspection ends, using the same production handle/share policy.
+    """
+    path = win._absolute(path)
+    api = win._API()
+    report = {"validation": "diagnostic only; original refusal retained", "components": []}
+    chain = list(reversed([path, *path.parents]))
+    if len(chain) > 129:
+        return {"validation": "component limit exceeded"}
+    with ExitStack() as pins:
+        for depth, component in enumerate(chain):
+            role = "drive" if depth == 0 else "owned-leaf" if component == path else "ancestor"
+            detail = {"depth": depth, "role": role}
+            report["components"].append(detail)
+            try:
+                handle = api.open(component, directory=True)
+            except FileNotFoundError:
+                detail["status"] = "missing"
+                break
+            except OSError as exc:
+                detail["status"] = "open-refused"
+                detail["error"] = error_record(exc)
+                break
+            pins.callback(api.close, handle)
+            try:
+                owned = component == path
+                api.validate_acl(handle, private=owned, traversal=not owned)
+                detail["status"] = "validated"
+            except Exception as exc:
+                detail["status"] = "refused"
+                detail["error"] = error_record(exc)
+                try:
+                    detail["acl"] = windows_acl_evidence(api, handle, win)
+                except Exception:
+                    detail["acl"] = {"diagnostic": "unavailable"}
+                break
+    return report
+
+
+def private_ancestor_preflight(path: Path, *, failure_evidence=None) -> dict:
     """Read-only production validation before any directory creation."""
     if os.name == "nt":
         from amplifier_foundation.session import _windows_ownership as win
 
-        with win._pinned(win._API(), path, root=path, create=False) as pins:
-            return {"existing_chain_validated": True, "owned_leaf_missing": pins.missing}
+        try:
+            with win._pinned(win._API(), path, root=path, create=False) as pins:
+                return {"existing_chain_validated": True, "owned_leaf_missing": pins.missing}
+        except Exception:
+            if failure_evidence is not None:
+                try:
+                    failure_evidence.update(windows_ancestor_evidence(path, win))
+                except Exception:
+                    failure_evidence["validation"] = "diagnostic unavailable; original refusal retained"
+            raise
     return {"native_acl_preflight": "not applicable on POSIX"}
 
 
@@ -697,7 +866,10 @@ def prepare_runtime_home(report: dict) -> None:
         detail["stage"] = role
         detail["operation"] = "read-only-ancestor-preflight"
         try:
-            detail.setdefault("ancestor_preflights", {})[role] = private_ancestor_preflight(path)
+            evidence = detail.setdefault("ancestor_failure_evidence", {}).setdefault(role, {})
+            detail.setdefault("ancestor_preflights", {})[role] = private_ancestor_preflight(
+                path, failure_evidence=evidence,
+            )
             detail["operation"] = "private-create"
             private_directory(path)
         except Exception as exc:
@@ -1120,6 +1292,7 @@ class CallerSources:
 
     def __init__(self, provenance=None):
         self.sources, self.compiled = {}, {}
+        self.ipv6_source = None
         self.add(SCRIPT, "installed_consumer_compat", "harness", digest(SCRIPT))
         stdlib = Path(sysconfig.get_path("stdlib"))
         for module in ("socket", "threading", "platform", "asyncio.base_events", "asyncio.events",
@@ -1147,6 +1320,13 @@ class CallerSources:
                 path = Path(evidence["path"])
                 if path.is_relative_to(Path(sys.prefix)) and "site-packages" in path.parts:
                     self.add(path, ".".join(parts), "installed", evidence["sha256"])
+        urllib = (provenance or {}).get("distributions", {}).get("urllib3", {})
+        evidence = urllib.get("files", {}).get("urllib3/util/connection.py", {})
+        if urllib.get("version") == "2.8.0" and evidence.get("sha256") == IPV6_SOURCE_SHA256:
+            path = Path(evidence["path"])
+            if path.is_relative_to(Path(sys.prefix)) and "site-packages" in path.parts:
+                self.ipv6_source = path
+                self.add(path, "urllib3.util.connection", "installed", IPV6_SOURCE_SHA256)
 
     def add(self, path, module, kind, sha256):
         # Only explicit registration code above supplies paths, never frames.
@@ -1226,6 +1406,8 @@ class SocketGuard:
         self.blocked_details = report["blocked_socket_details"] = []
         self.phase = "fixture-setup"
         self.caller_sources = caller_sources
+        self.capability_probe = None
+        self.expected_blocked = report["expected_blocked_capability_probes"] = []
         self.ipc = report["release_ipc"] = []
         self.runtime = (
             Path(tempfile.gettempdir()) / f"amplifier-handoff-{os.getuid()}"
@@ -1234,6 +1416,7 @@ class SocketGuard:
 
     def blocked(self, event, args=()):
         self.attempts.append(event)  # Never retain addresses or protocol payloads.
+        detail = None
         if len(self.blocked_details) < 8:
             detail = {
                 "event": event, "phase": self.phase, "consumer": self.consumer,
@@ -1253,7 +1436,103 @@ class SocketGuard:
                     # Diagnostics cannot replace policy refusal, even when a
                     # property, encoder, file or frame inspection fails.
                     detail.setdefault("diagnostic_failures", []).append(field)
+        try:
+            if self.attest_ipv6_probe(event, args):
+                if detail is not None:
+                    detail["policy_classification"] = "expected-blocked-capability-probe-pending-verification"
+        except BaseException:
+            if detail is not None:
+                detail["capability_attestation"] = "unavailable; refusal remains unexplained"
         raise HarnessPolicyError("Socket operation outside the exact CLI release endpoint")
+
+    def attest_ipv6_probe(self, event, args) -> bool:
+        """Recognize ONE blocked import probe; never call/allow bind ourselves."""
+        sources = self.caller_sources
+        if (self.consumer != "agent" or self.phase != "agent_roundtrip"
+                or event != "socket.bind" or self.capability_probe is not None
+                or sources is None or sources.ipv6_source is None or len(args) != 2):
+            return False
+        sock, address = args
+        if (sock.family != socket.AF_INET6 or sock.type != socket.SOCK_STREAM
+                or type(address) is not tuple or len(address) != 2
+                or type(address[0]) is not str or address[0] != "::1"
+                or type(address[1]) is not int or address[1] != 0):
+            return False
+        if digest(sources.ipv6_source) != IPV6_SOURCE_SHA256:
+            return False
+        frame = sys._getframe(1)
+        try:
+            # Only the immediate caller of our actual audit callback qualifies.
+            # A helper lower in an arbitrary stack is not an import-time probe.
+            for _ in range(8):
+                if frame is None:
+                    return False
+                if frame.f_code is SocketGuard.audit.__code__:
+                    break
+                frame = frame.f_back
+            else:
+                return False
+            probe = frame.f_back
+            module_frame = probe.f_back if probe is not None else None
+            if probe is None or module_frame is None:
+                return False
+            expected = (
+                (probe, "_has_ipv6", IPV6_PROBE_CODE_SHA256),
+                (module_frame, "<module>", IPV6_MODULE_CODE_SHA256),
+            )
+            for caller, function, fingerprint in expected:
+                evidence = sources.identify(caller.f_code)
+                if (evidence is None or evidence["module"] != "urllib3.util.connection"
+                        or evidence["source_sha256"] != IPV6_SOURCE_SHA256
+                        or evidence["function"] != function
+                        or hashlib.sha256(caller.f_code.co_code).hexdigest() != fingerprint):
+                    return False
+            name = "urllib3.util.connection"
+            module = sys.modules.get(name)
+            if (module is None or module.__dict__ is not module_frame.f_globals
+                    or probe.f_globals is not module_frame.f_globals
+                    or probe.f_locals.get("sock") is not sock or probe.f_locals.get("host") != "::1"
+                    or "HAS_IPV6" in module_frame.f_globals):
+                return False
+            receipt = {
+                "dependency": "urllib3", "version": "2.8.0", "source_sha256": IPV6_SOURCE_SHA256,
+                "attempt_index": len(self.attempts) - 1, "status": "pending-post-import-verification",
+                "bind_allowed": False, "socket_closed": False, "has_ipv6_false": False,
+            }
+            self.expected_blocked.append(receipt)
+            self.capability_probe = (sock, module, probe.f_code, module_frame.f_code, receipt)
+            return True
+        finally:
+            del frame
+
+    def verify_ipv6_probe(self) -> None:
+        """Observe the original socket and real module after normal import/run."""
+        if self.capability_probe is None:
+            return
+        sock, module, probe_code, module_code, receipt = self.capability_probe
+        receipt["socket_closed"] = sock.fileno() == -1
+        receipt["has_ipv6_false"] = module.__dict__.get("HAS_IPV6") is False
+        intact = (
+            sys.modules.get("urllib3.util.connection") is module
+            and digest(self.caller_sources.ipv6_source) == IPV6_SOURCE_SHA256
+            and self.caller_sources.identify(probe_code) is not None
+            and self.caller_sources.identify(module_code) is not None
+            and getattr(module.__dict__.get("_has_ipv6"), "__code__", None) is probe_code
+        )
+        if not intact or not receipt["socket_closed"] or not receipt["has_ipv6_false"]:
+            receipt["status"] = "failed-post-import-verification"
+            raise HarnessPolicyError("Expected blocked IPv6 probe did not settle safely")
+        receipt["status"] = "verified-blocked"
+        index = receipt["attempt_index"]
+        if index < len(self.blocked_details):
+            self.blocked_details[index]["policy_classification"] = "verified-expected-blocked-capability-probe"
+
+    def verify_policy(self) -> None:
+        self.verify_ipv6_probe()
+        expected = {receipt["attempt_index"] for receipt in self.expected_blocked
+                    if receipt["status"] == "verified-blocked"}
+        if (len(expected) > 1 or any(index not in expected for index in range(len(self.attempts)))):
+            raise HarnessPolicyError("Unexplained blocked socket operation; qualification remains failed")
 
     def production_endpoint(self, endpoint: Path) -> bool:
         """Read-only attestation from the actual installed handler's bind frame.
@@ -1427,9 +1706,14 @@ async def qualify(work: Path, consumer: str, report: dict, caller_sources=None) 
             guard.phase = name
             detail = report["checks"][name] = {"status": "running"}
             try:
-                result = check(detail)
-                if inspect.isawaitable(result):
-                    await asyncio.wait_for(result, timeout=90)
+                with ExitStack() as fixtures:
+                    if name == "cli_roundtrip":
+                        fixtures.enter_context(cli_display_offline(detail, report["provenance"]))
+                    result = check(detail)
+                    if inspect.isawaitable(result):
+                        await asyncio.wait_for(result, timeout=90)
+                    if name == "agent_roundtrip":
+                        guard.verify_ipv6_probe()
                 assert config.read_bytes() == before, "Consumer changed unrelated synthetic config"
                 detail["status"] = "passed"
             except (Exception, SystemExit) as exc:
@@ -1437,8 +1721,7 @@ async def qualify(work: Path, consumer: str, report: dict, caller_sources=None) 
             guard.phase = "between-checks"
             save_public_json(work, f"{consumer}.json", report)
     report["synthetic_config_preserved"] = config.read_bytes() == before
-    if guard.attempts:
-        raise HarnessPolicyError("Qualification blocked a socket operation; not a product-regression verdict")
+    guard.verify_policy()
     assert report["synthetic_config_preserved"]
 
 
@@ -1448,7 +1731,10 @@ def run_consumer(work: Path, consumer: str) -> int:
         "python": sys.version, "executable": sys.executable, "os": platform.platform(),
         "machine": platform.machine(), "pointer_bits": struct.calcsize("P") * 8,
         "isolated": sys.flags.isolated, "utf8_mode": sys.flags.utf8_mode,
-        "mocks": ["provider factory", "CLI bundle assembly", "CLI first-run setup predicate"],
+        "mocks": ["provider factory"] + ([
+            "CLI bundle assembly", "CLI first-run setup predicate",
+            "optional commit-date display lookup offline double",
+        ] if consumer == "cli" else []),
         "limits": [
             "No live provider, default bundle, memory integration or Unified runtime qualification",
             "Windows private history directories prepared by production adapter BEFORE consumer use",
@@ -1456,6 +1742,8 @@ def run_consumer(work: Path, consumer: str) -> int:
             "No checkpoint/fence writes, takeover requests, installer, service, or clean-install claim",
             "Python socket guard is a regression tripwire, not an adversarial OS sandbox",
             "Normal POSIX CLI release registration uses only its exact private AF_UNIX endpoint",
+            "Exact urllib3 capability bind remains BLOCKED; accounted only after source/close/HAS_IPV6 proof",
+            "Optional CLI commit-date helper returns None; actual version identity and initializer stay real",
         ],
     }
     try:
@@ -1527,6 +1815,10 @@ def main() -> int:
     work = args.work.resolve()
     # Refuse before any allocation/install/consumer side effects outside CI.
     require_runner()
+    if os.name == "nt":
+        # The workflow computes the short root from RUNNER_TEMP. Refuse a
+        # drive mismatch rather than trusting C: or repairing an unsafe volume.
+        validate_windows_work_drive(work, os.environ.get("RUNNER_TEMP", ""))
     if args.check_public:
         return check_public(work)
     work.mkdir(parents=True, exist_ok=True)
