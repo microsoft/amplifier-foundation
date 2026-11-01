@@ -26,10 +26,11 @@ import importlib
 import importlib.metadata as metadata
 import importlib.util
 import inspect
+import ipaddress
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import platform
 import re
 import socket
@@ -37,8 +38,10 @@ import stat
 import struct
 import subprocess
 import sys
+import sysconfig
 import tempfile
-from types import SimpleNamespace
+import threading
+from types import CodeType, SimpleNamespace
 from urllib.parse import urlsplit, urlunsplit
 import zipfile
 
@@ -283,19 +286,43 @@ class CommandFailure(RuntimeError):
 
 
 def error_record(exc: BaseException) -> dict:
-    # Exception messages, source lines, locals, argv and subprocess streams may
-    # contain arbitrary secrets. Keep bounded frame locations and numeric codes,
-    # not raw str(exc), repr(exc), traceback text or captured output.
+    # Traceback filenames, function names and custom exception class names are
+    # untrusted identifiers too. Unlike socket caller details, exception frames
+    # need no named-source diagnostics: keep numeric locations and bounded
+    # fingerprints only, without reading any co_filename.
     chain, seen, policy_failure = [], set(), False
     while exc is not None and id(exc) not in seen and len(chain) < 4:
         seen.add(id(exc))
         policy_failure = policy_failure or isinstance(exc, HarnessPolicyError)
         frames, tb = [], exc.__traceback__
         while tb is not None:
-            frames.append({"file": tb.tb_frame.f_code.co_filename, "line": tb.tb_lineno,
-                           "function": tb.tb_frame.f_code.co_name[:128]})
+            code = tb.tb_frame.f_code
+            frames.append({
+                "line": tb.tb_lineno,
+                "code_sha256": hashlib.sha256(code.co_code[:65536]).hexdigest(),
+                "code_bytes": len(code.co_code),
+                "code_fingerprint_scope": "bounded-prefix" if len(code.co_code) > 65536 else "complete",
+                "filename_sha256": hashlib.sha256(code.co_filename[:4096].encode(
+                    "utf-8", errors="replace",
+                )).hexdigest(),
+            })
+            if len(frames) > 8:
+                frames.pop(0)
             tb = tb.tb_next
-        detail = {"type": type(exc).__name__[:128], "frames": frames[-8:]}
+        # Exact class identity, not subclass __name__ or a caller's module claim.
+        kind = "withheld"
+        for known, label in (
+            (HarnessPolicyError, "HarnessPolicyError"), (CommandFailure, "CommandFailure"),
+            (AssertionError, "AssertionError"), (KeyError, "KeyError"), (ValueError, "ValueError"),
+            (TypeError, "TypeError"), (RuntimeError, "RuntimeError"), (OSError, "OSError"),
+            (PermissionError, "PermissionError"), (FileNotFoundError, "FileNotFoundError"),
+            (TimeoutError, "TimeoutError"), (subprocess.TimeoutExpired, "TimeoutExpired"),
+            (SystemExit, "SystemExit"),
+        ):
+            if type(exc) is known:
+                kind = label
+                break
+        detail = {"type": kind, "frames": frames}
         for name in ("errno", "winerror", "returncode", "timeout"):
             number = getattr(exc, name, None)
             if type(number) in {int, float}:
@@ -325,31 +352,94 @@ def require_runner() -> None:
         raise RuntimeError("Invoke the harness with -I -X utf8; do not expose checkout imports")
 
 
-def clean_environment(root: Path) -> dict[str, str]:
-    """Allow-list OS prerequisites; never forward provider/Git/cloud credentials."""
+def clean_environment(root: Path, *, runtime: bool = False) -> dict[str, str]:
+    """Allow-list OS prerequisites; runtime HOME must be created by native helper.
+
+    uv preparation has only public build inputs and may use an ordinary HOME.
+    The consumer HOME is different and initially absent, so elevated Windows
+    runners cannot pre-create it with an administrator-owned inherited ACL.
+    """
     allowed = {
         "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
         "SYSTEMDRIVE", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
     }
     env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
-    for name in ("home", "tmp", "config", "cache", "appdata", "localappdata"):
+    names = ["t", "config", "c", "appdata", "localappdata"]
+    if not runtime:
+        names.append("home")
+    for name in names:
         (root / name).mkdir(parents=True, exist_ok=True)
     env.update({
         "HOME": str(root / "home"), "USERPROFILE": str(root / "home"),
         "APPDATA": str(root / "appdata"), "LOCALAPPDATA": str(root / "localappdata"),
         "XDG_CONFIG_HOME": str(root / "config"), "XDG_CACHE_HOME": str(root / "cache"),
-        "TMP": str(root / "tmp"), "TEMP": str(root / "tmp"), "TMPDIR": str(root / "tmp"),
+        "TMP": str(root / "t"), "TEMP": str(root / "t"), "TMPDIR": str(root / "t"),
         "AMPLIFIER_HOME": str(root / "home" / ".amplifier"),
         "AMPLIFIER_MEMORY_HOME": str(root / "memory"),
         "AMPLIFIER_SESSION_STATE_HOME": str(root / "authority"),
         "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "",
         "UV_NO_CONFIG": "1", "UV_KEYRING_PROVIDER": "disabled",
-        "UV_CACHE_DIR": str(root / "cache" / "uv"), "UV_NO_PROGRESS": "1",
+        "UV_CACHE_DIR": str(root / "c"), "UV_NO_PROGRESS": "1",
         "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "GITHUB_ACTIONS": "true",
     })
     return env
+
+
+def setup_path_budget(work: Path | PureWindowsPath, env: dict) -> dict:
+    """Fixture preflight, not a promise that every dependency supports Windows.
+
+    Reserve 160 characters below the selected roots for uv's nested checkouts/
+    unpack/build names. Keep the resulting planning budget below classic
+    MAX_PATH (260 incl. terminator). Record measured maxima separately on
+    failure; dependency-internal suffixes can still exceed this reserve.
+    """
+    roots = {
+        "work": work, "temp": env["TEMP"], "cache": env["UV_CACHE_DIR"],
+        "agent_env": work / "agent", "cli_env": work / "cli",
+    }
+    lengths = {role: len(str(path)) for role, path in roots.items()}
+    reserve = 160
+    within = all(length + reserve < 260 for length in lengths.values())
+    return {
+        "root_characters": lengths, "nested_suffix_reserve": reserve,
+        "planning_budget_characters": 259, "within_planning_budget": within,
+        "qualification": "bounded fixture path plan; not a measured dependency maximum",
+    }
+
+
+def setup_path_observation(work: Path, env: dict) -> dict:
+    """Bounded filename-length measurement only. Never export names or contents."""
+    result = {}
+    remaining = 20000
+    for role, root in (("cache", Path(env["UV_CACHE_DIR"])), ("temp", Path(env["TEMP"])),
+                       ("agent_env", work / "agent"), ("cli_env", work / "cli")):
+        detail = result[role] = {"entries": 0, "max_characters": 0, "scan_errors": []}
+
+        def scan_error(exc):
+            if len(detail["scan_errors"]) < 8:
+                detail["scan_errors"].append({
+                    name: getattr(exc, name) for name in ("errno", "winerror")
+                    if type(getattr(exc, name, None)) is int
+                })
+
+        for directory, dirs, files in os.walk(root, followlinks=False, onerror=scan_error):
+            for name in dirs + files:
+                path = str(Path(directory) / name)
+                detail["entries"] += 1
+                if len(path) > detail["max_characters"]:
+                    detail["max_characters"] = len(path)
+                    detail["longest_path_sha256"] = hashlib.sha256(os.fsencode(path)).hexdigest()
+                remaining -= 1
+                if remaining <= 0:
+                    break
+            if remaining <= 0:
+                break
+        if remaining <= 0:
+            break
+    result["capped"] = remaining <= 0
+    return result
 
 
 def command(argv, *, cwd: Path, env: dict, timeout: int = 600, diagnose_setup: bool = False) -> str:
@@ -370,10 +460,13 @@ def env_python(work: Path, consumer: str) -> Path:
 def prepare(work: Path) -> int:
     """Resolve normal dependency metadata with ONE explicit candidate override."""
     report = {"status": "failed", "consumers": {}, "test_dependencies": TEST_DEPENDENCIES}
-    env = clean_environment(work / "preparation")
+    env = clean_environment(work / "p")
     source = SCRIPT.parent.parent
     try:
         require_runner()
+        report["setup_path_budget"] = setup_path_budget(work, env)
+        if os.name == "nt" and not report["setup_path_budget"]["within_planning_budget"]:
+            raise HarnessPolicyError("Windows qualification requires a shorter owned setup root")
         command(["uv", "build", "--wheel", "--no-sources", "--out-dir", work / "wheels", source],
                 cwd=work, env=env)
         wheels = list((work / "wheels").glob("amplifier_foundation-*.whl"))
@@ -433,6 +526,7 @@ def prepare(work: Path) -> int:
             except Exception as exc:
                 report["consumers"][consumer] = error_record(exc)
                 report["consumers"][consumer]["phase"] = phase
+                report["consumers"][consumer]["paths_at_failure"] = setup_path_observation(work, env)
         if all(item["status"] == "passed" for item in report["consumers"].values()):
             report["status"] = "passed"
     except Exception as exc:
@@ -564,6 +658,64 @@ def private_directory(path: Path) -> None:
             pass
     else:
         path.mkdir(parents=True, mode=0o700, exist_ok=True)
+
+
+def private_ancestor_preflight(path: Path) -> dict:
+    """Read-only production validation before any directory creation."""
+    if os.name == "nt":
+        from amplifier_foundation.session import _windows_ownership as win
+
+        with win._pinned(win._API(), path, root=path, create=False) as pins:
+            return {"existing_chain_validated": True, "owned_leaf_missing": pins.missing}
+    return {"native_acl_preflight": "not applicable on POSIX"}
+
+
+def prepare_runtime_home(report: dict) -> None:
+    """Create BOTH HOME and its history root natively, before any payload.
+
+    Refuse a reused fixture instead of adopting or repairing an inherited ACL.
+    Production's helper remains the sole creator/validator on Windows. Failure
+    categories are exact known messages, never raw SIDs, paths or ACL contents.
+    """
+    home = Path(os.environ["HOME"])
+    amplifier_home = Path(os.environ["AMPLIFIER_HOME"])
+    if amplifier_home != home / ".amplifier":
+        raise HarnessPolicyError("Fixture history root is not under synthetic HOME")
+    detail = report["private_fixture"] = {
+        "creation_policy": "production adapter before payload; no ACL repair",
+        "preexisting_home": home.exists(), "preexisting_history_root": amplifier_home.exists(),
+    }
+    if detail["preexisting_home"] or detail["preexisting_history_root"]:
+        raise HarnessPolicyError("Runtime HOME must be absent before private creation")
+    categories = {
+        "Windows state requires trusted ownership and a non-null DACL": "owner-or-null-dacl",
+        "Windows private state requires a protected DACL": "unprotected-dacl",
+        "Windows state DACL grants foreign access": "foreign-ace",
+        "unsupported Windows state ACE": "unsupported-ace",
+    }
+    for role, path in (("home", home), ("history-root", amplifier_home)):
+        detail["stage"] = role
+        detail["operation"] = "read-only-ancestor-preflight"
+        try:
+            detail.setdefault("ancestor_preflights", {})[role] = private_ancestor_preflight(path)
+            detail["operation"] = "private-create"
+            private_directory(path)
+        except Exception as exc:
+            chain, found = exc, set()
+            for _ in range(4):
+                if chain is None:
+                    break
+                for argument in chain.args:
+                    if isinstance(argument, str):
+                        for message, category in categories.items():
+                            if message in argument:
+                                found.add(category)
+                chain = chain.__cause__ or chain.__context__
+            detail["security_categories"] = sorted(found) or ["unclassified"]
+            detail["error"] = error_record(exc)
+            raise
+    detail["stage"] = "ready-before-payload"
+    detail["operation"] = "complete"
 
 
 def conversation(messages: list[dict]) -> list[tuple[str, str]]:
@@ -859,6 +1011,202 @@ class HarnessPolicyError(RuntimeError):
     """Harness admission/isolation failure, NOT evidence of a product regression."""
 
 
+def address_fingerprint(value) -> dict:
+    """Typed primitive tree, bounded before encoding; never invoke custom hooks.
+
+    A capped/unknown tree has only a prefix fingerprint, explicitly labelled.
+    This is diagnostic correlation, not an identity/permission decision.
+    """
+    nodes, payload_bytes, truncated, unsupported = 0, 0, False, False
+
+    def normalize(item, depth=0):
+        nonlocal nodes, payload_bytes, truncated, unsupported
+        nodes += 1
+        if nodes > 64 or depth > 4:
+            truncated = True
+            return ["limit"]
+        kind = type(item)
+        if kind in (str, bytes):
+            # Slice BEFORE encoding/copying; never materialize an unbounded
+            # caller value. bytes remain distinguishable from text in the hash.
+            limit = min(1024, max(0, 4096 - payload_bytes))
+            prefix = item[:limit]
+            raw = prefix.encode("utf-8", errors="replace") if kind is str else prefix
+            payload_bytes += len(raw)
+            truncated = truncated or len(prefix) != len(item)
+            return ["text" if kind is str else "bytes", len(item), raw.hex()]
+        if item is None or kind is bool:
+            return [kind.__name__, item]
+        if kind is int:
+            if item.bit_length() <= 64:
+                return ["int", item]
+            truncated = True
+            return ["large-int", item.bit_length()]
+        if kind in (tuple, list):
+            if len(item) > 16:
+                truncated = True
+            return [kind.__name__, [normalize(child, depth + 1) for child in item[:16]]]
+        unsupported = True
+        return ["unsupported"]  # No repr, properties, iteration or custom JSON.
+
+    encoded = json.dumps(normalize(value), ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    return {
+        "address_sha256": hashlib.sha256(encoded).hexdigest(), "address_bytes": len(encoded),
+        "fingerprint_scope": "bounded-prefix" if truncated else "supported-tree",
+        "unsupported_value": unsupported,
+    }
+
+
+def socket_address_evidence(event, args) -> dict:
+    """Non-resolving shape/class/hash only; never return a hostname or endpoint."""
+    sock = args[0] if args and event in {"socket.bind", "socket.connect", "socket.listen",
+                                        "socket.sendto", "socket.sendmsg"} else None
+    family = getattr(sock, "family", None)
+    kind = {socket.AF_INET: "ipv4", socket.AF_INET6: "ipv6"}
+    if hasattr(socket, "AF_UNIX"):
+        kind[socket.AF_UNIX] = "unix"
+    result = {"family": kind.get(family, "unknown")}
+    address = None
+    if event in {"socket.bind", "socket.connect"} and len(args) > 1:
+        address = args[1]
+    elif event in {"socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyaddr", "socket.getnameinfo"}:
+        address = args[:2]
+    elif event == "socket.listen" and sock is not None:
+        # The bound local name can be inspected without creating/contacting one.
+        try:
+            address = sock.getsockname()
+        except (OSError, AttributeError):
+            pass
+    result.update(address_fingerprint(address))
+    if family == getattr(socket, "AF_UNIX", object()):
+        raw = os.fsdecode(address[:1024]) if type(address) in (str, bytes) else ""
+        result["classification"] = "unix-abstract" if raw.startswith("\0") else "unix-filesystem"
+        return result
+    host = address[0] if type(address) in (tuple, list) and address else address
+    if type(host) in (tuple, list) and host:
+        host = host[0]  # getnameinfo's sockaddr.
+    if type(host) not in (str, bytes, type(None)):
+        result["classification"] = "unclassified"
+        return result
+    if host is not None and len(host) > 1024:
+        result["classification"] = "oversized-host"
+        return result
+    if type(host) is bytes:
+        host = host.decode("ascii", errors="replace")
+    if host is None or host == "":
+        classification = "no-host"
+    elif isinstance(host, str) and host.lower() == "localhost":
+        classification = "loopback-name"
+    else:
+        try:
+            ip = ipaddress.ip_address(host)
+            classification = ("ip-loopback" if ip.is_loopback else "ip-unspecified" if ip.is_unspecified
+                              else "ip-private" if ip.is_private else "ip-public")
+        except ValueError:
+            classification = "named-host"
+    result["classification"] = classification
+    return result
+
+
+class CallerSources:
+    """Small source allow-list; frame filenames never authorize file reads.
+
+    Installed paths/digests come from the completed installation audit. Stdlib
+    paths are fixed beneath this interpreter's stdlib, not module.__file__.
+    A name is published only if the actual code equals code compiled from
+    those verified bytes. A claimed module, filename or site-packages path is
+    insufficient. Compilation is read-only: no source is executed/imported.
+    """
+
+    def __init__(self, provenance=None):
+        self.sources, self.compiled = {}, {}
+        self.add(SCRIPT, "installed_consumer_compat", "harness", digest(SCRIPT))
+        stdlib = Path(sysconfig.get_path("stdlib"))
+        for module in ("socket", "threading", "platform", "asyncio.base_events", "asyncio.events",
+                       "asyncio.runners", "asyncio.selector_events", "asyncio.unix_events",
+                       "asyncio.proactor_events", "concurrent.futures.thread"):
+            path = stdlib.joinpath(*module.split(".")).with_suffix(".py")
+            if path.is_file():
+                self.add(path, module, "stdlib", digest(path))
+        for package, distribution in (provenance or {}).get("distributions", {}).items():
+            if package not in {
+                "amplifier-foundation", "amplifier-core", "amplifier-agent", "amplifier-agent-engine",
+                "amplifier-app-cli", "amplifier-module-context-simple", "amplifier-module-loop-streaming",
+            }:
+                continue
+            namespace = package.replace("-", "_")
+            for relative, evidence in distribution["files"].items():
+                parts = relative.replace("\\", "/").split("/")
+                if not parts or parts[0] != namespace or not parts[-1].endswith(".py"):
+                    continue
+                parts[-1] = parts[-1][:-3]
+                if parts[-1] == "__init__":
+                    parts.pop()
+                if not all(part.isidentifier() for part in parts):
+                    continue
+                path = Path(evidence["path"])
+                if path.is_relative_to(Path(sys.prefix)) and "site-packages" in path.parts:
+                    self.add(path, ".".join(parts), "installed", evidence["sha256"])
+
+    def add(self, path, module, kind, sha256):
+        # Only explicit registration code above supplies paths, never frames.
+        key = os.path.normcase(os.path.normpath(str(path)))
+        self.sources[key] = (Path(path), module, kind, sha256)
+
+    def identify(self, code) -> dict | None:
+        key = os.path.normcase(os.path.normpath(code.co_filename))
+        entry = self.sources.get(key)
+        if entry is None:
+            return None  # Do not stat/open/resolve a frame's unknown filename.
+        path, module, kind, expected_digest = entry
+        cache_key = (key, code.co_filename)
+        if cache_key not in self.compiled:
+            if path.stat().st_size > 2 * 1024 * 1024:
+                return None
+            raw = path.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != expected_digest:
+                return None
+            compiled = compile(raw, code.co_filename, "exec", dont_inherit=True, optimize=sys.flags.optimize)
+            codes, pending = set(), [compiled]
+            while pending:
+                current = pending.pop()
+                codes.add(current)
+                pending.extend(value for value in current.co_consts if type(value) is CodeType)
+            self.compiled[cache_key] = codes
+        if code not in self.compiled[cache_key]:
+            return None  # Dynamic code spoofing this filename is not its source.
+        return {
+            "module": module, "function": code.co_name, "source_kind": kind,
+            "source_sha256": expected_digest,
+        }
+
+
+def socket_caller_evidence(sources=None) -> list[dict]:
+    """Unknown frames expose fingerprints only, never claimed names or paths."""
+    frames = []
+    frame = sys._getframe(1)
+    try:
+        while frame is not None and len(frames) < 10:
+            code = frame.f_code
+            source = sources.identify(code) if sources is not None else None
+            if source is None:
+                source = {
+                    "source_kind": "unverified", "module": "withheld", "function": "withheld",
+                    "code_sha256": hashlib.sha256(code.co_code[:65536]).hexdigest(),
+                    "code_bytes": len(code.co_code),
+                    "code_fingerprint_scope": "bounded-prefix" if len(code.co_code) > 65536 else "complete",
+                    "filename_sha256": hashlib.sha256(code.co_filename[:4096].encode(
+                        "utf-8", errors="replace",
+                    )).hexdigest(),
+                }
+            source["line"] = frame.f_lineno
+            frames.append(source)
+            frame = frame.f_back
+    finally:
+        del frame
+    return frames
+
+
 def short_endpoint_path(temp: Path, uid: int) -> Path:
     # Production tempfile.mkdtemp uses h- plus eight random characters.
     endpoint = temp / f"amplifier-handoff-{uid}" / ("h-" + "x" * 8) / "control.sock"
@@ -870,19 +1218,41 @@ def short_endpoint_path(temp: Path, uid: int) -> Path:
 class SocketGuard:
     """One exact production release socket per CLI call; no other network."""
 
-    def __init__(self, workspace: Path, consumer: str, report: dict):
+    def __init__(self, workspace: Path, consumer: str, report: dict, caller_sources=None):
         self.workspace, self.consumer = workspace, consumer
         self.scope = False
         self.endpoint = self.listener = None
         self.attempts = report["blocked_socket_operations"] = []
+        self.blocked_details = report["blocked_socket_details"] = []
+        self.phase = "fixture-setup"
+        self.caller_sources = caller_sources
         self.ipc = report["release_ipc"] = []
         self.runtime = (
             Path(tempfile.gettempdir()) / f"amplifier-handoff-{os.getuid()}"
             if os.name != "nt" else None
         )
 
-    def blocked(self, event):
+    def blocked(self, event, args=()):
         self.attempts.append(event)  # Never retain addresses or protocol payloads.
+        if len(self.blocked_details) < 8:
+            detail = {
+                "event": event, "phase": self.phase, "consumer": self.consumer,
+                "address": {"classification": "diagnostic-unavailable"}, "frames": [],
+                "interpretation": "blocked request; caller cause and product compatibility not established",
+            }
+            self.blocked_details.append(detail)  # Retain refusal before diagnostics.
+            for field, read in (
+                ("address", lambda: socket_address_evidence(event, args)),
+                ("frames", lambda: socket_caller_evidence(self.caller_sources)),
+                ("thread", lambda: "main" if threading.current_thread() is threading.main_thread()
+                 else "background"),
+            ):
+                try:
+                    detail[field] = read()
+                except BaseException:
+                    # Diagnostics cannot replace policy refusal, even when a
+                    # property, encoder, file or frame inspection fails.
+                    detail.setdefault("diagnostic_failures", []).append(field)
         raise HarnessPolicyError("Socket operation outside the exact CLI release endpoint")
 
     def production_endpoint(self, endpoint: Path) -> bool:
@@ -952,7 +1322,7 @@ class SocketGuard:
                 elif event == "socket.connect" and endpoint == self.endpoint:
                     if self.private_endpoint(endpoint, bound=True):
                         return
-        self.blocked(event)
+        self.blocked(event, args)
 
     def listen(self, original, sock, *args, **kwargs):
         if (self.scope and sock is self.listener and self.endpoint is not None
@@ -960,7 +1330,7 @@ class SocketGuard:
                 and sock.getsockname() == str(self.endpoint)
                 and self.private_endpoint(self.endpoint, bound=True)):
             return original(sock, *args, **kwargs)
-        self.blocked("socket.listen")
+        self.blocked("socket.listen", (sock,))
 
     async def observe_release_cleanup(self, detail: dict) -> None:
         """Yield to scheduled production cleanup; never perform it ourselves."""
@@ -1022,17 +1392,17 @@ class SocketGuard:
                 raise HarnessPolicyError("Normal POSIX CLI did not register its release endpoint")
 
 
-async def qualify(work: Path, consumer: str, report: dict) -> None:
+async def qualify(work: Path, consumer: str, report: dict, caller_sources=None) -> None:
     import pytest
 
     # asyncio's own wakeup pair is already initialized. The only exception is
     # normal POSIX CLI registration, scoped around each actual execute_single.
     root = work / "cases" / consumer
     root.mkdir(parents=True, exist_ok=True)
-    guard = SocketGuard(root, consumer, report)
+    guard = SocketGuard(root, consumer, report, caller_sources)
     sys.addaudithook(guard.audit)
+    prepare_runtime_home(report)
     home = Path(os.environ["AMPLIFIER_HOME"])
-    private_directory(home)
     config = home / "settings.yaml"
     config.write_text("# synthetic offline configuration\nfixture: café-日本語\n", encoding="utf-8")
     before = config.read_bytes()
@@ -1054,6 +1424,7 @@ async def qualify(work: Path, consumer: str, report: dict) -> None:
 
         patch.setattr(socket.socket, "listen", guarded_listen)
         for name, check in cases:
+            guard.phase = name
             detail = report["checks"][name] = {"status": "running"}
             try:
                 result = check(detail)
@@ -1063,6 +1434,7 @@ async def qualify(work: Path, consumer: str, report: dict) -> None:
                 detail["status"] = "passed"
             except (Exception, SystemExit) as exc:
                 detail.update(error_record(exc))
+            guard.phase = "between-checks"
             save_public_json(work, f"{consumer}.json", report)
     report["synthetic_config_preserved"] = config.read_bytes() == before
     if guard.attempts:
@@ -1093,7 +1465,7 @@ def run_consumer(work: Path, consumer: str) -> int:
         assert digest(wheel) == preparation["candidate"]["wheel_sha256"]
         report["provenance"] = {}
         installed_audit(wheel, preparation["candidate"]["wheel_sha256"], consumer, report["provenance"])
-        asyncio.run(qualify(work, consumer, report))
+        asyncio.run(qualify(work, consumer, report, CallerSources(report["provenance"])))
         assert all(item["status"] == "passed" for item in report["checks"].values())
         report["status"] = "passed"
     except (Exception, SystemExit) as exc:
@@ -1122,8 +1494,8 @@ def run(work: Path) -> int:
                         tempfile.TemporaryDirectory(prefix="ic-", dir="/tmp"),
                     ))
                     compact = root
-                    short_endpoint_path(root / "tmp", os.getuid())
-                env = clean_environment(root)
+                    short_endpoint_path(root / "t", os.getuid())
+                env = clean_environment(root, runtime=True)
                 # -I ignores PYTHONUTF8: set the fixture encoding explicitly.
                 command([env_python(work, consumer), "-I", "-X", "utf8", SCRIPT,
                          "--consumer", consumer, "--work", work],

@@ -130,6 +130,14 @@ def test_separate_native_and_ubuntu_jobs_keep_pins_and_failure_evidence():
     runtime = job["steps"][-3]
     assert "always()" in runtime["if"]
     assert "python -I -X utf8 tests/installed_consumer_compat.py --run" in runtime["run"]
+    work_expression = (
+        "${{ matrix.os == 'windows-2025' && format('C:/ic-{0}-{1}', github.run_id, github.run_attempt)"
+        " || format('{0}/installed-consumers', runner.temp) }}"
+    )
+    for step in job["steps"]:
+        if "installed_consumer_compat.py" in step.get("run", ""):
+            assert f'--work "{work_expression}"' in step["run"]
+    assert upload["with"]["path"] == work_expression + "/evidence/*.json"
 
 
 def test_only_explicit_candidate_override_and_distinct_core_graphs():
@@ -891,3 +899,600 @@ def test_public_windows_mixed_separators_preserve_specific_environment_alias(har
     assert normalized.startswith("<agent-env>")
     assert "<work>" not in normalized and "runner" not in normalized
     harness.assert_public(normalized)
+
+
+def test_short_windows_setup_path_budget_keeps_cache_temp_and_both_envs_compact(harness):
+    work = harness.PureWindowsPath("C:/ic-41358043348-1")
+    env = {"TEMP": str(work / "p/t"), "UV_CACHE_DIR": str(work / "p/c")}
+    budget = harness.setup_path_budget(work, env)
+    assert budget["within_planning_budget"]
+    assert budget["root_characters"] == {
+        "work": len(str(work)), "temp": len(str(work / "p/t")), "cache": len(str(work / "p/c")),
+        "agent_env": len(str(work / "agent")), "cli_env": len(str(work / "cli")),
+    }
+    assert max(budget["root_characters"].values()) + budget["nested_suffix_reserve"] < 260
+    assert harness.env_python(Path(str(work)), "agent") != harness.env_python(Path(str(work)), "cli")
+    long = harness.PureWindowsPath("C:/") / ("long" * 40)
+    assert not harness.setup_path_budget(long, {
+        "TEMP": str(long / "p/t"), "UV_CACHE_DIR": str(long / "p/c"),
+    })["within_planning_budget"]
+
+
+def test_path_failure_observation_is_bounded_and_has_no_filename_payload(harness, tmp_path):
+    sentinel = "synthetic-private-sentinel"
+    cache, temp = tmp_path / "c", tmp_path / "t"
+    cache.mkdir()
+    temp.mkdir()
+    fixture = cache / sentinel
+    fixture.write_bytes(b"unread payload")
+    observation = harness.setup_path_observation(tmp_path, {
+        "TEMP": str(temp), "UV_CACHE_DIR": str(cache),
+    })
+    assert observation["cache"]["entries"] == 1
+    assert observation["cache"]["max_characters"] == len(str(fixture))
+    assert observation["cache"]["longest_path_sha256"] == harness.hashlib.sha256(
+        harness.os.fsencode(str(fixture)),
+    ).hexdigest()
+    assert not observation["capped"]
+    assert sentinel not in json.dumps(observation) and str(tmp_path) not in json.dumps(observation)
+    harness.save_public_json(tmp_path, "preparation.json", observation)
+    assert harness.check_public(tmp_path) == 0
+
+
+def test_path_observation_records_unreadable_subtree_without_claiming_complete_scan(
+    harness, tmp_path, monkeypatch,
+):
+    sentinel = "synthetic-private-sentinel"
+    def walk(root, *, followlinks, onerror):
+        assert followlinks is False
+        onerror(OSError(13, sentinel, str(root / sentinel)))
+        return iter(())
+    monkeypatch.setattr(harness.os, "walk", walk)
+    observation = harness.setup_path_observation(tmp_path, {
+        "TEMP": str(tmp_path / "t"), "UV_CACHE_DIR": str(tmp_path / "c"),
+    })
+    assert observation["cache"]["scan_errors"] == [{"errno": 13}]
+    assert observation["cache"]["entries"] == 0
+    assert sentinel not in json.dumps(observation)
+
+
+def test_runtime_environment_never_precreates_home_or_copies_credentials(harness, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-private-sentinel")
+    monkeypatch.setenv("GITHUB_TOKEN", "synthetic-private-sentinel")
+    root = tmp_path / "runtime"
+    env = harness.clean_environment(root, runtime=True)
+    assert not (root / "home").exists()
+    assert not Path(env["AMPLIFIER_HOME"]).exists()
+    assert env["HOME"] == env["USERPROFILE"] == str(root / "home")
+    assert env["AMPLIFIER_HOME"] == str(root / "home/.amplifier")
+    assert Path(env["TEMP"]).is_dir() and Path(env["UV_CACHE_DIR"]).is_dir()
+    assert all("synthetic-private-sentinel" not in value for value in env.values())
+    prep = harness.clean_environment(tmp_path / "prep")
+    assert Path(prep["HOME"]).is_dir()  # Public-only builder HOME is deliberately separate.
+
+
+def test_runtime_home_uses_adapter_for_missing_home_before_config_payload(harness, tmp_path, monkeypatch):
+    env = harness.clean_environment(tmp_path / "runtime", runtime=True)
+    monkeypatch.setenv("HOME", env["HOME"])
+    monkeypatch.setenv("AMPLIFIER_HOME", env["AMPLIFIER_HOME"])
+    home, history = Path(env["HOME"]), Path(env["AMPLIFIER_HOME"])
+    created = []
+    preflighted = []
+
+    def preflight(path):
+        assert not path.exists()
+        preflighted.append(path)
+        return {"existing_chain_validated": True, "owned_leaf_missing": True}
+
+    def adapter(path):
+        assert preflighted[-1] == path
+        assert not path.exists(), "Do not adopt or repair an ordinary-mkdir fixture"
+        assert not (history / "settings.yaml").exists()
+        if path == history:
+            assert created == [home]
+        path.mkdir(mode=0o700)
+        created.append(path)
+
+    monkeypatch.setattr(harness, "private_directory", adapter)
+    monkeypatch.setattr(harness, "private_ancestor_preflight", preflight)
+    report = {}
+    harness.prepare_runtime_home(report)
+    assert created == [home, history]
+    assert preflighted == [home, history]
+    assert report["private_fixture"]["stage"] == "ready-before-payload"
+    assert report["private_fixture"]["preexisting_home"] is False
+    # Real adapter is unchanged; neither function contains an ACL repair seam.
+    assert "win._pinned(win._API(), path, root=path, create=True)" in source("private_directory")
+    assert "prepare_runtime_home(report)" in source("qualify")
+    assert "root=path, create=False" in source("private_ancestor_preflight")
+    assert source("qualify").index("prepare_runtime_home(report)") < source("qualify").index("config.write_text")
+    assert "runtime=True" in source("run")
+
+
+def test_runtime_home_preexisting_directory_is_refused_without_repair(harness, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    sentinel = home / "untouched"
+    sentinel.write_bytes(b"retained")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home / ".amplifier"))
+    calls = []
+    monkeypatch.setattr(harness, "private_directory", lambda path: calls.append(path))
+    report = {}
+    with pytest.raises(harness.HarnessPolicyError):
+        harness.prepare_runtime_home(report)
+    assert report["private_fixture"]["preexisting_home"] is True
+    assert calls == [] and sentinel.read_bytes() == b"retained"
+    assert not (home / ".amplifier").exists()
+
+
+@pytest.mark.parametrize("failing_role", ["home", "history-root"])
+@pytest.mark.parametrize("message,category", [
+    ("Windows state requires trusted ownership and a non-null DACL", "owner-or-null-dacl"),
+    ("Windows private state requires a protected DACL", "unprotected-dacl"),
+    ("Windows state DACL grants foreign access", "foreign-ace"),
+])
+def test_private_creation_failure_reports_role_category_not_sid_or_path(
+    harness, tmp_path, monkeypatch, failing_role, message, category,
+):
+    home = tmp_path / "home"
+    history = home / ".amplifier"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AMPLIFIER_HOME", str(history))
+    def adapter(path):
+        if path == (home if failing_role == "home" else history):
+            try:
+                raise ValueError(f"{message}: S-1-5-21-synthetic-private-sentinel")
+            except ValueError as cause:
+                raise RuntimeError("unsafe traversal /home/synthetic-private-sentinel") from cause
+        path.mkdir(mode=0o700)
+    monkeypatch.setattr(harness, "private_directory", adapter)
+    monkeypatch.setattr(harness, "private_ancestor_preflight", lambda path: {
+        "existing_chain_validated": True, "owned_leaf_missing": True,
+    })
+    report = {}
+    with pytest.raises(RuntimeError):
+        harness.prepare_runtime_home(report)
+    detail = report["private_fixture"]
+    assert detail["stage"] == failing_role and detail["security_categories"] == [category]
+    assert detail["operation"] == "private-create"
+    assert not (history / "settings.yaml").exists()
+    harness.save_public_json(tmp_path, "cli.json", report)
+    saved = (tmp_path / "evidence/cli.json").read_text()
+    assert "synthetic-private-sentinel" not in saved and "S-1-5" not in saved
+    assert harness.check_public(tmp_path) == 0
+
+
+def test_unsafe_existing_ancestor_is_refused_before_private_creation(harness, tmp_path, monkeypatch):
+    home = tmp_path / "missing-home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home / ".amplifier"))
+    calls = []
+    def refuse(path):
+        raise RuntimeError("Windows state requires trusted ownership and a non-null DACL")
+    monkeypatch.setattr(harness, "private_ancestor_preflight", refuse)
+    monkeypatch.setattr(harness, "private_directory", lambda path: calls.append(path))
+    report = {}
+    with pytest.raises(RuntimeError):
+        harness.prepare_runtime_home(report)
+    assert calls == [] and not home.exists()
+    detail = report["private_fixture"]
+    assert detail["stage"] == "home" and detail["operation"] == "read-only-ancestor-preflight"
+    assert detail["security_categories"] == ["owner-or-null-dacl"]
+
+
+@pytest.mark.parametrize("event,args,classification", [
+    ("socket.getaddrinfo", ("synthetic-private-sentinel.invalid", 443, 0, 0, 0), "named-host"),
+    ("socket.getaddrinfo", ("localhost", 443), "loopback-name"),
+    ("socket.getaddrinfo", ("127.0.0.1", 443), "ip-loopback"),
+    ("socket.getaddrinfo", ("0.0.0.0", 0), "ip-unspecified"),
+    ("socket.getaddrinfo", ("10.0.0.1", 443), "ip-private"),
+    ("socket.getaddrinfo", ("8.8.8.8", 443), "ip-public"),
+    ("socket.getaddrinfo", (None, 0), "no-host"),
+])
+def test_socket_address_evidence_never_resolves_or_exports_raw_address(
+    harness, monkeypatch, event, args, classification,
+):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A diagnostic must not perform DNS")
+    monkeypatch.setattr(harness.socket, "getaddrinfo", forbidden)
+    detail = harness.socket_address_evidence(event, args)
+    assert detail["classification"] == classification
+    assert len(detail["address_sha256"]) == 64
+    assert detail["address_bytes"] > 0
+    assert all(str(value) not in json.dumps(detail) for value in args[:1] if isinstance(value, str))
+
+
+def test_blocked_socket_retains_failure_counter_and_safe_phase_source_evidence(harness, tmp_path):
+    guard = harness.SocketGuard(tmp_path, "agent", {}, harness.CallerSources())
+    guard.phase = "agent_roundtrip"
+    sentinel = "synthetic-private-sentinel.invalid"
+    for _ in range(10):
+        with pytest.raises(harness.HarnessPolicyError):
+            guard.audit("socket.getaddrinfo", (sentinel, 443, 0, 0, 0))
+    assert guard.attempts == ["socket.getaddrinfo"] * 10
+    assert len(guard.blocked_details) == 8  # Diagnostics bounded, no failed counter dropped.
+    detail = guard.blocked_details[0]
+    assert detail["consumer"] == "agent" and detail["phase"] == "agent_roundtrip"
+    assert detail["thread"] == "main"
+    assert detail["address"]["classification"] == "named-host"
+    assert not any(frame["function"] == "test_blocked_socket_retains_failure_counter_and_safe_phase_source_evidence"
+                   for frame in detail["frames"])
+    assert any(frame["source_kind"] == "harness" and frame["function"] == "blocked"
+               for frame in detail["frames"])
+    assert any(frame.get("source_sha256") == harness.digest(HARNESS) for frame in detail["frames"])
+    harness.save_public_json(tmp_path, "agent.json", {"failures": guard.blocked_details})
+    public = (tmp_path / "evidence/agent.json").read_text()
+    assert sentinel not in public and str(ROOT) not in public
+    assert harness.check_public(tmp_path) == 0
+
+
+def test_extra_local_bind_is_still_refused_and_classified_not_added_to_allowlist(harness, tmp_path):
+    guard = harness.SocketGuard(tmp_path, "agent", {})
+    sock = SimpleNamespace(family=harness.socket.AF_INET, type=harness.socket.SOCK_STREAM)
+    with pytest.raises(harness.HarnessPolicyError):
+        guard.audit("socket.bind", (sock, ("127.0.0.1", 0)))
+    assert guard.attempts == ["socket.bind"]
+    assert guard.endpoint is None
+    assert guard.blocked_details[0]["address"]["classification"] == "ip-loopback"
+
+
+@pytest.mark.parametrize("consumer,event", [("agent", "socket.bind"), ("cli", "socket.getaddrinfo")])
+def test_swallowed_socket_attempt_keeps_overall_qualification_failed_after_passed_checks(
+    harness, tmp_path, monkeypatch, consumer, event,
+):
+    """Model the measured all-checks-pass/overall-policy-fail case without IPC."""
+    audits = []
+    monkeypatch.setattr(harness.sys, "addaudithook", lambda callback: audits.append(callback))
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "runtime-home"
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    monkeypatch.setattr(harness, "prepare_runtime_home", lambda report: home.mkdir())
+    monkeypatch.setattr(harness, "foundation_ownership", lambda *args: None)
+    monkeypatch.setattr(harness, "incremental_history", lambda *args: None)
+    monkeypatch.setattr(harness, "settings_overlap", lambda *args: None)
+
+    async def roundtrip(*args):
+        try:
+            if event == "socket.bind":
+                audits[0](event, (SimpleNamespace(family=harness.socket.AF_INET,
+                                                  type=harness.socket.SOCK_STREAM), ("127.0.0.1", 0)))
+            else:
+                audits[0](event, ("synthetic-private-sentinel.invalid", 443))
+        except harness.HarnessPolicyError:
+            pass  # Mimic a dependency catching the refusal; it is still a failure.
+
+    async def wait_for(coro, *, timeout):
+        return await coro  # No OS loop or real timeout needed by this finite model.
+
+    monkeypatch.setattr(harness, "agent_roundtrip", roundtrip)
+    monkeypatch.setattr(harness, "cli_roundtrip", roundtrip)
+    monkeypatch.setattr(harness.asyncio, "wait_for", wait_for)
+    report = {"checks": {}}
+    with pytest.raises(harness.HarnessPolicyError):
+        _drive(harness.qualify(tmp_path, consumer, report))
+    assert all(value["status"] == "passed" for value in report["checks"].values())
+    assert report["blocked_socket_operations"] == [event]
+    assert report["blocked_socket_details"][0]["phase"] == f"{consumer}_roundtrip"
+    assert report["blocked_socket_details"][0]["interpretation"].startswith("blocked request")
+    assert report["release_ipc"] == []
+
+
+def _dynamic_caller(harness, sources, filename, *, symbol="private_person_project_sentinel",
+                    module="private_person_project_sentinel"):
+    # Deliberately plausible module/symbol/file claims; capture must not trust
+    # them merely because they match an identifier regex or package location.
+    namespace = {"__name__": module, "capture": harness.socket_caller_evidence, "sources": sources}
+    exec(compile(f"def {symbol}():\n    return capture(sources)\n", filename, "exec"), namespace)
+    return namespace[symbol]()
+
+
+@pytest.mark.parametrize("filename_kind", ["private", "claimed-installed", "harness", "stdlib"])
+def test_unknown_spoofed_frame_names_are_withheld_without_reading_claimed_files(
+    harness, tmp_path, monkeypatch, filename_kind,
+):
+    sources = harness.CallerSources()
+    sentinel = "private_person_project_sentinel"
+    filename = {
+        "private": str(tmp_path / sentinel / "secret.py"),
+        "claimed-installed": str(tmp_path / "site-packages/amplifier_agent" / (sentinel + ".py")),
+        "harness": str(HARNESS),  # Existing trusted file, but different code.
+        "stdlib": str(Path(harness.sysconfig.get_path("stdlib")) / "socket.py"),
+    }[filename_kind]
+    allowed = {str(entry[0]) for entry in sources.sources.values()}
+    old_read, old_stat = Path.read_bytes, Path.stat
+    reads = []
+
+    def read(path):
+        assert str(path) in allowed, "Unverified co_filename caused a file read"
+        reads.append(str(path))
+        return old_read(path)
+
+    def stat(path, *args, **kwargs):
+        assert str(path) in allowed, "Unverified co_filename caused a stat"
+        return old_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(Path, "stat", stat)
+    frames = _dynamic_caller(harness, sources, filename, module="amplifier_agent." + sentinel)
+    assert frames[0]["source_kind"] == "unverified"
+    assert frames[0]["module"] == frames[0]["function"] == "withheld"
+    assert frames[0]["line"] == 2
+    assert len(frames[0]["code_sha256"]) == len(frames[0]["filename_sha256"]) == 64
+    text = json.dumps(harness.public_value(frames, {}))
+    assert sentinel not in text
+    harness.assert_public(harness.public_value(frames, {}))
+    assert all(path in allowed for path in reads)
+    if filename_kind in {"private", "claimed-installed"}:
+        assert filename not in reads
+
+
+def test_verified_harness_frames_keep_useful_names_without_trusting_globals(harness, tmp_path):
+    sources = harness.CallerSources()
+    guard = harness.SocketGuard(tmp_path, "cli", {}, sources)
+    with pytest.raises(harness.HarnessPolicyError):
+        guard.audit("socket.getaddrinfo", (b"synthetic-private-sentinel.invalid", 443))
+    frames = guard.blocked_details[0]["frames"]
+    assert any(frame["module"] == "installed_consumer_compat" and frame["function"] == "blocked"
+               and frame["source_kind"] == "harness" and frame["source_sha256"] == harness.digest(HARNESS)
+               for frame in frames)
+    harness.save_public_json(tmp_path, "cli.json", {"frames": frames})
+    assert harness.check_public(tmp_path) == 0
+
+
+def test_selected_installed_bytes_verify_code_not_filename_or_module_claim(harness, tmp_path, monkeypatch):
+    prefix = tmp_path / "environment"
+    path = prefix / "lib/python3.13/site-packages/amplifier_agent/diagnostic_fixture.py"
+    path.parent.mkdir(parents=True)
+    raw = b"def known_caller():\n    return capture(sources)\n"
+    path.write_bytes(raw)
+    monkeypatch.setattr(harness.sys, "prefix", str(prefix))
+    sha = harness.digest(path)
+    evidence = {"distributions": {"amplifier-agent": {"files": {
+        "amplifier_agent/diagnostic_fixture.py": {"path": str(path), "sha256": sha},
+    }}}}
+    sources = harness.CallerSources(evidence)
+    namespace = {
+        "__name__": "private_person_project_sentinel",  # Do not publish frame globals.
+        "capture": harness.socket_caller_evidence, "sources": sources,
+    }
+    exec(compile(raw, str(path), "exec", dont_inherit=True), namespace)
+    frames = namespace["known_caller"]()
+    assert frames[0] == {
+        "source_kind": "installed", "module": "amplifier_agent.diagnostic_fixture",
+        "function": "known_caller", "source_sha256": sha, "line": 2,
+    }
+    # Same file/module claim is not enough; sentinel code differs from audited bytes.
+    spoofed = _dynamic_caller(harness, sources, str(path), module="amplifier_agent.diagnostic_fixture")
+    assert spoofed[0]["source_kind"] == "unverified"
+    assert "private_person_project_sentinel" not in json.dumps(spoofed)
+    # A digest mismatch cannot authorize publishing symbols either.
+    changed = copy.deepcopy(evidence)
+    changed["distributions"]["amplifier-agent"]["files"]["amplifier_agent/diagnostic_fixture.py"]["sha256"] = "0" * 64
+    namespace["sources"] = harness.CallerSources(changed)
+    assert namespace["known_caller"]()[0]["source_kind"] == "unverified"
+
+
+def test_known_stdlib_source_verifies_real_code_and_rejects_dynamic_spoof(harness):
+    sources = harness.CallerSources()
+    code = harness.socket.getaddrinfo.__code__
+    detail = sources.identify(code)  # Read/compile only: no getaddrinfo invocation.
+    assert detail["source_kind"] == "stdlib" and detail["module"] == "socket"
+    assert detail["function"] == "getaddrinfo" and len(detail["source_sha256"]) == 64
+    frames = _dynamic_caller(harness, sources, code.co_filename,
+                             symbol="private_person_project_sentinel", module="socket")
+    assert frames[0]["source_kind"] == "unverified"
+    assert "private_person_project_sentinel" not in json.dumps(frames)
+
+
+class _NoDiagnosticHooks:
+    def __repr__(self):
+        raise AssertionError("No custom repr")
+
+    def __str__(self):
+        raise AssertionError("No custom string conversion")
+
+    def __iter__(self):
+        raise AssertionError("No custom iteration")
+
+    def __eq__(self, other):
+        raise AssertionError("No custom comparison")
+
+
+@pytest.mark.parametrize("event,args,classification", [
+    ("socket.getaddrinfo", (b"synthetic-private-sentinel.invalid", 443), "named-host"),
+    ("socket.getaddrinfo", (b"127.0.0.1", b"443"), "ip-loopback"),
+    ("socket.getnameinfo", ((b"127.0.0.1", 443, 0, 0), 0), "ip-loopback"),
+    ("socket.getnameinfo", (("::1", 443, 0, 0), 0), "ip-loopback"),
+    ("socket.getaddrinfo", (_NoDiagnosticHooks(), 443), "unclassified"),
+    ("socket.getnameinfo", ((_NoDiagnosticHooks(), 443), 0), "unclassified"),
+])
+def test_nested_bytes_address_arguments_keep_policy_error_and_safe_details(
+    harness, tmp_path, event, args, classification,
+):
+    guard = harness.SocketGuard(tmp_path, "cli", {})
+    with pytest.raises(harness.HarnessPolicyError):
+        guard.audit(event, args)
+    assert guard.attempts == [event]
+    detail = guard.blocked_details[0]
+    assert detail["address"]["classification"] == classification
+    assert len(detail["address"]["address_sha256"]) == 64
+    assert "diagnostic_failures" not in detail
+    text = json.dumps(detail)
+    assert "synthetic-private-sentinel" not in text
+    harness.save_public_json(tmp_path, "cli.json", detail)
+    assert harness.check_public(tmp_path) == 0
+
+
+@pytest.mark.parametrize("value", [
+    b"x" * 100000, "x" * 100000,
+    tuple(b"x" * 10000 for _ in range(1000)),
+    [[[[[[[b"nested"]]]]]]],
+    1 << 10000,
+], ids=["large-bytes", "large-text", "large-container", "deep-container", "large-integer"])
+def test_oversized_address_trees_are_capped_before_encoding(harness, value):
+    first = harness.address_fingerprint(value)
+    assert first == harness.address_fingerprint(value)
+    assert first["fingerprint_scope"] == "bounded-prefix"
+    assert first["address_bytes"] < 12000
+    assert len(json.dumps(first)) < 256
+    cyclic = []
+    cyclic.append(cyclic)
+    assert harness.address_fingerprint(cyclic)["fingerprint_scope"] == "bounded-prefix"
+
+
+def test_address_fingerprint_distinguishes_bytes_text_and_nested_types(harness):
+    values = [(b"localhost", 443), ("localhost", 443), [b"localhost", 443],
+              (b"localhost", b"443"), (b"localhost", 444)]
+    hashes = {harness.address_fingerprint(value)["address_sha256"] for value in values}
+    assert len(hashes) == len(values)
+    detail = harness.address_fingerprint((_NoDiagnosticHooks(), b"fixture"))
+    assert detail["unsupported_value"] is True
+
+
+@pytest.mark.parametrize("shape", ["large-text", "large-bytes", "deep", "cycle", "custom-socket"])
+def test_large_or_unknown_audit_arguments_still_fail_with_policy_error(harness, tmp_path, shape):
+    guard = harness.SocketGuard(tmp_path, "agent", {})
+    event = "socket.getaddrinfo"
+    if shape == "large-text":
+        args = ("private_person_project_sentinel" * 10000, 443)
+    elif shape == "large-bytes":
+        args = (b"private_person_project_sentinel" * 10000, 443)
+    elif shape == "deep":
+        args = (((((((b"private_person_project_sentinel",),),),),),), 443)
+    elif shape == "cycle":
+        cyclic = []
+        cyclic.append(cyclic)
+        args = (cyclic, 443)
+    else:
+        class FaultySocket:
+            @property
+            def family(self):
+                raise TypeError("private_person_project_sentinel")
+        event, args = "socket.bind", (FaultySocket(), ("127.0.0.1", 0))
+    with pytest.raises(harness.HarnessPolicyError):
+        guard.audit(event, args)
+    assert guard.attempts == [event] and len(guard.blocked_details) == 1
+    text = json.dumps(guard.blocked_details)
+    assert "private_person_project_sentinel" not in text
+    assert len(text) < 12000
+    if shape == "custom-socket":
+        assert guard.blocked_details[0]["diagnostic_failures"] == ["address"]
+    else:
+        assert "diagnostic_failures" not in guard.blocked_details[0]
+    harness.save_public_json(tmp_path, "agent.json", {"details": guard.blocked_details})
+    assert harness.check_public(tmp_path) == 0
+
+
+@pytest.mark.parametrize("fault", ["address", "frames", "thread"])
+def test_diagnostic_exceptions_never_replace_policy_error_or_erase_attempts(
+    harness, tmp_path, monkeypatch, fault,
+):
+    def fail(*args, **kwargs):
+        raise TypeError("private_person_project_sentinel")
+    if fault == "address":
+        monkeypatch.setattr(harness, "socket_address_evidence", fail)
+    elif fault == "frames":
+        monkeypatch.setattr(harness, "socket_caller_evidence", fail)
+    else:
+        monkeypatch.setattr(harness.threading, "current_thread", fail)
+    guard = harness.SocketGuard(tmp_path, "agent", {})
+    for _ in range(10):
+        with pytest.raises(harness.HarnessPolicyError):
+            guard.audit("socket.getaddrinfo", (b"synthetic-private-sentinel.invalid", 443))
+    assert guard.attempts == ["socket.getaddrinfo"] * 10
+    assert len(guard.blocked_details) == 8
+    assert guard.blocked_details[0]["diagnostic_failures"] == [fault]
+    harness.save_public_json(tmp_path, "agent.json", {"details": guard.blocked_details})
+    public = (tmp_path / "evidence/agent.json").read_text()
+    assert "private_person_project_sentinel" not in public and "synthetic-private-sentinel" not in public
+    assert harness.check_public(tmp_path) == 0
+
+
+@pytest.mark.parametrize("custom_exception", [None, "os-error", "policy-subclass", "command-subclass"])
+def test_unknown_caller_policy_exception_error_record_public_rescan_never_leaks_symbols(
+    harness, tmp_path, monkeypatch, custom_exception,
+):
+    """Exact named-check catch path, including plausible private identifiers."""
+    sentinel = "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f"
+    filename = str(tmp_path / sentinel / "private_source.py")
+    guard = harness.SocketGuard(tmp_path, "cli", {})
+    guard.phase = "cli_roundtrip"
+    namespace = {"__name__": sentinel, "guard": guard}
+    exec(compile(
+        f"def {sentinel}():\n"
+        "    guard.audit('socket.getaddrinfo', (b'synthetic-private-host.invalid', 443))\n",
+        filename, "exec",
+    ), namespace)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Exception diagnostics must not inspect a traceback filename")
+
+    # No CallerSources map is needed for this probe: unknown frame details and
+    # exception serialization must perform NO filesystem inspection at all.
+    with monkeypatch.context() as patch:
+        for name in ("read_bytes", "read_text", "stat", "is_file", "resolve"):
+            patch.setattr(Path, name, forbidden)
+        try:
+            try:
+                namespace[sentinel]()
+            except harness.HarnessPolicyError as primary:
+                if custom_exception == "os-error":
+                    raise type(sentinel, (OSError,), {})(13, sentinel) from primary
+                if custom_exception == "policy-subclass":
+                    raise type(sentinel, (harness.HarnessPolicyError,), {})(sentinel) from primary
+                if custom_exception == "command-subclass":
+                    raise type(sentinel, (harness.CommandFailure,), {})(SimpleNamespace(
+                        returncode=19, stdout=sentinel, stderr=sentinel,
+                    )) from primary
+                raise
+        except (Exception, SystemExit) as caught:
+            record = harness.error_record(caught)  # Actual named-check catch seam.
+        public = harness.public_value({"check": record, "blocked": guard.blocked_details}, {})
+        harness.assert_public(public)
+
+    assert guard.attempts == ["socket.getaddrinfo"]
+    assert record["failure_domain"] == "qualification-policy"
+    assert record["diagnostics"][-1]["type"] == "HarnessPolicyError"
+    if custom_exception:
+        assert record["diagnostics"][0]["type"] == "withheld"
+        assert len(record["diagnostics"]) == 2
+    if custom_exception == "os-error":
+        assert record["diagnostics"][0]["errno"] == 13
+    if custom_exception == "command-subclass":
+        assert record["diagnostics"][0]["returncode"] == 19
+        assert record["diagnostics"][0]["streams"]["stderr"]["sha256"] == harness.hashlib.sha256(
+            sentinel.encode(),
+        ).hexdigest()
+    frames = [frame for detail in record["diagnostics"] for frame in detail["frames"]]
+    assert frames and all(type(frame["line"]) is int for frame in frames)
+    assert all("function" not in frame and "file" not in frame for frame in frames)
+    assert any(frame["line"] == 2 and frame["filename_sha256"] == harness.hashlib.sha256(
+        filename.encode(),
+    ).hexdigest() for frame in frames)
+    assert all(len(frame["code_sha256"]) == len(frame["filename_sha256"]) == 64 for frame in frames)
+    assert sentinel not in json.dumps(public)
+    assert "synthetic-private-host.invalid" not in json.dumps(public)
+    harness.save_public_json(tmp_path, "cli.json", {"check": record, "blocked": guard.blocked_details})
+    saved = (tmp_path / "evidence/cli.json").read_text(encoding="utf-8")
+    assert sentinel not in saved and "private_source.py" not in saved
+    assert "synthetic-private-host.invalid" not in saved
+    assert harness.check_public(tmp_path) == 0
+
+
+def test_error_record_bounds_exception_chain_and_frame_evidence_without_raw_symbols(harness):
+    def recurse(depth):
+        if depth:
+            return recurse(depth - 1)
+        raise PermissionError(13, "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f")
+
+    try:
+        recurse(20)
+    except PermissionError as exc:
+        record = harness.error_record(exc)
+    detail = record["diagnostics"][0]
+    assert detail["type"] == "PermissionError" and detail["errno"] == 13
+    assert len(detail["frames"]) == 8
+    assert "recurse" not in json.dumps(record)
+    assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in json.dumps(record)
+    harness.assert_public(harness.public_value(record, {}))
