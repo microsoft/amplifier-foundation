@@ -102,6 +102,29 @@ publication. Transcript writers must still hold execution ownership. Windows
 checkpoint/fence mutations and cooperative handoff remain unsupported; ordinary
 history saves do not remove those gates.
 
+On Windows, `session.store.write_transcript` also uses this private boundary and
+preserves system/developer rows, as that lower-level writer did before. As the
+explicit repair/rewind writer, it can replace a corrupt primary after validating
+the destination's security, including any existing append intent before changing
+the primary or backup. It retains the validated intent handle through replacement
+and removes that intent only after successful publication. A corrupt primary
+need not parse to perform this explicit repair. It retains existing backups
+rather than rotating corrupt data over them; it does not create a new backup
+automatically. The file-based `fork_session` reads the canonical source through `SessionHistoryStore`
+and saves its transcript/metadata through the same boundary. Windows forks first
+reserve a new private directory with atomic create-only semantics, then keep it
+and its ancestors pinned throughout transcript, metadata and optional legacy
+event publication. Every existing destination is refused with `FileExistsError`,
+including empty private directories, self-forks and same-ID contenders. There is
+no exists-then-create check or adoption of another fork's reservation. If a newly
+reserved fork fails, its directory and any partial files remain, with an explicit
+incomplete-publication exception note; no rollback deletes data. This is not a
+file-pair transaction. The operation does not create inherited-ACL history or
+resolve away reparse points. Unsafe source objects remain refusals, not migrations.
+The generic `read_jsonl`/`write_jsonl` utilities, format-only
+`load_transcript`/`load_metadata` readers and legacy root-event slicing remain
+separate low-level file helpers, not qualified private-history APIs.
+
 ## Recovery and revision checks
 
 - A missing transcript or metadata file falls back to its `.backup`, if present.

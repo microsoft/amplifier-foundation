@@ -1390,6 +1390,88 @@ def test_history_new_bindings_use_fixed_width_and_actual_change_time(monkeypatch
     assert C.sizeof(history_win._BASIC_INFO) == 40
 
 
+@pytest.mark.parametrize("failure", ["none", "exists-80", "exists-183", "denied", "ancestor", "leaf", "body"])
+def test_history_fork_reservation_is_private_create_only_and_pinned(monkeypatch, failure):
+    from contextlib import contextmanager
+
+    path = PureWindowsPath(r"C:\parent\new-fork")
+    events, last_error = [], [0]
+    error_code = {"exists-80": 80, "exists-183": 183, "denied": 5}.get(failure, 0)
+
+    class API:
+        @contextmanager
+        def private_security(self, **kwargs):
+            assert kwargs == {"directory": True}
+            events.append("private-security")
+            yield win.SECURITY_ATTRIBUTES(C.sizeof(win.SECURITY_ATTRIBUTES), 456, False)
+            last_error[0] = 0  # Cleanup must not erase the CreateDirectory error.
+
+        def CreateDirectoryW(self, actual, pointer):
+            assert actual == str(path)
+            security = C.cast(pointer, C.POINTER(win.SECURITY_ATTRIBUTES)).contents
+            assert security.lpSecurityDescriptor == 456 and not security.bInheritHandle
+            assert events == ["pin-parent", "private-security"]
+            events.append("create-new")
+            last_error[0] = error_code
+            return not error_code
+
+    @contextmanager
+    def pinned(api, directory, **kwargs):
+        if directory == path.parent:
+            assert kwargs == {"root": path.parent, "private": False, "create": True}
+            if failure == "ancestor":
+                raise shared.SharedStateError("unsafe ancestor")
+            label = "parent"
+        else:
+            assert directory == path and kwargs == {"root": path}
+            if failure == "leaf":
+                raise shared.SharedStateError("leaf validation failed")
+            label = "leaf"
+        events.append("pin-" + label)
+        try:
+            yield type("Pins", (), {"missing": False})()
+        finally:
+            events.append("unpin-" + label)
+
+    def native_error(code):
+        error = PermissionError("native access denied")
+        error.winerror = code
+        return error
+
+    monkeypatch.setattr(history_win, "_API", API)
+    monkeypatch.setattr(win, "_pinned", pinned)
+    monkeypatch.setattr(C, "get_last_error", lambda: last_error[0], raising=False)
+    monkeypatch.setattr(C, "WinError", native_error, raising=False)
+
+    def run():
+        with history_win.reserve_new_session(path):
+            assert events[-1] == "pin-leaf"
+            events.append("publish")
+            if failure == "body":
+                raise OSError("publication failure")
+
+    if failure == "none":
+        run()
+        assert events[-3:] == ["publish", "unpin-leaf", "unpin-parent"]
+    else:
+        expected = (FileExistsError if failure.startswith("exists") else
+                    PermissionError if failure == "denied" else
+                    OSError if failure == "body" else shared.SharedStateError)
+        with pytest.raises(expected) as caught:
+            run()
+        notes = getattr(caught.value, "__notes__", [])
+        assert bool(notes) == (failure in {"leaf", "body"})
+        if notes:
+            assert "retained" in notes[0] and str(path) in notes[0]
+        if error_code:
+            assert "pin-leaf" not in events
+            assert not notes  # Never claim we created somebody else's directory.
+        if failure == "ancestor":
+            assert not events  # No descendant creation before unsafe-ancestor refusal.
+        else:
+            assert events[-1] == "unpin-parent"
+
+
 @pytest.fixture
 def native_history(tmp_path):
     if os.name != "nt":
@@ -1533,32 +1615,79 @@ def test_native_history_foreign_read_acl_rejected_without_repair(native_history,
     assert store.metadata_path.read_bytes() == original
 
 
+def test_history_metadata_replacement_rotates_its_own_backup(monkeypatch):
+    """The warm-transcript copy guard must not reject this separate operation."""
+    calls = []
+    path = PureWindowsPath(r"C:\private\metadata.json")
+    monkeypatch.setattr(history_win, "stamp", lambda actual: object())
+    monkeypatch.setattr(history_win, "copy_backup", lambda source, target: calls.append(("backup", source, target)))
+    monkeypatch.setattr(history_win, "_replace", lambda target, chunks: calls.append(("replace", target, list(chunks))))
+    monkeypatch.setattr(history_win, "remove_pending", lambda *a: pytest.fail("metadata must not remove transcript intent"))
+    history_win.write_prepared(path, '{"turn":2}', preserve_backup=False)
+    assert calls == [
+        ("backup", path, path.with_suffix(".json.backup")),
+        ("replace", path, [b'{"turn":2}']),
+    ]
+
+
 @native
 def test_native_history_warm_append_never_copies_full_prefix(native_history, monkeypatch):
     store = native_history
     rows = [{"role": "user", "content": "x" * 2000 + str(i)} for i in range(100)]
     store.save(rows, {}, incremental=True)
     store.save(rows + rows[:1], {}, incremental=True)
-    before = store.transcript_path.read_bytes()
     inode = store.transcript_path.stat().st_ino
-    reads = []
+    reads, copied, tail_bytes = [], [], []
+    expected_start = 0
     original = history_win.open_binary
+    copy_backup = history_win.copy_backup
     from contextlib import contextmanager
+
+    class TailReader:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def seek(self, offset):
+            assert offset == expected_start, f"read began at {offset}, expected saved tail at {expected_start}"
+            return self.stream.seek(offset)
+
+        def read(self, size):
+            raw = self.stream.read(size)
+            tail_bytes.append(len(raw))
+            return raw
 
     @contextmanager
     def observed(path):
         if path.name.startswith("transcript"):
             reads.append(path.name)
         with original(path) as stream:
-            yield stream
+            yield TailReader(stream) if path == store.transcript_path else stream
+
+    def bounded_copy(source, target):
+        # Metadata replacement has its own small, required backup. The original
+        # blanket trap mistook that for a transcript-prefix copy in Windows CI.
+        assert source.name == "metadata.json", f"full-prefix copy on warm append: {source.name}"
+        copied.append(source.name)
+        return copy_backup(source, target)
 
     monkeypatch.setattr(history_win, "open_binary", observed)
-    monkeypatch.setattr(history_win, "copy_backup", lambda *a: pytest.fail("full-prefix copy on warm append"))
-    store.save(rows + rows[:2], {}, incremental=True)
-    assert reads == ["transcript.jsonl"]  # Only the previously appended tail.
-    assert store.transcript_path.stat().st_ino == inode
-    assert store.transcript_path.with_suffix(".jsonl.backup").read_bytes() == before
-    assert store.load_messages() == rows + rows[:2]
+    monkeypatch.setattr(history_win, "copy_backup", bounded_copy)
+    for count in (2, 3):
+        reads.clear()
+        copied.clear()
+        tail_bytes.clear()
+        before = store.transcript_path.read_bytes()
+        backup = store.transcript_path.with_suffix(".jsonl.backup")
+        expected_start = backup.stat().st_size
+        store.save(rows + rows[:count], {}, incremental=True)
+        assert reads == ["transcript.jsonl"], reads  # No primary/backup reparse.
+        assert sum(tail_bytes) == len(before) - expected_start
+        assert copied == ["metadata.json"]
+        assert store.transcript_path.stat().st_ino == inode
+        assert backup.read_bytes() == before
+    # Stop read instrumentation before checking complete content.
+    monkeypatch.setattr(history_win, "open_binary", original)
+    assert store.load_messages() == rows + rows[:3]
 
 
 @native

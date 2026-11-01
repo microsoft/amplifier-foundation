@@ -328,7 +328,7 @@ def test_native_ci_path_not_legacy_root_log(store):
 def test_relocated_ci_log_and_explicit_session_id(tmp_path):
     store = SessionHistoryStore(
         tmp_path / "arbitrary",
-        events_path=tmp_path / "relocated.jsonl",
+        events_path=tmp_path / "private-activity" / "relocated.jsonl",
         session_id="session",
     )
     write_events(store, [event("prompt:submit", prompt="hello")])

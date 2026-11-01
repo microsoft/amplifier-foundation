@@ -8,11 +8,12 @@ Only ordinary history names can be mutated here. No namespace durability claim.
 from __future__ import annotations
 
 import ctypes as C
+import errno
 import io
 import re
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from . import _windows_ownership as win
@@ -233,13 +234,73 @@ def copy_backup(source, target):
         _replace(target, iter(lambda: stream.read(1024 * 1024), b""))
 
 
+@contextmanager
+def reserve_new_session(directory):
+    """Atomically reserve a private fork directory and pin it through publication.
+
+    Never adopt an existing destination, even an empty/private one. A failed new
+    publication retains its directory and any partial files for explicit recovery.
+    """
+    directory = win._absolute(directory)
+    api = _API()
+    created = False
+    try:
+        with ExitStack() as pins:
+            # Validate/pin all existing ancestors before creating the leaf.
+            pins.enter_context(win._pinned(
+                api, directory.parent, root=directory.parent, private=False, create=True,
+            ))
+            with api.private_security(directory=True) as security:
+                created = bool(api.CreateDirectoryW(str(directory), C.byref(security)))
+                error = C.get_last_error() if not created else 0
+            if not created:
+                if error in {80, 183}:  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS.
+                    raise FileExistsError(errno.EEXIST, "fork destination already exists", str(directory))
+                raise C.WinError(error)
+            leaf = pins.enter_context(win._pinned(api, directory, root=directory))
+            if leaf.missing:
+                raise FileNotFoundError(directory)
+            yield
+    except BaseException as exc:
+        if created:
+            exc.add_note(
+                f"New Windows fork publication did not complete; reserved directory "
+                f"and any partial files are retained at {directory}. No rollback was attempted."
+            )
+        raise
+
+
+@contextmanager
+def _pending_intent(path):
+    """Validate before publication; retain the exact intent handle until removal."""
+    with ExitStack() as opened:
+        try:
+            pending = opened.enter_context(_file(path, remove=True))
+        except FileNotFoundError:
+            pending = None
+        yield pending
+
+
+def _delete_pending(api, handle):
+    # FileDispositionInfoEx: DELETE | POSIX_SEMANTICS on the validated handle.
+    flags = win.DWORD(3)
+    api.ok(api.SetFileInformationByHandle(handle, 21, C.byref(flags), C.sizeof(flags)))
+
+
 def write_prepared(path, content, preserve_backup):
     _history_name(path)
-    if not preserve_backup and stamp(path) is not None:
-        copy_backup(path, path.with_suffix(path.suffix + ".backup"))
-    _replace(path, [content.encode("utf-8")])
-    if path.name == "transcript.jsonl":
-        remove_pending(path.with_name(path.name + ".append-pending"))
+    with ExitStack() as preflight:
+        pending = (
+            preflight.enter_context(_pending_intent(path.with_name(path.name + ".append-pending")))
+            if path.name == "transcript.jsonl" else None
+        )
+        # Unsafe intent refuses before either primary or backup changes. This
+        # checks security only; explicit repair need not parse a corrupt primary.
+        if not preserve_backup and stamp(path) is not None:
+            copy_backup(path, path.with_suffix(path.suffix + ".backup"))
+        _replace(path, [content.encode("utf-8")])
+        if pending is not None:
+            _delete_pending(*pending)  # Only after successful primary replacement.
 
 
 def write_pending(path):
@@ -251,14 +312,9 @@ def write_pending(path):
 def remove_pending(path):
     if path.name != "transcript.jsonl.append-pending":
         raise ValueError("expected transcript append intent")
-    try:
-        with _file(path, remove=True) as (api, handle):
-            # FileDispositionInfoEx: DELETE | POSIX_SEMANTICS. Delete the exact
-            # validated intent, not a path reopened after validation.
-            flags = win.DWORD(3)
-            api.ok(api.SetFileInformationByHandle(handle, 21, C.byref(flags), C.sizeof(flags)))
-    except FileNotFoundError:
-        pass
+    with _pending_intent(path) as pending:
+        if pending is not None:
+            _delete_pending(*pending)
 
 
 def append(path, chunks):

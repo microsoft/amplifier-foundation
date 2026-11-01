@@ -12,6 +12,7 @@ on disk or how directories are structured.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -129,7 +130,18 @@ def write_transcript(session_dir: Path, entries: list[dict[str, Any]]) -> None:
         session_dir: Path to the session directory.
         entries: List of message dicts to write.
     """
-    write_jsonl(session_dir / TRANSCRIPT_FILENAME, entries)
+    if os.name == "nt":
+        # Canonical transcripts must be created privately, not with the generic
+        # JSONL utility. Preserve system/developer rows for this lower-level API.
+        # This is also the explicit repair/rewind writer: do not parse a damaged
+        # primary as a precondition, or rotate it over an earlier good backup.
+        from .history import SessionHistoryStore
+        from ._windows_history import write_prepared
+
+        content = SessionHistoryStore._messages_content(entries, True, None)
+        write_prepared(session_dir / TRANSCRIPT_FILENAME, content, preserve_backup=True)
+    else:
+        write_jsonl(session_dir / TRANSCRIPT_FILENAME, entries)
 
 
 def load_metadata(session_dir: Path) -> dict[str, Any]:
