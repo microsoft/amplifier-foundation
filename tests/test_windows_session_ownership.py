@@ -2026,6 +2026,153 @@ def test_reader_discriminator_actual_body_outcome_matrix(
     assert evidence["candidate"]["success"] is candidate_success
 
 
+def _assert_pre_pr_generator_chain():
+    """Pin the real legacy generator and backup/atomic chain, not substitutes."""
+    import hashlib
+    import inspect
+    from amplifier_foundation.io.files import write_with_backup
+    from amplifier_foundation.session.store import read_jsonl
+
+    atomic = _assert_pre_pr_atomic_writer()
+    assert write_with_backup.__globals__["_write_atomic"] is atomic
+    for function, expected in (
+        (write_with_backup, "aab888801b008ac5a6957ae312d7aa9640325a67e6e83ed2b2c1b90035379873"),
+        (read_jsonl, "e766ce6e1282011f3fbed31b848d12fea3ee9d2234fadaebf58318d3a889ef42"),
+    ):
+        # Definitions are byte-identical to 99fdb524 after newline normalization.
+        assert hashlib.sha256(inspect.getsource(function).encode("utf-8")).hexdigest() == expected
+    return write_with_backup, read_jsonl
+
+
+def _legacy_generator_publication_attempt(path, rows, expected_after, publish):
+    """Suspend the real generator; buffering must not hide target identity."""
+    _, read_jsonl = _assert_pre_pr_generator_chain()
+    before = path.read_bytes()
+    generator = read_jsonl(path)
+    try:
+        assert next(generator) == rows[0]
+        # CPython's actual generator frame exposes the stream opened by read_jsonl.
+        # Do not replace Path.open or the generator. Large remaining rows ensure
+        # the generator must fetch old-object bytes beyond its current buffer.
+        stream = generator.gi_frame.f_locals["fh"]
+        old_stat = os.fstat(stream.fileno())
+        old_identity = (old_stat.st_dev, old_stat.st_ino)
+        assert (path.stat().st_dev, path.stat().st_ino) == old_identity
+        assert stream.buffer.raw.tell() < len(before)
+        error = None
+        try:
+            publish()
+        except OSError as caught:
+            error = caught
+        current = path.stat()
+        identity = (current.st_dev, current.st_ino)
+        assert path.read_bytes() == (before if error else expected_after)
+        assert (identity == old_identity) is (error is not None)
+        assert not stream.closed
+        retained = os.fstat(stream.fileno())
+        assert (retained.st_dev, retained.st_ino) == old_identity
+        assert [next(generator) for _ in rows[1:]] == rows[1:]
+        # Stay suspended at the last yield: exhaustion would close it implicitly.
+        assert not stream.closed
+        retained = os.fstat(stream.fileno())
+        assert (retained.st_dev, retained.st_ino) == old_identity
+    finally:
+        generator.close()
+    assert stream.closed and generator.gi_frame is None
+    return error, identity
+
+
+def test_legacy_generator_baseline_vs_candidate(tmp_path, record_property):
+    """Real generator overlap: native on Windows, portable POSIX smoke elsewhere.
+
+    Baseline is only the pre-PR transcript write_with_backup/_write_atomic chain,
+    not a whole historical SessionHistoryStore.save. Candidate is a real combined
+    transcript/metadata save. No outcome or outer exception parity is prescribed
+    for baseline; candidate must preserve every baseline success.
+    """
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    write_with_backup, read_jsonl = _assert_pre_pr_generator_chain()
+    rows = [
+        {"role": "user", "content": "old first \u2603",
+         "metadata": {"provider:continuation": "synthetic"}},
+        {"role": "assistant", "content": "old middle \U0001f680" + "x" * 65536},
+        {"role": "user", "content": "old last \u2603" + "y" * 65536},
+    ]
+    new_rows = rows + [{"role": "assistant", "content": "complete new \U0001f680"}]
+    metadata = {"label": "old \u2603", "unknown": {"preserve": True}}
+    new_metadata = metadata | {"label": "complete new \U0001f680"}
+    content = SessionHistoryStore._messages_content(new_rows, True, None)
+    candidate_bytes = content.encode("utf-8")
+    baseline_bytes = content.replace("\n", os.linesep).encode("utf-8")
+    baseline = SessionHistoryStore(tmp_path / "generator-baseline")
+    candidate = SessionHistoryStore(tmp_path / "generator-candidate")
+    for store in (baseline, candidate):
+        store.save(rows, metadata)  # Independent private creation before payload.
+    before = candidate.transcript_path.read_bytes()
+    before_metadata = candidate.metadata_path.read_bytes()
+    assert baseline.transcript_path.read_bytes() == before
+    assert baseline.metadata_path.read_bytes() == before_metadata
+
+    def baseline_publish():
+        write_with_backup(baseline.transcript_path, content)
+
+    def candidate_publish():
+        candidate.save(new_rows, new_metadata)
+
+    old_error, old_identity = _legacy_generator_publication_attempt(
+        baseline.transcript_path, rows, baseline_bytes, baseline_publish,
+    )
+    new_error, new_identity = _legacy_generator_publication_attempt(
+        candidate.transcript_path, rows, candidate_bytes, candidate_publish,
+    )
+
+    def outcome(error):
+        chain = []
+        while error is not None:
+            chain.append({"type": type(error).__name__, "winerror": getattr(error, "winerror", None),
+                          "errno": error.errno})
+            error = error.__cause__
+        return {"success": not chain, "errors": chain}
+
+    evidence = json.dumps({"platform": sys.platform, "reader": "session.store.read_jsonl",
+                           "baseline_scope": "transcript write_with_backup only",
+                           "candidate_scope": "combined SessionHistoryStore.save",
+                           "baseline": outcome(old_error), "candidate": outcome(new_error)},
+                          sort_keys=True)
+    record_property("legacy_generator_discriminator", evidence)
+    print("legacy_generator_discriminator=" + evidence)  # Require final PASS, not just this print.
+    if old_error is None:
+        assert new_error is None, "candidate regressed a successful pre-PR publication"
+    if new_error is not None:
+        assert new_error.winerror == 32, "candidate failure must be a precise sharing refusal"
+    # Transcript is first: its refusal must not silently update metadata.
+    assert candidate.metadata_path.read_bytes() == (
+        before_metadata if new_error else SessionHistoryStore._metadata_content(new_metadata).encode("utf-8")
+    )
+    assert baseline.metadata_path.read_bytes() == before_metadata  # Baseline never wrote it.
+
+    # Both generators have explicitly closed. Each real writer must now publish
+    # a fresh complete object, and rotate the complete previously visible primary.
+    for store, expected, identity, publish in (
+        (baseline, baseline_bytes, old_identity, baseline_publish),
+        (candidate, candidate_bytes, new_identity, candidate_publish),
+    ):
+        previous = store.transcript_path.read_bytes()
+        _publication_after_reader_close(store.transcript_path, expected, identity, publish)
+        backup = store.transcript_path.with_suffix(".jsonl.backup")
+        assert backup.read_bytes() == previous
+        assert list(read_jsonl(backup)) == (rows if previous == before else new_rows)
+        assert list(read_jsonl(store.transcript_path)) == new_rows
+        assert not list(store.session_dir.glob("*.tmp"))
+        assert not (store.session_dir / "transcript.jsonl.append-pending").exists()
+    snapshot = candidate.load(include_events=False)
+    assert snapshot.messages == new_rows and snapshot.metadata == new_metadata
+    assert candidate.metadata_path.with_suffix(".json.backup").read_bytes() == (
+        before_metadata if new_error else SessionHistoryStore._metadata_content(new_metadata).encode("utf-8")
+    )
+
+
 @native
 def test_native_history_missing_reads_do_not_create_roots_or_lock(native_history):
     store = native_history

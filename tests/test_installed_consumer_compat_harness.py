@@ -141,8 +141,6 @@ def test_only_explicit_candidate_override_and_distinct_core_graphs():
     assert "--only-binary" in prepare and '"amplifier-core"' in prepare
     assert '("2.0.1" if consumer == "agent" else "2.0.2")' in source("installed_audit")
     assert '"vcs_info"]["commit_id"] == revision' in source("installed_audit")
-    assert 'direct["archive_info"]["hashes"]["sha256"] == digest(wheel)' in source("installed_audit")
-    assert 'path.read_bytes() == archive.read(name)' in source("installed_audit")
     assert "source_shadowing" in source("run_consumer")
     assert "site-packages" in source("import_audit")
 
@@ -664,3 +662,232 @@ def test_first_turn_does_not_require_a_nonexistent_prior_backup(harness, tmp_pat
     )
     (tmp_path / "metadata.json").write_text('{"turn_count":1}')
     assert len(harness.history_files(tmp_path, [harness.QUOTE])) == 2
+
+
+@pytest.fixture
+def installed_model(harness, tmp_path, monkeypatch):
+    """Synthetic ZIP and installed bytes only: no build, install, import or launch."""
+    prefix = tmp_path / "environment"
+    site = prefix / "lib/python3.13/site-packages"
+    site.mkdir(parents=True)
+    monkeypatch.setattr(harness.sys, "prefix", str(prefix))
+    wheel = tmp_path / "candidate.whl"
+    members = {
+        "amplifier_foundation/__init__.py": b"# synthetic candidate\n",
+        "amplifier_foundation/session/history.py": b"# synthetic history\n",
+        "amplifier_foundation-1.0.0.dist-info/METADATA": b"Name: amplifier-foundation\nVersion: 1.0.0\n",
+        "amplifier_foundation-1.0.0.dist-info/RECORD": b"synthetic pre-install RECORD\n",
+    }
+    with harness.zipfile.ZipFile(wheel, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+            target = site / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+    # Legitimate installer modification is confined to RECORD.
+    (site / "amplifier_foundation-1.0.0.dist-info/RECORD").write_bytes(b"installed RECORD\n")
+    expected = harness.digest(wheel)
+    distributions = {}
+    for name, revision in {
+        "amplifier-foundation": None, "amplifier-core": None,
+        "amplifier-agent": harness.AGENT_REV, "amplifier-agent-engine": harness.ENGINE_REV,
+        "amplifier-app-cli": harness.CLI_REV, "amplifier-module-context-simple": harness.CONTEXT_REV,
+        "amplifier-module-loop-streaming": harness.LOOP_REV,
+    }.items():
+        direct = None if name == "amplifier-core" else (
+            {"url": wheel.as_uri(), "archive_info": {}} if name == "amplifier-foundation" else {
+                "url": f"https://github.com/microsoft/{name}",
+                "vcs_info": {"commit_id": revision},
+            }
+        )
+        if name == "amplifier-foundation":
+            files = list(members)
+        else:
+            files = [f"{name.replace('-', '_')}/__init__.py"]
+            target = site / files[0]
+            target.parent.mkdir()
+            target.write_bytes(b"# synthetic dependency\n")
+        distribution = SimpleNamespace(
+            metadata={"Name": name, "Version": "1.0.0"}, version="1.0.0",
+            requires=["synthetic>=1"], files=files, direct=direct,
+            locate_file=lambda name: site / name,
+        )
+        distribution.read_text = lambda filename, d=distribution: (
+            json.dumps(d.direct) if filename == "direct_url.json" and d.direct is not None else None
+        )
+        distributions[name] = distribution
+    monkeypatch.setattr(harness.metadata, "distributions", lambda: list(distributions.values()))
+    monkeypatch.setattr(harness.metadata, "distribution", lambda name: distributions[name])
+    core = {"version": "2.0.1"}
+    monkeypatch.setattr(harness.metadata, "version", lambda name: core["version"])
+    return SimpleNamespace(wheel=wheel, expected=expected, members=members, site=site,
+                           distributions=distributions, core=core)
+
+
+@pytest.mark.parametrize("consumer", ["agent", "cli"])
+def test_actual_installed_audit_accepts_empty_uv_archive_info_only_with_full_proof(
+    harness, installed_model, tmp_path, consumer,
+):
+    model = installed_model
+    model.core["version"] = "2.0.1" if consumer == "agent" else "2.0.2"
+    result = {}
+    harness.installed_audit(model.wheel, model.expected, consumer, result)
+    proof = result["candidate_install_proof"]
+    assert proof["candidate_wheel_sha256"] == model.expected
+    assert proof["preparation_digest_verified"] and proof["direct_url_verified"]
+    assert proof["installer_hash_metadata"] == "absent" and proof["installer_hashes"] == {}
+    expected_files = {name: harness.hashlib.sha256(data).hexdigest() for name, data in model.members.items()
+                      if not name.endswith(".dist-info/RECORD")}
+    assert proof["installed_wheel_members"] == expected_files
+    assert result["distributions"]["amplifier-foundation"]["direct_url"]["archive_info"] == {}
+    harness.save_public_json(tmp_path, f"{consumer}.json", result)
+    assert harness.check_public(tmp_path) == 0
+
+
+@pytest.mark.parametrize("metadata_hash", ["sha256", "sha512", "legacy"])
+def test_candidate_hash_metadata_is_verified_when_present(harness, installed_model, metadata_hash):
+    model = installed_model
+    info = model.distributions["amplifier-foundation"].direct["archive_info"]
+    algorithm = "sha256" if metadata_hash == "legacy" else metadata_hash
+    value = harness.hashlib.new(algorithm, model.wheel.read_bytes()).hexdigest()
+    if metadata_hash == "legacy":
+        info["hash"] = f"sha256={value}"
+    else:
+        info["hashes"] = {algorithm: value}
+    result = {}
+    harness.installed_audit(model.wheel, model.expected, "agent", result)
+    proof = result["candidate_install_proof"]
+    assert proof["installer_hash_metadata"] == "verified"
+    assert proof["installer_hashes"] == {algorithm: value}
+
+
+@pytest.mark.parametrize("fault", [
+    "wrong-wheel-url", "mutated-wheel", "mutated-installed-python", "mutated-installed-metadata",
+    "missing-installed-file", "hash-mismatch", "legacy-hash-mismatch", "conflicting-hashes",
+    "invalid-hashes", "invalid-archive-info", "editable", "core-pin", "sdk-vcs", "engine-vcs",
+])
+def test_actual_installed_audit_rejects_failed_candidate_identity_oracles(
+    harness, installed_model, fault,
+):
+    model = installed_model
+    direct = model.distributions["amplifier-foundation"].direct
+    if fault == "wrong-wheel-url":
+        direct["url"] = (model.wheel.parent / "different.whl").as_uri()
+    elif fault == "mutated-wheel":
+        model.wheel.write_bytes(model.wheel.read_bytes() + b"changed since preparation")
+    elif fault.startswith("mutated-installed"):
+        name = ("amplifier_foundation/session/history.py" if fault.endswith("python") else
+                "amplifier_foundation-1.0.0.dist-info/METADATA")
+        (model.site / name).write_bytes(b"wrong installed bytes")
+    elif fault == "missing-installed-file":
+        # Simulate a missing installed member through locate_file, not file deletion.
+        foundation = model.distributions["amplifier-foundation"]
+        foundation.locate_file = lambda name: model.site / "missing" / name
+    elif fault == "hash-mismatch":
+        direct["archive_info"]["hashes"] = {"sha256": "0" * 64}
+    elif fault == "legacy-hash-mismatch":
+        direct["archive_info"]["hash"] = "sha256=" + "0" * 64
+    elif fault == "conflicting-hashes":
+        direct["archive_info"] = {"hashes": {"sha256": model.expected}, "hash": "sha256=" + "0" * 64}
+    elif fault == "invalid-hashes":
+        direct["archive_info"]["hashes"] = None
+    elif fault == "invalid-archive-info":
+        direct["archive_info"] = []
+    elif fault == "editable":
+        direct["dir_info"] = {"editable": True}
+    elif fault == "core-pin":
+        model.core["version"] = "2.0.2"
+    else:
+        package = "amplifier-agent" if fault == "sdk-vcs" else "amplifier-agent-engine"
+        model.distributions[package].direct["vcs_info"]["commit_id"] = "0" * 40
+    result = {}
+    with pytest.raises((AssertionError, FileNotFoundError)):
+        harness.installed_audit(model.wheel, model.expected, "agent", result)
+    assert "candidate_install_proof" not in result
+
+
+@pytest.mark.parametrize("consumer", ["agent", "cli"])
+def test_cli_graph_cannot_borrow_agent_core_or_consumer_revision(harness, installed_model, consumer):
+    model = installed_model
+    model.core["version"] = "2.0.1" if consumer == "cli" else "2.0.2"
+    with pytest.raises(AssertionError):
+        harness.installed_audit(model.wheel, model.expected, consumer, {})
+    model.core["version"] = "2.0.2" if consumer == "cli" else "2.0.1"
+    package = "amplifier-app-cli" if consumer == "cli" else "amplifier-agent"
+    model.distributions[package].direct["vcs_info"]["commit_id"] = "0" * 40
+    with pytest.raises(AssertionError):
+        harness.installed_audit(model.wheel, model.expected, consumer, {})
+
+
+@pytest.mark.parametrize("stderr,category,code", [
+    ("error: No solution found: amplifier-core has no wheels with a matching platform tag", "dependency-resolution", None),
+    ("error: Failed to fetch amplifier-agent-engine\nHTTP 403 Forbidden", "git-fetch", 403),
+    ("error: The filename or extension is too long (os error 206)", "path-too-long", 206),
+    ("error: Access is denied [WinError 5]", "access-denied", 5),
+    ("error: Build backend failed: Microsoft Visual C++ is required", "build-backend", None),
+    ("error: certificate verify failed", "certificate", None),
+])
+def test_setup_diagnostics_are_useful_bounded_templates_not_raw_stderr(
+    harness, tmp_path, monkeypatch, stderr, category, code,
+):
+    sentinel = "synthetic-private-sentinel"
+    raw = (
+        stderr + f"\nAuthorization: Bearer {sentinel}\npassword={sentinel}\n"
+        f"https://fixture:{sentinel}@example.invalid/private?token={sentinel}\n"
+        f"/home/{sentinel}/config\nC:\\Users\\{sentinel}\\config\n"
+        f"arbitrary unrecognized private prose {sentinel}\n"
+    )
+    stdout = f"arbitrary stdout {sentinel}"
+    monkeypatch.setattr(harness.subprocess, "run", lambda *args, **kw: SimpleNamespace(
+        returncode=1, stdout=stdout, stderr=raw,
+    ))
+    with pytest.raises(harness.CommandFailure) as raised:
+        harness.command(["uv", sentinel], cwd=tmp_path, env={}, diagnose_setup=True)
+    record = harness.error_record(raised.value)
+    detail = record["diagnostics"][0]
+    setup = detail["setup"]
+    assert category in setup["categories"]
+    if code:
+        assert code in setup["windows_codes"] + setup["http_status"]
+    assert detail["streams"]["stderr"]["sha256"] == harness.hashlib.sha256(raw.encode()).hexdigest()
+    text = json.dumps(setup)
+    assert len(text) < 2048
+    assert all(value not in text for value in (
+        sentinel, "Authorization", "example.invalid", "C:\\Users", "/home/", "arbitrary", "password=",
+    ))
+    harness.save_public_json(tmp_path, "preparation.json", record)
+    assert sentinel not in (tmp_path / "evidence/preparation.json").read_text()
+    assert harness.check_public(tmp_path) == 0
+
+
+def test_unknown_setup_stderr_stays_withheld_and_default_command_remains_private(
+    harness, tmp_path, monkeypatch,
+):
+    raw = "unknown synthetic-private-sentinel /home/private-fixture\n"
+    monkeypatch.setattr(harness.subprocess, "run", lambda *args, **kw: SimpleNamespace(
+        returncode=1, stdout=raw, stderr=raw,
+    ))
+    with pytest.raises(harness.CommandFailure) as raised:
+        harness.command(["fixture"], cwd=tmp_path, env={})
+    assert "setup" not in harness.error_record(raised.value)["diagnostics"][0]
+    with pytest.raises(harness.CommandFailure) as raised:
+        harness.command(["fixture"], cwd=tmp_path, env={}, diagnose_setup=True)
+    setup = harness.error_record(raised.value)["diagnostics"][0]["setup"]
+    assert setup["categories"] == ["unclassified"]
+    assert setup["packages"] == [] and setup["raw_stderr"] == "withheld"
+    assert "sentinel" not in json.dumps(setup)
+
+
+@pytest.mark.parametrize("path", [
+    r"C:\runner\work\agent/lib/site-packages/fixture.py",
+    r"C:/runner/work\agent\Lib\site-packages\fixture.py",
+    r"C:\runner/work/agent\Lib\site-packages\fixture.py",
+])
+def test_public_windows_mixed_separators_preserve_specific_environment_alias(harness, path):
+    # Pure strings: validates Windows normalization without a Windows host or install.
+    normalized = harness.public_string(path, {
+        r"C:\runner\work\agent": "<agent-env>", r"C:\runner\work": "<work>",
+    })
+    assert normalized.startswith("<agent-env>")
+    assert "<work>" not in normalized and "runner" not in normalized
+    harness.assert_public(normalized)

@@ -123,7 +123,10 @@ def public_string(value: str, aliases: dict[str, str]) -> str:
         if Path(path).is_absolute():
             variants.add(Path(path).as_uri())
         for variant in sorted(variants, key=len, reverse=True):
-            value = re.sub(re.escape(variant), lambda _: label, value, flags=re.I)
+            # Path.as_uri, pathlib and subprocesses can mix slash styles on
+            # Windows. Match separators, not a partially normalized prefix.
+            pattern = r"[\\/]".join(re.escape(part) for part in re.split(r"[\\/]", variant))
+            value = re.sub(pattern, lambda _: label, value, flags=re.I)
     value = _URL.sub(
         lambda match: "[private-file-url]" if urlsplit(match.group()).scheme == "file" else match.group(),
         value,
@@ -212,8 +215,63 @@ def check_public(work: Path) -> int:
     return 0
 
 
+def setup_diagnostics(stderr: str) -> dict:
+    """Allow-listed uv stderr markers, NOT arbitrary redacted prose.
+
+    An unknown line stays withheld, even if it looks harmless. Recognized
+    templates and package identities are useful for the next setup failure
+    without exporting paths, URLs, credentials, compiler output or tracebacks.
+    Markers describe the reported failure, not an independently proven cause.
+    """
+    sample = stderr[-65536:].lower()
+    markers = [
+        label for label, needles in (
+            ("dependency-resolution", ("no solution found", "unsatisfiable", "conflicting dependencies")),
+            ("compatible-wheel-unavailable", ("no matching distribution", "no wheels", "matching platform tag",
+                                              "does not have a wheel", "doesn't have a wheel")),
+            ("python-requirement", ("requires-python", "requires python")),
+            ("git-fetch", ("failed to fetch", "failed to clone", "git fetch", "git clone")),
+            ("connection", ("connection refused", "connection reset", "timed out", "failed to connect",
+                            "dns error", "name resolution")),
+            ("certificate", ("certificate verify failed", "invalid peer certificate", "unknown issuer")),
+            ("access-denied", ("permission denied", "access is denied")),
+            ("path-too-long", ("filename or extension is too long", "filename too long", "path too long")),
+            ("sharing-violation", ("being used by another process", "sharing violation")),
+            ("missing-file", ("no such file or directory", "cannot find the file", "cannot find the path")),
+            ("disk-full", ("no space left", "disk is full")),
+            ("build-backend", ("build backend", "failed to build", "failed to prepare metadata")),
+            ("compiler", ("microsoft visual c++", "microsoft c++ build tools", "compiler not found")),
+        )
+        if any(needle in sample for needle in needles)
+    ]
+    known_packages = (
+        "amplifier-agent", "amplifier-agent-engine", "amplifier-foundation", "amplifier-core",
+        "amplifier-app-cli", "amplifier-module-loop-streaming", "amplifier-module-context-simple",
+        "amplifier-module-tool-delegate", "amplifier-module-tool-skills", "amplifier-module-tool-mcp",
+        "amplifier-module-tool-filesystem", "amplifier-module-tool-apply-patch", "amplifier-module-tool-bash",
+        "amplifier-module-tool-web", "amplifier-module-tool-search", "amplifier-module-hooks-routing",
+        "amplifier-module-hook-context-intelligence", "amplifier-module-hook-redaction",
+        "pytest", "pytest-asyncio", "hatchling", "jsonschema", "pyyaml",
+    )
+    return {
+        "interpretation": "recognized stderr markers, not a proven root cause",
+        "categories": markers or ["unclassified"],
+        "packages": [name for name in known_packages
+                     if re.search(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", sample)][:8],
+        "windows_codes": sorted({int(code) for code in re.findall(
+            r"(?:winerror|os error)\s*[:\[]?\s*(\d{1,4})\b", sample,
+        )})[:8],
+        "http_status": sorted({int(code) for code in re.findall(
+            r"\b(401|403|404|408|429|500|502|503|504)\s+(?:unauthorized|forbidden|not found|"
+            r"request timeout|too many requests|internal server error|bad gateway|"
+            r"service unavailable|gateway timeout)\b", sample,
+        )})[:8],
+        "raw_stderr": "withheld",
+    }
+
+
 class CommandFailure(RuntimeError):
-    def __init__(self, result):
+    def __init__(self, result, *, diagnose_setup: bool = False):
         super().__init__("Qualification subprocess failed; raw output withheld")
         self.returncode = result.returncode
         self.streams = {
@@ -221,6 +279,7 @@ class CommandFailure(RuntimeError):
                    "bytes": len(text.encode("utf-8"))}
             for name, text in (("stdout", result.stdout), ("stderr", result.stderr))
         }
+        self.setup = setup_diagnostics(result.stderr) if diagnose_setup else None
 
 
 def error_record(exc: BaseException) -> dict:
@@ -243,6 +302,8 @@ def error_record(exc: BaseException) -> dict:
                 detail[name] = number
         if isinstance(exc, CommandFailure):
             detail["streams"] = exc.streams
+            if exc.setup is not None:
+                detail["setup"] = exc.setup
         chain.append(detail)
         exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
     return {
@@ -291,14 +352,14 @@ def clean_environment(root: Path) -> dict[str, str]:
     return env
 
 
-def command(argv, *, cwd: Path, env: dict, timeout: int = 600) -> str:
+def command(argv, *, cwd: Path, env: dict, timeout: int = 600, diagnose_setup: bool = False) -> str:
     """No shell, credentials, inherited stdin, or unbounded setup/child lifetime."""
     result = subprocess.run(
         [str(item) for item in argv], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
     )
     if result.returncode:
-        raise CommandFailure(result)
+        raise CommandFailure(result, diagnose_setup=diagnose_setup)
     return result.stdout
 
 
@@ -356,18 +417,22 @@ def prepare(work: Path) -> int:
                 f"amplifier-module-loop-streaming @ git+https://github.com/microsoft/amplifier-module-loop-streaming@{LOOP_REV}",
             ],
         }.items():
+            phase = "create-venv"
             try:
                 python = env_python(work, consumer)
                 command(["uv", "venv", "--python", sys.executable, python.parent.parent], cwd=work, env=env)
+                phase = "install"
                 command(["uv", "pip", "install", "--python", python, "--no-sources",
                          "--only-binary", "amplifier-core", "--overrides", override,
-                         *requirements, *TEST_DEPENDENCIES], cwd=work, env=env)
+                         *requirements, *TEST_DEPENDENCIES], cwd=work, env=env, diagnose_setup=True)
+                phase = "dependency-check"
                 command(["uv", "pip", "check", "--python", python], cwd=work, env=env)
                 report["consumers"][consumer] = {
                     "status": "passed", "requirements": requirements, "dependency_check": "passed",
                 }
             except Exception as exc:
                 report["consumers"][consumer] = error_record(exc)
+                report["consumers"][consumer]["phase"] = phase
         if all(item["status"] == "passed" for item in report["consumers"].values()):
             report["status"] = "passed"
     except Exception as exc:
@@ -379,7 +444,55 @@ def prepare(work: Path) -> int:
     return int(report["status"] != "passed")
 
 
-def installed_audit(wheel: Path, consumer: str, result: dict) -> None:
+def candidate_install_proof(wheel: Path, expected_sha256: str, foundation) -> dict:
+    """Prove the candidate independently of optional installer hash metadata."""
+    actual_sha256 = digest(wheel)
+    assert actual_sha256 == expected_sha256, "Candidate wheel changed after preparation"
+    direct = json.loads(foundation.read_text("direct_url.json"))
+    assert direct["url"] == wheel.as_uri(), "Foundation was not installed from this candidate wheel"
+    assert not direct.get("dir_info", {}).get("editable"), "Editable candidate install"
+    info = direct["archive_info"]
+    assert isinstance(info, dict), "Invalid archive_info"
+    hashes = info.get("hashes", {})
+    assert isinstance(hashes, dict), "Invalid archive hash metadata"
+    declared = dict(hashes)
+    if "hash" in info:  # Legacy PEP 610 spelling, if the installer supplies it.
+        algorithm, value = info["hash"].split("=", 1)
+        assert algorithm not in declared or declared[algorithm] == value, "Conflicting archive hashes"
+        declared[algorithm] = value
+    for algorithm, value in declared.items():
+        hasher = hashlib.new(algorithm)  # Unknown algorithms fail closed.
+        with wheel.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        assert isinstance(value, str) and hasher.hexdigest() == value, "Installer archive hash mismatch"
+    compared = {}
+    with zipfile.ZipFile(wheel) as archive:
+        assert len(archive.namelist()) == len(set(archive.namelist())), "Duplicate wheel members"
+        for name in archive.namelist():
+            if name.endswith("/"):
+                continue
+            # No unqualified wheel .data relocation is silently exempted.
+            assert ".data/" not in name, "Candidate wheel relocation is not qualified"
+            if name.endswith(".dist-info/RECORD"):
+                continue  # Installer rewrites this; installed hash is retained by installed_audit.
+            path = Path(foundation.locate_file(name)).resolve()
+            assert path.is_relative_to(Path(sys.prefix).resolve()), "Installed candidate escaped its environment"
+            assert "site-packages" in path.parts, "Candidate is not in site-packages"
+            expected = archive.read(name)
+            assert path.read_bytes() == expected, f"Installed candidate byte mismatch: {name}"
+            compared[name] = hashlib.sha256(expected).hexdigest()
+    assert any(name.startswith("amplifier_foundation/") and name.endswith(".py") for name in compared)
+    return {
+        "candidate_wheel_sha256": actual_sha256, "preparation_digest_verified": True,
+        "direct_url_verified": True,
+        "installer_hash_metadata": "verified" if declared else "absent",
+        "installer_hashes": declared, "installed_wheel_members": compared,
+        "record_exception": "installer-rewritten RECORD only; its installed hash retained separately",
+    }
+
+
+def installed_audit(wheel: Path, expected_sha256: str, consumer: str, result: dict) -> None:
     """Full selected-distribution hashes/metadata, exact VCS IDs, no editable imports."""
     names = ["amplifier-foundation", "amplifier-core"]
     names += ["amplifier-agent", "amplifier-agent-engine"] if consumer == "agent" else [
@@ -418,19 +531,7 @@ def installed_audit(wheel: Path, consumer: str, result: dict) -> None:
     for name, revision in expected.items():
         assert result["distributions"][name]["direct_url"]["vcs_info"]["commit_id"] == revision, name
     foundation = metadata.distribution("amplifier-foundation")
-    direct = json.loads(foundation.read_text("direct_url.json"))
-    assert direct["url"] == wheel.as_uri()
-    assert direct["archive_info"]["hashes"]["sha256"] == digest(wheel)
-    with zipfile.ZipFile(wheel) as archive:
-        for name in archive.namelist():
-            # Installers legitimately rewrite RECORD to include direct_url,
-            # INSTALLER and bytecode. Its installed hash is retained above.
-            if name.endswith(("/", ".dist-info/RECORD")) or ".data/" in name:
-                continue
-            path = Path(foundation.locate_file(name)).resolve()
-            assert path.is_relative_to(Path(sys.prefix).resolve()), str(path)
-            assert path.read_bytes() == archive.read(name), name
-    result["candidate_wheel_sha256"] = digest(wheel)
+    result["candidate_install_proof"] = candidate_install_proof(wheel, expected_sha256, foundation)
 
 
 def import_audit() -> dict:
@@ -991,7 +1092,7 @@ def run_consumer(work: Path, consumer: str) -> int:
         wheel = Path(preparation["candidate"]["wheel"])
         assert digest(wheel) == preparation["candidate"]["wheel_sha256"]
         report["provenance"] = {}
-        installed_audit(wheel, consumer, report["provenance"])
+        installed_audit(wheel, preparation["candidate"]["wheel_sha256"], consumer, report["provenance"])
         asyncio.run(qualify(work, consumer, report))
         assert all(item["status"] == "passed" for item in report["checks"].values())
         report["status"] = "passed"
