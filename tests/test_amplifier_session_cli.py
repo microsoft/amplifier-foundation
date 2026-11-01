@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _script_path = (
     Path(__file__).resolve().parent.parent / "scripts" / "amplifier-session.py"
 )
@@ -44,19 +46,24 @@ def _make_session(
     Returns the session directory path.
     """
     session_dir = tmp_path / "proj1" / "sessions" / "test-session-001"
-    session_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write transcript.jsonl
-    with open(session_dir / "transcript.jsonl", "w", encoding="utf-8") as f:
-        for entry in entries:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-    # Write metadata.json
     meta = dict(metadata) if metadata is not None else {}
     meta.setdefault("session_id", "test-session-001")
     meta.setdefault("created", "2024-06-01T10:00:00+00:00")
     meta.setdefault("bundle", "test-bundle")
     meta.setdefault("model", "test-model")
+    if os.name == "nt":
+        from amplifier_foundation.session.store import write_metadata, write_transcript
+
+        # Valid-state fixture: private creation before any payload, even when
+        # the message sequence deliberately has orphaned/misordered tool rows.
+        write_transcript(session_dir, entries)
+        write_metadata(session_dir, meta)
+        return session_dir
+
+    session_dir.mkdir(parents=True, exist_ok=True)
+    with open(session_dir / "transcript.jsonl", "w", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     with open(session_dir / "metadata.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
@@ -85,6 +92,32 @@ _BROKEN_ENTRIES = [
     },
     {"role": "user", "content": "Next message"},
 ]
+
+
+def test_windows_cli_fixture_uses_private_writers_before_payload(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from amplifier_foundation.session import store
+
+    calls = []
+    rows = [{"role": "system", "content": "context"},
+            {"role": "developer", "content": "instructions"}, *_BROKEN_ENTRIES]
+
+    def transcript(directory, entries):
+        assert not directory.exists()  # No inherited-ACL mkdir before private I/O.
+        assert entries is rows
+        calls.append("transcript")
+
+    def metadata(directory, entries):
+        assert not directory.exists()  # The transcript stub intentionally did no I/O.
+        assert entries["model"] == "synthetic-model"
+        calls.append("metadata")
+
+    monkeypatch.setattr(sys.modules[__name__], "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(store, "write_transcript", transcript)
+    monkeypatch.setattr(store, "write_metadata", metadata)
+    directory = _make_session(tmp_path, rows, {"model": "synthetic-model"})
+    assert calls == ["transcript", "metadata"]
+    assert not directory.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +200,8 @@ class TestRepairSubcommand:
     def test_repair_creates_backup_file(self, tmp_path: Path) -> None:
         """Repair creates a .bak-pre-repair backup file in the session dir."""
         session_dir = _make_session(tmp_path, _BROKEN_ENTRIES)
-        _run("repair", str(session_dir))
+        result = _run("repair", str(session_dir))
+        assert result.returncode == 0, result.stdout + result.stderr
         backup_files = list(session_dir.glob("transcript.jsonl.bak-pre-repair-*"))
         assert len(backup_files) == 1
 
@@ -213,7 +247,8 @@ class TestRewindSubcommand:
     def test_rewind_creates_backup(self, tmp_path: Path) -> None:
         """Rewind creates a .bak-pre-rewind backup file in the session dir."""
         session_dir = _make_session(tmp_path, _BROKEN_ENTRIES)
-        _run("rewind", str(session_dir))
+        result = _run("rewind", str(session_dir))
+        assert result.returncode == 0, result.stdout + result.stderr
         backup_files = list(session_dir.glob("transcript.jsonl.bak-pre-rewind-*"))
         assert len(backup_files) == 1
 
@@ -266,18 +301,19 @@ class TestFindSubcommand:
         _make_session(tmp_path, _HEALTHY_ENTRIES)
         # Create second session in proj2
         proj2_dir = tmp_path / "proj2" / "sessions" / "test-session-002"
-        proj2_dir.mkdir(parents=True, exist_ok=True)
-        with open(proj2_dir / "transcript.jsonl", "w", encoding="utf-8") as f:
-            for entry in _HEALTHY_ENTRIES:
-                f.write(json.dumps(entry) + "\n")
-        with open(proj2_dir / "metadata.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "session_id": "test-session-002",
-                    "created": "2024-06-01T10:00:00+00:00",
-                },
-                f,
-            )
+        meta = {"session_id": "test-session-002", "created": "2024-06-01T10:00:00+00:00"}
+        if os.name == "nt":
+            from amplifier_foundation.session.store import write_metadata, write_transcript
+
+            write_transcript(proj2_dir, _HEALTHY_ENTRIES)
+            write_metadata(proj2_dir, meta)
+        else:
+            proj2_dir.mkdir(parents=True, exist_ok=True)
+            with open(proj2_dir / "transcript.jsonl", "w", encoding="utf-8") as f:
+                for entry in _HEALTHY_ENTRIES:
+                    f.write(json.dumps(entry) + "\n")
+            with open(proj2_dir / "metadata.json", "w", encoding="utf-8") as f:
+                json.dump(meta, f)
 
         result = _run(
             "find",
@@ -318,6 +354,21 @@ class TestFindSubcommand:
 
 class TestCLIEdgeCases:
     """Edge case tests for the amplifier-session.py CLI."""
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows private ACL validation")
+    @pytest.mark.parametrize("action", ["repair", "rewind"])
+    def test_native_unsafe_legacy_session_is_not_repaired_or_rewound(self, tmp_path, action):
+        # Deliberately ordinary inherited-ACL creation, NOT a valid fixture.
+        directory = tmp_path / "unsafe-session"
+        directory.mkdir()
+        path = directory / "transcript.jsonl"
+        path.write_text("".join(json.dumps(row) + "\n" for row in _BROKEN_ENTRIES), encoding="utf-8")
+        before = path.read_bytes()
+        result = _run(action, str(directory))
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Windows" in json.loads(result.stdout)["error"]
+        assert path.read_bytes() == before
+        assert not (directory / "metadata.json").exists()
 
     def test_no_subcommand_exits_2(self) -> None:
         """Running with no subcommand exits with code 2."""

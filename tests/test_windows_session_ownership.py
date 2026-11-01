@@ -198,6 +198,9 @@ def test_creation_supplies_private_descriptor_before_createfile_and_clears_inher
     def create(path, access, share, sa, disposition, flags, template):
         security = C.cast(sa, C.POINTER(win.SECURITY_ATTRIBUTES)).contents
         assert security.lpSecurityDescriptor == 456 and not security.bInheritHandle
+        # Metadata-only opens do not participate in Windows sharing checks.
+        # A directory pin needs FILE_LIST_DIRECTORY, not broad GENERIC_READ.
+        assert access == win._READ_CONTROL | win._ATTRIBUTES | (1 if directory else win._READ)
         assert share == (1 if directory else 3) and disposition == 1
         assert flags & win._OPEN_REPARSE
         events.append("create")
@@ -703,6 +706,33 @@ def test_native_all_lock_ancestors_are_pinned_against_delete_and_rename(native_s
 
 
 @native
+def test_native_directory_pins_enforce_sharing_without_incidental_file_handles(tmp_path):
+    """An empty tree isolates the directory open, not stable-lock side effects."""
+    parent = tmp_path / "pin-parent"
+    leaf = parent / "leaf"
+    api = win._API()
+    with win._pinned(api, leaf, root=parent, create=True):
+        for directory in (leaf, parent):
+            with pytest.raises(OSError) as caught:
+                directory.rename(directory.with_name(directory.name + "-moved"))
+            assert caught.value.winerror == 32, (
+                f"rename must fail with sharing violation for {directory}: {caught.value}"
+            )
+            assert directory.is_dir()
+        with pytest.raises(OSError) as caught:
+            leaf.rmdir()
+        assert caught.value.winerror == 32, caught.value
+        # No file is open (or even present) to provide accidental rename protection.
+        assert list(leaf.iterdir()) == []
+    moved = leaf.with_name("leaf-moved")
+    leaf.rename(moved)
+    moved_parent = parent.with_name("pin-parent-moved")
+    parent.rename(moved_parent)
+    (moved_parent / moved.name).rmdir()
+    moved_parent.rmdir()  # Positive release/readback: no leaked directory handle.
+
+
+@native
 def test_native_case_alias_is_rejected_instead_of_merging_exact_ids(native_store):
     store = native_store
     with pytest.raises(ValueError, match="lowercase"):
@@ -877,6 +907,7 @@ def test_only_explicit_advisory_reader_shares_delete(monkeypatch, filename, advi
 
     def create(path, access, share, sa, disposition, flags, template):
         assert share == expected
+        assert access == win._READ_CONTROL | win._ATTRIBUTES | (1 if filename == "directory" else win._READ)
         assert disposition == 3
         return 123
 

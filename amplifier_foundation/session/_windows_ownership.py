@@ -272,7 +272,9 @@ class _API:
         if owner_temporary and (directory or create or advisory_read or not exclusive or not write
                                 or not re.fullmatch(r"\.owner-[0-9a-f]{32}\.tmp", path.name)):
             raise ValueError("rename access is restricted to a new private owner temporary file")
-        access = _READ_CONTROL | _ATTRIBUTES | (0 if directory else _READ)
+        # FILE_LIST_DIRECTORY makes directory pins participate in NT sharing.
+        # Metadata-only handles do not enforce the denied delete/write shares.
+        access = _READ_CONTROL | _ATTRIBUTES | (1 if directory else _READ)
         if write:
             access |= _WRITE
         if owner_temporary:
