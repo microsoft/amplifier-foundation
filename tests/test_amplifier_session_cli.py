@@ -358,17 +358,46 @@ class TestCLIEdgeCases:
     @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows private ACL validation")
     @pytest.mark.parametrize("action", ["repair", "rewind"])
     def test_native_unsafe_legacy_session_is_not_repaired_or_rewound(self, tmp_path, action):
-        # Deliberately ordinary inherited-ACL creation, NOT a valid fixture.
+        from amplifier_foundation.session import _windows_ownership as win
+        from amplifier_foundation.session.finder import resolve_session
+        from amplifier_foundation.session.shared_state import SharedStateError
+
+        # A private control proves the same messages/layout can be processed.
+        control = _make_session(tmp_path / "private-control", _BROKEN_ENTRIES)
+        transcript_bytes = (control / "transcript.jsonl").read_bytes()
+        metadata_bytes = (control / "metadata.json").read_bytes()
+        positive = _run(action, str(control))
+        assert positive.returncode == 0, positive.stdout + positive.stderr
+        assert json.loads(positive.stdout)["status"] == (
+            "repaired" if action == "repair" else "rewound"
+        )
+        assert _run("diagnose", str(control)).returncode == 0
+
+        # Same payload, but deliberately ordinary inherited-ACL creation.
+        # metadata.json is required for CLI recognition, not an ACL endorsement.
         directory = tmp_path / "unsafe-session"
         directory.mkdir()
         path = directory / "transcript.jsonl"
-        path.write_text("".join(json.dumps(row) + "\n" for row in _BROKEN_ENTRIES), encoding="utf-8")
-        before = path.read_bytes()
+        path.write_bytes(transcript_bytes)
+        metadata_path = directory / "metadata.json"
+        metadata_path.write_bytes(metadata_bytes)
+        assert resolve_session(str(directory)) == directory
+        diagnosis = _run("diagnose", str(directory))
+        assert diagnosis.returncode == 1, diagnosis.stdout + diagnosis.stderr
+        assert json.loads(diagnosis.stdout)["status"] == "broken"
+
+        # Capture the actual security failure independently. CLI refusal must be
+        # that failure, not missing metadata, invalid JSON, or layout rejection.
+        with pytest.raises(SharedStateError) as security:
+            with win._pinned(win._API(), directory, root=directory):
+                pytest.fail("inherited-ACL fixture unexpectedly passed private validation")
         result = _run(action, str(directory))
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "Windows" in json.loads(result.stdout)["error"]
-        assert path.read_bytes() == before
-        assert not (directory / "metadata.json").exists()
+        assert path.read_bytes() == transcript_bytes
+        assert metadata_path.read_bytes() == metadata_bytes
+        assert not list(directory.glob(".history-*"))
+        assert not (directory / "transcript.jsonl.backup").exists()
+        assert json.loads(result.stdout)["error"] == str(security.value)
 
     def test_no_subcommand_exits_2(self) -> None:
         """Running with no subcommand exits with code 2."""

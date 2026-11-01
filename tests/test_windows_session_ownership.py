@@ -1054,12 +1054,21 @@ def test_native_retained_exact_identity_contends_and_rejects_case_alias_and_rena
             normal_alias.acquire(app="normal-case-alias")
         with pytest.raises(ValueError, match="canonical"):
             shared.SharedSessionStore.from_identity(alias, root=store.root)
-        # A case-only rename does not authorize silently rewriting an identity.
-        store.workspace.rename(store.workspace.with_name("WORKSPACE"))
-        with pytest.raises(ValueError, match="canonical"):
-            shared.SharedSessionStore.from_identity(identity, root=store.root)
+        # Effective ancestor pins refuse a case-only rename while ownership is
+        # held. Require sharing violation, not an unrelated path/access error.
+        with pytest.raises(OSError) as caught:
+            store.workspace.rename(store.workspace.with_name("WORKSPACE"))
+        assert caught.value.winerror == 32, caught.value
+        assert store.workspace.resolve().name == store.workspace.name
     finally:
         held.release()
+    # Positive release control: case-only rename now works, but it cannot
+    # authorize silently rewriting the previously retained exact identity.
+    renamed = store.workspace.with_name("WORKSPACE")
+    store.workspace.rename(renamed)
+    assert renamed.resolve().name == "WORKSPACE"
+    with pytest.raises(ValueError, match="canonical"):
+        shared.SharedSessionStore.from_identity(identity, root=store.root)
 
 
 @native
@@ -1675,6 +1684,41 @@ def test_native_history_roundtrip_replace_old_reader_and_private_files(native_hi
     for path in store.session_dir.iterdir():
         with history_win._file(path) as (api, handle):
             api.validate_acl(handle, private=True)
+    assert not list(store.session_dir.glob(".history-*"))
+
+
+@native
+@pytest.mark.parametrize("mode", ["rb", "r"])
+@pytest.mark.parametrize("filename", ["transcript.jsonl", "metadata.json"])
+def test_native_history_replace_preserves_builtin_open_reader(native_history, mode, filename):
+    """Legacy builtin readers, not only the adapter's delete-sharing handles."""
+    store = native_history
+    rows = [{"role": "user", "content": "old \u2603\U0001f680",
+             "metadata": {"provider:continuation": "synthetic"}}]
+    metadata = {"unknown": {"preserved": True}, "label": "old \u2603\U0001f680"}
+    store.save(rows, metadata)
+    path = store.session_dir / filename
+    old_bytes = path.read_bytes()
+    options = {"encoding": "utf-8", "newline": ""} if mode == "r" else {}
+    expected_old = old_bytes.decode("utf-8") if mode == "r" else old_bytes
+    new_rows = rows + [{"role": "assistant", "content": "new \u2603\U0001f680"}]
+    new_metadata = metadata | {"label": "new \u2603\U0001f680"}
+    with open(path, mode, **options) as reader:
+        # No pre-read: a Python buffer must not conceal replacement failure.
+        old_inode = os.fstat(reader.fileno()).st_ino
+        store.save(new_rows, new_metadata)
+        new_bytes = path.read_bytes()
+        assert new_bytes != old_bytes
+        assert path.stat().st_ino != old_inode
+        assert not reader.closed
+        assert reader.read() == expected_old
+        reader.seek(0)
+        assert reader.read() == expected_old
+        assert os.fstat(reader.fileno()).st_ino == old_inode
+        with open(path, mode, **options) as fresh:
+            assert fresh.read() == (new_bytes.decode("utf-8") if mode == "r" else new_bytes)
+    snapshot = store.load(include_events=False)
+    assert snapshot.messages == new_rows and snapshot.metadata == new_metadata
     assert not list(store.session_dir.glob(".history-*"))
 
 
