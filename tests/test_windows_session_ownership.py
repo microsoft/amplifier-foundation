@@ -74,39 +74,54 @@ def test_rename_info_abi_uses_win32_utf16_and_pointer_sized_handle():
     assert win.FILE_RENAME_INFO.RootDirectory.offset == (8 if C.sizeof(win.HANDLE) == 8 else 4)
     assert C.sizeof(win.FILE_RENAME_INFO) == (24 if C.sizeof(win.HANDLE) == 8 else 16)
     assert C.sizeof(dict(win.FILE_RENAME_INFO._fields_)["FileName"]._type_) == 2
+    assert C.sizeof(win._IO_STATUS_VALUE) == C.sizeof(win.HANDLE)
+    assert win.IO_STATUS_BLOCK.Information.offset == C.sizeof(win.HANDLE)
+    assert C.sizeof(win.IO_STATUS_BLOCK) == 2 * C.sizeof(win.HANDLE)
+    assert C.sizeof(dict(win._IO_STATUS_VALUE._fields_)["Status"]) == 4
 
 
-@pytest.mark.parametrize("error", [0, 1, 5, 50, 87, 120])
+@pytest.mark.parametrize("error", [0, 1, 5, 32, 50, 87, 120])
 def test_owner_rename_uses_posix_replace_flags_and_preserves_native_failure(monkeypatch, error):
     api = win._API.__new__(win._API)
     handle = (1 << 40) if C.sizeof(win.HANDLE) == 8 else 123
     target = PureWindowsPath("C:\\private-\N{SNOWMAN}-\U0001f680\\owner.json")
     calls = []
 
-    def rename(actual, info_class, buffer, size):
+    def source_name(actual, output, size, flags):
+        assert actual == handle and flags == 0
+        output.value = "\\\\?\\" + str(target.parent / (".owner-" + "a" * 32 + ".tmp"))
+        return len(output.value)
+
+    def rename(actual, result, buffer, size, info_class):
         assert actual == handle
-        assert info_class == 22  # FileRenameInfoEx, NOT FileRenameInfo (3).
+        assert info_class == 65  # Native FileRenameInformationEx, NOT Win32 class 22.
+        assert isinstance(C.cast(result, C.POINTER(win.IO_STATUS_BLOCK)).contents,
+                          win.IO_STATUS_BLOCK)
         info = C.cast(buffer, C.POINTER(win.FILE_RENAME_INFO)).contents
         assert info.Flags == 3  # REPLACE_IF_EXISTS | POSIX_SEMANTICS only.
         assert not info.RootDirectory
         raw = C.string_at(C.cast(buffer, win.PVOID).value + win.FILE_RENAME_INFO.FileName.offset,
                           info.FileNameLength)
-        assert raw == str(target).encode("utf-16-le")
+        assert raw == target.name.encode("utf-16-le")
         assert size >= win.FILE_RENAME_INFO.FileName.offset + len(raw)
         calls.append("renamed")
-        return not error
+        return -1073741790 if error else 0  # A signed NTSTATUS, not BOOL/GetLastError.
 
     failure = OSError("native rename failure")
     failure.winerror = error
-    api.SetFileInformationByHandle = rename
-    monkeypatch.setattr(C, "get_last_error", lambda: error, raising=False)
-    monkeypatch.setattr(C, "WinError", lambda code: failure, raising=False)
+    api.GetFinalPathNameByHandleW = source_name
+    api.NtSetInformationFile = rename
+    api.RtlNtStatusToDosError = lambda status: error if status == -1073741790 else pytest.fail("wrong status")
+    api.SetFileInformationByHandle = lambda *a: pytest.fail("absolute Win32 fallback")
+    monkeypatch.setattr(C, "get_last_error", lambda: 999, raising=False)
+    monkeypatch.setattr(C, "WinError", lambda code: failure if code == error else pytest.fail("wrong mapped WinError"),
+                        raising=False)
     if error:
         with pytest.raises(OSError) as caught:
             api.replace_owner(handle, target)
         assert caught.value is failure
         if error in {1, 50, 87, 120}:
-            assert any("FileRenameInfoEx" in note for note in caught.value.__notes__)
+            assert any("FileRenameInformationEx" in note for note in caught.value.__notes__)
         else:
             assert not getattr(caught.value, "__notes__", [])  # Access denied stays access denied.
     else:
@@ -132,6 +147,12 @@ def test_rename_api_binding_uses_pointer_width_handle_and_fixed_win32_arguments(
     api = win._API()
     assert api.SetFileInformationByHandle.restype is win.BOOL
     assert api.SetFileInformationByHandle.argtypes == [win.HANDLE, C.c_int, win.PVOID, win.DWORD]
+    assert api.NtSetInformationFile.restype is C.c_int32
+    assert api.NtSetInformationFile.argtypes == [
+        win.HANDLE, C.POINTER(win.IO_STATUS_BLOCK), win.PVOID, win.DWORD, C.c_int,
+    ]
+    assert api.RtlNtStatusToDosError.restype is win.DWORD
+    assert api.RtlNtStatusToDosError.argtypes == [C.c_int32]
 
 
 @pytest.mark.parametrize("name", ["session.lock", "checkpoint.json", "transfer-fence.json"])
@@ -1064,6 +1085,91 @@ def test_native_open_advisory_reader_cannot_block_release_or_successor_publicati
         first.release()
 
 
+@native
+@pytest.mark.parametrize("name", ["owner.json", "transcript.jsonl", "metadata.json"])
+def test_native_pinned_publication_absolute_control_and_leaf_replace_old_reader(tmp_path, name):
+    """Compare absolute vs native leaf form with identical strict pins and payload.
+
+    These controls must actually run on NTFS; portable stubs cannot establish
+    the suspected absolute-target-open sharing conflict.
+    """
+    directory = tmp_path / "publication-\u2603-\U0001f680"
+    target = directory / name
+    api = history_win._API()
+    old, new, final = (json.dumps({"value": value}).encode() + b"\n"
+                       for value in ("old", "new", "after-close"))
+
+    def absolute_publish(handle):
+        encoded = str(target).encode("utf-16-le")
+        buffer = C.create_string_buffer(C.sizeof(win.FILE_RENAME_INFO) + len(encoded))
+        info = win.FILE_RENAME_INFO.from_buffer(buffer)
+        info.Flags, info.FileNameLength = 3, len(encoded)
+        C.memmove(C.addressof(buffer) + win.FILE_RENAME_INFO.FileName.offset, encoded, len(encoded))
+        result = api.SetFileInformationByHandle(handle, 22, buffer, len(buffer))
+        return bool(result), C.get_last_error() if not result else 0
+
+    def new_source(suffix, payload):
+        path = directory / (f".owner-{suffix * 32}.tmp" if name == "owner.json"
+                            else f".history-{suffix * 32}.tmp")
+        handle = (api.open(path, exclusive=True, write=True, owner_temporary=True)
+                  if name == "owner.json" else api.open_history(path, write=True, temporary=True))
+        try:
+            api.validate_acl(handle, private=True)
+            api.write_chunks(handle, [payload])  # Complete payload + FlushFileBuffers.
+        except BaseException:
+            api.close(handle)
+            raise
+        return path, handle
+
+    def read(handle):
+        buffer, count = C.create_string_buffer(65536), win.DWORD()
+        api.ok(api.ReadFile(handle, buffer, len(buffer), C.byref(count), None))
+        return buffer.raw[:count.value]
+
+    def assert_pinned():
+        with pytest.raises(OSError) as caught:
+            directory.rename(directory.with_name("must-not-move"))
+        assert caught.value.winerror == 32, caught.value
+        assert directory.is_dir()
+
+    after_close = None
+    try:
+        with win._pinned(api, directory, root=directory, create=True):
+            _private_file(target, old)
+            reader = (api.open(target, advisory_read=True) if name == "owner.json"
+                      else api.open_history(target))
+            try:
+                source, handle = new_source("a", new)
+                try:
+                    assert_pinned()
+                    assert absolute_publish(handle) == (False, 32)
+                    assert target.read_bytes() == old and source.exists()
+                    # Same source handle, bytes, target, flags and pins; only the
+                    # entry point/name form changes. No pin/sharing fallback.
+                    (api.replace_owner if name == "owner.json" else api.replace_history)(handle, target)
+                finally:
+                    api.close(handle)
+                assert not source.exists()
+                assert read(reader) == old  # Detached snapshot stays byte-identical.
+                assert target.read_bytes() == new
+                assert_pinned()  # Publication did not release or weaken the pins.
+                after_source, after_close = new_source("b", final)
+            finally:
+                api.close(reader)
+        # Same absolute wrapper succeeds once every directory pin is closed.
+        assert absolute_publish(after_close) == (True, 0)
+        api.close(after_close)
+        after_close = None
+        assert not after_source.exists() and target.read_bytes() == final
+        moved = directory.with_name(directory.name + "-moved")
+        directory.rename(moved)
+        assert (moved / name).read_bytes() == final
+        moved.rename(directory)
+    finally:
+        if after_close is not None:
+            api.close(after_close)
+
+
 @pytest.mark.parametrize("name", ["owner.json", "checkpoint.json", "transfer-fence.json"])
 def test_owner_json_read_pipeline_is_the_only_replaceable_reader(monkeypatch, name):
     from contextlib import contextmanager
@@ -1284,26 +1390,35 @@ def test_history_publication_flushes_complete_partial_writes_before_replace(monk
     assert events[0] == "pin-before-create"
 
 
-@pytest.mark.parametrize("error", [0, 5, 50, 87])
+@pytest.mark.parametrize("error", [0, 5, 32, 50, 87])
 def test_history_rename_uses_fullwidth_posix_replacement_without_fallback(monkeypatch, error):
     api = history_win._API.__new__(history_win._API)
     handle = (1 << 40) if C.sizeof(win.HANDLE) == 8 else 123
     path = PureWindowsPath("C:\\private-\u2603-\U0001f680\\metadata.json")
     calls = []
 
-    def replace(actual, info_class, buffer, size):
-        info = C.cast(buffer, C.POINTER(win.FILE_RENAME_INFO)).contents
-        assert (actual, info_class, info.Flags, info.RootDirectory) == (handle, 22, 3, None)
-        raw = C.string_at(C.addressof(buffer) + win.FILE_RENAME_INFO.FileName.offset, info.FileNameLength)
-        assert raw == str(path).encode("utf-16-le")
-        calls.append("replace")
-        return not error
+    def source_name(actual, output, size, flags):
+        assert actual == handle and flags == 0
+        output.value = "\\\\?\\" + str(path.parent / (".history-" + "b" * 32 + ".tmp"))
+        return len(output.value)
 
-    api.SetFileInformationByHandle = replace
+    def replace(actual, result, buffer, size, info_class):
+        info = C.cast(buffer, C.POINTER(win.FILE_RENAME_INFO)).contents
+        assert (actual, info_class, info.Flags, info.RootDirectory) == (handle, 65, 3, None)
+        raw = C.string_at(C.addressof(buffer) + win.FILE_RENAME_INFO.FileName.offset, info.FileNameLength)
+        assert raw == path.name.encode("utf-16-le")
+        calls.append("replace")
+        return 0xC0000022 if error else 0  # Also exercise unsigned-provider conversion.
+
+    api.GetFinalPathNameByHandleW = source_name
+    api.NtSetInformationFile = replace
+    api.RtlNtStatusToDosError = lambda status: error if status == -1073741790 else pytest.fail("wrong status")
+    api.SetFileInformationByHandle = lambda *a: pytest.fail("absolute Win32 fallback")
     failure = OSError("synthetic rename refusal")
     failure.winerror = error
-    monkeypatch.setattr(C, "get_last_error", lambda: error, raising=False)
-    monkeypatch.setattr(C, "WinError", lambda code: failure, raising=False)
+    monkeypatch.setattr(C, "get_last_error", lambda: 999, raising=False)
+    monkeypatch.setattr(C, "WinError", lambda code: failure if code == error else pytest.fail("wrong mapped WinError"),
+                        raising=False)
     if error:
         with pytest.raises(OSError) as caught:
             api.replace_history(handle, path)
@@ -1311,6 +1426,38 @@ def test_history_rename_uses_fullwidth_posix_replacement_without_fallback(monkey
     else:
         api.replace_history(handle, path)
     assert calls == ["replace"]
+
+
+@pytest.mark.parametrize("kind", ["owner", "history"])
+@pytest.mark.parametrize("failure", ["other-parent", "missing-source", "truncated-source", "pending"])
+def test_native_sibling_publication_refuses_wrong_parent_or_uncertain_completion(monkeypatch, kind, failure):
+    api = history_win._API.__new__(history_win._API)
+    path = PureWindowsPath(r"C:\private") / ("owner.json" if kind == "owner" else "metadata.json")
+    calls = []
+
+    def source_name(handle, output, size, flags):
+        output.value = str(path.parent / "source.tmp")
+        if failure == "other-parent":
+            output.value = r"C:\different\source.tmp"
+        return 0 if failure == "missing-source" else size if failure == "truncated-source" else len(output.value)
+
+    def rename(*args):
+        calls.append("native")
+        return 0x103
+
+    api.GetFinalPathNameByHandleW = source_name
+    api.NtSetInformationFile = rename
+    api.RtlNtStatusToDosError = lambda *a: pytest.fail("pending is not a completed error")
+    monkeypatch.setattr(C, "get_last_error", lambda: 5, raising=False)
+    error = OSError("source query failed")
+    error.winerror = 5
+    monkeypatch.setattr(C, "WinError", lambda code: error, raising=False)
+    publish = api.replace_owner if kind == "owner" else api.replace_history
+    with pytest.raises(shared.SharedStateError if failure == "other-parent" else OSError) as caught:
+        publish(123, path)
+    assert calls == (["native"] if failure == "pending" else [])
+    if failure == "pending":
+        assert "pending" in str(caught.value)
 
 
 def test_history_stream_read_seek_peek_keep_pins_and_close_handle(monkeypatch):

@@ -43,6 +43,14 @@ class FILE_RENAME_INFO(C.Structure):
                 ("FileNameLength", DWORD), ("FileName", WORD * 1)]
 
 
+class _IO_STATUS_VALUE(C.Union):
+    _fields_ = [("Status", C.c_int32), ("Pointer", PVOID)]
+
+
+class IO_STATUS_BLOCK(C.Structure):
+    _fields_ = [("Result", _IO_STATUS_VALUE), ("Information", C.c_size_t)]
+
+
 class FILETIME(C.Structure):
     _fields_ = [("low", DWORD), ("high", DWORD)]
 
@@ -154,6 +162,15 @@ class _API:
         for name, (result, args) in signatures.items():
             dll = self.kernel if hasattr(self.kernel, name) else self.security
             function = getattr(dll, name)
+            function.restype, function.argtypes = result, args
+            setattr(self, name, function)
+        native = C.WinDLL("ntdll", use_last_error=True)
+        for name, result, args in (
+            ("NtSetInformationFile", C.c_int32,
+             [HANDLE, C.POINTER(IO_STATUS_BLOCK), PVOID, DWORD, C.c_int]),
+            ("RtlNtStatusToDosError", DWORD, [C.c_int32]),
+        ):
+            function = getattr(native, name)
             function.restype, function.argtypes = result, args
             setattr(self, name, function)
         self.sid = self._user_sid()
@@ -305,29 +322,56 @@ class _API:
     def replace_owner(self, handle: int, path: Path) -> None:
         """Supersede only advisory owner.json, keeping existing readers valid.
 
-        FileRenameInfoEx + REPLACE_IF_EXISTS | POSIX_SEMANTICS is available from
-        Windows 10 1607. Unlike MoveFileExW, it explicitly allows an open target:
+        Native FileRenameInformationEx uses REPLACE_IF_EXISTS | POSIX_SEMANTICS.
+        Unlike MoveFileExW, it explicitly allows an open target:
         old handles keep reading the old file, new opens see the complete new
         file. The source stays open with DELETE access through the rename.
         https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
         """
         if path.name != "owner.json":
             raise ValueError("POSIX replacement is restricted to advisory owner.json")
-        encoded = str(_absolute(path)).encode("utf-16-le")
+        try:
+            self._replace_private_sibling(handle, path)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) in {1, 50, 87, 120}:
+                exc.add_note("Advisory replacement requires local NTFS with "
+                             "FileRenameInformationEx POSIX semantics; no legacy fallback is attempted.")
+            raise
+
+    def _replace_private_sibling(self, handle: int, path: Path) -> None:
+        """Replace a sibling of an already validated, flushed private temporary.
+
+        Callers retain validated ancestor pins and validate the target before
+        writing payload. A NULL RootDirectory and simple native name rename in
+        the source directory, without the Win32 wrapper's absolute target open.
+        Never release pins or relax sharing to perform publication.
+        """
+        from .shared_state import SharedStateError
+
+        path = _absolute(path)
+        source = C.create_unicode_buffer(32768)
+        count = self.GetFinalPathNameByHandleW(handle, source, len(source), 0)
+        if not count or count >= len(source):
+            raise C.WinError(C.get_last_error())
+        actual_parent = PureWindowsPath(source.value.removeprefix("\\\\?\\")).parent
+        if str(actual_parent).casefold() != str(path.parent).casefold():
+            raise SharedStateError("private replacement must remain in its pinned source directory")
+        encoded = path.name.encode("utf-16-le")
         buffer = C.create_string_buffer(C.sizeof(FILE_RENAME_INFO) + len(encoded))
         info = FILE_RENAME_INFO.from_buffer(buffer)
         info.Flags = 3  # FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
         info.FileNameLength = len(encoded)  # Bytes, excluding any NUL terminator.
         C.memmove(C.addressof(buffer) + FILE_RENAME_INFO.FileName.offset, encoded, len(encoded))
-        # RootDirectory is NULL: the absolute target is in the same pinned
-        # directory/volume as our freshly created source. No copy/delete fallback.
-        try:
-            self.ok(self.SetFileInformationByHandle(handle, 22, buffer, len(buffer)))  # FileRenameInfoEx
-        except OSError as exc:
-            if exc.winerror in {1, 50, 87, 120}:
-                exc.add_note("Advisory replacement requires Windows 10 1607+ local NTFS with "
-                             "FileRenameInfoEx POSIX semantics; no legacy fallback is attempted.")
-            raise
+        result = IO_STATUS_BLOCK()
+        status = C.c_int32(self.NtSetInformationFile(
+            handle, C.byref(result), buffer, len(buffer), 65,  # FileRenameInformationEx, NOT Win32 class 22.
+        )).value
+        if status < 0:
+            raise C.WinError(self.RtlNtStatusToDosError(status))
+        # All source handles are synchronous (no FILE_FLAG_OVERLAPPED). Never
+        # acknowledge an unexpected pending operation or replay an unknown effect.
+        if status == 0x103:  # STATUS_PENDING
+            raise OSError("unexpected pending private rename on a synchronous handle")
 
 
 class _PinnedDirectories:

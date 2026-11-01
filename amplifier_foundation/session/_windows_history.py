@@ -104,15 +104,7 @@ class _API(win._API):
 
     def replace_history(self, handle, path):
         _history_name(path)
-        encoded = str(win._absolute(path)).encode("utf-16-le")
-        buffer = C.create_string_buffer(C.sizeof(win.FILE_RENAME_INFO) + len(encoded))
-        info = win.FILE_RENAME_INFO.from_buffer(buffer)
-        info.Flags = 3  # REPLACE_IF_EXISTS | POSIX_SEMANTICS: old readers survive.
-        info.FileNameLength = len(encoded)
-        C.memmove(C.addressof(buffer) + win.FILE_RENAME_INFO.FileName.offset,
-                  encoded, len(encoded))
-        # No MoveFileEx/copy/delete fallback; same pinned directory and volume.
-        self.ok(self.SetFileInformationByHandle(handle, 22, buffer, len(buffer)))
+        self._replace_private_sibling(handle, path)
 
 
 class _Reader(io.RawIOBase):

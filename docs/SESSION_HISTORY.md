@@ -81,7 +81,12 @@ Optional activity reads use the same validated private handles; their logger
 must provision private files separately, or the host can omit events.
 
 Replacement writes complete and `FlushFileBuffers` the new private temporary
-before a same-volume `FileRenameInfoEx` replacement. Readers share deletion:
+before a same-directory native `NtSetInformationFile(FileRenameInformationEx)`
+replacement with `REPLACE_IF_EXISTS | POSIX_SEMANTICS`. The native request uses
+only the destination leaf name with a null root handle; the source handle's
+directory must match the pinned destination directory. Directory pins keep
+`FILE_LIST_DIRECTORY` access and deny write/delete sharing throughout publication.
+Readers share deletion:
 an already-open reader retains the complete old file while later readers see the
 new file. Unsupported native rename/disposition operations fail; there is no
 copy/delete, delete-first or less-safe sharing fallback. Native execution on
