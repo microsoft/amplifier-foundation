@@ -7,6 +7,7 @@ All paths are supplied by the host; reads never migrate or repair files.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -26,6 +27,12 @@ NAMING_FIELDS = (
 
 @contextmanager
 def metadata_lock(session_dir: Path) -> Iterator[None]:
+    if os.name == "nt":
+        from ._windows_history import metadata_lock as windows_lock
+
+        with windows_lock(session_dir):
+            yield
+        return
     # Import only on writes: filelock can probe filesystem capabilities.
     from filelock import FileLock
 

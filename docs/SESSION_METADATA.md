@@ -40,6 +40,17 @@ The stable lock is a sibling of the session directory,
 replace the lock inode. Destructive deletion must acquire this lock as well as
 the host's execution ownership lock. Never unlink the lock file.
 
+On native Windows this same sibling path uses `LockFileEx` with a private,
+non-inheritable, delete-denying handle. Acquisition waits up to ten seconds,
+matching the existing short-lock timeout. Access denial is not treated as lock
+contention. The lock is never truncated, replaced or removed, including after
+session deletion. Its local fixed NTFS ancestors are pinned and validated before
+creation. Metadata payloads and backups use protected private files and flushed
+same-volume replacement through the
+[bounded history adapter](SESSION_HISTORY.md#bounded-native-windows-history).
+Unsafe existing objects are refused, not repaired. This does not change the
+separate scoped-settings Windows ACL policy described below.
+
 Session execution still requires the separate Foundation ownership mechanism.
 Metadata-only edits may use the short metadata lock while an updated host owns
 execution. This does not grant permission to change transcripts, run tools,

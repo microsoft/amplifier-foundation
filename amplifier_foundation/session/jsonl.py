@@ -15,18 +15,52 @@ import shutil
 import tempfile
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 from ..io.files import _write_atomic
-from .shared_state import FileStamp, file_stamp
+from .shared_state import FileStamp, file_stamp as _posix_stamp
 
 _CACHE: OrderedDict[Path, TranscriptIndex] = OrderedDict()
 _LOCK = RLock()
 _MAX_ROWS = 100_000
 _MAX_FILES = 64
+
+
+def file_stamp(path: Path) -> FileStamp | None:
+    if os.name == "nt":
+        from ._windows_history import stamp
+
+        return stamp(path)
+    return _posix_stamp(path)
+
+
+def _exists(path: Path) -> bool:
+    return file_stamp(path) is not None if os.name == "nt" else path.exists()
+
+
+@contextmanager
+def _open_binary(path: Path):
+    if os.name == "nt":
+        from ._windows_history import open_binary
+
+        with open_binary(path) as stream:
+            yield stream
+    else:
+        with path.open("rb") as stream:
+            yield stream
+
+
+def _remove_pending(path: Path) -> None:
+    if os.name == "nt":
+        from ._windows_history import remove_pending
+
+        remove_pending(path)
+    else:
+        path.unlink()
 
 
 def intent_path(path: Path) -> Path:
@@ -75,7 +109,7 @@ class TranscriptIndex(Sequence):
 
         self.check()
         result = []
-        with self.path.open("rb") as stream:
+        with _open_binary(self.path) as stream:
             for position in positions:
                 row = self.rows[position]
                 stream.seek(row.offset)
@@ -93,7 +127,7 @@ class TranscriptIndex(Sequence):
         from .history import _decode
 
         self.check()
-        with self.path.open("rb") as stream:
+        with _open_binary(self.path) as stream:
             for row in self.rows:
                 stream.seek(row.offset)
                 yield _decode(stream.read(row.size))
@@ -110,7 +144,7 @@ class TranscriptIndex(Sequence):
                 from .history import _decode
 
                 additions = []
-                with self.path.open("rb") as stream:
+                with _open_binary(self.path) as stream:
                     for position, row in enumerate(
                         self.rows[len(values) :], len(values)
                     ):
@@ -138,7 +172,12 @@ def _remember(index: TranscriptIndex) -> TranscriptIndex:
 def indexed(path: Path) -> TranscriptIndex:
     from .history import _decode, _InvalidFile, _valid_message
 
-    path = path.absolute()
+    if os.name == "nt":
+        from ._windows_ownership import _absolute
+
+        path = _absolute(path)  # Retain lexical components for reparse validation.
+    else:
+        path = path.absolute()
     stamp = file_stamp(path)
     if stamp is None:
         raise FileNotFoundError(path)
@@ -151,7 +190,7 @@ def indexed(path: Path) -> TranscriptIndex:
     # verified append may extend an index; size growth alone is not evidence.
     rows = []
     terminated = True
-    with path.open("rb") as stream:
+    with _open_binary(path) as stream:
         offset = 0
         for number, raw in enumerate(stream, 1):
             terminated = raw.endswith(b"\n")
@@ -182,6 +221,10 @@ def _sync_directory(path: Path) -> None:
 
 
 def _append(path: Path, chunks: Iterator[bytes]) -> None:
+    if os.name == "nt":
+        from ._windows_history import append
+
+        return append(path, chunks)
     # No buffered partial JSON records. A pending intent still covers a crash
     # between complete rows of the same batch.
     with path.open("ab", buffering=0) as stream:
@@ -197,6 +240,10 @@ def _append(path: Path, chunks: Iterator[bytes]) -> None:
 
 def _copy_backup(source: Path, target: Path) -> None:
     """Establish a backup once, using bounded buffers and atomic replacement."""
+    if os.name == "nt":
+        from ._windows_history import copy_backup
+
+        return copy_backup(source, target)
     descriptor, name = tempfile.mkstemp(prefix=".transcript-backup-", dir=target.parent)
     try:
         with os.fdopen(descriptor, "wb") as output, source.open("rb") as input_file:
@@ -219,7 +266,7 @@ def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
     from .history import _InvalidFile
 
     pending = intent_path(path)
-    if pending.exists():
+    if _exists(pending):
         return False
     try:
         current = indexed(path)
@@ -264,7 +311,7 @@ def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
         )
 
         def previous_tail():
-            with path.open("rb") as stream:
+            with _open_binary(path) as stream:
                 stream.seek(start)
                 while chunk := stream.read(1024 * 1024):
                     yield chunk
@@ -282,13 +329,18 @@ def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
     assert backup_stamp is not None
     _remember(TranscriptIndex(backup.absolute(), backup_stamp, backup_rows, True))
     current.check()
-    _write_atomic(pending, '{"version":1}\n')
-    with pending.open("r+b") as stream:
-        os.fsync(stream.fileno())
+    if os.name == "nt":
+        from ._windows_history import write_pending
+
+        write_pending(pending)  # Private at creation, complete write and native flush.
+    else:
+        _write_atomic(pending, '{"version":1}\n')
+        with pending.open("r+b") as stream:
+            os.fsync(stream.fileno())
     _sync_directory(path.parent)
     # Failures deliberately retain intent + complete backup for read recovery.
     _append(path, iter(tail))
-    pending.unlink()
+    _remove_pending(pending)
     _sync_directory(path.parent)
     stamp = file_stamp(path)
     assert stamp is not None

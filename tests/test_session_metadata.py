@@ -1,6 +1,7 @@
 """Cross-host metadata interleavings against real native files."""
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -13,6 +14,18 @@ from amplifier_foundation.session.metadata import (
     SessionMetadataStore,
     has_generated_or_manual_name,
 )
+
+
+@pytest.fixture
+def tmp_path(tmp_path):
+    if os.name == "nt":
+        from amplifier_foundation.session import _windows_ownership as win
+
+        directory = tmp_path / "private-history"
+        with win._pinned(win._API(), directory, root=directory, create=True):
+            pass
+        return directory
+    return tmp_path
 
 
 def test_read_missing_does_not_create_custom_hierarchy(tmp_path):
@@ -86,7 +99,12 @@ def test_competing_field_patches_do_not_drop_fields(tmp_path):
 
 
 def test_invalid_metadata_is_not_silently_replaced(tmp_path):
-    (tmp_path / "metadata.json").write_text("{broken")
+    if os.name == "nt":
+        from amplifier_foundation.session._windows_history import _replace
+
+        _replace(tmp_path / "metadata.json", [b"{broken"])
+    else:
+        (tmp_path / "metadata.json").write_text("{broken")
     with pytest.raises(SessionHistoryError):
         SessionMetadataStore(tmp_path, create=True).set_name("Must not erase")
     assert (tmp_path / "metadata.json").read_text() == "{broken"

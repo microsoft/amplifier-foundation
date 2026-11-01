@@ -8,8 +8,10 @@ nor installs a logger, and reading never repairs or rewrites source files.
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,8 @@ from typing import Any
 from ..io.files import _write_atomic, write_with_backup
 from .messages import is_real_user_message
 from .metadata import checkpoint_metadata, metadata_lock
-from .shared_state import FileStamp, file_stamp
+from .jsonl import _exists, _open_binary, _remove_pending, file_stamp
+from .shared_state import FileStamp
 from .store import METADATA_FILENAME, TRANSCRIPT_FILENAME
 
 CI_EVENTS_PATH = Path("context-intelligence") / "events.jsonl"
@@ -94,7 +97,7 @@ class _InvalidFile(ValueError):
 def _read_messages(path: Path) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     # Decode per line so failures have a useful location without leaking payloads.
-    with path.open("rb") as stream:
+    with _open_binary(path) as stream:
         for line_number, raw in enumerate(stream, 1):
             if not raw.strip():
                 continue
@@ -110,7 +113,8 @@ def _read_messages(path: Path) -> list[dict[str, Any]]:
 
 def _read_metadata(path: Path) -> dict[str, Any]:
     try:
-        value = _decode(path.read_bytes())
+        with _open_binary(path) as stream:
+            value = _decode(stream.read())
     except (ValueError, UnicodeError):
         raise _InvalidFile() from None
     if not isinstance(value, dict):
@@ -150,7 +154,7 @@ class SessionHistoryStore:
 
     def exists(self) -> bool:
         """Whether any canonical transcript/metadata or their backup exists."""
-        return any(path.exists() for path in self._canonical_paths().values())
+        return any(_exists(path) for path in self._canonical_paths().values())
 
     def _canonical_paths(self) -> dict[str, Path]:
         return {
@@ -168,7 +172,7 @@ class SessionHistoryStore:
     ) -> Any:
         from .jsonl import intent_path
 
-        pending = source == "transcript" and intent_path(path).exists()
+        pending = source == "transcript" and _exists(intent_path(path))
         present = pending
         if pending:
             self.diagnostics.append(HistoryDiagnostic("interrupted_append", source))
@@ -284,15 +288,17 @@ class SessionHistoryStore:
     def _iter_events(
         self, *, max_lines: int | None = None, max_bytes: int | None = None
     ) -> Iterator[dict[str, Any]]:
+        streams = ExitStack()
         try:
-            stream = self.events_path.open("rb")
+            # Enter here so a missing optional log remains an ordinary empty read.
+            stream = streams.enter_context(_open_binary(self.events_path))
         except FileNotFoundError:
             return
         except OSError:
             self.diagnostics.append(HistoryDiagnostic("unreadable_file", "events"))
             return
         try:
-            with stream:
+            with streams:
                 line_number = consumed_bytes = 0
                 while max_lines is None or line_number < max_lines:
                     remaining = (
@@ -440,7 +446,7 @@ class SessionHistoryStore:
         # preserve that backup when replacing the damaged primary.
         from .jsonl import intent_path
 
-        if path == self.transcript_path and intent_path(path).exists():
+        if path == self.transcript_path and _exists(intent_path(path)):
             self._recover(path, "transcript", reader, [])
             return True
         try:
@@ -460,6 +466,10 @@ class SessionHistoryStore:
 
     @staticmethod
     def _write_prepared(path: Path, content: str, preserve_backup: bool) -> None:
+        if os.name == "nt":
+            from ._windows_history import write_prepared
+
+            return write_prepared(path, content, preserve_backup)
         if preserve_backup:
             _write_atomic(path, content)
         else:
@@ -467,12 +477,10 @@ class SessionHistoryStore:
         from .jsonl import _sync_directory, intent_path
 
         pending = intent_path(path)
-        if pending.exists():
+        if _exists(pending):
             with path.open("r+b") as stream:
-                import os
-
                 os.fsync(stream.fileno())
-            pending.unlink()
+            _remove_pending(pending)
             _sync_directory(path.parent)
 
     def save(
@@ -554,15 +562,15 @@ class SessionHistoryStore:
             if not append_messages(self.transcript_path, values):
                 content = self._messages_content(values, True, None)
                 pending = intent_path(self.transcript_path)
-                if pending.exists():
+                if _exists(pending):
                     # Never rotate an incomplete primary over its good backup.
                     self._recover(self.transcript_path, "transcript", indexed, [])
                     preserve_backup = True
                 else:
                     preserve_backup = self._prepare_write(self.transcript_path, indexed)
                 self._write_prepared(self.transcript_path, content, preserve_backup)
-                if pending.exists():
-                    pending.unlink()
+                if _exists(pending):
+                    _remove_pending(pending)
             self._write_prepared(
                 self.metadata_path, metadata_content, preserve_metadata
             )

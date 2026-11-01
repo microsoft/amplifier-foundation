@@ -19,6 +19,7 @@ import pytest
 
 from amplifier_foundation.session import shared_state as shared
 from amplifier_foundation.session import _windows_ownership as win
+from amplifier_foundation.session import _windows_history as history_win
 
 native = pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
 
@@ -1111,3 +1112,490 @@ def test_native_ancestor_reparse_or_delete_grant_refuses_before_state_creation(n
         with pytest.raises(shared.SharedStateError, match="foreign access"):
             store.acquire(app="must-refuse-before-creation")
         assert not store.root.exists()
+
+
+@pytest.mark.parametrize("name", [
+    "session.lock", "owner.json", "checkpoint.json", "transfer-fence.json",
+    ".root-1.metadata.lock",
+])
+def test_history_adapter_cannot_open_or_mutate_ownership_or_stable_locks(name):
+    api = history_win._API.__new__(history_win._API)
+    path = PureWindowsPath(r"C:\private") / name
+    for kwargs in ({}, {"write": True}, {"remove": True}, {"write": True, "temporary": True}):
+        with pytest.raises(ValueError):
+            api.open_history(path, **kwargs)
+    with pytest.raises(ValueError):
+        api.replace_history(123, path)
+    with pytest.raises(ValueError):
+        history_win._replace(path, [b"forbidden"])
+
+
+@pytest.mark.parametrize("mode", ["read", "append", "temporary", "remove"])
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_history_open_is_private_noninheritable_and_validated_before_payload(monkeypatch, mode, unsafe):
+    from contextlib import contextmanager
+
+    api = history_win._API.__new__(history_win._API)
+    events = []
+    handle = (1 << 40) if C.sizeof(win.HANDLE) == 8 else 123
+
+    @contextmanager
+    def security():
+        events.append("private-security")
+        yield win.SECURITY_ATTRIBUTES(C.sizeof(win.SECURITY_ATTRIBUTES), 456, False)
+
+    def create(path, access, share, sa, disposition, flags, template):
+        assert C.cast(sa, C.POINTER(win.SECURITY_ATTRIBUTES)).contents.lpSecurityDescriptor == 456
+        assert share == (3 if mode == "temporary" else 7)
+        assert disposition == (1 if mode == "temporary" else 3)
+        assert flags & win._OPEN_REPARSE
+        assert bool(access & win._WRITE) == (mode in {"append", "temporary"})
+        assert bool(access & 0x10000) == (mode in {"temporary", "remove"})
+        events.append("open")
+        return handle
+
+    def inheritance(actual, mask, flags):
+        assert (actual, mask, flags) == (handle, 1, 0)
+        events.append("noninherit")
+        return True
+
+    def acl(actual, **kwargs):
+        assert actual == handle and kwargs == {"private": True}
+        events.append("acl")
+        if unsafe:
+            raise shared.SharedStateError("unsafe ACL")
+
+    api.private_security, api.CreateFileW = security, create
+    api.SetHandleInformation, api.validate_acl = inheritance, acl
+    api.info = lambda *a, **kw: events.append("type-links-alias")
+    api.close = lambda actual: events.append("close")
+    path = PureWindowsPath(r"C:\private") / {
+        "read": "metadata.json", "append": "transcript.jsonl",
+        "temporary": ".history-" + "a" * 32 + ".tmp",
+        "remove": "transcript.jsonl.append-pending",
+    }[mode]
+    kwargs = {
+        "read": {}, "append": {"write": True},
+        "temporary": {"write": True, "temporary": True}, "remove": {"remove": True},
+    }[mode]
+    if unsafe:
+        with pytest.raises(shared.SharedStateError):
+            api.open_history(path, **kwargs)
+    else:
+        assert api.open_history(path, **kwargs) == handle
+    assert events == ["private-security", "open", "noninherit", "type-links-alias", "acl"] + (["close"] if unsafe else [])
+
+
+@pytest.mark.parametrize("failure", [None, "zero", "write", "flush", "replace"])
+def test_history_publication_flushes_complete_partial_writes_before_replace(monkeypatch, failure):
+    from contextlib import contextmanager
+
+    events, output = [], bytearray()
+    error = OSError("synthetic history failure")
+
+    class API:
+        write_chunks = history_win._API.write_chunks
+
+        def open_history(self, path, **kwargs):
+            events.append(("open", kwargs))
+            if not kwargs:
+                raise FileNotFoundError(path)
+            return 123
+
+        def WriteFile(self, handle, buffer, size, count, overlapped):
+            if failure == "write":
+                raise error
+            length = 0 if failure == "zero" else min(size, 17)
+            C.cast(count, win.PDWORD)[0] = length
+            output.extend(C.string_at(buffer, length))
+            return True
+
+        def FlushFileBuffers(self, handle):
+            events.append("flush")
+            if failure == "flush":
+                raise error
+            return True
+
+        def replace_history(self, handle, path):
+            events.append("replace")
+            if failure == "replace":
+                raise error
+
+        def close(self, handle):
+            events.append("close")
+
+        def DeleteFileW(self, path):
+            events.append("cleanup")
+            return True
+
+        ok = staticmethod(win._API.ok)
+
+    @contextmanager
+    def pins(*args, **kwargs):
+        assert kwargs["create"] is True
+        events.append("pin-before-create")
+        yield
+        events.append("unpin")
+
+    monkeypatch.setattr(history_win, "_API", API)
+    monkeypatch.setattr(win, "_pinned", pins)
+    payload = ("private \u2603\U0001f680" * 300).encode()
+    if failure:
+        with pytest.raises(OSError):
+            history_win._replace(PureWindowsPath(r"C:\private\metadata.json"), [payload])
+        assert "cleanup" in events
+        if failure != "replace":
+            assert "replace" not in events
+    else:
+        history_win._replace(PureWindowsPath(r"C:\private\metadata.json"), [payload])
+        assert bytes(output) == payload
+        assert events.index("flush") < events.index("replace") < events.index("close") < events.index("unpin")
+    assert events[0] == "pin-before-create"
+
+
+@pytest.mark.parametrize("error", [0, 5, 50, 87])
+def test_history_rename_uses_fullwidth_posix_replacement_without_fallback(monkeypatch, error):
+    api = history_win._API.__new__(history_win._API)
+    handle = (1 << 40) if C.sizeof(win.HANDLE) == 8 else 123
+    path = PureWindowsPath("C:\\private-\u2603-\U0001f680\\metadata.json")
+    calls = []
+
+    def replace(actual, info_class, buffer, size):
+        info = C.cast(buffer, C.POINTER(win.FILE_RENAME_INFO)).contents
+        assert (actual, info_class, info.Flags, info.RootDirectory) == (handle, 22, 3, None)
+        raw = C.string_at(C.addressof(buffer) + win.FILE_RENAME_INFO.FileName.offset, info.FileNameLength)
+        assert raw == str(path).encode("utf-16-le")
+        calls.append("replace")
+        return not error
+
+    api.SetFileInformationByHandle = replace
+    failure = OSError("synthetic rename refusal")
+    failure.winerror = error
+    monkeypatch.setattr(C, "get_last_error", lambda: error, raising=False)
+    monkeypatch.setattr(C, "WinError", lambda code: failure, raising=False)
+    if error:
+        with pytest.raises(OSError) as caught:
+            api.replace_history(handle, path)
+        assert caught.value is failure
+    else:
+        api.replace_history(handle, path)
+    assert calls == ["replace"]
+
+
+def test_history_stream_read_seek_peek_keep_pins_and_close_handle(monkeypatch):
+    import io
+    from contextlib import contextmanager
+
+    data, events = io.BytesIO(b"first\nsecond\n"), []
+
+    class API:
+        ok = staticmethod(win._API.ok)
+
+        def open_history(self, path):
+            events.append("validated-open")
+            return 123
+
+        def ReadFile(self, handle, buffer, size, count, overlapped):
+            raw = data.read(size)
+            C.memmove(buffer, raw, len(raw))
+            C.cast(count, win.PDWORD)[0] = len(raw)
+            return True
+
+        def seek(self, handle, offset, whence):
+            return data.seek(offset, whence)
+
+        def close(self, handle):
+            events.append("close")
+
+    @contextmanager
+    def pins(*args, **kwargs):
+        assert not kwargs.get("create")
+        events.append("pin")
+        yield type("Pins", (), {"missing": False})()
+        events.append("unpin")
+
+    monkeypatch.setattr(history_win, "_API", API)
+    monkeypatch.setattr(win, "_pinned", pins)
+    with history_win.open_binary(PureWindowsPath(r"C:\private\transcript.jsonl")) as stream:
+        assert stream.readline() == b"first\n"
+        assert stream.peek(1)
+        stream.seek(6)
+        assert stream.read() == b"second\n"
+        assert events == ["pin", "validated-open"]
+    assert events == ["pin", "validated-open", "close", "unpin"]
+
+
+@pytest.mark.parametrize("error", [5, 33])
+def test_history_metadata_lock_native_error_or_timeout_closes_without_unlink(monkeypatch, error):
+    from contextlib import contextmanager
+    from filelock import Timeout
+
+    events = []
+
+    class API:
+        def open(self, path, **kwargs):
+            assert path.name == ".session.metadata.lock"
+            assert kwargs == {"create": True, "write": True}
+            events.append("open-stable")
+            return 123
+
+        def validate_acl(self, handle, **kwargs):
+            assert kwargs == {"private": True}
+            events.append("validate")
+
+        def LockFileEx(self, handle, flags, reserved, low, high, overlapped):
+            assert (handle, flags, reserved, low, high) == (123, 3, 0, 1, 0)
+            return False
+
+        def close(self, handle):
+            events.append("close")
+
+    @contextmanager
+    def pins(*args, **kwargs):
+        assert kwargs["private"] is False
+        try:
+            yield
+        finally:
+            events.append("unpin")
+
+    clock = iter([0, 11])
+    monkeypatch.setattr(history_win, "_API", API)
+    monkeypatch.setattr(win, "_pinned", pins)
+    monkeypatch.setattr(history_win.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(C, "get_last_error", lambda: error, raising=False)
+    monkeypatch.setattr(C, "WinError", lambda code: PermissionError("native access denied"), raising=False)
+    with pytest.raises(Timeout if error == 33 else PermissionError):
+        with history_win.metadata_lock(PureWindowsPath(r"C:\private\session")):
+            pytest.fail("failed acquisition yielded")
+    assert events == ["open-stable", "validate", "close", "unpin"]
+
+
+def test_history_new_bindings_use_fixed_width_and_actual_change_time(monkeypatch):
+    class Function:
+        pass
+
+    class DLL:
+        def __getattr__(self, name):
+            function = Function()
+            setattr(self, name, function)
+            return function
+
+    monkeypatch.setattr(win, "os", _WindowsOS())
+    monkeypatch.setattr(C, "WinDLL", lambda *a, **kw: DLL(), raising=False)
+    monkeypatch.setattr(win._API, "_user_sid", lambda self: "synthetic-sid")
+    api = history_win._API()
+    assert api.SetFilePointerEx.argtypes == [win.HANDLE, C.c_int64, C.POINTER(C.c_int64), win.DWORD]
+    assert api.GetFileInformationByHandleEx.argtypes == [win.HANDLE, C.c_int, win.PVOID, win.DWORD]
+    assert history_win._BASIC_INFO.change.offset == 24
+    assert C.sizeof(history_win._BASIC_INFO) == 40
+
+
+@pytest.fixture
+def native_history(tmp_path):
+    if os.name != "nt":
+        pytest.skip("requires actual Windows local NTFS")
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    # Missing leaf: production code, not the fixture, creates its protected DACL.
+    return SessionHistoryStore(tmp_path / "private-history-\u2603-\U0001f680")
+
+
+@native
+def test_native_history_roundtrip_replace_old_reader_and_private_files(native_history):
+    store = native_history
+    rows = [{"role": "user", "content": "private \u2603\U0001f680",
+             "metadata": {"provider:continuation": "synthetic"}}]
+    store.save(rows, {"unknown": {"preserved": True}}, incremental=True, merge_metadata=True)
+    with history_win.open_binary(store.transcript_path) as reader:
+        store.save_messages(rows + [{"role": "assistant", "content": "answer"}])
+        assert [json.loads(line) for line in reader] == rows
+    assert store.load(include_events=False).metadata == {"unknown": {"preserved": True}}
+    assert list(store.indexed_messages()) == store.load_messages()
+    api = history_win._API()
+    for path in store.session_dir.iterdir():
+        with history_win._file(path) as (api, handle):
+            api.validate_acl(handle, private=True)
+    assert not list(store.session_dir.glob(".history-*"))
+
+
+@native
+def test_native_history_missing_reads_do_not_create_roots_or_lock(native_history):
+    store = native_history
+    assert store.load(include_events=False).messages == []
+    assert store.load_metadata() == {} and store.indexed_messages() == []
+    assert not store.exists()
+    assert not store.session_dir.exists()
+    assert not (store.session_dir.parent / f".{store.session_dir.name}.metadata.lock").exists()
+
+
+@native
+@pytest.mark.parametrize("complete", [False, True])
+def test_native_history_interrupted_append_preserves_complete_backup(native_history, monkeypatch, complete):
+    from amplifier_foundation.session import jsonl
+
+    store = native_history
+    rows = [{"role": "user", "content": str(i)} for i in range(4)]
+    store.save(rows[:2], {}, incremental=True)
+    original = history_win.append
+
+    def interrupt(path, chunks):
+        if path.name == "transcript.jsonl":
+            chunk = next(chunks)
+            original(path, iter([chunk if complete else chunk[:8]]))
+            raise OSError("synthetic interrupted append")
+        return original(path, chunks)
+
+    monkeypatch.setattr(history_win, "append", interrupt)
+    with pytest.raises(OSError):
+        store.save(rows, {}, incremental=True)
+    assert jsonl.intent_path(store.transcript_path).exists()
+    assert store.load_messages() == rows[:2]
+    assert list(store.indexed_messages()) == rows[:2]
+    assert "interrupted_append" in [d.code for d in store.diagnostics]
+    monkeypatch.setattr(history_win, "append", original)
+    store.save(rows, {}, incremental=True)
+    assert store.load_messages() == rows
+    assert not jsonl.intent_path(store.transcript_path).exists()
+
+
+@native
+def test_native_history_corrupt_primary_does_not_replace_good_backup(native_history):
+    store = native_history
+    rows = [{"role": "user", "content": "good"}]
+    store.save(rows, {"version": 1})
+    store.save(rows * 2, {"version": 2})
+    backup = store.transcript_path.with_suffix(".jsonl.backup").read_bytes()
+    store.transcript_path.write_bytes(b"corrupt")
+    assert store.load_messages() == rows
+    store.save_messages(rows * 3)
+    assert store.transcript_path.with_suffix(".jsonl.backup").read_bytes() == backup
+    assert store.load_messages() == rows * 3
+
+
+@native
+@pytest.mark.parametrize("filename", ["transcript.jsonl", "metadata.json", "transcript.jsonl.backup",
+                                      "transcript.jsonl.append-pending"])
+def test_native_history_rejects_hardlinks_without_repair(native_history, tmp_path, filename):
+    store = native_history
+    store.save([{"role": "user", "content": "one"}], {})
+    store.save([{"role": "user", "content": "two"}], {})
+    target = store.session_dir / filename
+    if not target.exists():
+        history_win.write_pending(target)
+    original = target.read_bytes()
+    os.link(target, tmp_path / "forbidden-alias")
+    with pytest.raises(shared.SharedStateError, match="hardlink"):
+        history_win.stamp(target)
+    with pytest.raises(shared.SharedStateError, match="hardlink"):
+        history_win._replace(target, [b"must not repair"])
+    assert target.read_bytes() == original
+
+
+@native
+def test_native_history_reparse_ancestor_refused_before_descendant_creation(native_history, tmp_path):
+    alias, actual = tmp_path / "alias", tmp_path / "actual"
+    actual.mkdir()
+    result = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(actual)],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    store = SessionHistoryStore(alias / "must-not-create")
+    with pytest.raises(shared.SharedStateError, match="reparse"):
+        store.save([], {})
+    assert not (actual / "must-not-create").exists()
+
+
+@native
+@pytest.mark.parametrize("target_name", ["metadata.json", "transcript.jsonl", "directory"])
+def test_native_history_foreign_read_acl_rejected_without_repair(native_history, target_name):
+    store = native_history
+    store.save([{"role": "user", "content": "synthetic"}], {})
+    target = store.session_dir if target_name == "directory" else store.session_dir / target_name
+    original = store.metadata_path.read_bytes()
+    api = history_win._API()
+    descriptor = win.PVOID()
+    api.ok(api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        f"O:{api.sid}D:P(A;;FA;;;{api.sid})(A;;GR;;;WD)",
+        1, C.byref(descriptor), None,
+    ))
+    setter = api.security.SetFileSecurityW
+    setter.argtypes, setter.restype = [C.c_wchar_p, win.DWORD, win.PVOID], win.BOOL
+    try:
+        api.ok(setter(str(target), 0x80000005, descriptor))
+    finally:
+        api.LocalFree(descriptor)
+    operation = store.load_metadata if target_name != "transcript.jsonl" else store.load_messages
+    with pytest.raises(shared.SharedStateError, match="foreign access"):
+        operation()
+    with pytest.raises(shared.SharedStateError, match="foreign access"):
+        store.save([{"role": "user", "content": "must not publish"}], {})
+    assert store.metadata_path.read_bytes() == original
+
+
+@native
+def test_native_history_warm_append_never_copies_full_prefix(native_history, monkeypatch):
+    store = native_history
+    rows = [{"role": "user", "content": "x" * 2000 + str(i)} for i in range(100)]
+    store.save(rows, {}, incremental=True)
+    store.save(rows + rows[:1], {}, incremental=True)
+    before = store.transcript_path.read_bytes()
+    inode = store.transcript_path.stat().st_ino
+    reads = []
+    original = history_win.open_binary
+    from contextlib import contextmanager
+
+    @contextmanager
+    def observed(path):
+        if path.name.startswith("transcript"):
+            reads.append(path.name)
+        with original(path) as stream:
+            yield stream
+
+    monkeypatch.setattr(history_win, "open_binary", observed)
+    monkeypatch.setattr(history_win, "copy_backup", lambda *a: pytest.fail("full-prefix copy on warm append"))
+    store.save(rows + rows[:2], {}, incremental=True)
+    assert reads == ["transcript.jsonl"]  # Only the previously appended tail.
+    assert store.transcript_path.stat().st_ino == inode
+    assert store.transcript_path.with_suffix(".jsonl.backup").read_bytes() == before
+    assert store.load_messages() == rows + rows[:2]
+
+
+@native
+def test_native_history_metadata_stable_lock_noninheritance_and_process_contention(native_history):
+    from amplifier_foundation.session.metadata import SessionMetadataStore, metadata_lock
+
+    store = native_history
+    store.save([], {"unknown": "keep"})
+    lock = store.session_dir.parent / f".{store.session_dir.name}.metadata.lock"
+    inode = lock.stat().st_ino
+    with metadata_lock(store.session_dir):
+        api = history_win._API()
+        handle = api.open(lock, write=True)
+        try:
+            getter = api.kernel.GetHandleInformation
+            getter.argtypes, getter.restype = [win.HANDLE, win.PDWORD], win.BOOL
+            flags = win.DWORD()
+            api.ok(getter(handle, C.byref(flags)))
+            assert not flags.value & 1
+        finally:
+            api.close(handle)
+        with pytest.raises(OSError):
+            lock.unlink()
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-c",
+             "import sys,ctypes as C\n"
+             "from pathlib import Path\n"
+             "from amplifier_foundation.session import _windows_ownership as w\n"
+             "a=w._API(); p=Path(sys.argv[1]); h=a.open(p,write=True)\n"
+             "o=w.OVERLAPPED(); result=a.LockFileEx(h,3,0,1,0,C.byref(o))\n"
+             "error=C.get_last_error(); a.close(h)\n"
+             "sys.exit(23 if not result and error==33 else 1)\n", str(lock)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 23, result.stderr
+    SessionMetadataStore(store.session_dir).set_name("Canonical")
+    store.save([], {"turn": 2}, merge_metadata=True, incremental=True)
+    assert store.load_metadata()["name"] == "Canonical"
+    assert store.load_metadata()["unknown"] == "keep"
+    assert lock.stat().st_ino == inode

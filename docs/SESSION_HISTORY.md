@@ -61,6 +61,47 @@ release ownership mechanism. They should read and write native files through
 to produce an additional checkpoint. Older applications that do not participate
 in the ownership protocol must not write the same session concurrently.
 
+## Bounded native Windows history
+
+The existing API selects a private Windows adapter on Windows. The scope is
+ordinary `transcript.jsonl`, `metadata.json`, their `.backup` files and the
+transcript `.append-pending` intent, not shared checkpoints or transfer fences.
+The layout and public API do not change. POSIX persistence is unchanged.
+
+The adapter requires an absolute local fixed NTFS path (relative inputs are
+anchored without resolving away unsafe components). It pins and validates each
+ancestor before opening or creating a descendant. Newly created directories and
+files receive a protected current-user DACL **at creation, before payload**.
+Existing history directories and files must already satisfy the private ACL
+contract. Reparse points, hardlinked files, unsafe ACLs and namespace aliases
+are refused without automatic ACL repair or migration. Windows security failures
+are not transcript corruption and do not authorize overwriting the object.
+Reads, including missing-root reads, never create directories or locks.
+Optional activity reads use the same validated private handles; their logger
+must provision private files separately, or the host can omit events.
+
+Replacement writes complete and `FlushFileBuffers` the new private temporary
+before a same-volume `FileRenameInfoEx` replacement. Readers share deletion:
+an already-open reader retains the complete old file while later readers see the
+new file. Unsupported native rename/disposition operations fail; there is no
+copy/delete, delete-first or less-safe sharing fallback. Native execution on
+the intended Windows version/filesystem is required before claiming qualification.
+
+`save(..., incremental=True)` retains the append optimization. A warm append
+copies only the previous tail into the backup, not the full transcript prefix.
+The complete previous transcript is flushed before the private pending intent
+is published. The primary append is flushed before that intent is removed.
+A failed primary append retains the intent and complete backup, even if failure
+lands between whole JSONL rows. Intent-aware reads recover the backup and do not
+acknowledge a partial batch. Recovery replacement does not rotate a damaged
+primary over a good backup.
+
+These are individual-file visibility and file-content flush guarantees, **not**
+a file-pair transaction or a power-loss guarantee for directory/ancestor
+publication. Transcript writers must still hold execution ownership. Windows
+checkpoint/fence mutations and cooperative handoff remain unsupported; ordinary
+history saves do not remove those gates.
+
 ## Recovery and revision checks
 
 - A missing transcript or metadata file falls back to its `.backup`, if present.
