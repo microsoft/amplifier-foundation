@@ -269,6 +269,7 @@ def test_file_stamp_returns_none_only_for_missing_path(tmp_path: Path) -> None:
     assert isinstance(file_stamp(path), FileStamp)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="tests missing POSIX primitive, not the Windows backend")
 def test_acquire_fails_clearly_without_a_posix_locking_primitive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
