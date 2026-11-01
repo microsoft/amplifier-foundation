@@ -39,3 +39,51 @@ jobs:
       # which tests run changes here; only whether the log says their names.
       - name: Run tests
         run: uv run pytest tests/ -q --tb=short -rA
+
+  installed-consumers:
+    name: Installed consumers (${{ matrix.os }}, Python 3.13 x64)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+          architecture: x64
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+
+      # The script builds ONE non-editable candidate wheel, then resolves the
+      # pinned consumers independently. Agent's Core==2.0.1 is not compatible
+      # with the CLI/Unified Core>=2.0.2 graph. Never combine those environments.
+      - name: Build candidate and install isolated consumer graphs
+        run: python -I -X utf8 tests/installed_consumer_compat.py --prepare --work "${{ runner.temp }}/installed-consumers"
+
+      - name: Qualify installed SDK and CLI persistence
+        if: ${{ always() && !cancelled() }}
+        run: python -I -X utf8 tests/installed_consumer_compat.py --run --work "${{ runner.temp }}/installed-consumers"
+
+      # Rescan the saved, normalized JSON. Failure withholds the entire upload;
+      # never publish raw private state, command output, or exception messages.
+      - name: Check public evidence before upload
+        id: public-evidence
+        if: ${{ always() && !cancelled() }}
+        run: python -I -X utf8 tests/installed_consumer_compat.py --check-public --work "${{ runner.temp }}/installed-consumers"
+
+      - name: Retain installed-consumer evidence
+        if: ${{ always() && steps.public-evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installed-consumers-${{ matrix.os }}-py313-x64
+          path: ${{ runner.temp }}/installed-consumers/evidence/*.json
+          if-no-files-found: error
