@@ -1722,6 +1722,310 @@ def test_native_history_replace_preserves_builtin_open_reader(native_history, mo
     assert not list(store.session_dir.glob(".history-*"))
 
 
+def _assert_pre_pr_atomic_writer():
+    """Pin the exact writer from 99fdb524037fb998b9c36355315e66a3052b662f.
+
+    inspect normalizes checkout line endings; the hash is of that commit's
+    complete _write_atomic definition, including its trailing newline.
+    No Git executable or network is needed in the native check.
+    """
+    import hashlib
+    import inspect
+    from amplifier_foundation.io.files import _write_atomic
+
+    assert hashlib.sha256(inspect.getsource(_write_atomic).encode("utf-8")).hexdigest() == (
+        "8f3db6888995faca5f77e9e31738e6c5a0ec33185790e089e56053efb6af7cf9"
+    )
+    return _write_atomic
+
+
+def test_reader_discriminator_uses_exact_pre_pr_atomic_writer():
+    assert callable(_assert_pre_pr_atomic_writer())
+
+
+def _reader_publication_attempt(path, mode, expected_before, expected_after, publish):
+    """Observe one attempt; reject mutation-on-refusal and non-atomic successes."""
+    assert path.read_bytes() == expected_before
+    options = {"encoding": "utf-8", "newline": ""} if mode == "r" else {}
+    old_content = expected_before.decode("utf-8") if mode == "r" else expected_before
+    with open(path, mode, **options) as reader:
+        # Do not fill a Python read buffer before publication.
+        old_stat = os.fstat(reader.fileno())
+        old_identity = (old_stat.st_dev, old_stat.st_ino)
+        error = None
+        try:
+            publish()
+        except OSError as caught:
+            error = caught
+        current = path.stat()
+        current_identity = (current.st_dev, current.st_ino)
+        assert path.read_bytes() == (expected_before if error else expected_after)
+        assert (current_identity == old_identity) is (error is not None)
+        assert not reader.closed
+        assert reader.read() == old_content
+        reader.seek(0)
+        assert reader.read() == old_content
+        still_open = os.fstat(reader.fileno())
+        assert (still_open.st_dev, still_open.st_ino) == old_identity
+        with open(path, mode, **options) as fresh:
+            expected = expected_before if error else expected_after
+            assert fresh.read() == (expected.decode("utf-8") if mode == "r" else expected)
+    return error, current_identity
+
+
+def _publication_after_reader_close(path, expected, previous_identity, publish):
+    """Require a fresh complete publication after closure, not permanent refusal."""
+    publish()
+    assert path.read_bytes() == expected
+    current = path.stat()
+    assert (current.st_dev, current.st_ino) != previous_identity
+
+
+@pytest.mark.parametrize("mode", ["rb", "r"])
+@pytest.mark.parametrize("behavior", [
+    "atomic", "refuse", "noop", "in-place", "truncated", "mutate-refusal", "never-recovers",
+])
+def test_reader_discriminator_oracles_with_portable_faults(monkeypatch, mode, behavior):
+    """Oracle checks only: simulated refusals are not Windows baseline evidence."""
+    import io
+    from types import SimpleNamespace
+
+    before, after = b'{"value":"old"}\n', b'{"value":"complete new"}\n'
+    state = {"bytes": before, "inode": 100}
+    path = SimpleNamespace(
+        read_bytes=lambda: state["bytes"],
+        stat=lambda: SimpleNamespace(st_dev=1, st_ino=state["inode"]),
+    )
+
+    def opened(actual, mode, **options):
+        assert actual is path
+        stream = io.StringIO(state["bytes"].decode()) if mode == "r" else io.BytesIO(state["bytes"])
+        inode = state["inode"]  # Each reader retains its opened object identity.
+        stream.fileno = lambda: inode
+        return stream
+
+    monkeypatch.setattr(sys.modules[__name__], "open", opened, raising=False)
+    monkeypatch.setattr(sys.modules[__name__], "os", SimpleNamespace(
+        fstat=lambda descriptor: SimpleNamespace(st_dev=1, st_ino=descriptor),
+    ))
+    failure = OSError("synthetic sharing refusal")
+    failure.winerror = 32
+
+    def recovered():
+        state["bytes"] = after
+        state["inode"] += 1
+
+    def publish():
+        if behavior in {"refuse", "never-recovers"}:
+            raise failure
+        if behavior == "noop":
+            return
+        if behavior in {"in-place", "mutate-refusal"}:
+            state["bytes"] = after
+            if behavior == "mutate-refusal":
+                raise failure
+            return
+        recovered()
+        if behavior == "truncated":
+            state["bytes"] = after[:5]
+
+    if behavior in {"noop", "in-place", "truncated", "mutate-refusal"}:
+        with pytest.raises(AssertionError):
+            _reader_publication_attempt(path, mode, before, after, publish)
+    else:
+        error, identity = _reader_publication_attempt(path, mode, before, after, publish)
+        assert error is (failure if behavior != "atomic" else None)
+        if behavior == "never-recovers":
+            with pytest.raises(OSError) as caught:
+                _publication_after_reader_close(path, after, identity, publish)
+            assert caught.value is failure
+        else:
+            _publication_after_reader_close(path, after, identity, recovered)
+
+
+@native
+@pytest.mark.parametrize("mode", ["rb", "r"])
+@pytest.mark.parametrize("filename", ["transcript.jsonl", "metadata.json"])
+def test_native_baseline_vs_candidate_builtin_reader_discriminator(tmp_path, mode, filename, record_property):
+    """Measure baseline outcome; never allow the candidate to regress its success.
+
+    This does not replace the four unconditional builtin-reader tests above.
+    A metadata failure may follow a successful transcript publication: inspect
+    both primaries without asserting rollback of an unpromised pair transaction.
+    """
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    atomic = _assert_pre_pr_atomic_writer()
+    rows = [{"role": "user", "content": "old \u2603\U0001f680",
+             "metadata": {"provider:continuation": "synthetic"}}]
+    metadata = {"label": "old \u2603\U0001f680", "unknown": {"preserve": True}}
+    new_rows = rows + [{"role": "assistant", "content": "complete new \u2603\U0001f680"}]
+    new_metadata = metadata | {"label": "complete new \u2603\U0001f680"}
+    transcript_content = SessionHistoryStore._messages_content(new_rows, True, None)
+    metadata_content = SessionHistoryStore._metadata_content(new_metadata)
+    content = transcript_content if filename == "transcript.jsonl" else metadata_content
+    candidate_bytes = content.encode("utf-8")
+    # The exact pre-PR default text writer translates newlines through the CRT.
+    baseline_bytes = content.replace("\n", os.linesep).encode("utf-8")
+    baseline = SessionHistoryStore(tmp_path / "baseline")
+    candidate = SessionHistoryStore(tmp_path / "candidate")
+    for store in (baseline, candidate):
+        store.save(rows, metadata)  # Independent protected targets, no shared pins.
+    baseline_path, candidate_path = baseline.session_dir / filename, candidate.session_dir / filename
+    before = candidate_path.read_bytes()
+    assert baseline_path.read_bytes() == before
+
+    old_error, old_identity = _reader_publication_attempt(
+        baseline_path, mode, before, baseline_bytes, lambda: atomic(baseline_path, content),
+    )
+    before_transcript = candidate.transcript_path.read_bytes()
+    before_metadata = candidate.metadata_path.read_bytes()
+    new_error, new_identity = _reader_publication_attempt(
+        candidate_path, mode, before, candidate_bytes, lambda: candidate.save(new_rows, new_metadata),
+    )
+
+    def outcome(error):
+        chain = []
+        while error is not None:
+            chain.append({"type": type(error).__name__, "winerror": getattr(error, "winerror", None),
+                          "errno": error.errno})
+            error = error.__cause__
+        return {"success": not chain, "errors": chain}
+
+    evidence = json.dumps({"filename": filename, "mode": mode,
+                           "baseline": outcome(old_error), "candidate": outcome(new_error)},
+                          sort_keys=True)
+    record_property("windows_reader_discriminator", evidence)
+    print("windows_reader_discriminator=" + evidence)  # Payload/path-free CI evidence.
+    if old_error is None:
+        assert new_error is None, "candidate regressed a successful pre-PR publication"
+    if new_error is not None:
+        assert new_error.winerror == 32, "candidate failure must be a precise sharing refusal"
+
+    actual_transcript = candidate.transcript_path.read_bytes()
+    actual_metadata = candidate.metadata_path.read_bytes()
+    if new_error is None:
+        assert actual_transcript == transcript_content.encode("utf-8")
+        assert actual_metadata == metadata_content.encode("utf-8")
+    elif filename == "metadata.json":
+        # Transcript is published first. The target metadata is still old, not
+        # partially overwritten; no claim that the earlier transcript rolled back.
+        assert actual_transcript == transcript_content.encode("utf-8")
+        assert actual_metadata == before_metadata
+    else:
+        assert actual_transcript == before_transcript
+        assert actual_metadata == before_metadata
+    _publication_after_reader_close(
+        baseline_path, baseline_bytes, old_identity, lambda: atomic(baseline_path, content),
+    )
+    _publication_after_reader_close(
+        candidate_path, candidate_bytes, new_identity, lambda: candidate.save(new_rows, new_metadata),
+    )
+    assert baseline.transcript_path.exists() and baseline.metadata_path.exists()
+    snapshot = candidate.load(include_events=False)
+    assert snapshot.messages == new_rows and snapshot.metadata == new_metadata
+    for store in (baseline, candidate):
+        assert not list(store.session_dir.glob("*.tmp"))
+        assert not (store.session_dir / "transcript.jsonl.append-pending").exists()
+
+
+@pytest.mark.parametrize("baseline_success,candidate_success,accepted", [
+    (True, True, True),
+    (True, False, False),
+    (False, False, True),
+    (False, True, True),
+])
+def test_reader_discriminator_actual_body_outcome_matrix(
+    tmp_path, monkeypatch, baseline_success, candidate_success, accepted,
+):
+    """Execute the native test body with modeled I/O outcomes, not source patterns.
+
+    This portable matrix qualifies the comparison logic, not Windows behavior.
+    Reader bytes/identity fault oracles are tested separately above.
+    """
+    from types import SimpleNamespace
+    from amplifier_foundation.session import history
+
+    module = sys.modules[__name__]
+    active_reader = None
+    attempts, properties = [], []
+    formats = history.SessionHistoryStore
+
+    def replace(path, content):
+        if path == active_reader:
+            success = baseline_success if path.parent.name == "baseline" else candidate_success
+            if not success:
+                error = OSError("modeled sharing refusal")
+                error.winerror = 32
+                raise error
+        temporary = path.with_suffix(".model-tmp")
+        temporary.write_bytes(content.encode("utf-8"))
+        temporary.replace(path)
+
+    class ModelStore:
+        _messages_content = staticmethod(formats._messages_content)
+        _metadata_content = staticmethod(formats._metadata_content)
+
+        def __init__(self, directory):
+            self.session_dir = directory
+            self.transcript_path = directory / "transcript.jsonl"
+            self.metadata_path = directory / "metadata.json"
+
+        def save(self, rows, metadata):
+            self.session_dir.mkdir(exist_ok=True)
+            replace(self.transcript_path, self._messages_content(rows, True, None))
+            replace(self.metadata_path, self._metadata_content(metadata))
+
+        def load(self, *, include_events):
+            assert include_events is False
+            return SimpleNamespace(
+                messages=[json.loads(line) for line in self.transcript_path.read_bytes().splitlines()],
+                metadata=json.loads(self.metadata_path.read_bytes()),
+            )
+
+    def attempt(path, mode, before, after, publish):
+        nonlocal active_reader
+        assert path.read_bytes() == before and mode == "rb"
+        attempts.append(path.parent.name)
+        active_reader = path
+        error = None
+        try:
+            publish()
+        except OSError as caught:
+            error = caught
+        finally:
+            active_reader = None
+        assert path.read_bytes() == (before if error else after)
+        current = path.stat()
+        return error, (current.st_dev, current.st_ino)
+
+    monkeypatch.setattr(module, "_assert_pre_pr_atomic_writer", lambda: (
+        lambda path, content: replace(path, content.replace("\n", os.linesep))
+    ))
+    monkeypatch.setattr(module, "_reader_publication_attempt", attempt)
+    monkeypatch.setattr(history, "SessionHistoryStore", ModelStore)
+    record = lambda name, value: properties.append((name, json.loads(value)))
+
+    def run():
+        # One metadata case exercises the actual combined-save/partial-publication
+        # assertions and both real after-reader-close recovery oracles.
+        test_native_baseline_vs_candidate_builtin_reader_discriminator(
+            tmp_path, "rb", "metadata.json", record,
+        )
+
+    if accepted:
+        run()
+    else:
+        with pytest.raises(AssertionError, match="candidate regressed a successful pre-PR publication"):
+            run()
+    assert attempts == ["baseline", "candidate"]
+    assert len(properties) == 1
+    name, evidence = properties[0]
+    assert name == "windows_reader_discriminator"
+    assert evidence["baseline"]["success"] is baseline_success
+    assert evidence["candidate"]["success"] is candidate_success
+
+
 @native
 def test_native_history_missing_reads_do_not_create_roots_or_lock(native_history):
     store = native_history
