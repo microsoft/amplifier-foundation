@@ -375,8 +375,9 @@ def clean_environment(root: Path, *, runtime: bool = False) -> dict[str, str]:
     names = ["t", "config", "c", "appdata", "localappdata"]
     if not runtime:
         names.append("home")
-    for name in names:
-        (root / name).mkdir(parents=True, exist_ok=True)
+    if not (runtime and os.name == "nt"):
+        for name in names:
+            (root / name).mkdir(parents=True, exist_ok=True)
     env.update({
         "HOME": str(root / "home"), "USERPROFILE": str(root / "home"),
         "APPDATA": str(root / "appdata"), "LOCALAPPDATA": str(root / "localappdata"),
@@ -393,6 +394,22 @@ def clean_environment(root: Path, *, runtime: bool = False) -> dict[str, str]:
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "GITHUB_ACTIONS": "true",
     })
     return env
+
+
+def windows_runtime_root(original_temp: str) -> Path:
+    """One native-pytest-style location, NOT a drive search or a trust decision.
+
+    Capture the job's original TEMP before clean_environment replaces it. Build
+    caches stay compact on RUNNER_TEMP's drive; storage fixtures must not inherit
+    that drive choice. The installed child alone validates/creates this root.
+    Do not call gettempdir/TemporaryDirectory here: both can write before native
+    ancestor validation. No fallback to another drive if production refuses.
+    """
+    base = PureWindowsPath(original_temp)
+    if (not base.is_absolute() or not re.fullmatch(r"[A-Za-z]:", base.drive)
+            or ".." in base.parts):
+        raise HarnessPolicyError("Original TEMP is not an absolute local fixture location")
+    return Path(str(base)) / ("ic-" + os.urandom(8).hex())
 
 
 def setup_path_budget(work: Path | PureWindowsPath, env: dict) -> dict:
@@ -854,6 +871,11 @@ def prepare_runtime_home(report: dict) -> None:
         "creation_policy": "production adapter before payload; no ACL repair",
         "preexisting_home": home.exists(), "preexisting_history_root": amplifier_home.exists(),
     }
+    if os.name == "nt":
+        detail["runtime_location_basis"] = "original process TEMP before environment sanitization"
+        detail["preexisting_runtime_root"] = home.parent.exists()
+        if detail["preexisting_runtime_root"]:
+            raise HarnessPolicyError("Windows runtime fixture root must be absent before private creation")
     if detail["preexisting_home"] or detail["preexisting_history_root"]:
         raise HarnessPolicyError("Runtime HOME must be absent before private creation")
     categories = {
@@ -1676,11 +1698,19 @@ async def qualify(work: Path, consumer: str, report: dict, caller_sources=None) 
 
     # asyncio's own wakeup pair is already initialized. The only exception is
     # normal POSIX CLI registration, scoped around each actual execute_single.
-    root = work / "cases" / consumer
-    root.mkdir(parents=True, exist_ok=True)
+    root = (Path(os.environ["HOME"]).parent / "cases" if os.name == "nt"
+            else work / "cases" / consumer)
+    if os.name != "nt":
+        root.mkdir(parents=True, exist_ok=True)
     guard = SocketGuard(root, consumer, report, caller_sources)
     sys.addaudithook(guard.audit)
     prepare_runtime_home(report)
+    if os.name == "nt":
+        # HOME creation above also creates the missing runtime parent with a
+        # protected TokenUser DACL. Keep every writable fixture on THAT validated
+        # chain, not the build volume. Nothing is adopted or ACL-repaired.
+        for name in ("t", "config", "c", "appdata", "localappdata", "cache", "cases"):
+            private_directory(Path(os.environ["HOME"]).parent / name)
     home = Path(os.environ["AMPLIFIER_HOME"])
     config = home / "settings.yaml"
     config.write_text("# synthetic offline configuration\nfixture: café-日本語\n", encoding="utf-8")
@@ -1738,6 +1768,7 @@ def run_consumer(work: Path, consumer: str) -> int:
         "limits": [
             "No live provider, default bundle, memory integration or Unified runtime qualification",
             "Windows private history directories prepared by production adapter BEFORE consumer use",
+            "Windows runtime fixtures use original TEMP only; unsafe ancestors fail without fallback",
             "Consumer saves replace files; logical extension is distinct from Foundation opt-in append",
             "No checkpoint/fence writes, takeover requests, installer, service, or clean-install claim",
             "Python socket guard is a regression tripwire, not an adversarial OS sandbox",
@@ -1775,7 +1806,11 @@ def run(work: Path) -> int:
             # Preparation failures do not suppress the other graph's evidence.
             with ExitStack() as resources:
                 root = work / "runtime" / consumer
-                if os.name != "nt":
+                if os.name == "nt":
+                    root = windows_runtime_root(os.environ.get("TEMP", ""))
+                    # No mkdir here. The installed child must validate every
+                    # existing ancestor and privately create the absent root.
+                else:
                     # Private, unique, compact CI-only synthetic root. Runner
                     # temp defaults can exceed the handler's 103-byte bound.
                     root = Path(resources.enter_context(

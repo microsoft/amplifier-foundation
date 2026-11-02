@@ -974,7 +974,10 @@ def test_runtime_environment_never_precreates_home_or_copies_credentials(harness
     assert not Path(env["AMPLIFIER_HOME"]).exists()
     assert env["HOME"] == env["USERPROFILE"] == str(root / "home")
     assert env["AMPLIFIER_HOME"] == str(root / "home/.amplifier")
-    assert Path(env["TEMP"]).is_dir() and Path(env["UV_CACHE_DIR"]).is_dir()
+    if harness.os.name == "nt":
+        assert not root.exists()  # Installed child validates ancestors before mkdir.
+    else:
+        assert Path(env["TEMP"]).is_dir() and Path(env["UV_CACHE_DIR"]).is_dir()
     assert all("synthetic-private-sentinel" not in value for value in env.values())
     prep = harness.clean_environment(tmp_path / "prep")
     assert Path(prep["HOME"]).is_dir()  # Public-only builder HOME is deliberately separate.
@@ -999,7 +1002,7 @@ def test_runtime_home_uses_adapter_for_missing_home_before_config_payload(harnes
         assert not (history / "settings.yaml").exists()
         if path == history:
             assert created == [home]
-        path.mkdir(mode=0o700)
+        path.mkdir(parents=True, mode=0o700)
         created.append(path)
 
     monkeypatch.setattr(harness, "private_directory", adapter)
@@ -1044,7 +1047,7 @@ def test_runtime_home_preexisting_directory_is_refused_without_repair(harness, t
 def test_private_creation_failure_reports_role_category_not_sid_or_path(
     harness, tmp_path, monkeypatch, failing_role, message, category,
 ):
-    home = tmp_path / "home"
+    home = tmp_path / "new-runtime" / "home"
     history = home / ".amplifier"
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("AMPLIFIER_HOME", str(history))
@@ -1054,7 +1057,7 @@ def test_private_creation_failure_reports_role_category_not_sid_or_path(
                 raise ValueError(f"{message}: S-1-5-21-synthetic-private-sentinel")
             except ValueError as cause:
                 raise RuntimeError("unsafe traversal /home/synthetic-private-sentinel") from cause
-        path.mkdir(mode=0o700)
+        path.mkdir(parents=True, mode=0o700)
     monkeypatch.setattr(harness, "private_directory", adapter)
     monkeypatch.setattr(harness, "private_ancestor_preflight", lambda path, **kwargs: {
         "existing_chain_validated": True, "owned_leaf_missing": True,
@@ -1073,7 +1076,7 @@ def test_private_creation_failure_reports_role_category_not_sid_or_path(
 
 
 def test_unsafe_existing_ancestor_is_refused_before_private_creation(harness, tmp_path, monkeypatch):
-    home = tmp_path / "missing-home"
+    home = tmp_path / "new-runtime" / "missing-home"
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("AMPLIFIER_HOME", str(home / ".amplifier"))
     calls = []
@@ -1154,9 +1157,11 @@ def test_swallowed_socket_attempt_keeps_overall_qualification_failed_after_passe
     audits = []
     monkeypatch.setattr(harness.sys, "addaudithook", lambda callback: audits.append(callback))
     monkeypatch.chdir(tmp_path)
-    home = tmp_path / "runtime-home"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    home = tmp_path / "home/.amplifier"
     monkeypatch.setenv("AMPLIFIER_HOME", str(home))
-    monkeypatch.setattr(harness, "prepare_runtime_home", lambda report: home.mkdir())
+    monkeypatch.setattr(harness, "prepare_runtime_home", lambda report: home.mkdir(parents=True))
+    monkeypatch.setattr(harness, "private_directory", lambda path: path.mkdir(parents=True, exist_ok=True))
     monkeypatch.setattr(harness, "foundation_ownership", lambda *args: None)
     monkeypatch.setattr(harness, "incremental_history", lambda *args: None)
     monkeypatch.setattr(harness, "settings_overlap", lambda *args: None)
@@ -2085,3 +2090,187 @@ def test_display_import_boundary_fails_closed_before_startup_on_unverified_input
         with harness.cli_display_offline({}, proof):
             raise AssertionError("Should not enter unverified fixture")
     assert http == []
+
+
+def _fixture_function(name, namespace):
+    """Run a changed harness body with fake platform/API objects, not consumers."""
+    node = copy.deepcopy(FUNCTIONS[name])
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
+                 "runtime-fixture-model", "exec"), namespace)
+    return namespace[name]
+
+
+def test_windows_runtime_location_uses_original_native_temp_not_short_build_drive(harness, monkeypatch):
+    monkeypatch.setattr(harness, "Path", harness.PureWindowsPath)
+    monkeypatch.setattr(harness.os, "urandom", lambda count: b"a" * count)
+    original = r"C:\Users\runneradmin\AppData\Local\Temp"
+    monkeypatch.setenv("RUNNER_TEMP", r"D:\a\_temp")
+    root = harness.windows_runtime_root(original)
+    assert root.parent == harness.PureWindowsPath(original)
+    assert root.name == "ic-" + (b"a" * 8).hex()
+    assert "mkdir" not in source("windows_runtime_root")
+    # Call wiring must capture the parent's original TEMP before sanitization.
+    body = source("run")
+    assert body.index('windows_runtime_root(os.environ.get("TEMP", ""))') < body.index("clean_environment(")
+    assert "gettempdir(" not in body and "windows_runtime_root" in body
+
+
+@pytest.mark.parametrize("original", ["", "relative", r"C:relative", r"\\server\share\temp",
+                                    r"C:\Temp\..\other"])
+def test_windows_runtime_unknown_or_alias_location_has_no_drive_fallback(harness, original):
+    with pytest.raises(harness.HarnessPolicyError):
+        harness.windows_runtime_root(original)
+
+
+def test_windows_clean_environment_does_not_create_runtime_before_child_validation(harness, tmp_path):
+    root = tmp_path / "absent-runtime"
+    env = _fixture_function("clean_environment", {
+        "Path": Path, "os": SimpleNamespace(name="nt", environ={"PATH": "synthetic"}, devnull="NUL"),
+    })(root, runtime=True)
+    assert not root.exists()
+    assert env["HOME"] == str(root / "home") and env["TEMP"] == str(root / "t")
+
+
+def test_windows_reused_runtime_parent_is_refused_without_adoption(harness, tmp_path):
+    home = tmp_path / "home"
+    operations = []
+    report = {}
+    prepare = _fixture_function("prepare_runtime_home", {
+        "Path": Path, "os": SimpleNamespace(name="nt", environ={
+            "HOME": str(home), "AMPLIFIER_HOME": str(home / ".amplifier"),
+        }), "HarnessPolicyError": harness.HarnessPolicyError,
+        "private_directory": lambda path: operations.append(path),
+        "private_ancestor_preflight": lambda path, **kw: operations.append(path),
+    })
+    with pytest.raises(harness.HarnessPolicyError):
+        prepare(report)
+    assert report["private_fixture"]["preexisting_runtime_root"] is True
+    assert operations == [] and not home.exists()
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_windows_qualify_keeps_every_case_on_validated_runtime_chain_before_payload(
+    harness, tmp_path, unsafe,
+):
+    runtime, work = tmp_path / "native-temp-fixture", tmp_path / "short-build-volume"
+    home, events = runtime / "home", []
+    original = RuntimeError("original native ancestor refusal")
+
+    def prepare(report):
+        assert not runtime.exists() and not work.exists()
+        events.append("readonly-preflight")
+        if unsafe:
+            raise original
+        # Fake creation stands in for the separately source-tested production adapter.
+        home.mkdir(parents=True)
+        (home / ".amplifier").mkdir()
+        events.append("private-home-created")
+
+    def private(path):
+        assert events[1:3] == ["readonly-preflight", "private-home-created"]
+        assert path.parent == runtime
+        assert not (home / ".amplifier/settings.yaml").exists()
+        path.mkdir()
+        events.append(path.name)
+
+    class Guard:
+        def __init__(self, root, *args):
+            assert root == runtime / "cases"
+
+        def audit(self, *args):
+            raise AssertionError("Model must never install a real audit callback")
+
+        def verify_ipv6_probe(self):
+            events.append("probe-policy")
+
+        def verify_policy(self):
+            events.append("final-policy")
+
+    def check(root, detail):
+        assert root == runtime / "cases" and root.is_dir()
+        assert (home / ".amplifier/settings.yaml").is_file()
+        events.append("fake-check")
+
+    qualify = _fixture_function("qualify", {
+        "Path": Path, "os": SimpleNamespace(name="nt", environ={
+            "HOME": str(home), "AMPLIFIER_HOME": str(home / ".amplifier"),
+        }, chdir=lambda root: events.append("chdir")),
+        "sys": SimpleNamespace(addaudithook=lambda callback: events.append("fake-audit")),
+        "SocketGuard": Guard, "prepare_runtime_home": prepare, "private_directory": private,
+        "socket": SimpleNamespace(socket=SimpleNamespace(listen=lambda *args: None)),
+        "foundation_ownership": check, "incremental_history": check,
+        "agent_roundtrip": lambda work, root, detail: check(root, detail),
+        "ExitStack": __import__("contextlib").ExitStack, "inspect": harness.inspect,
+        "save_public_json": lambda *args: None,
+    })
+    report = {"checks": {}}
+    if unsafe:
+        with pytest.raises(RuntimeError) as refusal:
+            _drive(qualify(work, "agent", report))
+        assert refusal.value is original
+        assert events == ["fake-audit", "readonly-preflight"]
+        assert not runtime.exists() and report["checks"] == {}
+    else:
+        _drive(qualify(work, "agent", report))
+        assert events[2:10] == ["private-home-created", "t", "config", "c",
+                               "appdata", "localappdata", "cache", "cases"]
+        assert events.count("fake-check") == 3 and events[-1] == "final-policy"
+        assert all(item["status"] == "passed" for item in report["checks"].values())
+    assert not work.exists()  # No payload or state on untrusted build volume.
+
+
+def test_production_preflight_cannot_escape_foreign_drive_owner_by_choosing_deeper_path(
+    harness, native_acl_model,
+):
+    """Actual _PinnedDirectories + validate_acl bodies, entirely fake Win32 APIs."""
+    win, api = native_acl_model
+    real_sid_text, real_open = api.sid_text, api.open
+
+    def sid_text(pointer):
+        if pointer.value == 1 and api.current.drive == "D:":
+            return "S-1-SYNTHETIC_FOREIGN_DRIVE_OWNER"
+        # C is a conditional valid native-temp model, NOT a claim about CI C:\.
+        if api.current.drive == "C:" and pointer.value >= 1008:
+            return api.sid
+        return real_sid_text(pointer)
+
+    def opened(path, **kwargs):
+        if path.name == "ic-fixture":
+            api.opens.append(path)
+            missing = FileNotFoundError()
+            missing.winerror = 3
+            raise missing
+        return real_open(path, **kwargs)
+
+    api.sid_text, api.open = sid_text, opened
+    api.GetDriveTypeW = lambda path: 3
+    api.GetVolumeInformationByHandleW = lambda handle, a, b, c, d, e, fs, size: (
+        setattr(fs, "value", "NTFS") or True
+    )
+    class Buffer:
+        value = ""
+
+        def __len__(self):
+            return 32
+
+    win.C.create_unicode_buffer = lambda count: Buffer()
+    tree = ast.parse((ROOT / "amplifier_foundation/session/_windows_ownership.py").read_text())
+    cls = copy.deepcopy(next(node for node in tree.body
+                             if isinstance(node, ast.ClassDef) and node.name == "_PinnedDirectories"))
+    cls.body[0].body = [node for node in cls.body[0].body if not isinstance(node, ast.ImportFrom)]
+    namespace = {"_API": object, "Path": harness.PureWindowsPath, "C": win.C,
+                 "_absolute": lambda path: path, "SharedStateError": RuntimeError}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])),
+                 "production-directory-pins-model", "exec"), namespace)
+    pins_type = namespace["_PinnedDirectories"]
+    for name in ("D:/ic-fixture/home", "D:/a/_temp/ic-fixture/home"):
+        api.opens.clear()
+        with pytest.raises(RuntimeError, match="trusted ownership"):
+            pins_type(api, harness.PureWindowsPath(name),
+                      owned_from=harness.PureWindowsPath(name), private=True, create=False)
+        assert api.opens == [harness.PureWindowsPath("D:/")]
+    path = harness.PureWindowsPath("C:/Users/runner/Temp/ic-fixture/home")
+    pins = pins_type(api, path, owned_from=path, private=True, create=False)
+    assert pins.missing and api.opens[-1].name == "ic-fixture"
+    assert len(pins.handles) == 4  # All existing ancestors validated, no child created.
+    pins.close()
