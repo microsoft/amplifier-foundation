@@ -9,8 +9,10 @@ display lookup are doubles. History, leases,
 resume and settings writes are real installed code. An unexplained refusal is a
 failure, never a skip. This is not a live-provider, default-bundle, clean-install,
 Unified, or checkpoint/transfer-fence qualification. No memory bridge is needed.
-Windows fixtures create private directories BEFORE use through the production
-adapter in the prepared cells. Additional Windows-only default-creation cells
+Pinned consumers keep their default legacy history policy, including prepared
+cells; those are NOT strict-consumer qualification. Separate Foundation append/
+reader checks select private policy before I/O and use the public creation API.
+Additional Windows-only default-creation cells
 leave consumer descendants absent under a safe HOME, comparing the candidate
 with an exact pre-PR456 wheel in separate environments.
 POSIX CLI startup may use its exact private same-user release endpoint; all
@@ -1438,23 +1440,127 @@ def incremental_history(root: Path, report: dict) -> None:
     from amplifier_foundation.session.jsonl import file_stamp
 
     directory = root / "incremental"
-    private_directory(directory)
-    history = SessionHistoryStore(directory)
+    history = SessionHistoryStore(directory, windows_policy="private")
+    prepare_strict_history(history, report)
     first = [{"role": "user", "content": QUOTE}, {"role": "assistant", "content": ANSWERS[0]}]
     history.save(first, {"turn_count": 1}, incremental=True)
     prior = saved_state(directory)
-    old = file_stamp(history.transcript_path)
+    old = file_stamp(history.transcript_path, windows_policy="private")
     prefix = history.transcript_path.read_bytes()
     second = first + [{"role": "user", "content": SECOND}, {"role": "assistant", "content": ANSWERS[1]}]
     history.save(second, {"turn_count": 2}, incremental=True)
-    new = file_stamp(history.transcript_path)
+    new = file_stamp(history.transcript_path, windows_policy="private")
     assert old and new and (old.dev, old.ino) == (new.dev, new.ino)
     assert history.transcript_path.read_bytes().startswith(prefix)
     assert history.load_messages() == second
     assert (directory / "transcript.jsonl.backup").read_bytes() == prefix
     report["files"] = history_files(directory, [QUOTE, SECOND], prior=prior)
     report["real_in_place_append"] = True
-    report["scope"] = "Foundation opt-in interface, NOT the pinned consumers' default save mode"
+    report["scope"] = "Explicit-private Foundation append; NOT updated Agent/CLI strict acceptance"
+    if os.name == "nt":
+        strict_existing_refusal(root, report.setdefault("unsafe_existing", {}))
+
+
+def prepare_strict_history(history, report: dict) -> None:
+    """Public creation seam, absent leaf, selected policy, then ACL proof BEFORE payload."""
+    from amplifier_foundation.session import prepare_session_directory
+
+    assert history.windows_policy == "private", "Strict check accidentally selected legacy history"
+    directory = history.session_dir
+    report["windows_policy"] = history.windows_policy
+    report["absent_before_public_creation"] = not directory.exists()
+    assert report["absent_before_public_creation"], "Strict leaf must not be fixture-precreated"
+    prepare_session_directory(directory)
+    assert not list(directory.iterdir()), "Public preparation must precede all history payload"
+    report["creation_api"] = "prepare_session_directory"
+    if os.name == "nt":
+        from amplifier_foundation.session import _windows_ownership as win
+
+        api = win._API()
+        handle = api.open(directory, directory=True)
+        try:
+            api.validate_acl(handle, private=True)
+            security = windows_acl_evidence(api, handle, win)
+        finally:
+            api.close(handle)
+        report["directory_security_before_payload"] = security
+        assert security["owner"]["class"] == "current-user"
+        assert security["dacl_present"] and security["dacl_protected"]
+    else:
+        report["directory_security_before_payload"] = {"native_windows_acl": "not applicable on POSIX"}
+    report["empty_before_payload"] = True
+
+
+def strict_existing_refusal(root: Path, report: dict) -> None:
+    """New CI-only unprotected leaf: strict refusal never repairs/retries as legacy."""
+    import pytest
+    from amplifier_foundation.session import prepare_session_directory
+    from amplifier_foundation.session.history import SessionHistoryStore
+    from amplifier_foundation.session.jsonl import _open_binary
+    from amplifier_foundation.session.shared_state import SharedStateError
+    from amplifier_foundation.session import _windows_ownership as win
+
+    directory = root / "unprotected-existing"
+    history = SessionHistoryStore(directory, windows_policy="private")
+    assert history.windows_policy == "private" and not directory.exists()
+    api, descriptor = win._API(), win.PVOID()
+    # Intentionally unsafe test fixture, not an ACL repair: TokenUser ownership,
+    # non-null but UNPROTECTED DACL supplied on the one new directory's creation.
+    api.ok(api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        f"O:{api.sid}D:(A;OICI;FA;;;{api.sid})", 1, win.C.byref(descriptor), None,
+    ))
+    try:
+        security = win.SECURITY_ATTRIBUTES(win.C.sizeof(win.SECURITY_ATTRIBUTES), descriptor, False)
+        api.ok(api.CreateDirectoryW(str(directory), win.C.byref(security)))
+    finally:
+        api.LocalFree(descriptor)
+    handle = api.open(directory, directory=True)
+    try:
+        original_security = windows_acl_evidence(api, handle, win)
+    finally:
+        api.close(handle)
+    assert original_security["owner"]["class"] == "current-user"
+    assert original_security["dacl_present"] and not original_security["dacl_protected"]
+    # Raw writes populate only this deliberately unsafe synthetic fixture. The
+    # REAL strict APIs below must refuse before consuming/replacing these bytes.
+    payloads = {
+        "transcript.jsonl": b'{"role":"user","content":"synthetic prior"}\n',
+        "metadata.json": b'{"turn_count":1}',
+    }
+    for name, raw in payloads.items():
+        (directory / name).write_bytes(raw)
+    before = {name: {"sha256": digest(directory / name), "bytes": (directory / name).stat().st_size}
+              for name in payloads}
+    report.update({"windows_policy": "private", "security_before": original_security,
+                   "before": before, "refusals": {}})
+    for name, operation in (
+        ("public_prepare", lambda: prepare_session_directory(directory)),
+        ("private_save_messages", lambda: history.save_messages([{"role": "user", "content": SECOND}])),
+    ):
+        with pytest.raises(SharedStateError) as refused:
+            operation()
+        assert default_failure_categories(refused.value) == ["unprotected-dacl"]
+        report["refusals"][name] = default_failure_categories(refused.value)
+    with pytest.raises(SharedStateError) as refused:
+        with _open_binary(history.transcript_path, windows_policy="private") as stream:
+            raise AssertionError("Unsafe private reader yielded instead of refusing")
+    assert default_failure_categories(refused.value) == ["unprotected-dacl"]
+    report["refusals"]["private_read"] = default_failure_categories(refused.value)
+    # Fail closed on unexpected names without publishing them. Only the two
+    # allowlisted synthetic files may appear in public byte evidence.
+    assert {path.name for path in directory.iterdir()} == set(payloads), "Strict refusal changed fixture members"
+    assert all((directory / name).stat().st_size <= 4096 for name in payloads), "Strict fixture bytes exceeded bound"
+    after = {name: {"sha256": digest(directory / name), "bytes": (directory / name).stat().st_size}
+             for name in payloads}
+    handle = api.open(directory, directory=True)
+    try:
+        after_security = windows_acl_evidence(api, handle, win)
+    finally:
+        api.close(handle)
+    report.update({"after": after, "security_after": after_security})
+    assert before == after and original_security == after_security
+    assert history.windows_policy == "private"
+    report["bytes_and_acl_unchanged"] = True
 
 
 def settings_overlap(root: Path, report: dict) -> None:
@@ -1465,8 +1571,9 @@ def settings_overlap(root: Path, report: dict) -> None:
 
     home = root / ".amplifier"
     directory = home / "projects" / "fixture" / "sessions" / "history"
-    private_directory(directory)
-    history = SessionHistoryStore(directory)
+    history = SessionHistoryStore(directory, windows_policy="private")
+    prepare_strict_history(history, report)
+    report["scope"] = "Explicit-private Foundation reader versus actual CLI settings writer; NOT strict CLI session"
     history.save([{"role": "user", "content": QUOTE}], {"turn_count": 1})
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("AMPLIFIER_HOME", str(home))
@@ -1474,11 +1581,11 @@ def settings_overlap(root: Path, report: dict) -> None:
         settings.set_active_bundle("baseline-café")
         assert settings.get_active_bundle() == "baseline-café"
         report["baseline_settings_write"] = True
-        # Actual production read context retains the native ancestor pins. Do
-        # not substitute builtin open, weaken sharing, or expect an ACL refusal.
+        # Retain the validated native file snapshot, not traversal-directory
+        # pins. Select private explicitly; never substitute a legacy/builtin read.
         failure = None
         try:
-            with _open_binary(history.transcript_path) as stream:
+            with _open_binary(history.transcript_path, windows_policy="private") as stream:
                 assert stream.read()
                 settings.set_active_bundle("overlap-Montréal")
                 assert settings.get_active_bundle() == "overlap-Montréal"
@@ -2083,6 +2190,8 @@ def run_consumer(work: Path, consumer: str, *, default_creation=False, variant="
     name = default_report_name(consumer, variant) if default_creation else f"{consumer}.json"
     report["cell"] = "default-creation" if default_creation else "privately-prepared"
     report["foundation_variant"] = variant
+    report["consumer_history_policy"] = "unchanged pinned consumer; legacy default (no strict selection)"
+    report["strict_consumer_acceptance"] = "not qualified; requires updated consumer revisions"
     if default_creation:
         report["limits"][1] = "Only safe synthetic HOME is precreated; actual consumers create descendants"
     try:

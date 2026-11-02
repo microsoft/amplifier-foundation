@@ -209,7 +209,7 @@ def test_real_resume_runs_second_turn_and_physical_backup_checks():
 
 def test_settings_overlap_retains_real_read_and_failure_with_release_control():
     overlap = source("settings_overlap")
-    assert "with _open_binary(history.transcript_path) as stream" in overlap
+    assert 'with _open_binary(history.transcript_path, windows_policy="private") as stream' in overlap
     assert len(calls("settings_overlap", "set_active_bundle")) == 3
     assert "raise failure" in overlap
     assert overlap.index('report["released_settings_write"]') < overlap.index("raise failure")
@@ -2945,3 +2945,318 @@ def test_default_failure_categories_are_bounded_allowlist_not_raw_consumer_prose
     result = harness.default_failure_categories(primary)
     assert result == ["foreign-ace"] and sentinel not in json.dumps(result)
     harness.assert_public(harness.public_value(result, {}))
+
+
+def _strict_body(name, namespace):
+    """Actual harness body with fake installed imports; no product/native execution."""
+    class OmitImport(ast.NodeTransformer):
+        def visit_ImportFrom(self, node):
+            return None
+
+        def visit_Import(self, node):
+            return None
+
+    body = OmitImport().visit(copy.deepcopy(FUNCTIONS[name]))
+    namespace.setdefault("Path", Path)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[body], type_ignores=[])),
+                 "strict-harness-body-model", "exec"), namespace)
+    return namespace[name]
+
+
+@pytest.mark.parametrize("fault", [
+    None, "legacy", "precreated", "creation-refused", "payload-before-proof",
+    "foreign-owner", "unprotected", "null-dacl",
+])
+def test_strict_public_preparation_selects_before_io_and_checks_private_acl_before_payload(
+    harness, tmp_path, fault,
+):
+    directory = tmp_path / "strict-missing"
+    events, report = [], {}
+    if fault == "precreated":
+        directory.mkdir()
+    history = SimpleNamespace(session_dir=directory, windows_policy="legacy" if fault == "legacy" else "private")
+    refusal = RuntimeError("synthetic production creation refusal")
+    security = {
+        "owner": {"class": "other" if fault == "foreign-owner" else "current-user"},
+        "dacl_present": fault != "null-dacl", "dacl_protected": fault != "unprotected",
+    }
+
+    def prepare(path):
+        assert path == directory and not path.exists()
+        events.append("public-create")
+        if fault == "creation-refused":
+            raise refusal
+        path.mkdir()
+        if fault == "payload-before-proof":
+            (path / "transcript.jsonl").write_bytes(b"unexpected")
+
+    api = SimpleNamespace(
+        open=lambda path, **kwargs: events.append("inspect") or 123,
+        validate_acl=lambda handle, **kwargs: events.append(("validate", kwargs)),
+        close=lambda handle: events.append("closed"),
+    )
+    run = _strict_body("prepare_strict_history", {
+        "os": SimpleNamespace(name="nt"), "prepare_session_directory": prepare,
+        "win": SimpleNamespace(_API=lambda: api),
+        "windows_acl_evidence": lambda *args: security,
+    })
+    if fault:
+        with pytest.raises((AssertionError, RuntimeError)) as exc:
+            run(history, report)
+        if fault == "creation-refused":
+            assert exc.value is refusal and events == ["public-create"]
+        if fault in {"legacy", "precreated"}:
+            assert events == []
+        assert not report.get("empty_before_payload")
+    else:
+        run(history, report)
+        assert events == ["public-create", "inspect", ("validate", {"private": True}), "closed"]
+        assert report["windows_policy"] == "private" and report["absent_before_public_creation"]
+        assert report["creation_api"] == "prepare_session_directory" and report["empty_before_payload"]
+        assert report["directory_security_before_payload"] == security
+        assert list(directory.iterdir()) == []
+
+
+def test_strict_public_preparation_on_posix_does_not_claim_native_acl_evidence(harness, tmp_path):
+    directory = tmp_path / "strict-posix"
+    run = _strict_body("prepare_strict_history", {
+        "os": SimpleNamespace(name="posix"), "prepare_session_directory": lambda path: path.mkdir(),
+    })
+    report = {}
+    run(SimpleNamespace(session_dir=directory, windows_policy="private"), report)
+    assert report["directory_security_before_payload"] == {"native_windows_acl": "not applicable on POSIX"}
+
+
+def test_strict_append_and_settings_calls_cannot_silently_run_default_legacy():
+    for name in ("incremental_history", "settings_overlap"):
+        text = source(name)
+        assert "private_directory(" not in text
+        assert 'SessionHistoryStore(directory, windows_policy="private")' in text
+        assert text.index('windows_policy="private"') < text.index("prepare_strict_history(history, report)")
+        assert text.index("prepare_strict_history(history, report)") < text.index("history.save(")
+        assert "NOT" in text  # Claim limit remains explicit.
+    stamps = calls("incremental_history", "save")
+    assert len(stamps) == 2 and all(
+        any(kw.arg == "incremental" and ast.literal_eval(kw.value) for kw in node.keywords)
+        for node in stamps
+    )
+    for name, function in (("incremental_history", "file_stamp"), ("settings_overlap", "_open_binary")):
+        matched = [node for node in ast.walk(FUNCTIONS[name]) if isinstance(node, ast.Call)
+                   and isinstance(node.func, ast.Name) and node.func.id == function]
+        assert matched
+        assert all(any(kw.arg == "windows_policy" and ast.literal_eval(kw.value) == "private"
+                       for kw in node.keywords) for node in matched)
+    # Neither normal consumer nor default comparison gets a process/global policy
+    # switch or constructor monkeypatch; actual old-pin bodies keep their default.
+    for name in ("agent_roundtrip", "cli_roundtrip", "qualify_default", "run_defaults"):
+        assert "windows_policy" not in source(name)
+        assert "prepare_strict_history" not in source(name)
+    assert "no strict selection" in source("run_consumer")
+    assert "requires updated consumer revisions" in source("run_consumer")
+
+
+@pytest.mark.parametrize("fault", [None, "wrong-policy", "lost-prefix", "changed-inode", "bad-readback"])
+def test_strict_incremental_body_requires_explicit_policy_and_keeps_original_append_oracles(
+    harness, tmp_path, fault,
+):
+    events, report = [], {}
+
+    class History:
+        def __init__(self, directory, *, windows_policy):
+            assert windows_policy == "private"
+            self.session_dir = directory
+            self.windows_policy = "legacy" if fault == "wrong-policy" else windows_policy
+            self.transcript_path = directory / "transcript.jsonl"
+            self.messages = []
+
+        def save(self, messages, metadata, *, incremental):
+            assert incremental and report["empty_before_payload"]
+            if self.messages:
+                old = self.transcript_path.read_bytes()
+                self.transcript_path.with_suffix(".jsonl.backup").write_bytes(old)
+                with self.transcript_path.open("ab") as stream:
+                    stream.write(b"second\n")
+                if fault == "lost-prefix":
+                    self.transcript_path.write_bytes(b"not-the-prefix\n")
+            else:
+                self.transcript_path.write_bytes(b"first\n")
+            self.messages = messages
+            events.append("save")
+
+        def load_messages(self):
+            return [] if fault == "bad-readback" else self.messages
+
+    def prepare(history, detail):
+        assert history.windows_policy == "private"
+        assert not history.session_dir.exists()
+        history.session_dir.mkdir()
+        detail["empty_before_payload"] = True
+        events.append("public-create-before-payload")
+
+    def stamp(path, *, windows_policy):
+        assert windows_policy == "private"
+        return SimpleNamespace(dev=1, ino=(2 if fault == "changed-inode" and len(events) == 3 else 1))
+
+    run = _strict_body("incremental_history", {
+        "SessionHistoryStore": History, "prepare_strict_history": prepare, "file_stamp": stamp,
+        "QUOTE": harness.QUOTE, "SECOND": harness.SECOND, "ANSWERS": harness.ANSWERS,
+        "saved_state": lambda directory: ("captured", "prior"),
+        "history_files": lambda *args, **kwargs: {"retained": True},
+        "os": SimpleNamespace(name="posix"),
+    })
+    if fault:
+        with pytest.raises(AssertionError):
+            run(tmp_path, report)
+    else:
+        run(tmp_path, report)
+        assert events == ["public-create-before-payload", "save", "save"]
+        assert report["real_in_place_append"] and report["files"] == {"retained": True}
+
+
+@pytest.mark.parametrize("fault", [
+    None, "prepare-accepted", "save-accepted", "read-accepted", "wrong-reason",
+    "mutated-bytes", "mutated-acl", "unexpected-member", "oversized-bytes",
+])
+def test_strict_unsafe_existing_body_requires_all_refusals_with_bytes_acl_and_policy_unchanged(
+    harness, tmp_path, fault,
+):
+    events, descriptor = [], SimpleNamespace()
+    security = {"owner": {"class": "current-user"}, "dacl_present": True, "dacl_protected": False}
+    refusal = RuntimeError("Windows private state requires a protected DACL")
+
+    def convert(text, revision, output, size):
+        assert "D:(" in text and "D:P" not in text
+        events.append("unprotected-at-creation")
+        return True
+
+    api = SimpleNamespace(
+        sid="S-1-synthetic-current", ok=lambda value: value if value else (_ for _ in ()).throw(AssertionError()),
+        ConvertStringSecurityDescriptorToSecurityDescriptorW=convert,
+        CreateDirectoryW=lambda path, security: (Path(path).mkdir() or events.append("create") or True),
+        LocalFree=lambda descriptor: events.append("free"),
+        open=lambda path, **kwargs: path, close=lambda handle: None,
+    )
+    win = SimpleNamespace(_API=lambda: api, PVOID=lambda: descriptor,
+                          C=SimpleNamespace(byref=lambda value: value, sizeof=lambda value: 20),
+                          SECURITY_ATTRIBUTES=lambda *args: SimpleNamespace())
+
+    def refuse(operation, path=None):
+        events.append(operation)
+        if fault == operation + "-accepted":
+            return
+        if fault == "mutated-bytes":
+            (path / "transcript.jsonl").write_bytes(b"bad fallback mutation")
+        if fault == "mutated-acl":
+            security["dacl_protected"] = True
+        if fault == "unexpected-member":
+            (path / "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f").write_bytes(b"unexpected fallback")
+        if fault == "oversized-bytes":
+            (path / "transcript.jsonl").write_bytes(b"x" * 4097)
+        if fault == "wrong-reason":
+            raise RuntimeError("not a private-policy refusal")
+        raise refusal
+
+    class History:
+        def __init__(self, directory, *, windows_policy):
+            assert windows_policy == "private"
+            self.windows_policy = windows_policy
+            self.transcript_path = directory / "transcript.jsonl"
+
+        def save_messages(self, messages):
+            return refuse("save", self.transcript_path.parent)
+
+    @__import__("contextlib").contextmanager
+    def opened(path, *, windows_policy):
+        assert windows_policy == "private"
+        refuse("read", path.parent)
+        yield SimpleNamespace()
+
+    run = _strict_body("strict_existing_refusal", {
+        "pytest": pytest, "win": win, "prepare_session_directory": lambda path: refuse("prepare", path),
+        "SessionHistoryStore": History, "SharedStateError": RuntimeError, "_open_binary": opened,
+        "windows_acl_evidence": lambda *args: copy.deepcopy(security),
+        "digest": harness.digest, "default_failure_categories": harness.default_failure_categories,
+        "SECOND": harness.SECOND,
+    })
+    report = {}
+    if fault:
+        with pytest.raises((AssertionError, pytest.fail.Exception)):
+            run(tmp_path, report)
+        assert not report.get("bytes_and_acl_unchanged")
+        assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in json.dumps(report)
+    else:
+        run(tmp_path, report)
+        assert report["bytes_and_acl_unchanged"] and report["windows_policy"] == "private"
+        assert report["before"] == report["after"] and report["security_before"] == report["security_after"]
+        assert set(report["refusals"]) == {"public_prepare", "private_save_messages", "private_read"}
+        assert events == ["unprotected-at-creation", "create", "free", "prepare", "save", "read"]
+        harness.assert_public(harness.public_value(report, {}))
+
+
+@pytest.mark.parametrize("overlap_refused", [False, True])
+def test_strict_settings_body_keeps_actual_writer_inside_private_read_and_after_release_control(
+    harness, tmp_path, overlap_refused,
+):
+    state = SimpleNamespace(prepared=False, reading=False, value=None, calls=[])
+    refusal = PermissionError(13, "synthetic sharing counterevidence")
+
+    class History:
+        def __init__(self, directory, *, windows_policy):
+            assert windows_policy == "private"
+            self.windows_policy = windows_policy
+            self.session_dir = directory
+            self.transcript_path = directory / "transcript.jsonl"
+
+        def save(self, messages, metadata):
+            assert state.prepared and self.windows_policy == "private"
+            state.calls.append("strict-save")
+
+    def prepare(history, report):
+        assert history.windows_policy == "private" and not history.session_dir.exists()
+        history.session_dir.mkdir(parents=True)
+        state.prepared = True
+        state.calls.append("public-create/ACL-before-payload")
+
+    @__import__("contextlib").contextmanager
+    def opened(path, *, windows_policy):
+        assert windows_policy == "private" and state.prepared
+        state.reading = True
+        try:
+            yield SimpleNamespace(read=lambda: b"retained private snapshot")
+        finally:
+            state.reading = False
+            state.calls.append("private-read-closed")
+
+    class Settings:
+        def set_active_bundle(self, value):
+            state.calls.append((value, state.reading))
+            if value.startswith("overlap-"):
+                assert state.reading
+                if overlap_refused:
+                    raise refusal
+            else:
+                assert not state.reading
+            state.value = value
+
+        def get_active_bundle(self):
+            return state.value
+
+    run = _strict_body("settings_overlap", {
+        "pytest": pytest, "SessionHistoryStore": History, "prepare_strict_history": prepare,
+        "AppSettings": Settings, "_open_binary": opened,
+        "QUOTE": harness.QUOTE, "error_record": harness.error_record,
+    })
+    report = {}
+    if overlap_refused:
+        with pytest.raises(PermissionError) as caught:
+            run(tmp_path, report)
+        assert caught.value is refusal and report["overlap_error"]["status"] == "failed"
+    else:
+        run(tmp_path, report)
+        assert report["settings_replace_during_retained_history_read"]
+    assert report["baseline_settings_write"] and report["released_settings_write"]
+    assert state.calls == [
+        "public-create/ACL-before-payload", "strict-save", ("baseline-caf\u00e9", False),
+        ("overlap-Montr\u00e9al", True), "private-read-closed", ("released-\u65e5\u672c\u8a9e", False),
+    ]
+    assert "NOT strict CLI session" in report["scope"]

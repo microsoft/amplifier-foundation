@@ -69,6 +69,9 @@ jobs:
       # Windows also builds the exact pre-PR456 wheel into TWO separate baseline
       # venvs. Default-creation candidate/baseline cells use fresh synthetic HOME
       # boundaries, no session precreation, and the same pinned consumer graphs.
+      # Pinned Agent/CLI cells qualify unchanged legacy defaults. Independent
+      # Foundation append/reader checks select private before I/O and qualify
+      # public private creation, not strict acceptance of an updated consumer.
       # Ubuntu retains only the existing privately prepared qualification cells.
       # Short build/install paths stay on the runner temp volume. Runtime state
       # separately uses canonical original TEMP, like native pytest, with full
