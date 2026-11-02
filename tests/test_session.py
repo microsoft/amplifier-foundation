@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -96,7 +97,8 @@ def messages_with_orphaned_tool():
 def sample_session(tmp_path):
     """Create a sample session directory with transcript and metadata."""
     session_dir = tmp_path / "sessions" / "parent_session_123"
-    session_dir.mkdir(parents=True)
+    if os.name != "nt":
+        session_dir.mkdir(parents=True)
 
     messages = [
         {"role": "user", "content": "Turn 1", "timestamp": "2026-01-05T10:00:00Z"},
@@ -120,9 +122,14 @@ def sample_session(tmp_path):
     ]
 
     # Write transcript
-    with open(session_dir / "transcript.jsonl", "w") as f:
-        for msg in messages:
-            f.write(json.dumps(msg) + "\n")
+    if os.name == "nt":
+        from amplifier_foundation.session.store import write_transcript
+
+        write_transcript(session_dir, messages, windows_policy="private")
+    else:
+        with open(session_dir / "transcript.jsonl", "w") as f:
+            for msg in messages:
+                f.write(json.dumps(msg) + "\n")
 
     # Write metadata
     metadata = {
@@ -132,7 +139,12 @@ def sample_session(tmp_path):
         "created": "2026-01-05T10:00:00Z",
         "turn_count": 3,
     }
-    (session_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    if os.name == "nt":
+        from amplifier_foundation.session.store import write_metadata
+
+        write_metadata(session_dir, metadata, windows_policy="private")
+    else:
+        (session_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
     # Write events
     events = [
@@ -464,6 +476,304 @@ class TestGetTurnSummary:
 
 
 class TestForkSession:
+    @pytest.fixture
+    def windows_fork_io(self, sample_session, monkeypatch):
+        """Exercise the Windows fork control path with synthetic portable I/O."""
+        import importlib
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+        from amplifier_foundation.session import history, _windows_history as backend
+        from amplifier_foundation.session import _windows_ownership as win
+
+        fork_module = importlib.import_module("amplifier_foundation.session.fork")
+        messages = [{"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "answer"},
+                    {"role": "user", "content": "second"}]
+        barrier = None
+        reservations = []
+
+        class History:
+            def __init__(self, directory, *, windows_policy):
+                assert windows_policy == "private"
+                self.directory = directory
+
+            def load(self, **kwargs):
+                if barrier is not None:
+                    barrier.wait(timeout=5)
+                return SimpleNamespace(messages=messages, metadata={"session_id": sample_session.name})
+
+            def save(self, rows, metadata, **kwargs):
+                self.directory.mkdir(exist_ok=True)
+                (self.directory / "transcript.jsonl").write_text(json.dumps(rows), encoding="utf-8")
+                (self.directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+        @contextmanager
+        def reserved(directory):
+            # Portable stand-in only: the real native helper is tested separately.
+            directory.mkdir()  # Atomic create-only, not exists-then-create.
+            reservations.append(directory)
+            yield
+
+        def synchronize(value):
+            nonlocal barrier
+            barrier = value
+
+        from amplifier_foundation.session import jsonl
+        monkeypatch.setattr(jsonl, "os", SimpleNamespace(name="nt"))
+        monkeypatch.setattr(win, "_absolute", lambda path: path)
+        monkeypatch.setattr(history, "SessionHistoryStore", History)
+        monkeypatch.setattr(backend, "reserve_new_session", reserved, raising=False)
+        return SimpleNamespace(source=sample_session, reservations=reservations, synchronize=synchronize)
+
+    @pytest.mark.parametrize("self_fork", [False, True])
+    def test_windows_fork_rejects_existing_private_destination_and_self(self, windows_fork_io, self_fork):
+        source = windows_fork_io.source
+        destination = source if self_fork else source.parent / "existing-private"
+        if not self_fork:
+            destination.mkdir()
+            (destination / "transcript.jsonl").write_bytes(b"preserve transcript")
+            (destination / "metadata.json").write_bytes(b"preserve metadata")
+        before = {path.name: path.read_bytes() for path in destination.iterdir()}
+        with pytest.raises(FileExistsError):
+            fork_session(source, new_session_id=destination.name, turn=1, include_events=False, windows_policy="private")
+        assert before == {path.name: path.read_bytes() for path in destination.iterdir()}
+        assert not windows_fork_io.reservations
+
+    def test_windows_fork_same_id_contenders_have_one_winner(self, windows_fork_io):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        windows_fork_io.synchronize(Barrier(2))
+
+        def fork():
+            try:
+                return fork_session(windows_fork_io.source, new_session_id="one-fork",
+                                    turn=1, include_events=False, windows_policy="private")
+            except FileExistsError:
+                return None
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: fork(), range(2)))
+        assert sum(result is not None for result in results) == 1
+        assert windows_fork_io.reservations == [windows_fork_io.source.parent / "one-fork"]
+
+    def test_windows_fork_routes_source_and_destination_through_private_history(self, sample_session, monkeypatch):
+        import importlib
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+        from amplifier_foundation.session import history, _windows_ownership as win
+        from amplifier_foundation.session import _windows_history as backend
+
+        fork_module = importlib.import_module("amplifier_foundation.session.fork")
+        calls = []
+        messages = [{"role": "system", "content": "synthetic instructions"},
+                    {"role": "user", "content": "synthetic question"},
+                    {"role": "assistant", "content": "synthetic answer"}]
+
+        class History:
+            def __init__(self, directory, *, windows_policy):
+                assert windows_policy == "private"
+                self.directory = directory
+
+            def load(self, **kwargs):
+                assert self.directory == sample_session
+                assert kwargs == {"include_events": False}
+                calls.append("private-source")
+                return SimpleNamespace(messages=messages, metadata={"session_id": "parent_session_123"})
+
+            def save(self, rows, metadata, **kwargs):
+                assert not self.directory.exists()  # No inherited-ACL mkdir/write first.
+                assert rows == messages
+                assert metadata["parent_id"] == "parent_session_123"
+                assert kwargs == {"preserve_system": True}
+                assert calls[-1] == "reserved"
+                calls.append("private-destination")
+
+        @contextmanager
+        def reserved(directory):
+            assert not directory.exists()
+            calls.append("reserved")
+            yield
+            calls.append("unpinned")
+
+        from amplifier_foundation.session import jsonl
+        monkeypatch.setattr(jsonl, "os", SimpleNamespace(name="nt"))
+        monkeypatch.setattr(win, "_absolute", lambda path: path)
+        monkeypatch.setattr(backend, "reserve_new_session", reserved)
+        monkeypatch.setattr(history, "SessionHistoryStore", History)
+        for name in ("write_jsonl", "write_metadata", "load_transcript", "load_metadata"):
+            monkeypatch.setattr(fork_module, name, lambda *a: pytest.fail("legacy history I/O"))
+        result = fork_session(sample_session, include_events=False, windows_policy="private")
+        assert calls == ["private-source", "reserved", "private-destination", "unpinned"]
+        assert not result.session_dir.exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
+    def test_native_fork_creates_private_canonical_history(self, sample_session, tmp_path):
+        from amplifier_foundation.session.history import SessionHistoryStore
+
+        source = SessionHistoryStore(sample_session, windows_policy="private")
+        rows = [{"role": "system", "content": "synthetic context"},
+                {"role": "developer", "content": "synthetic instructions"},
+                *source.load_messages()]
+        source.save_messages(rows, preserve_system=True)
+        result = fork_session(sample_session, target_dir=tmp_path / "new-target",
+                              turn=2, include_events=False, windows_policy="private")
+        saved = SessionHistoryStore(result.session_dir, windows_policy="private").load(include_events=False)
+        assert saved.messages == rows[:6]
+        assert saved.metadata["parent_id"] == "parent_session_123"
+        assert saved.metadata["forked_from_turn"] == 2
+        assert not (result.session_dir / "events.jsonl").exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
+    def test_native_fork_refuses_unsafe_legacy_source(self, tmp_path):
+        from amplifier_foundation.session.shared_state import SharedStateError
+
+        source = tmp_path / "legacy"
+        source.mkdir()
+        (source / "transcript.jsonl").write_bytes(b'{"role":"user","content":"legacy"}\n')
+        with pytest.raises(SharedStateError):
+            fork_session(source, target_dir=tmp_path / "destination", include_events=False, windows_policy="private")
+        assert not (tmp_path / "destination").exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
+    def test_native_fork_refuses_unsafe_existing_destination(self, sample_session):
+        destination = sample_session.parent / "unsafe-fork"
+        destination.mkdir()
+        path = destination / "transcript.jsonl"
+        path.write_bytes(b'{"role":"user","content":"preserve"}\n')
+        before = path.read_bytes()
+        with pytest.raises(FileExistsError):
+            fork_session(sample_session, new_session_id="unsafe-fork", include_events=False, windows_policy="private")
+        assert path.read_bytes() == before
+        assert not (destination / "metadata.json").exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
+    @pytest.mark.parametrize("kind", ["private", "empty-private", "self"])
+    def test_native_fork_existing_private_and_self_are_create_only(self, sample_session, kind):
+        from amplifier_foundation.session.history import SessionHistoryStore
+        from amplifier_foundation.session import _windows_history as backend
+
+        destination = sample_session if kind == "self" else sample_session.parent / "existing-fork"
+        if kind == "private":
+            SessionHistoryStore(destination, windows_policy="private").save([{"role": "user", "content": "keep"}], {"keep": True})
+        elif kind == "empty-private":
+            with backend.reserve_new_session(destination):
+                pass
+        before = {path.name: path.read_bytes() for path in destination.iterdir()}
+        with pytest.raises(FileExistsError):
+            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False, windows_policy="private")
+        assert before == {path.name: path.read_bytes() for path in destination.iterdir()}
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
+    def test_native_fork_two_same_id_contenders_have_one_winner(self, sample_session, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextlib import contextmanager
+        from threading import Barrier
+        from amplifier_foundation.session import _windows_history as backend
+        from amplifier_foundation.session.history import SessionHistoryStore
+
+        original = backend.reserve_new_session
+        barrier = Barrier(2)
+
+        @contextmanager
+        def synchronized(directory):
+            barrier.wait(timeout=10)
+            with original(directory):
+                yield
+
+        monkeypatch.setattr(backend, "reserve_new_session", synchronized)
+
+        def fork(_):
+            try:
+                return fork_session(sample_session, new_session_id="one-fork", turn=1, include_events=False, windows_policy="private")
+            except FileExistsError:
+                return None
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(fork, range(2)))
+        assert sum(result is not None for result in results) == 1
+        saved = SessionHistoryStore(sample_session.parent / "one-fork", windows_policy="private").load(include_events=False)
+        assert len(saved.messages) == 2 and saved.metadata["parent_id"] == sample_session.name
+        assert not list((sample_session.parent / "one-fork").glob("*.backup"))
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
+    def test_native_fork_pins_namespace_through_save_and_events(self, sample_session, monkeypatch):
+        import importlib
+        from amplifier_foundation.session.history import SessionHistoryStore
+
+        fork_module = importlib.import_module("amplifier_foundation.session.fork")
+        original_save = SessionHistoryStore.save
+        original_events = fork_module.slice_events_for_fork
+        destination = sample_session.parent / "pinned-fork"
+        observed = []
+
+        def pinned():
+            for directory in (destination, destination.parent):
+                with pytest.raises(OSError):
+                    directory.rename(directory.with_name(directory.name + "-moved"))
+
+        def save(store, *args, **kwargs):
+            pinned()
+            observed.append("save")
+            return original_save(store, *args, **kwargs)
+
+        def events(*args, **kwargs):
+            pinned()
+            observed.append("events")
+            return original_events(*args, **kwargs)
+
+        monkeypatch.setattr(SessionHistoryStore, "save", save)
+        monkeypatch.setattr(fork_module, "slice_events_for_fork", events)
+        fork_session(sample_session, new_session_id=destination.name, turn=1, windows_policy="private")
+        assert observed == ["save", "events"]
+        # Pins were released after all publication, not leaked.
+        moved = destination.with_name("completed-fork")
+        destination.rename(moved)
+        assert (moved / "metadata.json").exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
+    def test_native_fork_failure_retains_partial_new_directory_and_refuses_retry(self, sample_session, monkeypatch):
+        from amplifier_foundation.session.history import SessionHistoryStore
+
+        original = SessionHistoryStore._write_prepared
+        destination = sample_session.parent / "incomplete-fork"
+        source_before = {path.name: path.read_bytes() for path in sample_session.iterdir()}
+
+        def fail_metadata(store, path, content, preserve_backup):
+            if path == destination / "metadata.json":
+                raise OSError("synthetic metadata publication failure")
+            return original(store, path, content, preserve_backup)
+
+        monkeypatch.setattr(SessionHistoryStore, "_write_prepared", fail_metadata)
+        with pytest.raises(OSError, match="synthetic metadata") as caught:
+            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False, windows_policy="private")
+        assert any("did not complete" in note and "retained" in note for note in caught.value.__notes__)
+        assert len(SessionHistoryStore(destination, windows_policy="private").load_messages()) == 2
+        assert not (destination / "metadata.json").exists()
+        partial = (destination / "transcript.jsonl").read_bytes()
+        with pytest.raises(FileExistsError):
+            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False, windows_policy="private")
+        assert (destination / "transcript.jsonl").read_bytes() == partial
+        assert source_before == {path.name: path.read_bytes() for path in sample_session.iterdir()}
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
+    @pytest.mark.parametrize("location", ["source", "target"])
+    def test_native_fork_rejects_reparse_before_resolving_it(self, sample_session, tmp_path, location):
+        import subprocess
+        from amplifier_foundation.session.shared_state import SharedStateError
+
+        alias = tmp_path / "alias"
+        actual = sample_session if location == "source" else tmp_path / "actual-target"
+        actual.mkdir(exist_ok=True)
+        result = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(actual)],
+                                capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        with pytest.raises(SharedStateError, match="reparse"):
+            fork_session(alias if location == "source" else sample_session,
+                         target_dir=alias if location == "target" else tmp_path / "destination",
+                         include_events=False, new_session_id="must-not-publish", windows_policy="private")
+        assert not (actual / "must-not-publish").exists()
+
     def test_fork_at_turn_1(self, sample_session, tmp_path):
         result = fork_session(sample_session, turn=1)
 

@@ -61,6 +61,143 @@ release ownership mechanism. They should read and write native files through
 to produce an additional checkpoint. Older applications that do not participate
 in the ownership protocol must not write the same session concurrently.
 
+## Bounded native Windows history
+
+Windows history is staged opt-in. `SessionHistoryStore` defaults to
+`windows_policy="legacy"`: unchanged callers retain ordinary file I/O, directory
+creation and the existing file-lock behavior. Private Windows history requires
+explicit `windows_policy="private"` **before I/O**. There is no environment/global
+toggle, ACL-based automatic selection, or downgrade after a private refusal.
+Both selections use the same layout and formats; POSIX persistence is unchanged.
+
+```python
+from amplifier_foundation.session import SessionHistoryStore, prepare_session_directory
+from amplifier_foundation.session.metadata import SessionMetadataStore
+
+# Do this before ordinary mkdir, logger/lease setup, or any session payload.
+prepare_session_directory(session_dir)
+history = SessionHistoryStore(session_dir, windows_policy="private")
+names = SessionMetadataStore(session_dir, windows_policy="private")
+history.save(messages, metadata, merge_metadata=True)
+```
+
+The store's `windows_policy` is read-only. Constructors perform no filesystem
+I/O. Selection propagates through recovery, revisions, events, lazy indexes,
+incremental append, intent handling and metadata serialization. Index caches
+are separated by policy; lazy readers retain their selection. Cooperating hosts
+must select the same policy for all operations on a session. A legacy writer
+does not gain private guarantees because another host selected private mode.
+
+`prepare_session_directory` is an explicit creation operation, not selection or
+migration. On Windows it uses pinned traversal and protected current-user DACLs
+for missing components before payload; existing components must satisfy their
+private/traversal validation rules and are never repaired. It does not reserve
+a session ID exclusively. On POSIX it uses mkdir(mode=0700) for missing directories
+without changing existing permissions. Hosts with existing unqualified stores
+must retain legacy mode or provision a separate qualified destination; opting
+in does not authorize migration. Preparing only after a consumer has already
+created unsafe directories cannot make them acceptable.
+
+The following guarantees apply to **private Windows mode**. Its scope is ordinary
+`transcript.jsonl`, `metadata.json`, their `.backup` files and the transcript
+`.append-pending` intent, not shared checkpoints or transfer fences.
+
+The adapter requires an absolute local fixed NTFS path (relative inputs are
+anchored without resolving away unsafe components). It pins and validates each
+ancestor before opening or creating a descendant. Newly created directories and
+files receive a protected current-user DACL **at creation, before payload**.
+Existing history directories and files must already satisfy the private ACL
+contract. Reparse points, hardlinked files, unsafe ACLs and namespace aliases
+are refused without automatic ACL repair or migration. Windows security failures
+are not transcript corruption and do not authorize overwriting the object.
+Reads, including missing-root reads, never create directories or locks.
+Optional activity reads use the same validated private handles; their logger
+must provision private files separately, or the host can omit events.
+
+Read-only streams retain a validated file object, not a namespace lease. They
+hold traversal pins through the private file handle's open and validation, then
+release those pins before yielding the stream. Read, seek and peek use that
+same non-inheritable handle without reopening its pathname. Each future path
+open independently validates its ancestors and file again. This lets an ordinary
+atomic settings writer publish into an ancestor while a history reader remains
+open; it does not bypass a separately held ownership or write-operation lease.
+Ownership, publication, append/intent, metadata-lock and fork-reservation pins
+retain their existing lifetimes and sharing restrictions.
+
+Replacement writes complete and `FlushFileBuffers` the new private temporary
+before a same-directory native `NtSetInformationFile(FileRenameInformationEx)`
+replacement with `REPLACE_IF_EXISTS | POSIX_SEMANTICS`. The native request uses
+only the destination leaf name with a null root handle; the source handle's
+directory must match the pinned destination directory. Directory pins keep
+`FILE_LIST_DIRECTORY` access and deny write/delete sharing throughout publication.
+Adapter readers share deletion:
+an already-open adapter reader retains the complete old file while later readers
+see the new file. Unsupported native rename/disposition operations fail; there is no
+copy/delete, delete-first or less-safe sharing fallback. Native execution on
+the intended Windows version/filesystem is required before claiming qualification.
+
+On Windows, ordinary Python `open(..., "r")` / `open(..., "rb")` readers do not
+share deletion. This also applies to the low-level `session.store.read_jsonl`
+generator while suspended after yielding a row: it retains its builtin reader
+until exhausted or explicitly closed. Close these readers/generators before
+publishing to their file. A blocked adapter replacement raises
+`PermissionError` (`errno=13`, `winerror=32`), preserves the blocked target's
+bytes and identity, and can publish after the reader closes. The pre-adapter
+atomic writer also refuses such held readers; its measured error is an outer
+`OSError` caused by `PermissionError` (`errno=13`, `winerror=5`), not the same
+outer exception as the adapter. Native baseline comparisons cover the transcript
+writer or individual file publication, not whole historical-save parity.
+
+Combined saves publish transcript before metadata. If metadata is held by a
+builtin reader, the transcript may already contain the new complete version when
+metadata publication refuses. There is no transcript/metadata rollback promise;
+publication is atomic per file, not a file-pair transaction.
+
+`save(..., incremental=True)` retains the append optimization. A warm append
+copies only the previous tail into the backup, not the full transcript prefix.
+The complete previous transcript is flushed before the private pending intent
+is published. The primary append is flushed before that intent is removed.
+A failed primary append retains the intent and complete backup, even if failure
+lands between whole JSONL rows. Intent-aware reads recover the backup and do not
+acknowledge a partial batch. Recovery replacement does not rotate a damaged
+primary over a good backup.
+
+These are individual-file visibility and file-content flush guarantees, **not**
+a file-pair transaction or a power-loss guarantee for directory/ancestor
+publication. Transcript writers must still hold execution ownership. Windows
+checkpoint/fence mutations and cooperative handoff remain unsupported; ordinary
+history saves do not remove those gates.
+
+With `windows_policy="private"` on Windows, `session.store.write_transcript`
+also uses this private boundary and
+preserves system/developer rows, as that lower-level writer did before. As the
+explicit repair/rewind writer, it can replace a corrupt primary after validating
+the destination's security, including any existing append intent before changing
+the primary or backup. It retains the validated intent handle through replacement
+and removes that intent only after successful publication. A corrupt primary
+need not parse to perform this explicit repair. It retains existing backups
+rather than rotating corrupt data over them; it does not create a new backup
+automatically. `write_metadata` accepts the same keyword. The file-based
+`fork_session(..., windows_policy="private")` reads the canonical source through
+`SessionHistoryStore` and saves its transcript/metadata through the same boundary.
+Private Windows forks first
+reserve a new private directory with atomic create-only semantics, then keep it
+and its ancestors pinned throughout transcript, metadata and optional legacy
+event publication. Every existing destination is refused with `FileExistsError`,
+including empty private directories, self-forks and same-ID contenders. There is
+no exists-then-create check or adoption of another fork's reservation. If a newly
+reserved fork fails, its directory and any partial files remain, with an explicit
+incomplete-publication exception note; no rollback deletes data. This is not a
+file-pair transaction. The operation does not create inherited-ACL history or
+resolve away reparse points. Unsafe source objects remain refusals, not migrations.
+The generic `read_jsonl`/`write_jsonl` utilities, format-only
+`load_transcript`/`load_metadata` readers and legacy root-event slicing remain
+separate low-level file helpers, not qualified private-history APIs.
+The repair writer and fork function default to legacy behavior, just like the
+history store. Invalid policies are rejected before filesystem I/O. The low-level
+`jsonl.indexed`, `file_stamp`, `append_messages` and `metadata_lock` helpers accept
+the same keyword when called directly; normal hosts should use the store APIs.
+
 ## Recovery and revision checks
 
 - A missing transcript or metadata file falls back to its `.backup`, if present.

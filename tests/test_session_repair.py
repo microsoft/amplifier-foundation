@@ -36,15 +36,43 @@ rewind_transcript = _mod.rewind_transcript
 def _write_transcript(tmp_path: Path, entries: list[dict]) -> Path:
     """Write a list of dicts as transcript.jsonl and return the session dir.
 
-    Creates *tmp_path* as a directory (if needed), writes ``transcript.jsonl``
-    inside it, and returns *tmp_path* (the session directory).
+    On Windows, create a private child of *tmp_path*: pytest's existing temporary
+    root is not private history. Return the actual session directory on all hosts.
     """
+    if os.name == "nt":
+        from amplifier_foundation.session.store import write_transcript
+
+        session_dir = tmp_path / "private-session"
+        write_transcript(session_dir, entries, windows_policy="private")
+        return session_dir
     tmp_path.mkdir(parents=True, exist_ok=True)
     p = tmp_path / "transcript.jsonl"
     with open(p, "w", encoding="utf-8") as f:
         for entry in entries:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     return tmp_path
+
+
+def test_windows_repair_fixture_uses_private_child_before_payload(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from amplifier_foundation.session import store
+
+    calls = []
+    rows = [{"role": "system", "content": "context"},
+            {"role": "developer", "content": "instructions"},
+            {"role": "user", "content": "synthetic question"}]
+
+    def transcript(directory, entries, *, windows_policy):
+        assert windows_policy == "private"
+        assert directory == tmp_path / "private-session" and not directory.exists()
+        assert entries is rows
+        calls.append(directory)
+
+    monkeypatch.setattr(sys.modules[__name__], "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(store, "write_transcript", transcript)
+    directory = _write_transcript(tmp_path, rows)
+    assert calls == [directory]
+    assert not directory.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -691,7 +719,7 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
-        f"{_project_root}:{existing}" if existing else str(_project_root)
+        f"{_project_root}{os.pathsep}{existing}" if existing else str(_project_root)
     )
     return subprocess.run(
         [sys.executable, str(_script_path), *args],
@@ -711,8 +739,8 @@ class TestCLI:
             {"role": "user", "content": "Hi"},
             {"role": "assistant", "content": "Hello"},
         ]
-        _write_transcript(tmp_path, lines)
-        result = _run_cli(str(tmp_path), "--diagnose")
+        session_dir = _write_transcript(tmp_path, lines)
+        result = _run_cli(str(session_dir), "--diagnose")
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data["status"] == "healthy"
@@ -729,8 +757,8 @@ class TestCLI:
                 ],
             },
         ]
-        _write_transcript(tmp_path, lines)
-        result = _run_cli(str(tmp_path), "--diagnose")
+        session_dir = _write_transcript(tmp_path, lines)
+        result = _run_cli(str(session_dir), "--diagnose")
         assert result.returncode == 1
         data = json.loads(result.stdout)
         assert data["status"] == "broken"
@@ -747,9 +775,10 @@ class TestCLI:
                 ],
             },
         ]
-        _write_transcript(tmp_path, lines)
-        _run_cli(str(tmp_path), "--repair")
-        backups = list(tmp_path.glob("transcript.jsonl.bak-pre-repair-*"))
+        session_dir = _write_transcript(tmp_path, lines)
+        result = _run_cli(str(session_dir), "--repair")
+        assert result.returncode == 0, result.stdout + result.stderr
+        backups = list(session_dir.glob("transcript.jsonl.bak-pre-repair-*"))
         assert len(backups) == 1
 
     def test_repair_writes_valid_transcript(self, tmp_path):
@@ -764,11 +793,11 @@ class TestCLI:
                 ],
             },
         ]
-        _write_transcript(tmp_path, lines)
-        repair_result = _run_cli(str(tmp_path), "--repair")
+        session_dir = _write_transcript(tmp_path, lines)
+        repair_result = _run_cli(str(session_dir), "--repair")
         assert repair_result.returncode == 0
         # Re-diagnose should show healthy
-        diag_result = _run_cli(str(tmp_path), "--diagnose")
+        diag_result = _run_cli(str(session_dir), "--diagnose")
         assert diag_result.returncode == 0
         data = json.loads(diag_result.stdout)
         assert data["status"] == "healthy"
@@ -798,11 +827,11 @@ class TestCLI:
             {"role": "user", "content": "Stop"},
             receipt,
         ]
-        _write_transcript(tmp_path, lines)
-        result = _run_cli(str(tmp_path), "--repair")
+        session_dir = _write_transcript(tmp_path, lines)
+        result = _run_cli(str(session_dir), "--repair")
         assert result.returncode == 0, result.stdout + result.stderr
         assert json.loads(result.stdout)["verification"]["status"] == "healthy"
-        path = tmp_path / "transcript.jsonl"
+        path = session_dir / "transcript.jsonl"
         written = path.read_text(encoding="utf-8")
         rows = [json.loads(line) for line in written.splitlines()]
         assert rows[1:3] == [call, receipt]
@@ -810,10 +839,10 @@ class TestCLI:
         assert rows[3]["tool_call_id"] == "missing"
         assert "outcome is unknown" in json.loads(rows[3]["content"])["message"]
         assert rows[4]["role"] == "assistant"
-        again = _run_cli(str(tmp_path), "--repair")
+        again = _run_cli(str(session_dir), "--repair")
         assert again.returncode == 0, again.stdout + again.stderr
         assert path.read_text(encoding="utf-8") == written
-        (backup_path,) = tmp_path.glob("transcript.jsonl.bak-pre-repair-*")
+        (backup_path,) = session_dir.glob("transcript.jsonl.bak-pre-repair-*")
         assert [
             json.loads(line) for line in backup_path.read_text().splitlines()
         ] == lines
@@ -832,16 +861,17 @@ class TestCLI:
                 ],
             },
         ]
-        _write_transcript(tmp_path, lines)
+        session_dir = _write_transcript(tmp_path, lines)
         # Also create an events.jsonl file
-        events_path = tmp_path / "events.jsonl"
+        events_path = session_dir / "events.jsonl"
         events_path.write_text(
             '{"event": "one"}\n{"event": "two"}\n{"event": "three"}\n{"event": "four"}\n',
             encoding="utf-8",
         )
-        _run_cli(str(tmp_path), "--rewind")
-        transcript_backups = list(tmp_path.glob("transcript.jsonl.bak-pre-rewind-*"))
-        events_backups = list(tmp_path.glob("events.jsonl.bak-pre-rewind-*"))
+        result = _run_cli(str(session_dir), "--rewind")
+        assert result.returncode == 0, result.stdout + result.stderr
+        transcript_backups = list(session_dir.glob("transcript.jsonl.bak-pre-rewind-*"))
+        events_backups = list(session_dir.glob("events.jsonl.bak-pre-rewind-*"))
         assert len(transcript_backups) == 1
         assert len(events_backups) == 1
 
@@ -852,8 +882,8 @@ class TestCLI:
 
     def test_no_action_flag_exits_2(self, tmp_path):
         """Running with session dir but no action flag exits 2."""
-        _write_transcript(tmp_path, [{"role": "user", "content": "Hi"}])
-        result = _run_cli(str(tmp_path))
+        session_dir = _write_transcript(tmp_path, [{"role": "user", "content": "Hi"}])
+        result = _run_cli(str(session_dir))
         assert result.returncode == 2
 
     def test_deprecation_warning_emitted(self):
@@ -861,7 +891,7 @@ class TestCLI:
         env = os.environ.copy()
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = (
-            f"{_project_root}:{existing}" if existing else str(_project_root)
+            f"{_project_root}{os.pathsep}{existing}" if existing else str(_project_root)
         )
         result = subprocess.run(
             [sys.executable, "-W", "all", str(_script_path), "--help"],
@@ -1102,20 +1132,20 @@ class TestIntegrationRealisticFailures:
                 "tool_calls": [_tc("tc_orph", "grep")],
             },
         ]
-        _write_transcript(tmp_path, lines)
+        session_dir = _write_transcript(tmp_path, lines)
 
         # Step 1: diagnose → exit 1 (broken)
-        r1 = _run_cli(str(tmp_path), "--diagnose")
+        r1 = _run_cli(str(session_dir), "--diagnose")
         assert r1.returncode == 1
         d1 = json.loads(r1.stdout)
         assert d1["status"] == "broken"
 
         # Step 2: repair → exit 0
-        r2 = _run_cli(str(tmp_path), "--repair")
+        r2 = _run_cli(str(session_dir), "--repair")
         assert r2.returncode == 0
 
         # Step 3: diagnose again → exit 0, healthy
-        r3 = _run_cli(str(tmp_path), "--diagnose")
+        r3 = _run_cli(str(session_dir), "--diagnose")
         assert r3.returncode == 0
         d3 = json.loads(r3.stdout)
         assert d3["status"] == "healthy"
