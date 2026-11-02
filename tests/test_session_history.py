@@ -64,7 +64,7 @@ def normalized(kind: str, **data) -> dict:
 
 @pytest.fixture
 def store(tmp_path: Path) -> SessionHistoryStore:
-    return SessionHistoryStore(tmp_path / "session")
+    return SessionHistoryStore(tmp_path / "session", windows_policy="private")
 
 
 def test_missing_session_is_empty_and_does_not_create_files(store):
@@ -330,6 +330,7 @@ def test_relocated_ci_log_and_explicit_session_id(tmp_path):
         tmp_path / "arbitrary",
         events_path=tmp_path / "private-activity" / "relocated.jsonl",
         session_id="session",
+        windows_policy="private",
     )
     write_events(store, [event("prompt:submit", prompt="hello")])
     assert next(store.iter_events())["session_id"] == "session"
@@ -444,13 +445,13 @@ def test_changed_during_read_is_explicit_without_retry_or_overwrite(store, monke
     original = history_module.file_stamp
     calls = 0
 
-    def changed_stamp(path):
+    def changed_stamp(path, **kwargs):
         nonlocal calls
         if path == store.transcript_path:
             calls += 1
             if calls == 2:
                 return None
-        return original(path)
+        return original(path, **kwargs)
 
     monkeypatch.setattr(history_module, "file_stamp", changed_stamp)
     loaded = store.load(include_events=False)
@@ -654,12 +655,12 @@ def test_invalid_byte_limit_is_rejected(store, limit):
 def test_windows_public_api_routes_reads_writes_append_and_naming_to_adapter(tmp_path, monkeypatch):
     """Routing/format evidence only. Fake I/O is NOT native privacy evidence."""
     from contextlib import contextmanager
-    from amplifier_foundation.session import jsonl, metadata, _windows_history as backend
+    from amplifier_foundation.session import jsonl, _windows_history as backend
     from amplifier_foundation.session import _windows_ownership as win
     from amplifier_foundation.session.metadata import SessionMetadataStore
 
     calls = []
-    store = SessionHistoryStore(tmp_path / "synthetic")
+    store = SessionHistoryStore(tmp_path / "synthetic", windows_policy="private")
 
     class WindowsOS:
         name = "nt"
@@ -703,7 +704,6 @@ def test_windows_public_api_routes_reads_writes_append_and_naming_to_adapter(tmp
 
     monkeypatch.setattr(history_module, "os", WindowsOS())
     monkeypatch.setattr(jsonl, "os", WindowsOS())
-    monkeypatch.setattr(metadata, "os", WindowsOS())
     monkeypatch.setattr(win, "_absolute", lambda path: path)
     monkeypatch.setattr(backend, "metadata_lock", locked)
     monkeypatch.setattr(backend, "open_binary", opened)
@@ -717,10 +717,187 @@ def test_windows_public_api_routes_reads_writes_append_and_naming_to_adapter(tmp
     monkeypatch.setattr(history_module, "_write_atomic", lambda *a: pytest.fail("generic atomic writer"))
     monkeypatch.setattr(jsonl, "_write_atomic", lambda *a: pytest.fail("generic intent writer"))
     store.save([USER], {"custom": True}, merge_metadata=True, incremental=True)
-    SessionMetadataStore(store.session_dir).set_name("canonical")
+    SessionMetadataStore(store.session_dir, windows_policy="private").set_name("canonical")
     store.save([USER, ANSWER], {"turn": 2}, merge_metadata=True, incremental=True)
     loaded = store.load(include_events=False)
     assert loaded.messages == [USER, ANSWER]
     assert list(store.indexed_messages()) == loaded.messages
     assert loaded.metadata["name"] == "canonical" and loaded.metadata["custom"]
     assert {"read", "replace", "backup", "pending", "append", "remove", "metadata-lock"} <= set(calls)
+
+
+@pytest.mark.parametrize("selection", [{}, {"windows_policy": "legacy"}])
+def test_windows_legacy_default_never_enters_private_backend(tmp_path, monkeypatch, selection):
+    """Ordinary mkdir/default consumers retain legacy routes, not ACL detection."""
+    from amplifier_foundation.session import jsonl, _windows_history as backend
+    from amplifier_foundation.session import fork_session
+    from amplifier_foundation.session.store import write_transcript, write_metadata
+    from amplifier_foundation.session.metadata import SessionMetadataStore
+
+    class WindowsOS:
+        name = "nt"
+
+        def __getattr__(self, key):
+            return getattr(os, key)
+
+    monkeypatch.setattr(jsonl, "os", WindowsOS())
+    monkeypatch.setattr(backend, "_API", lambda: pytest.fail("default entered native backend"))
+    directory = tmp_path / "ordinary"
+    directory.mkdir()
+    store = SessionHistoryStore(directory, **selection)
+    assert store.windows_policy == "legacy"
+    store.save([USER], {"custom": True}, incremental=True)
+    SessionMetadataStore(directory, **selection).set_name("legacy default")
+    store.save([USER, ANSWER], {"turn": 2}, incremental=True, merge_metadata=True)
+    assert store.load(include_events=False).messages == [USER, ANSWER]
+    assert list(store.indexed_messages()) == [USER, ANSWER]
+    write_transcript(directory, [USER], **selection)
+    write_metadata(directory, {"session_id": "legacy"}, **selection)
+    assert store.load_messages() == [USER]
+    result = fork_session(directory, new_session_id="legacy-fork", include_events=False, **selection)
+    assert SessionHistoryStore(result.session_dir).load_messages() == [USER]
+
+
+@pytest.mark.parametrize("policy", [None, True, "", "auto", "PRIVATE", []])
+def test_invalid_windows_policy_refuses_before_io(tmp_path, monkeypatch, policy):
+    from amplifier_foundation.session import jsonl, fork_session
+    from amplifier_foundation.session.metadata import SessionMetadataStore, metadata_lock
+    from amplifier_foundation.session.store import write_transcript, write_metadata
+
+    monkeypatch.setattr(Path, "open", lambda *a, **kw: pytest.fail("I/O before policy validation"))
+    monkeypatch.setattr(Path, "stat", lambda *a, **kw: pytest.fail("stat before policy validation"))
+    directory = tmp_path / "missing"
+    operations = [
+        lambda: SessionHistoryStore(directory, windows_policy=policy),
+        lambda: SessionMetadataStore(directory, windows_policy=policy),
+        lambda: jsonl.indexed(directory / "transcript.jsonl", windows_policy=policy),
+        lambda: jsonl.append_messages(directory / "transcript.jsonl", [], windows_policy=policy),
+        lambda: write_transcript(directory, [], windows_policy=policy),
+        lambda: write_metadata(directory, {}, windows_policy=policy),
+        lambda: fork_session(directory, windows_policy=policy),
+    ]
+    for operation in operations:
+        with pytest.raises(ValueError, match="windows_policy"):
+            operation()
+    with pytest.raises(ValueError, match="windows_policy"):
+        with metadata_lock(directory, windows_policy=policy):
+            pytest.fail("invalid lock yielded")
+
+
+@pytest.mark.parametrize("operation", [
+    "exists", "load", "load_messages", "load_metadata", "indexed_messages",
+    "events", "save", "incremental", "save_messages", "save_metadata",
+    "naming", "repair", "fork",
+])
+def test_explicit_private_refusal_never_falls_back(tmp_path, monkeypatch, operation):
+    from amplifier_foundation.session import jsonl, fork_session, _windows_history as backend
+    from amplifier_foundation.session import _windows_ownership as win
+    from amplifier_foundation.session.metadata import SessionMetadataStore
+    from amplifier_foundation.session.shared_state import SharedStateError
+    from amplifier_foundation.session.store import write_transcript
+
+    class WindowsOS:
+        name = "nt"
+
+    directory = tmp_path / "source"
+    SessionHistoryStore(directory).save([USER], {})  # Setup before selecting strict.
+    store = SessionHistoryStore(directory, windows_policy="private")
+    names = SessionMetadataStore(directory, windows_policy="private")
+    error, calls = SharedStateError("synthetic strict security refusal"), []
+
+    def refuse(*args, **kwargs):
+        calls.append("strict")
+        raise error
+
+    monkeypatch.setattr(jsonl, "os", WindowsOS())
+    monkeypatch.setattr(win, "_absolute", lambda path: path)
+    for name in ("stamp", "open_binary", "metadata_lock", "write_prepared", "append",
+                 "write_pending", "remove_pending", "copy_backup", "reserve_new_session"):
+        monkeypatch.setattr(backend, name, refuse)
+    monkeypatch.setattr(history_module, "_write_atomic", lambda *a, **kw: pytest.fail("legacy fallback"))
+    monkeypatch.setattr(history_module, "write_with_backup", lambda *a, **kw: pytest.fail("legacy fallback"))
+    operations = {
+        "exists": store.exists, "load": store.load, "load_messages": store.load_messages,
+        "load_metadata": store.load_metadata, "indexed_messages": store.indexed_messages,
+        "events": lambda: list(store.iter_events()),
+        "save": lambda: store.save([USER], {}),
+        "incremental": lambda: store.save([USER], {}, incremental=True),
+        "save_messages": lambda: store.save_messages([USER]),
+        "save_metadata": lambda: store.save_metadata({}),
+        "naming": lambda: names.set_name("strict"),
+        "repair": lambda: write_transcript(directory, [USER], windows_policy="private"),
+        "fork": lambda: fork_session(directory, include_events=False, windows_policy="private"),
+    }
+    with pytest.raises(SharedStateError) as caught:
+        operations[operation]()
+    assert caught.value is error and calls == ["strict"]
+    assert store.windows_policy == names.windows_policy == "private"
+    with pytest.raises(AttributeError):
+        store.windows_policy = "legacy"
+    with pytest.raises(AttributeError):
+        names.windows_policy = "legacy"
+
+
+def test_windows_index_policies_are_isolated_across_threads_and_lazy_lifetimes(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from amplifier_foundation.session import jsonl, _windows_history as backend
+    from amplifier_foundation.session import _windows_ownership as win
+    from amplifier_foundation.session.shared_state import SharedStateError
+
+    class WindowsOS:
+        name = "nt"
+
+    directory = tmp_path / "same-file"
+    SessionHistoryStore(directory).save([USER, ANSWER], {})
+    legacy = SessionHistoryStore(directory)
+    private = SessionHistoryStore(directory, windows_policy="private")
+    private_reads = []
+
+    @contextmanager
+    def opened(path):
+        private_reads.append(path)
+        with path.open("rb") as stream:
+            yield stream
+
+    monkeypatch.setattr(jsonl, "os", WindowsOS())
+    monkeypatch.setattr(win, "_absolute", lambda path: path)
+    monkeypatch.setattr(backend, "stamp", jsonl._posix_stamp)
+    monkeypatch.setattr(backend, "open_binary", opened)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        left, right = list(pool.map(lambda store: store.indexed_messages(), (legacy, private)))
+    assert left is not right
+    assert (left.windows_policy, right.windows_policy) == ("legacy", "private")
+    assert list(left) == list(right) == [USER, ANSWER] and private_reads
+    # A cached strict revision and a suspended store generator retain selection.
+    def refuse(path):
+        raise SharedStateError("future private open refused")
+    pending = private.iter_events()
+    monkeypatch.setattr(backend, "open_binary", refuse)
+    assert list(left) == [USER, ANSWER]  # Legacy never inherits another store's policy.
+    with pytest.raises(SharedStateError):
+        list(right)
+    with pytest.raises(SharedStateError):
+        next(pending)
+    with pytest.raises(AttributeError):
+        right.windows_policy = "legacy"
+
+
+@pytest.mark.parametrize("policy", ["legacy", "private"])
+def test_policy_selection_construction_is_immutable_and_io_free(tmp_path, monkeypatch, policy):
+    from amplifier_foundation.session.metadata import SessionMetadataStore
+    from amplifier_foundation.session import _windows_history as backend
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("constructor performed filesystem I/O")
+
+    monkeypatch.setattr(Path, "open", forbidden)
+    monkeypatch.setattr(Path, "stat", forbidden)
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+    monkeypatch.setattr(backend, "_API", forbidden)
+    path = tmp_path / "not-created"
+    history = SessionHistoryStore(path, windows_policy=policy)
+    metadata = SessionMetadataStore(path, windows_policy=policy)
+    assert history.windows_policy == metadata.windows_policy == policy
+    with pytest.raises(AttributeError):
+        history.windows_policy = "private" if policy == "legacy" else "legacy"

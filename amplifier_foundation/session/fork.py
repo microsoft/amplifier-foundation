@@ -13,7 +13,6 @@ The forked session is independently resumable and addressable.
 
 from __future__ import annotations
 
-import os
 import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .events import slice_events_for_fork
+from .jsonl import _private_windows
 from .messages import (
     count_turns,
     find_orphaned_tool_calls,
@@ -70,6 +70,7 @@ def fork_session(
     target_dir: Path | None = None,
     include_events: bool = True,
     handle_orphaned_tools: str = "complete",
+    windows_policy: str = "legacy",
 ) -> ForkResult:
     """Fork a stored session from a specific turn.
 
@@ -85,6 +86,8 @@ def fork_session(
         target_dir: Base directory to create new session in.
                     Defaults to sibling of parent session.
         include_events: Whether to copy and slice events.jsonl (default: True).
+        windows_policy: "legacy" by default; "private" explicitly opts into
+            private Windows reads and create-only destination reservation.
         handle_orphaned_tools: How to handle tool_use without tool_result:
             - "complete": Add synthetic error result (default)
             - "remove": Remove the orphaned tool_use content
@@ -95,7 +98,7 @@ def fork_session(
 
     Raises:
         FileNotFoundError: If parent session doesn't exist or lacks transcript.
-        FileExistsError: On Windows, if the destination already exists (including self).
+        FileExistsError: In private Windows mode, if the destination already exists.
         ValueError: If turn number is invalid.
 
     Example:
@@ -105,7 +108,8 @@ def fork_session(
         ... )
         >>> print(f"Forked to {result.session_id} at turn {result.forked_from_turn}")
     """
-    if os.name == "nt":
+    private_windows = _private_windows(windows_policy)
+    if private_windows:
         from ._windows_ownership import _absolute
 
         # Do not resolve away a reparse ancestor before the private reader sees it.
@@ -125,10 +129,10 @@ def fork_session(
         )
 
     # Load parent data
-    if os.name == "nt":
+    if private_windows:
         from .history import SessionHistoryStore
 
-        parent = SessionHistoryStore(parent_session_dir).load(include_events=False)
+        parent = SessionHistoryStore(parent_session_dir, windows_policy=windows_policy).load(include_events=False)
         messages, parent_metadata = parent.messages, parent.metadata
     else:
         messages = load_transcript(parent_session_dir)
@@ -153,7 +157,7 @@ def fork_session(
 
     # Generate new session ID
     session_id = new_session_id or str(uuid.uuid4())
-    if os.name == "nt" and (
+    if private_windows and (
         Path(session_id).name != session_id or session_id in {".", ".."}
     ):
         raise ValueError("Windows fork ID must be a single path component")
@@ -164,14 +168,13 @@ def fork_session(
         base_dir = parent_session_dir.parent
     else:
         base_dir = (
-            _absolute(Path(target_dir)) if os.name == "nt" else Path(target_dir).resolve()
+            _absolute(Path(target_dir)) if private_windows else Path(target_dir).resolve()
         )
 
     new_session_dir = base_dir / session_id
 
-    if os.name != "nt":
-        # Retain the legacy POSIX path; Windows creates private descendants only
-        # through SessionHistoryStore after both payloads are prepared.
+    if not private_windows:
+        # Default legacy path is unchanged on both Windows and POSIX.
         new_session_dir.mkdir(parents=True, exist_ok=True)
         write_jsonl(new_session_dir / TRANSCRIPT_FILENAME, sliced)
 
@@ -189,13 +192,13 @@ def fork_session(
         "model": parent_metadata.get("model"),
     }
     with ExitStack() as publication:
-        if os.name == "nt":
+        if private_windows:
             from ._windows_history import reserve_new_session
 
             # Create-only reservation, not exists-then-save: reject private
             # destinations, self-forks and concurrent same-ID contenders alike.
             publication.enter_context(reserve_new_session(new_session_dir))
-            SessionHistoryStore(new_session_dir).save(
+            SessionHistoryStore(new_session_dir, windows_policy=windows_policy).save(
                 sliced, new_metadata, preserve_system=True
             )
         else:

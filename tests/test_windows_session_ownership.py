@@ -1780,7 +1780,93 @@ def native_history(tmp_path):
     from amplifier_foundation.session.history import SessionHistoryStore
 
     # Missing leaf: production code, not the fixture, creates its protected DACL.
-    return SessionHistoryStore(tmp_path / "private-history-\u2603-\U0001f680")
+    return SessionHistoryStore(tmp_path / "private-history-\u2603-\U0001f680", windows_policy="private")
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_private_directory_preparation_reuses_pinned_creation_without_repair(monkeypatch, unsafe):
+    from contextlib import contextmanager
+    from amplifier_foundation.session import history, prepare_session_directory
+
+    path = PureWindowsPath(r"C:\safe\missing")
+    events = []
+    api = object()
+    error = shared.SharedStateError("existing directory is unsafe")
+
+    @contextmanager
+    def pinned(actual, directory, **kwargs):
+        assert actual is api and directory == path
+        assert kwargs == {"root": path, "create": True}
+        events.append("pinned-private-creation")
+        if unsafe:
+            raise error
+        yield
+        events.append("unpin")
+
+    monkeypatch.setattr(history, "os", _WindowsOS())
+    monkeypatch.setattr(history, "Path", lambda actual: actual)
+    monkeypatch.setattr(win, "_absolute", lambda actual: actual)
+    monkeypatch.setattr(history_win, "_API", lambda: api)
+    monkeypatch.setattr(win, "_pinned", pinned)
+    if unsafe:
+        with pytest.raises(shared.SharedStateError) as caught:
+            prepare_session_directory(path)
+        assert caught.value is error and events == ["pinned-private-creation"]
+    else:
+        assert prepare_session_directory(path) is None
+        assert events == ["pinned-private-creation", "unpin"]
+
+
+@native
+def test_native_public_directory_preparation_is_private_at_creation_before_payload(tmp_path, monkeypatch):
+    from amplifier_foundation.session import prepare_session_directory, SessionHistoryStore
+
+    path = tmp_path / "prepare-private" / "project" / "sessions"
+    api = history_win._API()
+    create = api.CreateDirectoryW
+    observed = []
+
+    def created(directory, pointer):
+        security = C.cast(pointer, C.POINTER(win.SECURITY_ATTRIBUTES)).contents
+        assert security.lpSecurityDescriptor and not security.bInheritHandle
+        result = create(directory, pointer)
+        if result:
+            actual = Path(directory)
+            handle = api.open(actual, directory=True)
+            try:
+                api.validate_acl(handle, private=True)  # At creation, before any payload.
+                assert list(actual.iterdir()) == []
+            finally:
+                api.close(handle)
+            observed.append(actual)
+        return result
+
+    api.CreateDirectoryW = created
+    monkeypatch.setattr(history_win, "_API", lambda: api)
+    prepare_session_directory(path)
+    assert observed == [path.parent.parent, path.parent, path]
+    prepare_session_directory(path)  # Existing safe objects validate; no recreation.
+    assert len(observed) == 3 and list(path.iterdir()) == []
+    store = SessionHistoryStore(path / "history", windows_policy="private")
+    assert store.load(include_events=False).messages == [] and not store.session_dir.exists()
+    store.save([{"role": "user", "content": "private after preparation"}], {})
+    assert store.load_messages()[0]["content"] == "private after preparation"
+
+
+@native
+def test_native_public_directory_preparation_refuses_existing_without_acl_repair(tmp_path):
+    from amplifier_foundation.session import prepare_session_directory
+
+    directory = tmp_path / "ordinary-existing"
+    directory.mkdir()
+    marker = directory / "preserve"
+    marker.write_bytes(b"existing payload")
+    inode = directory.stat().st_ino
+    for _ in range(2):
+        with pytest.raises(shared.SharedStateError):
+            prepare_session_directory(directory)
+        assert directory.stat().st_ino == inode and marker.read_bytes() == b"existing payload"
+        assert [item.name for item in directory.iterdir()] == ["preserve"]
 
 
 @native
@@ -1808,7 +1894,7 @@ def test_native_history_snapshot_allows_ordinary_ancestor_settings_replace(tmp_p
     from amplifier_foundation.settings import atomic_write
 
     home = tmp_path / "settings-home"
-    store = SessionHistoryStore(home / "projects" / "fixture" / "sessions" / "history")
+    store = SessionHistoryStore(home / "projects" / "fixture" / "sessions" / "history", windows_policy="private")
     rows = [{"role": "user", "content": "old \u2603" + "x" * 131072}]
     store.save(rows, {"turn": 1})
     old = store.transcript_path.read_bytes()
@@ -1908,7 +1994,7 @@ def test_native_read_snapshot_does_not_release_independent_namespace_guards(tmp_
     from amplifier_foundation.session.history import SessionHistoryStore
 
     root = tmp_path / "guard-root"
-    store = SessionHistoryStore(root / "history")
+    store = SessionHistoryStore(root / "history", windows_policy="private")
     moved = root.with_name("guard-root-moved")
 
     def assert_pinned():
@@ -2241,8 +2327,8 @@ def test_native_baseline_vs_candidate_builtin_reader_discriminator(tmp_path, mod
     candidate_bytes = content.encode("utf-8")
     # The exact pre-PR default text writer translates newlines through the CRT.
     baseline_bytes = content.replace("\n", os.linesep).encode("utf-8")
-    baseline = SessionHistoryStore(tmp_path / "baseline")
-    candidate = SessionHistoryStore(tmp_path / "candidate")
+    baseline = SessionHistoryStore(tmp_path / "baseline", windows_policy="private")
+    candidate = SessionHistoryStore(tmp_path / "candidate", windows_policy="private")
     for store in (baseline, candidate):
         store.save(rows, metadata)  # Independent protected targets, no shared pins.
     baseline_path, candidate_path = baseline.session_dir / filename, candidate.session_dir / filename
@@ -2340,7 +2426,8 @@ def test_reader_discriminator_actual_body_outcome_matrix(
         _messages_content = staticmethod(formats._messages_content)
         _metadata_content = staticmethod(formats._metadata_content)
 
-        def __init__(self, directory):
+        def __init__(self, directory, *, windows_policy):
+            assert windows_policy == "private"
             self.session_dir = directory
             self.transcript_path = directory / "transcript.jsonl"
             self.metadata_path = directory / "metadata.json"
@@ -2479,8 +2566,8 @@ def test_legacy_generator_baseline_vs_candidate(tmp_path, record_property):
     content = SessionHistoryStore._messages_content(new_rows, True, None)
     candidate_bytes = content.encode("utf-8")
     baseline_bytes = content.replace("\n", os.linesep).encode("utf-8")
-    baseline = SessionHistoryStore(tmp_path / "generator-baseline")
-    candidate = SessionHistoryStore(tmp_path / "generator-candidate")
+    baseline = SessionHistoryStore(tmp_path / "generator-baseline", windows_policy="private")
+    candidate = SessionHistoryStore(tmp_path / "generator-candidate", windows_policy="private")
     for store in (baseline, candidate):
         store.save(rows, metadata)  # Independent private creation before payload.
     before = candidate.transcript_path.read_bytes()
@@ -2629,7 +2716,7 @@ def test_native_history_reparse_ancestor_refused_before_descendant_creation(nati
     assert result.returncode == 0, result.stderr
     from amplifier_foundation.session.history import SessionHistoryStore
 
-    store = SessionHistoryStore(alias / "must-not-create")
+    store = SessionHistoryStore(alias / "must-not-create", windows_policy="private")
     with pytest.raises(shared.SharedStateError, match="reparse"):
         store.save([], {})
     assert not (actual / "must-not-create").exists()
@@ -2745,7 +2832,7 @@ def test_native_history_metadata_stable_lock_noninheritance_and_process_contenti
     store.save([], {"unknown": "keep"})
     lock = store.session_dir.parent / f".{store.session_dir.name}.metadata.lock"
     inode = lock.stat().st_ino
-    with metadata_lock(store.session_dir):
+    with metadata_lock(store.session_dir, windows_policy="private"):
         api = history_win._API()
         handle = api.open(lock, write=True)
         try:
@@ -2770,7 +2857,7 @@ def test_native_history_metadata_stable_lock_noninheritance_and_process_contenti
             capture_output=True, text=True, timeout=15,
         )
         assert result.returncode == 23, result.stderr
-    SessionMetadataStore(store.session_dir).set_name("Canonical")
+    SessionMetadataStore(store.session_dir, windows_policy="private").set_name("Canonical")
     store.save([], {"turn": 2}, merge_metadata=True, incremental=True)
     assert store.load_metadata()["name"] == "Canonical"
     assert store.load_metadata()["unknown"] == "keep"

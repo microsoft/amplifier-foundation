@@ -43,7 +43,7 @@ def _write_transcript(tmp_path: Path, entries: list[dict]) -> Path:
         from amplifier_foundation.session.store import write_transcript
 
         session_dir = tmp_path / "private-session"
-        write_transcript(session_dir, entries)
+        write_transcript(session_dir, entries, windows_policy="private")
         return session_dir
     tmp_path.mkdir(parents=True, exist_ok=True)
     p = tmp_path / "transcript.jsonl"
@@ -62,7 +62,8 @@ def test_windows_repair_fixture_uses_private_child_before_payload(tmp_path, monk
             {"role": "developer", "content": "instructions"},
             {"role": "user", "content": "synthetic question"}]
 
-    def transcript(directory, entries):
+    def transcript(directory, entries, *, windows_policy):
+        assert windows_policy == "private"
         assert directory == tmp_path / "private-session" and not directory.exists()
         assert entries is rows
         calls.append(directory)

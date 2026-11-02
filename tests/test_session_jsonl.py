@@ -33,7 +33,7 @@ def save(store, messages):
 
 
 def test_append_noop_and_backup_advance_without_prefix_reads(tmp_path, monkeypatch):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     data = rows(10)
     save(store, data)
     save(store, data + rows(1))  # Establish indexes and first backup.
@@ -79,7 +79,7 @@ def test_append_noop_and_backup_advance_without_prefix_reads(tmp_path, monkeypat
 
 
 def test_edits_truncation_and_in_place_mutation_are_not_missed(tmp_path):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     data = rows(10)
     save(store, data)
     index = store.indexed_messages()
@@ -100,13 +100,13 @@ def test_edits_truncation_and_in_place_mutation_are_not_missed(tmp_path):
 
 
 def test_external_cli_append_and_replace_rebuild_cache(tmp_path):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     save(store, rows(2))
     original = store.indexed_messages()
     with store.transcript_path.open("a") as stream:
         stream.write(json.dumps(rows(3)[2]) + "\n")
     assert list(store.indexed_messages()) == rows(3)
-    SessionHistoryStore(tmp_path).save(rows(4), {})  # Unoptimized CLI path.
+    SessionHistoryStore(tmp_path, windows_policy="private").save(rows(4), {})  # Unoptimized host path.
     assert list(store.indexed_messages()) == rows(4)
     with pytest.raises(ValueError):
         _ = original[:]
@@ -116,16 +116,16 @@ def test_external_cli_append_and_replace_rebuild_cache(tmp_path):
 def test_crash_inside_append_never_exposes_partial_batch(
     tmp_path, monkeypatch, complete_line
 ):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     save(store, rows(2))
     original = jsonl._append
 
-    def fail(path, chunks):
+    def fail(path, chunks, **kwargs):
         if path == store.transcript_path:
             chunk = next(chunks)
-            original(path, iter([chunk if complete_line else chunk[:10]]))
+            original(path, iter([chunk if complete_line else chunk[:10]]), **kwargs)
             raise OSError("simulated crash")
-        original(path, chunks)
+        original(path, chunks, **kwargs)
 
     monkeypatch.setattr(jsonl, "_append", fail)
     with pytest.raises(OSError):
@@ -141,7 +141,7 @@ def test_crash_inside_append_never_exposes_partial_batch(
 
 
 def test_legacy_writer_can_repair_interrupted_append(tmp_path):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     save(store, rows(2))
     save(store, rows(3))
     if os.name == "nt":
@@ -156,7 +156,7 @@ def test_legacy_writer_can_repair_interrupted_append(tmp_path):
 
 
 def test_bad_late_row_or_metadata_does_not_mutate_files(tmp_path):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     save(store, rows(2))
     before = store.transcript_path.read_bytes()
     for data, metadata in (
@@ -170,7 +170,7 @@ def test_bad_late_row_or_metadata_does_not_mutate_files(tmp_path):
 
 
 def test_unterminated_cli_last_line_is_replaced_not_joined(tmp_path):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     if os.name == "nt":
         from amplifier_foundation.session._windows_history import _replace
 
@@ -186,7 +186,7 @@ def test_warm_page_decodes_only_requested_bodies_and_updates_projection(
 ):
     from amplifier_foundation.session import history
 
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     save(store, rows(100))
     index = store.indexed_messages()
     assert len(index.project("roles", lambda row, i: row["role"])) == 100
@@ -212,7 +212,7 @@ def test_warm_page_decodes_only_requested_bodies_and_updates_projection(
 def test_indexed_association_matches_complete_history_without_retaining_prompts(
     tmp_path,
 ):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     messages = rows(6)
     events = [
         {"event": "prompt:submit", "session_id": "s", "data": {"prompt": m["content"]}}
@@ -229,7 +229,7 @@ def test_cache_is_bounded_and_evicts_without_changing_data(tmp_path, monkeypatch
     monkeypatch.setattr(jsonl, "_MAX_ROWS", 5)
     jsonl._CACHE.clear()
     for i in range(4):
-        store = SessionHistoryStore(tmp_path / str(i))
+        store = SessionHistoryStore(tmp_path / str(i), windows_policy="private")
         save(store, rows(3))
         assert list(store.indexed_messages()) == rows(3)
     assert sum(len(item) for item in jsonl._CACHE.values()) <= 5
@@ -238,7 +238,7 @@ def test_cache_is_bounded_and_evicts_without_changing_data(tmp_path, monkeypatch
 def test_compact_event_associations_keep_identity_without_prompt_payload(tmp_path):
     from amplifier_foundation.session.history import event_association_record
 
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     messages = rows(20)
     save(store, messages)
     events = [
@@ -255,7 +255,7 @@ def test_compact_event_associations_keep_identity_without_prompt_payload(tmp_pat
 
 
 def test_hardlinked_backup_does_not_append_to_primary(tmp_path):
-    store = SessionHistoryStore(tmp_path)
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
     save(store, rows(2))
     backup = store.transcript_path.with_suffix(".jsonl.backup")
     os.link(store.transcript_path, backup)

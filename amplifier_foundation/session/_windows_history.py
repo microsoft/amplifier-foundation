@@ -235,6 +235,13 @@ def copy_backup(source, target):
         _replace(target, iter(lambda: stream.read(1024 * 1024), b""))
 
 
+def prepare_directory(directory):
+    """Create missing private directories; validate existing state without repair."""
+    directory = win._absolute(directory)
+    with win._pinned(_API(), directory, root=directory, create=True):
+        pass
+
+
 @contextmanager
 def reserve_new_session(directory):
     """Atomically reserve a private fork directory and pin it through publication.

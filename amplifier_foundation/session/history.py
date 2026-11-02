@@ -17,9 +17,16 @@ from pathlib import Path
 from typing import Any
 
 from ..io.files import _write_atomic, write_with_backup
+from .jsonl import (
+    _exists,
+    _open_binary,
+    _private_windows,
+    _remove_pending,
+    _validate_windows_policy,
+    file_stamp,
+)
 from .messages import is_real_user_message
 from .metadata import checkpoint_metadata, metadata_lock
-from .jsonl import _exists, _open_binary, _remove_pending, file_stamp
 from .shared_state import FileStamp
 from .store import METADATA_FILENAME, TRANSCRIPT_FILENAME
 
@@ -94,10 +101,10 @@ class _InvalidFile(ValueError):
         self.line = line
 
 
-def _read_messages(path: Path) -> list[dict[str, Any]]:
+def _read_messages(path: Path, *, windows_policy: str = "legacy") -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     # Decode per line so failures have a useful location without leaking payloads.
-    with _open_binary(path) as stream:
+    with _open_binary(path, windows_policy=windows_policy) as stream:
         for line_number, raw in enumerate(stream, 1):
             if not raw.strip():
                 continue
@@ -111,15 +118,31 @@ def _read_messages(path: Path) -> list[dict[str, Any]]:
     return messages
 
 
-def _read_metadata(path: Path) -> dict[str, Any]:
+def _read_metadata(path: Path, *, windows_policy: str = "legacy") -> dict[str, Any]:
     try:
-        with _open_binary(path) as stream:
+        with _open_binary(path, windows_policy=windows_policy) as stream:
             value = _decode(stream.read())
     except (ValueError, UnicodeError):
         raise _InvalidFile() from None
     if not isinstance(value, dict):
         raise _InvalidFile()
     return value
+
+
+def prepare_session_directory(session_dir: str | Path) -> None:
+    """Explicitly create missing private Windows directories before payload.
+
+    Existing Windows objects are validated, never repaired or migrated. This
+    does not select a store policy or reserve a session ID exclusively. On POSIX
+    it uses ordinary mkdir(mode=0700); existing permissions are not changed.
+    """
+    path = Path(session_dir)
+    if os.name == "nt":
+        from ._windows_history import prepare_directory
+
+        prepare_directory(path)
+    else:
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
 class SessionHistoryStore:
@@ -130,6 +153,10 @@ class SessionHistoryStore:
     ``save`` replaces metadata; callers merge unknown fields before calling it.
     Writes are atomic *per file*, with the existing CLI ``.backup`` convention;
     the two files are not a multi-file transaction or a power-loss guarantee.
+    ``windows_policy="private"`` opts into strict native Windows I/O before any
+    operation; the default ``"legacy"`` preserves existing callers. Neither
+    construction nor policy selection performs I/O. Private refusal never falls
+    back to legacy. Both policies retain the existing POSIX implementation.
     """
 
     def __init__(
@@ -138,7 +165,9 @@ class SessionHistoryStore:
         *,
         events_path: str | Path | None = None,
         session_id: str | None = None,
+        windows_policy: str = "legacy",
     ) -> None:
+        self._windows_policy = _validate_windows_policy(windows_policy)
         self.session_dir = Path(session_dir)
         self.transcript_path = self.session_dir / TRANSCRIPT_FILENAME
         self.metadata_path = self.session_dir / METADATA_FILENAME
@@ -152,9 +181,17 @@ class SessionHistoryStore:
         )
         self.diagnostics: list[HistoryDiagnostic] = []
 
+    @property
+    def windows_policy(self) -> str:
+        """Immutable selection: legacy default or explicit private Windows I/O."""
+        return self._windows_policy
+
     def exists(self) -> bool:
         """Whether any canonical transcript/metadata or their backup exists."""
-        return any(_exists(path) for path in self._canonical_paths().values())
+        return any(
+            _exists(path, windows_policy=self.windows_policy)
+            for path in self._canonical_paths().values()
+        )
 
     def _canonical_paths(self) -> dict[str, Path]:
         return {
@@ -168,11 +205,13 @@ class SessionHistoryStore:
         }
 
     def _recover(
-        self, path: Path, source: str, reader: Callable[[Path], Any], empty: Any
+        self, path: Path, source: str, reader: Callable[..., Any], empty: Any
     ) -> Any:
         from .jsonl import intent_path
 
-        pending = source == "transcript" and _exists(intent_path(path))
+        pending = source == "transcript" and _exists(
+            intent_path(path), windows_policy=self.windows_policy
+        )
         present = pending
         if pending:
             self.diagnostics.append(HistoryDiagnostic("interrupted_append", source))
@@ -183,7 +222,7 @@ class SessionHistoryStore:
             if pending and candidate == path:
                 continue
             try:
-                value = reader(candidate)
+                value = reader(candidate, windows_policy=self.windows_policy)
             except FileNotFoundError:
                 continue
             except (_InvalidFile, OSError) as error:
@@ -244,11 +283,17 @@ class SessionHistoryStore:
         paths = self._canonical_paths()
         if include_events:
             paths["events"] = self.events_path
-        before = {key: file_stamp(path) for key, path in paths.items()}
+        before = {
+            key: file_stamp(path, windows_policy=self.windows_policy)
+            for key, path in paths.items()
+        }
         messages = self._recover(self.transcript_path, "transcript", _read_messages, [])
         metadata = self._recover(self.metadata_path, "metadata", _read_metadata, {})
         events = list(self._iter_events()) if include_events else []
-        after = {key: file_stamp(path) for key, path in paths.items()}
+        after = {
+            key: file_stamp(path, windows_policy=self.windows_policy)
+            for key, path in paths.items()
+        }
         for source, stamp in before.items():
             if stamp != after[source]:
                 self.diagnostics.append(
@@ -291,7 +336,9 @@ class SessionHistoryStore:
         streams = ExitStack()
         try:
             # Enter here so a missing optional log remains an ordinary empty read.
-            stream = streams.enter_context(_open_binary(self.events_path))
+            stream = streams.enter_context(
+                _open_binary(self.events_path, windows_policy=self.windows_policy)
+            )
         except FileNotFoundError:
             return
         except OSError:
@@ -440,23 +487,23 @@ class SessionHistoryStore:
         except (TypeError, ValueError):
             raise ValueError("Metadata is not JSON serializable") from None
 
-    def _prepare_write(self, path: Path, reader: Callable[[Path], Any]) -> bool:
+    def _prepare_write(self, path: Path, reader: Callable[..., Any]) -> bool:
         # Validate existing state before changing either file. Never rotate a
         # damaged primary over the only readable backup. The return value means
         # preserve that backup when replacing the damaged primary.
         from .jsonl import intent_path
 
-        if path == self.transcript_path and _exists(intent_path(path)):
+        if path == self.transcript_path and _exists(intent_path(path), windows_policy=self.windows_policy):
             self._recover(path, "transcript", reader, [])
             return True
         try:
-            reader(path)
+            reader(path, windows_policy=self.windows_policy)
         except FileNotFoundError:
             pass
         except _InvalidFile:
             backup_path = path.with_suffix(path.suffix + ".backup")
             try:
-                reader(backup_path)
+                reader(backup_path, windows_policy=self.windows_policy)
             except (FileNotFoundError, _InvalidFile):
                 raise SessionHistoryError(
                     path.stem, [HistoryDiagnostic("invalid_file", path.name)]
@@ -464,9 +511,8 @@ class SessionHistoryStore:
             return True
         return False
 
-    @staticmethod
-    def _write_prepared(path: Path, content: str, preserve_backup: bool) -> None:
-        if os.name == "nt":
+    def _write_prepared(self, path: Path, content: str, preserve_backup: bool) -> None:
+        if _private_windows(self.windows_policy):
             from ._windows_history import write_prepared
 
             return write_prepared(path, content, preserve_backup)
@@ -477,10 +523,10 @@ class SessionHistoryStore:
         from .jsonl import _sync_directory, intent_path
 
         pending = intent_path(path)
-        if _exists(pending):
+        if _exists(pending, windows_policy=self.windows_policy):
             with path.open("r+b") as stream:
                 os.fsync(stream.fileno())
-            _remove_pending(pending)
+            _remove_pending(pending, windows_policy=self.windows_policy)
             _sync_directory(path.parent)
 
     def save(
@@ -506,7 +552,7 @@ class SessionHistoryStore:
         transcript_content = self._messages_content(
             messages, preserve_system, sanitizer
         )
-        with metadata_lock(self.session_dir):
+        with metadata_lock(self.session_dir, windows_policy=self.windows_policy):
             if merge_metadata:
                 metadata = checkpoint_metadata(self.load_metadata(), metadata)
             metadata_content = self._metadata_content(metadata)
@@ -552,25 +598,25 @@ class SessionHistoryStore:
         # Validate all rows before any source mutation, including an invalid
         # late row after an otherwise matching prefix. Hashes are computed by
         # append_messages; encoding here would duplicate large-history work.
-        with metadata_lock(self.session_dir):
+        with metadata_lock(self.session_dir, windows_policy=self.windows_policy):
             if merge_metadata:
                 metadata = checkpoint_metadata(self.load_metadata(), metadata)
             metadata_content = self._metadata_content(metadata)
             preserve_metadata = self._prepare_write(self.metadata_path, _read_metadata)
             # Validation and comparison in append_messages are read-only until
             # the entire append has been encoded. Replacement validates below.
-            if not append_messages(self.transcript_path, values):
+            if not append_messages(self.transcript_path, values, windows_policy=self.windows_policy):
                 content = self._messages_content(values, True, None)
                 pending = intent_path(self.transcript_path)
-                if _exists(pending):
+                if _exists(pending, windows_policy=self.windows_policy):
                     # Never rotate an incomplete primary over its good backup.
                     self._recover(self.transcript_path, "transcript", indexed, [])
                     preserve_backup = True
                 else:
                     preserve_backup = self._prepare_write(self.transcript_path, indexed)
                 self._write_prepared(self.transcript_path, content, preserve_backup)
-                if _exists(pending):
-                    _remove_pending(pending)
+                if _exists(pending, windows_policy=self.windows_policy):
+                    _remove_pending(pending, windows_policy=self.windows_policy)
             self._write_prepared(
                 self.metadata_path, metadata_content, preserve_metadata
             )
@@ -595,7 +641,7 @@ class SessionHistoryStore:
         All cooperating metadata writes use the short metadata lock. Transcript
         writers still need the separate session execution ownership lock.
         """
-        with metadata_lock(self.session_dir):
+        with metadata_lock(self.session_dir, windows_policy=self.windows_policy):
             if merge_metadata:
                 metadata = checkpoint_metadata(self.load_metadata(), metadata)
             self._save_metadata_unlocked(metadata)

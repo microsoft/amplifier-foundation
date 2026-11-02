@@ -30,13 +30,13 @@ def tmp_path(tmp_path):
 
 def test_read_missing_does_not_create_custom_hierarchy(tmp_path):
     path = tmp_path / "another-app" / "session"
-    assert SessionMetadataStore(path).read() == {}
+    assert SessionMetadataStore(path, windows_policy="private").read() == {}
     assert not path.exists()
 
 
 def test_checkpoint_after_other_host_rename_preserves_name_and_unknown_fields(tmp_path):
-    history = SessionHistoryStore(tmp_path)
-    names = SessionMetadataStore(tmp_path, create=True)
+    history = SessionHistoryStore(tmp_path, windows_policy="private")
+    names = SessionMetadataStore(tmp_path, create=True, windows_policy="private")
     history.save([{"role": "user", "content": "original"}], {"host_specific": {"x": 1}})
     names.set_name("Web name")
     stale = names.read()
@@ -53,7 +53,7 @@ def test_checkpoint_after_other_host_rename_preserves_name_and_unknown_fields(tm
 
 
 def test_fallback_generated_then_explicit_name_and_late_result(tmp_path):
-    names = SessionMetadataStore(tmp_path, create=True)
+    names = SessionMetadataStore(tmp_path, create=True, windows_policy="private")
     fallback = names.set_name("First prompt", source="fallback")
     assert not has_generated_or_manual_name(fallback)
     generated = names.set_name("Useful name", source="generated", expected_revision=1)
@@ -67,7 +67,7 @@ def test_fallback_generated_then_explicit_name_and_late_result(tmp_path):
 
 
 def test_first_prompt_can_replace_placeholder_but_not_an_intentional_name(tmp_path):
-    names = SessionMetadataStore(tmp_path, create=True)
+    names = SessionMetadataStore(tmp_path, create=True, windows_policy="private")
     names.set_name("New conversation", source="fallback")
     assert names.set_name("First prompt", source="fallback")["name"] == "First prompt"
     names.set_name("User title")
@@ -77,9 +77,9 @@ def test_first_prompt_can_replace_placeholder_but_not_an_intentional_name(tmp_pa
 
 
 def test_legacy_name_is_not_overridden_and_updates_preserve_other_fields(tmp_path):
-    history = SessionHistoryStore(tmp_path)
+    history = SessionHistoryStore(tmp_path, windows_policy="private")
     history.save_metadata({"name": "Legacy CLI choice", "custom": [1, 2]})
-    names = SessionMetadataStore(tmp_path, create=True)
+    names = SessionMetadataStore(tmp_path, create=True, windows_policy="private")
     assert (
         names.set_name("Generated", source="generated")["name"] == "Legacy CLI choice"
     )
@@ -89,11 +89,11 @@ def test_legacy_name_is_not_overridden_and_updates_preserve_other_fields(tmp_pat
 
 def test_competing_field_patches_do_not_drop_fields(tmp_path):
     def update(index):
-        SessionMetadataStore(tmp_path, create=True).update({f"host_{index}": index})
+        SessionMetadataStore(tmp_path, create=True, windows_policy="private").update({f"host_{index}": index})
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(update, range(30)))
-    assert SessionMetadataStore(tmp_path, create=True).read() == {
+    assert SessionMetadataStore(tmp_path, create=True, windows_policy="private").read() == {
         f"host_{i}": i for i in range(30)
     }
 
@@ -106,7 +106,7 @@ def test_invalid_metadata_is_not_silently_replaced(tmp_path):
     else:
         (tmp_path / "metadata.json").write_text("{broken")
     with pytest.raises(SessionHistoryError):
-        SessionMetadataStore(tmp_path, create=True).set_name("Must not erase")
+        SessionMetadataStore(tmp_path, create=True, windows_policy="private").set_name("Must not erase")
     assert (tmp_path / "metadata.json").read_text() == "{broken"
 
 
@@ -114,7 +114,7 @@ def test_naming_does_not_write_transcript_or_events(tmp_path):
     events = tmp_path / "events.jsonl"
     events.write_text('{"event":"tool:post","opaque":true}\n')
     original = events.read_bytes()
-    SessionMetadataStore(tmp_path, create=True).set_name("Readable")
+    SessionMetadataStore(tmp_path, create=True, windows_policy="private").set_name("Readable")
     assert events.read_bytes() == original
     assert not (tmp_path / "transcript.jsonl").exists()
     assert json.loads((tmp_path / "metadata.json").read_text())["name"] == "Readable"
@@ -126,8 +126,8 @@ def test_late_rename_cannot_recreate_a_deleted_session(tmp_path):
     from amplifier_foundation.session.metadata import metadata_lock
 
     directory = tmp_path / "session"
-    SessionMetadataStore(directory, create=True).set_name("Original")
-    writer = SessionMetadataStore(directory)
+    SessionMetadataStore(directory, create=True, windows_policy="private").set_name("Original")
+    writer = SessionMetadataStore(directory, windows_policy="private")
     with metadata_lock(directory):
         shutil.rmtree(directory)
     with pytest.raises(FileNotFoundError):

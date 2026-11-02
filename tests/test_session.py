@@ -125,7 +125,7 @@ def sample_session(tmp_path):
     if os.name == "nt":
         from amplifier_foundation.session.store import write_transcript
 
-        write_transcript(session_dir, messages)
+        write_transcript(session_dir, messages, windows_policy="private")
     else:
         with open(session_dir / "transcript.jsonl", "w") as f:
             for msg in messages:
@@ -142,7 +142,7 @@ def sample_session(tmp_path):
     if os.name == "nt":
         from amplifier_foundation.session.store import write_metadata
 
-        write_metadata(session_dir, metadata)
+        write_metadata(session_dir, metadata, windows_policy="private")
     else:
         (session_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
@@ -493,7 +493,8 @@ class TestForkSession:
         reservations = []
 
         class History:
-            def __init__(self, directory):
+            def __init__(self, directory, *, windows_policy):
+                assert windows_policy == "private"
                 self.directory = directory
 
             def load(self, **kwargs):
@@ -517,7 +518,8 @@ class TestForkSession:
             nonlocal barrier
             barrier = value
 
-        monkeypatch.setattr(fork_module, "os", SimpleNamespace(name="nt"))
+        from amplifier_foundation.session import jsonl
+        monkeypatch.setattr(jsonl, "os", SimpleNamespace(name="nt"))
         monkeypatch.setattr(win, "_absolute", lambda path: path)
         monkeypatch.setattr(history, "SessionHistoryStore", History)
         monkeypatch.setattr(backend, "reserve_new_session", reserved, raising=False)
@@ -533,7 +535,7 @@ class TestForkSession:
             (destination / "metadata.json").write_bytes(b"preserve metadata")
         before = {path.name: path.read_bytes() for path in destination.iterdir()}
         with pytest.raises(FileExistsError):
-            fork_session(source, new_session_id=destination.name, turn=1, include_events=False)
+            fork_session(source, new_session_id=destination.name, turn=1, include_events=False, windows_policy="private")
         assert before == {path.name: path.read_bytes() for path in destination.iterdir()}
         assert not windows_fork_io.reservations
 
@@ -546,7 +548,7 @@ class TestForkSession:
         def fork():
             try:
                 return fork_session(windows_fork_io.source, new_session_id="one-fork",
-                                    turn=1, include_events=False)
+                                    turn=1, include_events=False, windows_policy="private")
             except FileExistsError:
                 return None
 
@@ -569,7 +571,8 @@ class TestForkSession:
                     {"role": "assistant", "content": "synthetic answer"}]
 
         class History:
-            def __init__(self, directory):
+            def __init__(self, directory, *, windows_policy):
+                assert windows_policy == "private"
                 self.directory = directory
 
             def load(self, **kwargs):
@@ -593,13 +596,14 @@ class TestForkSession:
             yield
             calls.append("unpinned")
 
-        monkeypatch.setattr(fork_module, "os", SimpleNamespace(name="nt"))
+        from amplifier_foundation.session import jsonl
+        monkeypatch.setattr(jsonl, "os", SimpleNamespace(name="nt"))
         monkeypatch.setattr(win, "_absolute", lambda path: path)
         monkeypatch.setattr(backend, "reserve_new_session", reserved)
         monkeypatch.setattr(history, "SessionHistoryStore", History)
         for name in ("write_jsonl", "write_metadata", "load_transcript", "load_metadata"):
             monkeypatch.setattr(fork_module, name, lambda *a: pytest.fail("legacy history I/O"))
-        result = fork_session(sample_session, include_events=False)
+        result = fork_session(sample_session, include_events=False, windows_policy="private")
         assert calls == ["private-source", "reserved", "private-destination", "unpinned"]
         assert not result.session_dir.exists()
 
@@ -607,14 +611,14 @@ class TestForkSession:
     def test_native_fork_creates_private_canonical_history(self, sample_session, tmp_path):
         from amplifier_foundation.session.history import SessionHistoryStore
 
-        source = SessionHistoryStore(sample_session)
+        source = SessionHistoryStore(sample_session, windows_policy="private")
         rows = [{"role": "system", "content": "synthetic context"},
                 {"role": "developer", "content": "synthetic instructions"},
                 *source.load_messages()]
         source.save_messages(rows, preserve_system=True)
         result = fork_session(sample_session, target_dir=tmp_path / "new-target",
-                              turn=2, include_events=False)
-        saved = SessionHistoryStore(result.session_dir).load(include_events=False)
+                              turn=2, include_events=False, windows_policy="private")
+        saved = SessionHistoryStore(result.session_dir, windows_policy="private").load(include_events=False)
         assert saved.messages == rows[:6]
         assert saved.metadata["parent_id"] == "parent_session_123"
         assert saved.metadata["forked_from_turn"] == 2
@@ -628,7 +632,7 @@ class TestForkSession:
         source.mkdir()
         (source / "transcript.jsonl").write_bytes(b'{"role":"user","content":"legacy"}\n')
         with pytest.raises(SharedStateError):
-            fork_session(source, target_dir=tmp_path / "destination", include_events=False)
+            fork_session(source, target_dir=tmp_path / "destination", include_events=False, windows_policy="private")
         assert not (tmp_path / "destination").exists()
 
     @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
@@ -639,7 +643,7 @@ class TestForkSession:
         path.write_bytes(b'{"role":"user","content":"preserve"}\n')
         before = path.read_bytes()
         with pytest.raises(FileExistsError):
-            fork_session(sample_session, new_session_id="unsafe-fork", include_events=False)
+            fork_session(sample_session, new_session_id="unsafe-fork", include_events=False, windows_policy="private")
         assert path.read_bytes() == before
         assert not (destination / "metadata.json").exists()
 
@@ -651,13 +655,13 @@ class TestForkSession:
 
         destination = sample_session if kind == "self" else sample_session.parent / "existing-fork"
         if kind == "private":
-            SessionHistoryStore(destination).save([{"role": "user", "content": "keep"}], {"keep": True})
+            SessionHistoryStore(destination, windows_policy="private").save([{"role": "user", "content": "keep"}], {"keep": True})
         elif kind == "empty-private":
             with backend.reserve_new_session(destination):
                 pass
         before = {path.name: path.read_bytes() for path in destination.iterdir()}
         with pytest.raises(FileExistsError):
-            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False)
+            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False, windows_policy="private")
         assert before == {path.name: path.read_bytes() for path in destination.iterdir()}
 
     @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows local NTFS")
@@ -681,14 +685,14 @@ class TestForkSession:
 
         def fork(_):
             try:
-                return fork_session(sample_session, new_session_id="one-fork", turn=1, include_events=False)
+                return fork_session(sample_session, new_session_id="one-fork", turn=1, include_events=False, windows_policy="private")
             except FileExistsError:
                 return None
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(fork, range(2)))
         assert sum(result is not None for result in results) == 1
-        saved = SessionHistoryStore(sample_session.parent / "one-fork").load(include_events=False)
+        saved = SessionHistoryStore(sample_session.parent / "one-fork", windows_policy="private").load(include_events=False)
         assert len(saved.messages) == 2 and saved.metadata["parent_id"] == sample_session.name
         assert not list((sample_session.parent / "one-fork").glob("*.backup"))
 
@@ -720,7 +724,7 @@ class TestForkSession:
 
         monkeypatch.setattr(SessionHistoryStore, "save", save)
         monkeypatch.setattr(fork_module, "slice_events_for_fork", events)
-        fork_session(sample_session, new_session_id=destination.name, turn=1)
+        fork_session(sample_session, new_session_id=destination.name, turn=1, windows_policy="private")
         assert observed == ["save", "events"]
         # Pins were released after all publication, not leaked.
         moved = destination.with_name("completed-fork")
@@ -735,20 +739,20 @@ class TestForkSession:
         destination = sample_session.parent / "incomplete-fork"
         source_before = {path.name: path.read_bytes() for path in sample_session.iterdir()}
 
-        def fail_metadata(path, content, preserve_backup):
+        def fail_metadata(store, path, content, preserve_backup):
             if path == destination / "metadata.json":
                 raise OSError("synthetic metadata publication failure")
-            return original(path, content, preserve_backup)
+            return original(store, path, content, preserve_backup)
 
-        monkeypatch.setattr(SessionHistoryStore, "_write_prepared", staticmethod(fail_metadata))
+        monkeypatch.setattr(SessionHistoryStore, "_write_prepared", fail_metadata)
         with pytest.raises(OSError, match="synthetic metadata") as caught:
-            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False)
+            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False, windows_policy="private")
         assert any("did not complete" in note and "retained" in note for note in caught.value.__notes__)
-        assert len(SessionHistoryStore(destination).load_messages()) == 2
+        assert len(SessionHistoryStore(destination, windows_policy="private").load_messages()) == 2
         assert not (destination / "metadata.json").exists()
         partial = (destination / "transcript.jsonl").read_bytes()
         with pytest.raises(FileExistsError):
-            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False)
+            fork_session(sample_session, new_session_id=destination.name, turn=1, include_events=False, windows_policy="private")
         assert (destination / "transcript.jsonl").read_bytes() == partial
         assert source_before == {path.name: path.read_bytes() for path in sample_session.iterdir()}
 
@@ -767,7 +771,7 @@ class TestForkSession:
         with pytest.raises(SharedStateError, match="reparse"):
             fork_session(alias if location == "source" else sample_session,
                          target_dir=alias if location == "target" else tmp_path / "destination",
-                         include_events=False, new_session_id="must-not-publish")
+                         include_events=False, new_session_id="must-not-publish", windows_policy="private")
         assert not (actual / "must-not-publish").exists()
 
     def test_fork_at_turn_1(self, sample_session, tmp_path):

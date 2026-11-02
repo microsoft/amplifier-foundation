@@ -148,6 +148,7 @@ from .history import (
     SessionHistoryError,
     SessionHistoryStore,
     associate_events,
+    prepare_session_directory,
 )
 
 # Portable shared root-session locks and legacy checkpoints (POSIX/local filesystem)
@@ -229,6 +230,7 @@ __all__ = [
     "SessionHistory",
     "SessionHistoryError",
     "SessionHistoryStore",
+    "prepare_session_directory",
     "associate_events",
     # Portable shared-state locks and legacy checkpoints
     "FileStamp",

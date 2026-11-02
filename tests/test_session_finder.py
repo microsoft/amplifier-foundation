@@ -47,14 +47,14 @@ def _make_session(
             {"role": "assistant", "content": "Hi there"},
         ]
     )
-    write_transcript(session_dir, msgs)
+    write_transcript(session_dir, msgs, windows_policy="private")
 
     meta = dict(metadata) if metadata is not None else {}
     meta.setdefault("session_id", session_id)
     meta.setdefault("created", "2024-06-01T10:00:00+00:00")
     meta.setdefault("bundle", "test-bundle")
     meta.setdefault("model", "test-model")
-    write_metadata(session_dir, meta)
+    write_metadata(session_dir, meta, windows_policy="private")
 
     return session_dir
 

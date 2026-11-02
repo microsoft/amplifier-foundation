@@ -12,12 +12,13 @@ on disk or how directories are structured.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from .jsonl import _private_windows
 
 # ---------------------------------------------------------------------------
 # Filename constants
@@ -123,14 +124,15 @@ def load_transcript_with_lines(session_dir: Path) -> list[dict[str, Any]]:
     return entries
 
 
-def write_transcript(session_dir: Path, entries: list[dict[str, Any]]) -> None:
+def write_transcript(session_dir: Path, entries: list[dict[str, Any]], *,
+                     windows_policy: str = "legacy") -> None:
     """Write entries to transcript.jsonl in the given session directory.
 
     Args:
         session_dir: Path to the session directory.
         entries: List of message dicts to write.
     """
-    if os.name == "nt":
+    if _private_windows(windows_policy):
         # Canonical transcripts must be created privately, not with the generic
         # JSONL utility. Preserve system/developer rows for this lower-level API.
         # This is also the explicit repair/rewind writer: do not parse a damaged
@@ -156,7 +158,8 @@ def load_metadata(session_dir: Path) -> dict[str, Any]:
     return json.loads((session_dir / METADATA_FILENAME).read_text(encoding="utf-8"))
 
 
-def write_metadata(session_dir: Path, metadata: dict[str, Any]) -> None:
+def write_metadata(session_dir: Path, metadata: dict[str, Any], *,
+                   windows_policy: str = "legacy") -> None:
     """Write metadata to metadata.json in the given session directory.
 
     Uses ``indent=2`` for human-readable pretty-printing and ``ensure_ascii=False``
@@ -168,7 +171,7 @@ def write_metadata(session_dir: Path, metadata: dict[str, Any]) -> None:
     """
     from .history import SessionHistoryStore
 
-    SessionHistoryStore(session_dir).save_metadata(metadata)
+    SessionHistoryStore(session_dir, windows_policy=windows_policy).save_metadata(metadata)
 
 
 def backup(filepath: Path, label: str) -> Path | None:

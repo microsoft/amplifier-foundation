@@ -63,10 +63,44 @@ in the ownership protocol must not write the same session concurrently.
 
 ## Bounded native Windows history
 
-The existing API selects a private Windows adapter on Windows. The scope is
-ordinary `transcript.jsonl`, `metadata.json`, their `.backup` files and the
-transcript `.append-pending` intent, not shared checkpoints or transfer fences.
-The layout and public API do not change. POSIX persistence is unchanged.
+Windows history is staged opt-in. `SessionHistoryStore` defaults to
+`windows_policy="legacy"`: unchanged callers retain ordinary file I/O, directory
+creation and the existing file-lock behavior. Private Windows history requires
+explicit `windows_policy="private"` **before I/O**. There is no environment/global
+toggle, ACL-based automatic selection, or downgrade after a private refusal.
+Both selections use the same layout and formats; POSIX persistence is unchanged.
+
+```python
+from amplifier_foundation.session import SessionHistoryStore, prepare_session_directory
+from amplifier_foundation.session.metadata import SessionMetadataStore
+
+# Do this before ordinary mkdir, logger/lease setup, or any session payload.
+prepare_session_directory(session_dir)
+history = SessionHistoryStore(session_dir, windows_policy="private")
+names = SessionMetadataStore(session_dir, windows_policy="private")
+history.save(messages, metadata, merge_metadata=True)
+```
+
+The store's `windows_policy` is read-only. Constructors perform no filesystem
+I/O. Selection propagates through recovery, revisions, events, lazy indexes,
+incremental append, intent handling and metadata serialization. Index caches
+are separated by policy; lazy readers retain their selection. Cooperating hosts
+must select the same policy for all operations on a session. A legacy writer
+does not gain private guarantees because another host selected private mode.
+
+`prepare_session_directory` is an explicit creation operation, not selection or
+migration. On Windows it uses pinned traversal and protected current-user DACLs
+for missing components before payload; existing components must satisfy their
+private/traversal validation rules and are never repaired. It does not reserve
+a session ID exclusively. On POSIX it uses mkdir(mode=0700) for missing directories
+without changing existing permissions. Hosts with existing unqualified stores
+must retain legacy mode or provision a separate qualified destination; opting
+in does not authorize migration. Preparing only after a consumer has already
+created unsafe directories cannot make them acceptable.
+
+The following guarantees apply to **private Windows mode**. Its scope is ordinary
+`transcript.jsonl`, `metadata.json`, their `.backup` files and the transcript
+`.append-pending` intent, not shared checkpoints or transfer fences.
 
 The adapter requires an absolute local fixed NTFS path (relative inputs are
 anchored without resolving away unsafe components). It pins and validates each
@@ -134,7 +168,8 @@ publication. Transcript writers must still hold execution ownership. Windows
 checkpoint/fence mutations and cooperative handoff remain unsupported; ordinary
 history saves do not remove those gates.
 
-On Windows, `session.store.write_transcript` also uses this private boundary and
+With `windows_policy="private"` on Windows, `session.store.write_transcript`
+also uses this private boundary and
 preserves system/developer rows, as that lower-level writer did before. As the
 explicit repair/rewind writer, it can replace a corrupt primary after validating
 the destination's security, including any existing append intent before changing
@@ -142,8 +177,10 @@ the primary or backup. It retains the validated intent handle through replacemen
 and removes that intent only after successful publication. A corrupt primary
 need not parse to perform this explicit repair. It retains existing backups
 rather than rotating corrupt data over them; it does not create a new backup
-automatically. The file-based `fork_session` reads the canonical source through `SessionHistoryStore`
-and saves its transcript/metadata through the same boundary. Windows forks first
+automatically. `write_metadata` accepts the same keyword. The file-based
+`fork_session(..., windows_policy="private")` reads the canonical source through
+`SessionHistoryStore` and saves its transcript/metadata through the same boundary.
+Private Windows forks first
 reserve a new private directory with atomic create-only semantics, then keep it
 and its ancestors pinned throughout transcript, metadata and optional legacy
 event publication. Every existing destination is refused with `FileExistsError`,
@@ -156,6 +193,10 @@ resolve away reparse points. Unsafe source objects remain refusals, not migratio
 The generic `read_jsonl`/`write_jsonl` utilities, format-only
 `load_transcript`/`load_metadata` readers and legacy root-event slicing remain
 separate low-level file helpers, not qualified private-history APIs.
+The repair writer and fork function default to legacy behavior, just like the
+history store. Invalid policies are rejected before filesystem I/O. The low-level
+`jsonl.indexed`, `file_stamp`, `append_messages` and `metadata_lock` helpers accept
+the same keyword when called directly; normal hosts should use the store APIs.
 
 ## Recovery and revision checks
 

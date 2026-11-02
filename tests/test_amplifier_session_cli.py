@@ -56,8 +56,8 @@ def _make_session(
 
         # Valid-state fixture: private creation before any payload, even when
         # the message sequence deliberately has orphaned/misordered tool rows.
-        write_transcript(session_dir, entries)
-        write_metadata(session_dir, meta)
+        write_transcript(session_dir, entries, windows_policy="private")
+        write_metadata(session_dir, meta, windows_policy="private")
         return session_dir
 
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -102,12 +102,14 @@ def test_windows_cli_fixture_uses_private_writers_before_payload(tmp_path, monke
     rows = [{"role": "system", "content": "context"},
             {"role": "developer", "content": "instructions"}, *_BROKEN_ENTRIES]
 
-    def transcript(directory, entries):
+    def transcript(directory, entries, *, windows_policy):
+        assert windows_policy == "private"
         assert not directory.exists()  # No inherited-ACL mkdir before private I/O.
         assert entries is rows
         calls.append("transcript")
 
-    def metadata(directory, entries):
+    def metadata(directory, entries, *, windows_policy):
+        assert windows_policy == "private"
         assert not directory.exists()  # The transcript stub intentionally did no I/O.
         assert entries["model"] == "synthetic-model"
         calls.append("metadata")
@@ -357,10 +359,11 @@ class TestCLIEdgeCases:
 
     @pytest.mark.skipif(os.name != "nt", reason="requires actual Windows private ACL validation")
     @pytest.mark.parametrize("action", ["repair", "rewind"])
-    def test_native_unsafe_legacy_session_is_not_repaired_or_rewound(self, tmp_path, action):
+    def test_native_cli_legacy_default_is_distinct_from_explicit_private_refusal(self, tmp_path, action):
         from amplifier_foundation.session import _windows_ownership as win
         from amplifier_foundation.session.finder import resolve_session
         from amplifier_foundation.session.shared_state import SharedStateError
+        from amplifier_foundation.session.store import write_transcript
 
         # A private control proves the same messages/layout can be processed.
         control = _make_session(tmp_path / "private-control", _BROKEN_ENTRIES)
@@ -386,18 +389,23 @@ class TestCLIEdgeCases:
         assert diagnosis.returncode == 1, diagnosis.stdout + diagnosis.stderr
         assert json.loads(diagnosis.stdout)["status"] == "broken"
 
-        # Capture the actual security failure independently. CLI refusal must be
-        # that failure, not missing metadata, invalid JSON, or layout rejection.
-        with pytest.raises(SharedStateError) as security:
+        # The explicit strict route still refuses without changing any bytes.
+        with pytest.raises(SharedStateError):
             with win._pinned(win._API(), directory, root=directory):
                 pytest.fail("inherited-ACL fixture unexpectedly passed private validation")
-        result = _run(action, str(directory))
-        assert result.returncode == 1, result.stdout + result.stderr
+        with pytest.raises(SharedStateError):
+            write_transcript(directory, _HEALTHY_ENTRIES, windows_policy="private")
         assert path.read_bytes() == transcript_bytes
+        assert metadata_path.read_bytes() == metadata_bytes
+        # Unchanged CLI entry points select legacy before I/O, not as a fallback
+        # after the strict refusal above (that call completed independently).
+        result = _run(action, str(directory))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(result.stdout)["status"] == ("repaired" if action == "repair" else "rewound")
         assert metadata_path.read_bytes() == metadata_bytes
         assert not list(directory.glob(".history-*"))
         assert not (directory / "transcript.jsonl.backup").exists()
-        assert json.loads(result.stdout)["error"] == str(security.value)
+        assert _run("diagnose", str(directory)).returncode == 0
 
     def test_no_subcommand_exits_2(self) -> None:
         """Running with no subcommand exits with code 2."""

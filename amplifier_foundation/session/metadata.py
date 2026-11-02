@@ -7,12 +7,13 @@ All paths are supplied by the host; reads never migrate or repair files.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from .jsonl import _private_windows
 
 NAMING_FIELDS = (
     "name",
@@ -26,8 +27,8 @@ NAMING_FIELDS = (
 
 
 @contextmanager
-def metadata_lock(session_dir: Path) -> Iterator[None]:
-    if os.name == "nt":
+def metadata_lock(session_dir: Path, *, windows_policy: str = "legacy") -> Iterator[None]:
+    if _private_windows(windows_policy):
         from ._windows_history import metadata_lock as windows_lock
 
         with windows_lock(session_dir):
@@ -63,20 +64,27 @@ class SessionMetadataStore:
 
     Older writers that bypass this API's lock cannot be made concurrent-safe.
     No second name file, event replay, provider call, or execution lease is used.
+    Select windows_policy="private" explicitly to share a private history store's
+    native I/O/lock policy; unchanged callers retain legacy I/O and FileLock.
     """
 
-    def __init__(self, session_dir: str | Path, *, create: bool = False):
+    def __init__(self, session_dir: str | Path, *, create: bool = False,
+                 windows_policy: str = "legacy"):
         from .history import SessionHistoryStore
 
-        self.history = SessionHistoryStore(session_dir)
+        self.history = SessionHistoryStore(session_dir, windows_policy=windows_policy)
         self.create = create
+
+    @property
+    def windows_policy(self) -> str:
+        return self.history.windows_policy
 
     def read(self) -> dict[str, Any]:
         return self.history.load_metadata()
 
     def update(self, fields: dict[str, Any]) -> dict[str, Any]:
         """Reread under the lock and patch only the supplied fields."""
-        with metadata_lock(self.history.session_dir):
+        with metadata_lock(self.history.session_dir, windows_policy=self.windows_policy):
             if not self.create and not self.history.session_dir.is_dir():
                 raise FileNotFoundError("The native session no longer exists")
             current = self.read()
@@ -106,7 +114,7 @@ class SessionMetadataStore:
         if description is not None and not isinstance(description, str):
             raise ValueError("Session description must be a string")
         name = name.strip()
-        with metadata_lock(self.history.session_dir):
+        with metadata_lock(self.history.session_dir, windows_policy=self.windows_policy):
             if not self.create and not self.history.session_dir.is_dir():
                 raise FileNotFoundError("The native session no longer exists")
             current = self.read()

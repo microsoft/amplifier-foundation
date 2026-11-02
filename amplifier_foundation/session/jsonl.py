@@ -24,27 +24,39 @@ from typing import Any
 from ..io.files import _write_atomic
 from .shared_state import FileStamp, file_stamp as _posix_stamp
 
-_CACHE: OrderedDict[Path, TranscriptIndex] = OrderedDict()
+_CACHE: OrderedDict[tuple[Path, str], TranscriptIndex] = OrderedDict()
 _LOCK = RLock()
 _MAX_ROWS = 100_000
 _MAX_FILES = 64
 
 
-def file_stamp(path: Path) -> FileStamp | None:
-    if os.name == "nt":
+def _validate_windows_policy(windows_policy: str) -> str:
+    if type(windows_policy) is not str or windows_policy not in ("legacy", "private"):
+        raise ValueError("windows_policy must be 'legacy' or 'private'")
+    return windows_policy
+
+
+def _private_windows(windows_policy: str) -> bool:
+    return _validate_windows_policy(windows_policy) == "private" and os.name == "nt"
+
+
+def file_stamp(path: Path, *, windows_policy: str = "legacy") -> FileStamp | None:
+    if _private_windows(windows_policy):
         from ._windows_history import stamp
 
         return stamp(path)
     return _posix_stamp(path)
 
 
-def _exists(path: Path) -> bool:
-    return file_stamp(path) is not None if os.name == "nt" else path.exists()
+def _exists(path: Path, *, windows_policy: str = "legacy") -> bool:
+    if _private_windows(windows_policy):
+        return file_stamp(path, windows_policy=windows_policy) is not None
+    return path.exists()
 
 
 @contextmanager
-def _open_binary(path: Path):
-    if os.name == "nt":
+def _open_binary(path: Path, *, windows_policy: str = "legacy"):
+    if _private_windows(windows_policy):
         from ._windows_history import open_binary
 
         with open_binary(path) as stream:
@@ -54,8 +66,8 @@ def _open_binary(path: Path):
             yield stream
 
 
-def _remove_pending(path: Path) -> None:
-    if os.name == "nt":
+def _remove_pending(path: Path, *, windows_policy: str = "legacy") -> None:
+    if _private_windows(windows_policy):
         from ._windows_history import remove_pending
 
         remove_pending(path)
@@ -91,17 +103,25 @@ class TranscriptIndex(Sequence):
     use a versioned, policy-specific key; projection results are read-only.
     """
 
-    def __init__(self, path: Path, stamp: FileStamp, rows: list[Row], terminated: bool):
+    def __init__(
+        self, path: Path, stamp: FileStamp, rows: list[Row], terminated: bool,
+        *, windows_policy: str = "legacy",
+    ):
+        self._windows_policy = _validate_windows_policy(windows_policy)
         self.path, self.stamp, self.rows = path, stamp, rows
         self.terminated = terminated
         self._projections: dict[str, list[Any]] = {}
         self._projection_lock = RLock()
 
+    @property
+    def windows_policy(self) -> str:
+        return self._windows_policy
+
     def __len__(self) -> int:
         return len(self.rows)
 
     def check(self) -> None:
-        if file_stamp(self.path) != self.stamp:
+        if file_stamp(self.path, windows_policy=self.windows_policy) != self.stamp:
             raise ValueError("Session history changed during indexed read")
 
     def read_positions(self, positions) -> list[dict[str, Any]]:
@@ -109,7 +129,7 @@ class TranscriptIndex(Sequence):
 
         self.check()
         result = []
-        with _open_binary(self.path) as stream:
+        with _open_binary(self.path, windows_policy=self.windows_policy) as stream:
             for position in positions:
                 row = self.rows[position]
                 stream.seek(row.offset)
@@ -127,7 +147,7 @@ class TranscriptIndex(Sequence):
         from .history import _decode
 
         self.check()
-        with _open_binary(self.path) as stream:
+        with _open_binary(self.path, windows_policy=self.windows_policy) as stream:
             for row in self.rows:
                 stream.seek(row.offset)
                 yield _decode(stream.read(row.size))
@@ -144,7 +164,7 @@ class TranscriptIndex(Sequence):
                 from .history import _decode
 
                 additions = []
-                with _open_binary(self.path) as stream:
+                with _open_binary(self.path, windows_policy=self.windows_policy) as stream:
                     for position, row in enumerate(
                         self.rows[len(values) :], len(values)
                     ):
@@ -159,8 +179,9 @@ class TranscriptIndex(Sequence):
 
 def _remember(index: TranscriptIndex) -> TranscriptIndex:
     with _LOCK:
-        _CACHE[index.path] = index
-        _CACHE.move_to_end(index.path)
+        key = (index.path, index.windows_policy)
+        _CACHE[key] = index
+        _CACHE.move_to_end(key)
         while (
             len(_CACHE) > _MAX_FILES
             or sum(len(item) for item in _CACHE.values()) > _MAX_ROWS
@@ -169,28 +190,29 @@ def _remember(index: TranscriptIndex) -> TranscriptIndex:
     return index
 
 
-def indexed(path: Path) -> TranscriptIndex:
+def indexed(path: Path, *, windows_policy: str = "legacy") -> TranscriptIndex:
     from .history import _decode, _InvalidFile, _valid_message
 
-    if os.name == "nt":
+    if _private_windows(windows_policy):
         from ._windows_ownership import _absolute
 
         path = _absolute(path)  # Retain lexical components for reparse validation.
     else:
         path = path.absolute()
-    stamp = file_stamp(path)
+    stamp = file_stamp(path, windows_policy=windows_policy)
     if stamp is None:
         raise FileNotFoundError(path)
     with _LOCK:
-        cached = _CACHE.get(path)
+        key = (path, windows_policy)
+        cached = _CACHE.get(key)
         if cached is not None and cached.stamp == stamp:
-            _CACHE.move_to_end(path)
+            _CACHE.move_to_end(key)
             return cached
     # External writers can edit a prefix while growing the file. Only our own
     # verified append may extend an index; size growth alone is not evidence.
     rows = []
     terminated = True
-    with _open_binary(path) as stream:
+    with _open_binary(path, windows_policy=windows_policy) as stream:
         offset = 0
         for number, raw in enumerate(stream, 1):
             terminated = raw.endswith(b"\n")
@@ -203,7 +225,7 @@ def indexed(path: Path) -> TranscriptIndex:
                 except (ValueError, UnicodeError):
                     raise _InvalidFile(number) from None
             offset += len(raw)
-    index = TranscriptIndex(path, stamp, rows, terminated)
+    index = TranscriptIndex(path, stamp, rows, terminated, windows_policy=windows_policy)
     index.check()
     return _remember(index)
 
@@ -220,8 +242,8 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _append(path: Path, chunks: Iterator[bytes]) -> None:
-    if os.name == "nt":
+def _append(path: Path, chunks: Iterator[bytes], *, windows_policy: str = "legacy") -> None:
+    if _private_windows(windows_policy):
         from ._windows_history import append
 
         return append(path, chunks)
@@ -238,9 +260,9 @@ def _append(path: Path, chunks: Iterator[bytes]) -> None:
         os.fsync(stream.fileno())
 
 
-def _copy_backup(source: Path, target: Path) -> None:
+def _copy_backup(source: Path, target: Path, *, windows_policy: str = "legacy") -> None:
     """Establish a backup once, using bounded buffers and atomic replacement."""
-    if os.name == "nt":
+    if _private_windows(windows_policy):
         from ._windows_history import copy_backup
 
         return copy_backup(source, target)
@@ -255,7 +277,7 @@ def _copy_backup(source: Path, target: Path) -> None:
         Path(name).unlink(missing_ok=True)
 
 
-def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
+def append_messages(path: Path, messages: list[dict[str, Any]], *, windows_policy: str = "legacy") -> bool:
     """Append/no-op if the entire saved prefix matches; otherwise return False.
 
     The caller validates incoming metadata before this operation. A False result
@@ -266,10 +288,10 @@ def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
     from .history import _InvalidFile
 
     pending = intent_path(path)
-    if _exists(pending):
+    if _exists(pending, windows_policy=windows_policy):
         return False
     try:
-        current = indexed(path)
+        current = indexed(path, windows_policy=windows_policy)
     except (FileNotFoundError, _InvalidFile):
         return False
     if not current.terminated or len(messages) < len(current):
@@ -287,7 +309,7 @@ def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
         return True
     backup = path.with_suffix(path.suffix + ".backup")
     try:
-        old = indexed(backup)
+        old = indexed(backup, windows_policy=windows_policy)
     except (FileNotFoundError, _InvalidFile):
         old = None
     if old is not None and (old.stamp.dev, old.stamp.ino) == (
@@ -311,25 +333,27 @@ def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
         )
 
         def previous_tail():
-            with _open_binary(path) as stream:
+            with _open_binary(path, windows_policy=windows_policy) as stream:
                 stream.seek(start)
                 while chunk := stream.read(1024 * 1024):
                     yield chunk
 
-        _append(backup, previous_tail())
+        _append(backup, previous_tail(), windows_policy=windows_policy)
         backup_rows = old.rows + [
             Row(old.stamp.size + row.offset - start, row.size, row.digest)
             for row in current.rows[len(old) :]
         ]
     else:
         # First append or changed CLI history: establish one complete backup.
-        _copy_backup(path, backup)
+        _copy_backup(path, backup, windows_policy=windows_policy)
         backup_rows = list(current.rows)
-    backup_stamp = file_stamp(backup)
+    backup_stamp = file_stamp(backup, windows_policy=windows_policy)
     assert backup_stamp is not None
-    _remember(TranscriptIndex(backup.absolute(), backup_stamp, backup_rows, True))
+    _remember(TranscriptIndex(
+        backup.absolute(), backup_stamp, backup_rows, True, windows_policy=windows_policy
+    ))
     current.check()
-    if os.name == "nt":
+    if _private_windows(windows_policy):
         from ._windows_history import write_pending
 
         write_pending(pending)  # Private at creation, complete write and native flush.
@@ -339,17 +363,17 @@ def append_messages(path: Path, messages: list[dict[str, Any]]) -> bool:
             os.fsync(stream.fileno())
     _sync_directory(path.parent)
     # Failures deliberately retain intent + complete backup for read recovery.
-    _append(path, iter(tail))
-    _remove_pending(pending)
+    _append(path, iter(tail), windows_policy=windows_policy)
+    _remove_pending(pending, windows_policy=windows_policy)
     _sync_directory(path.parent)
-    stamp = file_stamp(path)
+    stamp = file_stamp(path, windows_policy=windows_policy)
     assert stamp is not None
     rows = list(current.rows)
     offset = current.stamp.size
     for raw in tail:
         rows.append(Row(offset, len(raw), hashlib.sha256(raw[:-1]).digest()))
         offset += len(raw)
-    updated = TranscriptIndex(current.path, stamp, rows, True)
+    updated = TranscriptIndex(current.path, stamp, rows, True, windows_policy=windows_policy)
     with current._projection_lock:
         updated._projections = {
             key: list(values) for key, values in current._projections.items()

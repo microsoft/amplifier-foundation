@@ -247,8 +247,7 @@ class TestWriteTranscript:
     def test_roundtrips_write_then_load(self, tmp_path: Path):
         """Entries written by write_transcript can be loaded back by load_transcript."""
         session_dir = tmp_path / "session"
-        if os.name != "nt":
-            session_dir.mkdir()
+        session_dir.mkdir()  # Legacy writer retains its original caller-created layout.
         entries = [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},
@@ -263,20 +262,21 @@ class TestWriteTranscript:
 
     def test_windows_write_transcript_routes_to_private_history_preserving_roles(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
-        from amplifier_foundation.session import _windows_history, store
+        from amplifier_foundation.session import _windows_history, jsonl
 
         calls = []
 
         def publish(path, content, **kwargs):
             calls.append((path, content, kwargs))
 
-        monkeypatch.setattr(store, "os", SimpleNamespace(name="nt"))
+        monkeypatch.setattr(jsonl, "os", SimpleNamespace(name="nt"))
         monkeypatch.setattr(_windows_history, "write_prepared", publish)
+        from amplifier_foundation.session import store
         monkeypatch.setattr(store, "write_jsonl", lambda *a: pytest.fail("generic JSONL writer"))
         entries = [{"role": "system", "content": "context"},
                    {"role": "developer", "content": "instructions"},
                    {"role": "user", "content": "question"}]
-        write_transcript(tmp_path / "missing", entries)
+        write_transcript(tmp_path / "missing", entries, windows_policy="private")
         import json
 
         assert len(calls) == 1
@@ -330,7 +330,7 @@ class TestWriteTranscript:
         import ctypes as C
         from contextlib import contextmanager
         from types import SimpleNamespace
-        from amplifier_foundation.session import _windows_history as backend, store
+        from amplifier_foundation.session import _windows_history as backend, store, jsonl
 
         primary = tmp_path / "transcript.jsonl"
         pending = tmp_path / "transcript.jsonl.append-pending"
@@ -374,15 +374,15 @@ class TestWriteTranscript:
                 raise OSError("synthetic primary replacement failure")
             path.write_bytes(b"".join(chunks))
 
-        monkeypatch.setattr(store, "os", SimpleNamespace(name="nt"))
+        monkeypatch.setattr(jsonl, "os", SimpleNamespace(name="nt"))
         monkeypatch.setattr(backend, "_file", validated)
         monkeypatch.setattr(backend, "_replace", replace)
         monkeypatch.setattr(backend, "copy_backup", lambda *a: pytest.fail("corrupt primary rotated"))
         if phase.endswith("failure"):
             with pytest.raises(OSError, match="synthetic"):
-                write_transcript(tmp_path, [{"role": "user", "content": "repaired"}])
+                write_transcript(tmp_path, [{"role": "user", "content": "repaired"}], windows_policy="private")
         else:
-            write_transcript(tmp_path, [{"role": "user", "content": "repaired"}])
+            write_transcript(tmp_path, [{"role": "user", "content": "repaired"}], windows_policy="private")
         assert backup.read_bytes() == before_backup
         if phase == "replace-failure":
             assert primary.read_bytes() == b"corrupt primary"
@@ -405,7 +405,7 @@ class TestWriteTranscript:
         from amplifier_foundation.session.shared_state import SharedStateError
 
         directory = tmp_path / "private-repair"
-        store = SessionHistoryStore(directory)
+        store = SessionHistoryStore(directory, windows_policy="private")
         store.save([{"role": "user", "content": "good backup"}], {})
         store.save([{"role": "user", "content": "newer"}], {})
         pending = directory / "transcript.jsonl.append-pending"
@@ -439,7 +439,7 @@ class TestWriteTranscript:
         # Opening a directory reparse point as a file may fail in CreateFileW
         # before handle validation. Both are fail-closed, before publication.
         with pytest.raises((SharedStateError, OSError) if unsafe == "junction" else SharedStateError):
-            write_transcript(directory, [{"role": "user", "content": "must not publish"}])
+            write_transcript(directory, [{"role": "user", "content": "must not publish"}], windows_policy="private")
         assert before == (store.transcript_path.read_bytes(), backup.read_bytes())
         assert pending.exists()
         assert not list(directory.glob(".history-*"))
@@ -453,8 +453,8 @@ class TestWriteTranscript:
         entries = [{"role": "system", "content": "synthetic context"},
                    {"role": "developer", "content": "synthetic instructions"},
                    {"role": "user", "content": "synthetic question"}]
-        write_transcript(directory, entries)
-        history = SessionHistoryStore(directory)
+        write_transcript(directory, entries, windows_policy="private")
+        history = SessionHistoryStore(directory, windows_policy="private")
         assert history.load_messages() == entries
         assert not (directory / "transcript.jsonl.backup").exists()
         # A prior runtime checkpoint established this good backup. The explicit
@@ -464,7 +464,7 @@ class TestWriteTranscript:
         before = backup.read_bytes()
         history.transcript_path.write_bytes(b"corrupt primary\n")
         _windows_history.write_pending(directory / "transcript.jsonl.append-pending")
-        write_transcript(directory, entries + [{"role": "assistant", "content": "answer"}])
+        write_transcript(directory, entries + [{"role": "assistant", "content": "answer"}], windows_policy="private")
         assert history.load_messages() == entries + [{"role": "assistant", "content": "answer"}]
         assert backup.read_bytes() == before
         assert not (directory / "transcript.jsonl.append-pending").exists()
@@ -479,7 +479,7 @@ class TestWriteTranscript:
         path.write_bytes(b'{"role":"user","content":"preserve"}\n')
         before = path.read_bytes()
         with pytest.raises(SharedStateError):
-            write_transcript(directory, [{"role": "user", "content": "must not replace"}])
+            write_transcript(directory, [{"role": "user", "content": "must not replace"}], windows_policy="private")
         assert path.read_bytes() == before
         assert not (directory / "transcript.jsonl.backup").exists()
 
@@ -527,7 +527,7 @@ class TestWriteMetadata:
         directory = tmp_path / "unsafe-legacy"
         directory.mkdir()  # Unsafe inherited ACL must not be repaired to pass CI.
         with pytest.raises(SharedStateError):
-            write_metadata(directory, {"must": "not publish"})
+            write_metadata(directory, {"must": "not publish"}, windows_policy="private")
         assert not (directory / "metadata.json").exists()
 
 
