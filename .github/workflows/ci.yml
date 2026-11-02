@@ -66,6 +66,10 @@ jobs:
       # The script builds ONE non-editable candidate wheel, then resolves the
       # pinned consumers independently. Agent's Core==2.0.1 is not compatible
       # with the CLI/Unified Core>=2.0.2 graph. Never combine those environments.
+      # Windows also builds the exact pre-PR456 wheel into TWO separate baseline
+      # venvs. Default-creation candidate/baseline cells use fresh synthetic HOME
+      # boundaries, no session precreation, and the same pinned consumer graphs.
+      # Ubuntu retains only the existing privately prepared qualification cells.
       # Short build/install paths stay on the runner temp volume. Runtime state
       # separately uses canonical original TEMP, like native pytest, with full
       # production ancestor validation before creation; neither volume is trusted

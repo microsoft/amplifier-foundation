@@ -168,7 +168,7 @@ def test_mocks_are_only_permitted_seams_and_network_tripwire():
     assert sorted(patches) == sorted([
         "'_get_commit_date_from_api'",
         "'_provider_factory'", "'_provider_factory'", "'_create_bundle_session'",
-        "'amplifier_app_cli.commands.init.check_first_run'", "'listen'",
+        "'amplifier_app_cli.commands.init.check_first_run'", "'listen'", "'listen'",
     ])
     assert "HeldSession.write" not in TEXT
     assert "register_release_handler.__code__" in TEXT
@@ -2500,6 +2500,7 @@ def test_run_transfers_only_canonical_fixture_paths_and_public_normalization_fac
         "env_python": lambda work, consumer: work / consumer / "Scripts/python.exe",
         "command": command, "SCRIPT": HARNESS, "error_record": harness.error_record,
         "save_public_json": save,
+        "run_defaults": lambda work: {"status": "passed"},
     })
     assert run(harness.PureWindowsPath("D:/ic-build")) == int(child_failure)
     assert len(commands) == 2 and set(saved["consumers"]) == {"agent", "cli"}
@@ -2509,3 +2510,438 @@ def test_run_transfers_only_canonical_fixture_paths_and_public_normalization_fac
                for item in saved["consumers"].values())
     assert "runneradmin" not in json.dumps(saved)
     assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in json.dumps(saved)
+
+
+def test_default_cells_reuse_roundtrip_bodies_without_precreation_or_sdk_override():
+    sdk = FUNCTIONS["agent_roundtrip"]
+    parents = {child: parent for parent in ast.walk(TREE) for child in ast.iter_child_nodes(parent)}
+    # Native fixture creation exists only in the NEGATIVE default_creation branch.
+    for name in ("agent_roundtrip", "cli_roundtrip"):
+        call = next(node for node in ast.walk(FUNCTIONS[name])
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "private_directory")
+        statement = parents[call]
+        branch = parents[statement]
+        assert isinstance(branch, ast.If) and ast.unparse(branch.test) == "not default_creation"
+    options = next(node for node in ast.walk(sdk) if isinstance(node, ast.Call)
+                   and isinstance(node.func, ast.Attribute) and node.func.attr == "AgentOptions")
+    assert "sessions_directory" not in {kw.arg for kw in options.keywords}
+    expansion = next(kw.value for kw in options.keywords if kw.arg is None)
+    assert isinstance(expansion, ast.IfExp) and ast.unparse(expansion.test) == "default_creation"
+    assert ast.literal_eval(expansion.body) == {}
+    assert "slug(Path.cwd().resolve())" in source("agent_roundtrip")
+    # The same real resume/readback/meaningful backup oracles remain in both routes.
+    assert len(calls("agent_roundtrip", "run")) == 2
+    assert len(calls("cli_roundtrip", "execute_single")) == 2
+    assert len(calls("cli_roundtrip", "load")) == 2
+    assert "reopened.history == second_history" in source("agent_roundtrip")
+    assert 'history_files(directory, [QUOTE, SECOND], prior=prior)' in source("cli_roundtrip")
+    assert "default_creation=True" in source("qualify_default")
+    assert "foundation_ownership(" not in source("qualify_default")  # No unrelated F2 matrix.
+
+
+@pytest.mark.parametrize("foundation", [
+    "amplifier-foundation @ file:///D:/ic/wheels/f.whl", "amplifier_foundation==1.0.0",
+])
+def test_baseline_constraints_change_foundation_only_and_keep_every_other_pin(harness, foundation):
+    others = [
+        "amplifier-core==2.0.1",
+        "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@" + harness.AGENT_REV,
+        "amplifier-agent-engine @ git+https://github.com/microsoft/amplifier-agent@" + harness.ENGINE_REV,
+        "urllib3==2.8.0", "pytest==9.0.3",
+    ]
+    expected = [others[0], "amplifier-agent==0.25.0", "amplifier-agent-engine==0.25.0", *others[3:]]
+    assert harness.baseline_constraints("\n".join([foundation, *others]), {
+        "amplifier-agent": "0.25.0", "amplifier-agent-engine": "0.25.0",
+    }) == "\n".join(expected) + "\n"
+
+
+@pytest.mark.parametrize("frozen", ["amplifier-core==2.0.1\n",
+                                  "amplifier-foundation==1\namplifier_foundation==1\n"])
+def test_baseline_constraints_refuse_missing_or_ambiguous_foundation(harness, frozen):
+    with pytest.raises(AssertionError):
+        harness.baseline_constraints(frozen, {})
+
+
+@pytest.mark.parametrize("fault", [None, "wrong-revision", "wheel-mutation", "agent-install"])
+def test_baseline_setup_builds_exact_separate_wheel_and_never_reinstalls_candidate(
+    harness, tmp_path, monkeypatch, fault,
+):
+    import zipfile
+    commands = []
+    source = tmp_path / "f"
+    package = source / "amplifier_foundation"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_bytes(b"# baseline package model\n")
+
+    def command(argv, **kwargs):
+        argv = [str(item) for item in argv]
+        commands.append(argv)
+        if "rev-parse" in argv:
+            return ("0" * 40 if fault == "wrong-revision" else harness.BASELINE_REV) + "\n"
+        if "status" in argv:
+            return ""
+        if argv[:2] == ["uv", "build"]:
+            out = tmp_path / "bw"
+            out.mkdir()
+            with zipfile.ZipFile(out / "amplifier_foundation-1-py3-none-any.whl", "w") as archive:
+                archive.writestr("amplifier_foundation/__init__.py",
+                                 b"# mutation" if fault == "wheel-mutation"
+                                 else (package / "__init__.py").read_bytes())
+        if argv[:3] == ["uv", "pip", "freeze"]:
+            assert str(tmp_path / "b") not in argv[-1]
+            return "amplifier-foundation @ file:///candidate.whl\namplifier-core==2.0.1\n"
+        if argv[:3] == ["uv", "pip", "list"]:
+            return '[{"name":"amplifier-core","version":"2.0.1"}]'
+        if argv[:3] == ["uv", "pip", "install"]:
+            python = argv[argv.index("--python") + 1]
+            assert str(tmp_path / "b") in python  # No replacement of an existing main env.
+            assert "--constraints" in argv and "--overrides" in argv
+            if fault == "agent-install" and "agent" in python:
+                raise RuntimeError("synthetic blocked installation")
+        return ""
+
+    monkeypatch.setattr(harness, "command", command)
+    report = harness.prepare_baseline(tmp_path, {}, {"agent": ["agent-pin"], "cli": ["cli-pin"]})
+    assert report["status"] == ("passed" if fault is None else "failed")
+    fetch = next(argv for argv in commands if "fetch" in argv)
+    assert fetch[-1] == harness.BASELINE_REV
+    if fault in {"wrong-revision", "wheel-mutation"}:
+        assert not any(argv[:2] == ["uv", "venv"] for argv in commands)
+    else:
+        assert set(report["consumers"]) == {"agent", "cli"}
+        assert report["consumers"]["cli"]["status"] == "passed"
+        assert report["files"]["amplifier_foundation/__init__.py"] == harness.digest(package / "__init__.py")
+        assert len([argv for argv in commands if argv[:2] == ["uv", "venv"]]) == 2
+
+
+@pytest.mark.parametrize("consumer", ["agent", "cli"])
+@pytest.mark.parametrize("fault", [
+    None, "ordinary-mkdir-refusal", "precreated", "network", "listen", "evidence-error", "primary-and-evidence-error",
+])
+def test_default_cell_home_only_route_fails_real_refusals_and_retains_primary_evidence(
+    harness, tmp_path, consumer, fault,
+):
+    import asyncio
+    home = tmp_path / "new-runtime/home"
+    events, snapshots = [], []
+    primary = PermissionError(13, "synthetic private ACL refusal")
+    primary.__cause__ = RuntimeError(
+        "Windows private state requires a protected DACL: SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f"
+    )
+    report = {"checks": {}, "provenance": {}}
+    original_listen = lambda *args: None
+    fake_socket = SimpleNamespace(socket=SimpleNamespace(listen=original_listen))
+
+    def prepare(report, *, history_root):
+        assert history_root is False and not home.exists()
+        home.mkdir(parents=True)
+        events.append("HOME-only")
+
+    def private(path):
+        assert path.parent == home.parent and not path.is_relative_to(home)
+        path.mkdir()
+        events.append("sibling")
+
+    def snapshot(path):
+        assert path == home
+        after = bool(snapshots)
+        snapshots.append(path)
+        if after and fault in {"evidence-error", "primary-and-evidence-error"}:
+            raise OSError("synthetic evidence failure")
+        return {"roots": {".amplifier": fault == "precreated" and not after,
+                          ".amplifier-agent": after},
+                "entries": [{"bytes": 7, "sha256": "a" * 64}] if after else []}
+
+    async def roundtrip(*args, default_creation):
+        assert default_creation is True and snapshots == [home]
+        assert events.count("HOME-only") == 1
+        assert not (home / ".amplifier").exists() and not (home / ".amplifier-agent").exists()
+        # This model consumer, not the harness, does ordinary directory creation.
+        (home / ".amplifier-agent").mkdir()
+        events.append("ordinary-consumer-mkdir")
+        if fault == "listen":
+            fake_socket.socket.listen(SimpleNamespace())
+        if fault in {"ordinary-mkdir-refusal", "primary-and-evidence-error"}:
+            raise primary
+
+    class Guard:
+        def __init__(self, *args):
+            pass
+
+        def audit(self, *args):
+            raise AssertionError("No host audit callback is installed by a portable model")
+
+        def verify_ipv6_probe(self):
+            events.append("probe-check")
+
+        def verify_policy(self):
+            if fault == "network":
+                raise harness.HarnessPolicyError("unexplained blocked socket")
+
+        def listen(self, *args, **kwargs):
+            raise harness.HarnessPolicyError("unexpected listen blocked in default model")
+
+    async def wait_for(coro, *, timeout):
+        assert timeout == 90
+        return await coro
+
+    def offline(*args):
+        events.append("optional-date-context")
+        return nullcontext()
+
+    cell = _fixture_function("qualify_default", {
+        "os": SimpleNamespace(name="nt", environ={"HOME": str(home)}, chdir=lambda path: None),
+        "sys": SimpleNamespace(addaudithook=lambda callback: None), "Path": Path,
+        "SocketGuard": Guard, "prepare_runtime_home": prepare, "private_directory": private,
+        "default_tree_snapshot": snapshot, "ExitStack": __import__("contextlib").ExitStack,
+        "cli_display_offline": offline, "agent_roundtrip": roundtrip, "cli_roundtrip": roundtrip,
+        "asyncio": SimpleNamespace(wait_for=wait_for), "hashlib": harness.hashlib,
+        "error_record": harness.error_record,
+        "socket": fake_socket,
+        "default_failure_categories": harness.default_failure_categories,
+    })
+    if fault:
+        with pytest.raises((AssertionError, PermissionError, OSError, harness.HarnessPolicyError)) as caught:
+            _drive(cell(tmp_path, consumer, report, None))
+        if fault in {"ordinary-mkdir-refusal", "primary-and-evidence-error"}:
+            assert caught.value is primary
+            detail = report["checks"][consumer + "_roundtrip"]
+            assert detail["security_categories"] == ["unprotected-dacl"]
+            if fault == "ordinary-mkdir-refusal":
+                assert detail["after_creation"]["entries"][0]["bytes"] == 7
+            else:
+                assert detail["after_creation_error"]["status"] == "failed"
+    else:
+        _drive(cell(tmp_path, consumer, report, None))
+        detail = report["checks"][consumer + "_roundtrip"]
+        assert detail["status"] == "passed" and report["synthetic_config_preserved"]
+        assert detail["unrelated_config_sha256_before"] == detail["unrelated_config_sha256_after"]
+    assert ("optional-date-context" in events) == (consumer == "cli" and fault != "precreated")
+    assert ("ordinary-consumer-mkdir" in events) == (fault != "precreated")
+    assert all(path == home for path in snapshots)
+    assert fake_socket.socket.listen is original_listen
+
+
+@pytest.mark.parametrize("candidate,baseline,expected", [
+    ("passed", "passed", "passed"), ("failed", "passed", "failed"),
+    ("passed", "failed", "failed"), ("failed", "failed", "failed"),
+])
+def test_default_comparison_does_not_accept_refusal_as_expected_result(harness, candidate, baseline, expected):
+    comparison = harness.default_comparison({"status": candidate}, {"status": baseline})
+    assert comparison["status"] == expected
+    if candidate == "failed" and baseline == "passed":
+        assert comparison["interpretation"] == (
+            "candidate default cell failed while baseline passed; inspect failure domain"
+        )
+
+
+def test_safe_home_preparation_default_mode_never_precreates_consumer_descendants(harness, tmp_path):
+    home = tmp_path / "absent/home"
+    paths = []
+
+    def create(path):
+        paths.append(path)
+        path.mkdir(parents=True)
+
+    prepare = _fixture_function("prepare_runtime_home", {
+        "Path": Path, "os": SimpleNamespace(name="nt", environ={
+            "HOME": str(home), "AMPLIFIER_HOME": str(home / ".amplifier"),
+        }), "HarnessPolicyError": harness.HarnessPolicyError,
+        "private_directory": create, "private_ancestor_preflight": lambda *args, **kwargs: {"validated": True},
+        "error_record": harness.error_record,
+    })
+    report = {}
+    prepare(report, history_root=False)
+    assert paths == [home]
+    assert not (home / ".amplifier").exists() and not (home / ".amplifier-agent").exists()
+    assert report["private_fixture"]["stage"] == "ready-before-payload"
+
+
+def test_all_four_new_evidence_files_use_same_public_gate(harness, tmp_path):
+    for consumer in ("agent", "cli"):
+        for variant in ("candidate", "baseline"):
+            name = harness.default_report_name(consumer, variant)
+            assert name in harness.PUBLIC_FILES
+            harness.save_public_json(tmp_path, name, {
+                "status": "failed", "synthetic": "Authorization: Bearer synthetic-private-sentinel",
+            })
+    assert harness.check_public(tmp_path) == 0
+    for path in (tmp_path / "evidence").iterdir():
+        assert "synthetic-private-sentinel" not in path.read_text()
+
+
+@pytest.mark.parametrize("fault", [None, "candidate-agent", "baseline-cli", "empty-checks", "graph-mismatch"])
+def test_four_default_children_are_fresh_separate_and_never_mask_a_failed_comparison(
+    harness, tmp_path, fault,
+):
+    commands, roots = [], []
+
+    def location(original, *, evidence):
+        root = tmp_path / ("runtime-" + str(len(roots)))
+        assert not root.exists()
+        roots.append(root)
+        evidence["same_directory_identity"] = True
+        return root
+
+    def environment(root, *, runtime):
+        assert runtime and not root.exists()
+        return {"HOME": str(root / "home")}
+
+    def command(argv, *, env, cwd, timeout):
+        commands.append((argv, env))
+        consumer = argv[argv.index("--consumer") + 1]
+        variant = argv[argv.index("--variant") + 1]
+        assert "--default-creation" in argv and timeout == 300
+        python = argv[0]
+        assert python == (tmp_path if variant == "candidate" else tmp_path / "b") / consumer / "Scripts/python.exe"
+        if fault == variant + "-" + consumer:
+            raise PermissionError(13, "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f")
+        name = harness.default_report_name(consumer, variant)
+        harness.save_public_json(tmp_path, name, {
+            "status": "passed", "checks": {} if fault == "empty-checks" else {"roundtrip": {"status": "passed"}},
+            "cell": "default-creation", "foundation_variant": variant,
+            "other_graph_identity_matches_candidate": fault != "graph-mismatch",
+        })
+
+    run = _fixture_function("run_defaults", {
+        "Path": Path, "os": SimpleNamespace(name="nt", environ={"TEMP": "original-synthetic"}),
+        "windows_runtime_root": location, "clean_environment": environment, "command": command,
+        "env_python": lambda base, consumer: base / consumer / "Scripts/python.exe",
+        "default_report_name": harness.default_report_name, "error_record": harness.error_record,
+        "default_comparison": harness.default_comparison, "SCRIPT": HARNESS,
+        "MAX_PUBLIC_BYTES": harness.MAX_PUBLIC_BYTES, "json": json,
+    })
+    report = run(tmp_path)
+    assert len(commands) == 4 and len(set(roots)) == 4
+    assert not any(root.exists() for root in roots)  # Child-only creation.
+    assert report["status"] == ("passed" if fault is None else "failed")
+    assert len(report["cells"]) == 4
+    if fault == "candidate-agent":
+        assert report["comparisons"]["agent"]["interpretation"] == (
+            "candidate default cell failed while baseline passed; inspect failure domain"
+        )
+        assert report["comparisons"]["cli"]["status"] == "passed"
+    harness.assert_public(harness.public_value(report, {}))
+    assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("variant", ["candidate", "baseline"])
+@pytest.mark.parametrize("fault", [None, "graph", "graph-vcs", "wheel", "source-shadow", "no-checks"])
+def test_default_child_keeps_exact_install_and_graph_audits_as_mandatory_failures(
+    harness, tmp_path, monkeypatch, variant, fault,
+):
+    # Fake installed metadata/async body only. Existing wheel/member/VCS/Core
+    # fault models test the actual reused installed_audit separately.
+    wheel = tmp_path / (variant + ".whl")
+    wheel.write_bytes(b"synthetic wheel")
+    selected = {"wheel": str(wheel), "wheel_sha256": harness.digest(wheel),
+                "head": "candidate-head", "revision": harness.BASELINE_REV, "tree": "exact-tree",
+                "consumers": {"agent": {"status": "passed"}, "cli": {"status": "failed"}}}
+    harness.save_json(tmp_path / "private/preparation.json", {
+        "candidate": selected, "baseline": {**selected, "status": "failed"},
+    })
+    identity = [{"name": "amplifier-core", "version": "2.0.1", "direct_url": None, "requires": []}]
+    harness.save_json(tmp_path / "private/candidate-graph-agent.json", identity)
+    if fault == "wheel":
+        wheel.write_bytes(b"changed wheel")
+    ran, saved = [], {}
+
+    def audit(wheel, sha, consumer, provenance):
+        assert sha == selected["wheel_sha256"] and consumer == "agent"
+        provenance["all_distributions"] = copy.deepcopy(identity)
+        if fault == "graph":
+            provenance["all_distributions"][0]["version"] = "wrong"
+        elif fault == "graph-vcs":
+            provenance["all_distributions"][0]["direct_url"] = {
+                "url": "https://github.com/synthetic/wrong-source", "vcs_info": {"commit_id": "0" * 40},
+            }
+
+    async def qualify(work, consumer, report, sources):
+        ran.append(True)
+        if fault != "no-checks":
+            report["checks"]["agent_roundtrip"] = {"status": "passed"}
+
+    monkeypatch.setattr(harness, "require_runner", lambda: None)
+    monkeypatch.setattr(harness, "os", SimpleNamespace(name="nt", environ={}))
+    monkeypatch.setattr(harness, "installed_audit", audit)
+    monkeypatch.setattr(harness, "CallerSources", lambda provenance: None)
+    monkeypatch.setattr(harness, "qualify_default", qualify)
+    monkeypatch.setattr(harness.asyncio, "run", lambda coro: _drive(coro))
+    monkeypatch.setattr(harness, "import_audit", lambda: {
+        "source_shadowing": ["synthetic-module"] if fault == "source-shadow" else [],
+    })
+    monkeypatch.setattr(harness, "save_public_json", lambda work, name, value: saved.update(
+        {"name": name, "report": value},
+    ))
+    code = harness.run_consumer(tmp_path, "agent", default_creation=True, variant=variant)
+    assert code == (0 if fault is None else 1)
+    assert saved["name"] == f"default-{variant}-agent.json"
+    assert saved["report"]["foundation_variant"] == variant
+    if fault in {"wheel", "graph", "graph-vcs"}:
+        assert not ran
+    if fault is None:
+        assert ran and saved["report"]["other_graph_identity_matches_candidate"]
+        # A different baseline consumer's setup failure does not suppress this cell.
+        assert selected["consumers"]["cli"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("fault", [None, "unprotected", "reparse", "byte-budget"])
+def test_default_snapshot_reports_security_and_exact_bytes_without_names_or_acl_repair(
+    harness, tmp_path, native_acl_model, fault,
+):
+    win, api = native_acl_model
+    home = tmp_path / "home"
+    tree = home / ".amplifier" / "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f"
+    tree.mkdir(parents=True)
+    payload = tree / "transcript.jsonl"
+    payload.write_bytes(b'{"role":"user","content":"synthetic"}\n')
+
+    class ModelPath(type(tmp_path)):
+        def lstat(self):
+            info = super().lstat()
+            return SimpleNamespace(st_mode=info.st_mode, st_size=(
+                17 * 1024 * 1024 if fault == "byte-budget" and self.name == "transcript.jsonl"
+                else info.st_size),
+                st_file_attributes=(harness.stat.FILE_ATTRIBUTE_REPARSE_POINT
+                                    if fault == "reparse" and self.name == payload.name else 0))
+
+    api.open = lambda path, **kwargs: path
+    if fault == "unprotected":
+        api.GetSecurityDescriptorControl = lambda descriptor, control, revision: (
+            setattr(control, "value", 0) or True
+        )
+    node = copy.deepcopy(FUNCTIONS["default_tree_snapshot"])
+    node.body = [line for line in node.body if not isinstance(line, ast.ImportFrom)]
+    namespace = {
+        "Path": ModelPath, "win": win, "stat": harness.stat, "hashlib": harness.hashlib,
+        "windows_acl_evidence": harness.windows_acl_evidence,
+    }
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
+                 "default-tree-snapshot-model", "exec"), namespace)
+    if fault in {"reparse", "byte-budget"}:
+        with pytest.raises(AssertionError):
+            namespace["default_tree_snapshot"](ModelPath(home))
+    else:
+        result = namespace["default_tree_snapshot"](ModelPath(home))
+        assert result["roots"] == {".amplifier": True, ".amplifier-agent": False}
+        leaf = next(item for item in result["entries"] if item["kind"] == "file")
+        assert leaf["bytes"] == payload.stat().st_size and leaf["sha256"] == harness.digest(payload)
+        assert leaf["security"]["dacl_protected"] is (fault != "unprotected")
+        assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in json.dumps(result)
+        assert "S-1-" not in json.dumps(result)
+        harness.save_public_json(tmp_path, "default-candidate-cli.json", result)
+        assert harness.check_public(tmp_path) == 0
+    assert payload.read_bytes() == b'{"role":"user","content":"synthetic"}\n'
+
+
+def test_default_failure_categories_are_bounded_allowlist_not_raw_consumer_prose(harness):
+    sentinel = "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f"
+    unknown = RuntimeError(sentinel)
+    unknown.__cause__ = unknown
+    assert harness.default_failure_categories(unknown) == ["unclassified"]
+    primary = PermissionError(13, sentinel)
+    primary.__cause__ = RuntimeError("Windows state DACL grants foreign access: " + sentinel)
+    result = harness.default_failure_categories(primary)
+    assert result == ["foreign-ace"] and sentinel not in json.dumps(result)
+    harness.assert_public(harness.public_value(result, {}))

@@ -10,7 +10,9 @@ resume and settings writes are real installed code. An unexplained refusal is a
 failure, never a skip. This is not a live-provider, default-bundle, clean-install,
 Unified, or checkpoint/transfer-fence qualification. No memory bridge is needed.
 Windows fixtures create private directories BEFORE use through the production
-adapter; this does not qualify consumers' default directory creation policy.
+adapter in the prepared cells. Additional Windows-only default-creation cells
+leave consumer descendants absent under a safe HOME, comparing the candidate
+with an exact pre-PR456 wheel in separate environments.
 POSIX CLI startup may use its exact private same-user release endpoint; all
 other sockets remain prohibited. One exact urllib3 import-time capability bind
 may be accounted as expected only AFTER it was blocked and cleanup verified.
@@ -51,6 +53,7 @@ import zipfile
 
 AGENT_REV = "95877ef54cd8849f8f2066ef3e97ce4c8a1669af"
 ENGINE_REV = "1da05aa81fa2239d9044b375f21f75ed0e46c89f"  # SDK's v0.25.0
+BASELINE_REV = "99fdb524037fb998b9c36355315e66a3052b662f"
 CLI_REV = "631c4bdbcf3dcd2da20456ad6ccef386e778c101"
 CONTEXT_REV = "c7ec55db96888200ba619adedc857278daf787c5"
 LOOP_REV = "dd916499344671e0209d4951bc025777e3e891fd"
@@ -66,6 +69,8 @@ ANSWERS = ["Réponse café 日本語.", "Réponse Montréal conservée."]
 TEST_DEPENDENCIES = ["pytest>=9.0.3", "pytest-asyncio>=1.3.0"]
 SCRIPT = Path(__file__).resolve()
 PUBLIC_FILES = {"preparation.json", "agent.json", "cli.json", "execution.json"}
+PUBLIC_FILES |= {f"default-{variant}-{consumer}.json"
+                 for variant in ("candidate", "baseline") for consumer in ("agent", "cli")}
 MAX_PUBLIC_BYTES = 16 * 1024 * 1024
 MAX_PUBLIC_TEXT = 8192
 IPC_CLEANUP_TIMEOUT = 2.0
@@ -105,6 +110,8 @@ def save_json(path: Path, value) -> None:
 def path_aliases(work: Path) -> dict[str, str]:
     paths = {
         str(work / "agent"): "<agent-env>", str(work / "cli"): "<cli-env>",
+        str(work / "b" / "agent"): "<baseline-agent-env>",
+        str(work / "b" / "cli"): "<baseline-cli-env>",
         str(work): "<work>", str(SCRIPT.parent.parent): "<checkout>",
         sys.prefix: "<python-prefix>", sys.base_prefix: "<python-base>",
         str(Path(sys.executable).parent): "<python-bin>",
@@ -572,7 +579,7 @@ def prepare(work: Path) -> int:
             "sha256": digest(helper / "tests/support/scripted_provider.py"),
             "scenarios_sha256": digest(helper / "tests/support/scenarios/turns.json"),
         }
-        for consumer, requirements in {
+        graphs = {
             "agent": [
                 f"amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@{AGENT_REV}#subdirectory=packages/python",
             ],
@@ -582,7 +589,8 @@ def prepare(work: Path) -> int:
                 f"amplifier-module-context-simple @ git+https://github.com/microsoft/amplifier-module-context-simple@{CONTEXT_REV}",
                 f"amplifier-module-loop-streaming @ git+https://github.com/microsoft/amplifier-module-loop-streaming@{LOOP_REV}",
             ],
-        }.items():
+        }
+        for consumer, requirements in graphs.items():
             phase = "create-venv"
             try:
                 python = env_python(work, consumer)
@@ -600,8 +608,14 @@ def prepare(work: Path) -> int:
                 report["consumers"][consumer] = error_record(exc)
                 report["consumers"][consumer]["phase"] = phase
                 report["consumers"][consumer]["paths_at_failure"] = setup_path_observation(work, env)
+        if os.name == "nt":
+            # Comparison is Windows-only. Existing candidate installs are never
+            # replaced/reinstalled; each baseline Core graph gets its own venv.
+            report["baseline"] = prepare_baseline(work, env, graphs)
         if all(item["status"] == "passed" for item in report["consumers"].values()):
             report["status"] = "passed"
+        if os.name == "nt" and report["baseline"]["status"] != "passed":
+            report["status"] = "failed"
     except Exception as exc:
         report["error"] = error_record(exc)
     finally:
@@ -609,6 +623,94 @@ def prepare(work: Path) -> int:
         save_json(work / "private" / "preparation.json", report)
         save_public_json(work, "preparation.json", report)
     return int(report["status"] != "passed")
+
+
+def prepare_baseline(work: Path, env: dict, graphs: dict) -> dict:
+    """One exact pre-PR456 wheel, two isolated graphs constrained to candidate deps."""
+    report = {"status": "failed", "revision": BASELINE_REV, "consumers": {}}
+    try:
+        source = work / "f"
+        command(["git", "init", source], cwd=work, env=env)
+        command(["git", "-C", source, "-c", "credential.helper=", "fetch", "--depth=1",
+                 "https://github.com/microsoft/amplifier-foundation", BASELINE_REV], cwd=work, env=env)
+        command(["git", "-C", source, "-c", "core.autocrlf=false", "checkout", "--detach", "FETCH_HEAD"],
+                cwd=work, env=env)
+        assert command(["git", "-C", source, "rev-parse", "HEAD"], cwd=work, env=env).strip() == BASELINE_REV
+        assert not command(["git", "-C", source, "status", "--porcelain"], cwd=work, env=env).strip()
+        report["tree"] = command(["git", "-C", source, "rev-parse", "HEAD^{tree}"], cwd=work, env=env).strip()
+        command(["uv", "build", "--wheel", "--no-sources", "--out-dir", work / "bw", source],
+                cwd=work, env=env)
+        wheels = list((work / "bw").glob("amplifier_foundation-*.whl"))
+        assert len(wheels) == 1
+        wheel = wheels[0]
+        report.update({"wheel": str(wheel), "wheel_sha256": digest(wheel), "files": {}})
+        with zipfile.ZipFile(wheel) as archive:
+            for path in (source / "amplifier_foundation").rglob("*.py"):
+                name = path.relative_to(source).as_posix()
+                assert archive.read(name) == path.read_bytes()
+                report["files"][name] = digest(path)
+        override = work / "baseline-override.txt"
+        override.write_text(f"amplifier-foundation @ {wheel.as_uri()}\n", encoding="utf-8")
+        for consumer, requirements in graphs.items():
+            phase = "freeze-candidate-graph"
+            try:
+                frozen = command(["uv", "pip", "freeze", "--python", env_python(work, consumer)],
+                                 cwd=work, env=env)
+                listed = json.loads(command(["uv", "pip", "list", "--python", env_python(work, consumer),
+                                             "--format", "json"], cwd=work, env=env))
+                versions = {item["name"].lower().replace("_", "-"): item["version"] for item in listed}
+                constraints = baseline_constraints(frozen, versions)
+                constraint = work / "private" / f"baseline-{consumer}-constraints.txt"
+                constraint.parent.mkdir(parents=True, exist_ok=True)
+                constraint.write_text(constraints, encoding="utf-8")
+                python = env_python(work / "b", consumer)
+                phase = "create-venv"
+                command(["uv", "venv", "--python", sys.executable, python.parent.parent], cwd=work, env=env)
+                phase = "install"
+                command(["uv", "pip", "install", "--python", python, "--no-sources",
+                         "--only-binary", "amplifier-core", "--overrides", override,
+                         "--constraints", constraint, *requirements, *TEST_DEPENDENCIES],
+                        cwd=work, env=env, diagnose_setup=True)
+                phase = "dependency-check"
+                command(["uv", "pip", "check", "--python", python], cwd=work, env=env)
+                report["consumers"][consumer] = {
+                    "status": "passed", "requirements": requirements,
+                    "candidate_constraints_sha256": hashlib.sha256(constraints.encode("utf-8")).hexdigest(),
+                }
+            except Exception as exc:
+                report["consumers"][consumer] = {**error_record(exc), "phase": phase}
+        assert set(report["consumers"]) == {"agent", "cli"}
+        if all(item["status"] == "passed" for item in report["consumers"].values()):
+            report["status"] = "passed"
+    except Exception as exc:
+        report["error"] = error_record(exc)
+    return report
+
+
+def baseline_constraints(frozen: str, versions: dict) -> str:
+    """Keep exact other graph pins; replace Foundation alone with full dependency resolution."""
+    lines = frozen.splitlines()
+    foundation = [line for line in lines
+                  if re.match(r"(?i)^amplifier[-_]foundation(?:\s|=|@|\[)", line)]
+    assert len(foundation) == 1, "Candidate freeze must identify Foundation exactly once"
+    result = []
+    for line in lines:
+        if line in foundation:
+            continue
+        direct = re.fullmatch(r"([A-Za-z0-9_.-]+)\s+@\s+\S+", line)
+        if direct:
+            # A freeze emits the resolved VCS commit; the consumer can declare
+            # the SAME source as a tag (engine v0.25.0). Do not inject conflicting
+            # source spellings via constraints or override a declared VCS pin.
+            # Keep its version, resolve its original requirement normally, and
+            # require exact ORIGINAL direct_url identities at consumer entry.
+            name = direct[1]
+            version = versions[name.lower().replace("_", "-")]
+            assert re.fullmatch(r"[A-Za-z0-9.!+_-]+", version)
+            result.append(f"{name}=={version}")
+        else:
+            result.append(line)
+    return "\n".join(result) + "\n"
 
 
 def candidate_install_proof(wheel: Path, expected_sha256: str, foundation) -> dict:
@@ -814,6 +916,9 @@ def windows_acl_evidence(api, handle, win) -> dict:
             }
 
         result = {"owner": principal(api.sid_text(owner)), "dacl_present": bool(dacl), "aces": []}
+        control, revision = win.WORD(), win.DWORD()
+        api.ok(api.GetSecurityDescriptorControl(descriptor, win.C.byref(control), win.C.byref(revision)))
+        result["dacl_protected"] = bool(control.value & 0x1000)
         if dacl:
             info = win.ACL_INFO()
             api.ok(api.GetAclInformation(dacl, win.C.byref(info), win.C.sizeof(info), 2))
@@ -896,8 +1001,8 @@ def private_ancestor_preflight(path: Path, *, failure_evidence=None) -> dict:
     return {"native_acl_preflight": "not applicable on POSIX"}
 
 
-def prepare_runtime_home(report: dict) -> None:
-    """Create BOTH HOME and its history root natively, before any payload.
+def prepare_runtime_home(report: dict, *, history_root=True) -> None:
+    """Create safe HOME, optionally its history root, before any payload.
 
     Refuse a reused fixture instead of adopting or repairing an inherited ACL.
     Production's helper remains the sole creator/validator on Windows. Failure
@@ -908,7 +1013,8 @@ def prepare_runtime_home(report: dict) -> None:
     if amplifier_home != home / ".amplifier":
         raise HarnessPolicyError("Fixture history root is not under synthetic HOME")
     detail = report["private_fixture"] = {
-        "creation_policy": "production adapter before payload; no ACL repair",
+        "creation_policy": ("production adapter before payload; no ACL repair" if history_root
+                            else "safe HOME boundary only; consumer descendants must remain absent"),
         "preexisting_home": home.exists(), "preexisting_history_root": amplifier_home.exists(),
     }
     if os.name == "nt":
@@ -925,7 +1031,8 @@ def prepare_runtime_home(report: dict) -> None:
         "unsupported Windows state ACE": "unsupported-ace",
         "Windows state path has an alternate namespace alias": "namespace-alias",
     }
-    for role, path in (("home", home), ("history-root", amplifier_home)):
+    for role, path in ((("home", home), ("history-root", amplifier_home)) if history_root
+                       else (("home", home),)):
         detail["stage"] = role
         detail["operation"] = "read-only-ancestor-preflight"
         try:
@@ -951,6 +1058,143 @@ def prepare_runtime_home(report: dict) -> None:
             raise
     detail["stage"] = "ready-before-payload"
     detail["operation"] = "complete"
+
+
+def default_tree_snapshot(home: Path) -> dict:
+    """Bounded read-only facts/bytes for synthetic consumer roots, not validation.
+
+    No raw filename, SID, contents or error prose is published. The candidate
+    validator is NOT used to accept ordinary mkdir: inspect actual ownership and
+    DACL flags even when private validation would refuse, without repairing them.
+    """
+    from amplifier_foundation.session import _windows_ownership as win
+
+    api = win._API()
+    result = {"roots": {}, "entries": []}
+    remaining = 16 * 1024 * 1024
+    for label in (".amplifier", ".amplifier-agent"):
+        root = home / label
+        try:
+            root.lstat()  # A dangling reparse point is not an absent root.
+        except FileNotFoundError:
+            result["roots"][label] = False
+            continue
+        result["roots"][label] = True
+        pending = [root]
+        while pending:
+            path = pending.pop()
+            assert len(result["entries"]) < 256, "Synthetic creation evidence exceeded entry bound"
+            relative = path.relative_to(home)
+            assert len(relative.parts) <= 32
+            info = path.lstat()
+            detail = {
+                "root": label, "depth": len(relative.parts) - 1,
+                "relative_sha256": hashlib.sha256(str(relative).encode("utf-8")).hexdigest(),
+            }
+            result["entries"].append(detail)
+            assert not info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT, "Fixture reparse point"
+            directory = stat.S_ISDIR(info.st_mode)
+            assert directory or stat.S_ISREG(info.st_mode)
+            detail["kind"] = "directory" if directory else "file"
+            handle = api.open(path, directory=directory)
+            try:
+                detail["security"] = windows_acl_evidence(api, handle, win)
+            finally:
+                api.close(handle)
+            if directory:
+                pending.extend(sorted(path.iterdir()))
+            else:
+                assert info.st_size <= remaining, "Synthetic creation evidence exceeded byte bound"
+                raw = path.read_bytes()
+                remaining -= len(raw)
+                assert remaining >= 0
+                detail.update({"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+    return result
+
+
+def default_failure_categories(exc) -> list[str]:
+    """Known native validation reasons only; never publish consumer error prose."""
+    known = {
+        "Windows state requires trusted ownership and a non-null DACL": "owner-or-null-dacl",
+        "Windows private state requires a protected DACL": "unprotected-dacl",
+        "Windows state DACL grants foreign access": "foreign-ace",
+        "unsupported Windows state ACE": "unsupported-ace",
+        "Windows state path has an alternate namespace alias": "namespace-alias",
+    }
+    found, seen = set(), set()
+    for _ in range(4):
+        if exc is None or id(exc) in seen:
+            break
+        seen.add(id(exc))
+        for argument in exc.args:
+            if type(argument) is str:
+                found.update(category for message, category in known.items() if message in argument)
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+    return sorted(found) or ["unclassified"]
+
+
+async def qualify_default(work: Path, consumer: str, report: dict, caller_sources) -> None:
+    """Windows default mkdir discriminator; no session paths/precreated history."""
+    import pytest
+
+    assert os.name == "nt", "Default-directory comparison is Windows-only"
+    home = Path(os.environ["HOME"])
+    root = home.parent / "cases"
+    guard = SocketGuard(root, consumer, report, caller_sources)
+    sys.addaudithook(guard.audit)
+    prepare_runtime_home(report, history_root=False)
+    for name in ("t", "config", "c", "appdata", "localappdata", "cache", "cases"):
+        private_directory(home.parent / name)  # Siblings of HOME, NOT consumer descendants.
+    os.chdir(root)
+    config = home.parent / "config" / "unrelated.txt"
+    config.write_bytes(b"synthetic unrelated configuration\n")
+    before = config.read_bytes()
+    detail = report["checks"][f"{consumer}_roundtrip"] = {"status": "running", "default_creation": True}
+    detail["before_creation"] = default_tree_snapshot(home)
+    assert not any(detail["before_creation"]["roots"].values()), "Consumer roots must start absent"
+    assert not detail["before_creation"]["entries"]
+    failure = None
+    guard.phase = f"{consumer}_roundtrip"  # Same exact blocked capability import policy.
+    try:
+        # listen() has no CPython audit event. Keep the same explicit guard as
+        # the prepared cell, even for an otherwise unbound Windows socket.
+        with pytest.MonkeyPatch.context() as patch, ExitStack() as fixtures:
+            original_listen = socket.socket.listen
+
+            def guarded_listen(sock, *args, **kwargs):
+                return guard.listen(original_listen, sock, *args, **kwargs)
+
+            patch.setattr(socket.socket, "listen", guarded_listen)
+            if consumer == "cli":
+                fixtures.enter_context(cli_display_offline(detail, report["provenance"]))
+            check = (agent_roundtrip(work, root, detail, default_creation=True) if consumer == "agent"
+                     else cli_roundtrip(work, root, detail, guard, default_creation=True))
+            await asyncio.wait_for(check, timeout=90)
+            if consumer == "agent":
+                guard.verify_ipv6_probe()
+        guard.verify_policy()
+        assert config.read_bytes() == before
+        detail["status"] = "passed"
+    except (Exception, SystemExit) as exc:
+        failure = exc
+        detail.update(error_record(exc))
+        detail["security_categories"] = default_failure_categories(exc)
+        raise
+    finally:
+        # Retain the primary failure if a read-only evidence operation also
+        # fails (e.g. consumer cleanup removed a partial session).
+        detail["unrelated_config_sha256_before"] = hashlib.sha256(before).hexdigest()
+        try:
+            after = config.read_bytes()
+            detail["unrelated_config_sha256_after"] = hashlib.sha256(after).hexdigest()
+            report["synthetic_config_preserved"] = after == before
+            detail["after_creation"] = default_tree_snapshot(home)
+            assert report["synthetic_config_preserved"], "Default consumer changed unrelated config"
+        except Exception as exc:
+            detail["after_creation_error"] = error_record(exc)
+            detail["status"] = "failed"
+            if failure is None:
+                raise
 
 
 def conversation(messages: list[dict]) -> list[tuple[str, str]]:
@@ -1019,18 +1263,24 @@ def history_files(directory: Path, prompts: list[str], *, prior=None) -> dict:
     return records
 
 
-async def agent_roundtrip(work: Path, root: Path, report: dict) -> None:
+async def agent_roundtrip(work: Path, root: Path, report: dict, *, default_creation=False) -> None:
     import pytest
     import amplifier_agent as sdk
     from amplifier_agent_engine._engine import assembly
 
     factory = scripted_factory(work)
     session_id = "installed-sdk-utf8"
-    sessions = root / "sdk"
+    if default_creation:
+        from amplifier_agent_engine._engine.configuration import slug
+
+        sessions = Path.home() / ".amplifier-agent" / "projects" / slug(Path.cwd().resolve())
+    else:
+        sessions = root / "sdk"
     directory = sessions / "sessions" / session_id
-    private_directory(directory)
+    if not default_creation:
+        private_directory(directory)
     options = sdk.AgentOptions(provider="anthropic", model="claude-sonnet-5", approvals="allow",
-                               sessions_directory=sessions)
+                               **({} if default_creation else {"sessions_directory": sessions}))
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(assembly, "_provider_factory", factory([{"text": ANSWERS[0]}]))
         async with await sdk.create_agent(options) as first:
@@ -1069,7 +1319,7 @@ async def agent_roundtrip(work: Path, root: Path, report: dict) -> None:
     report["logical_append_not_in_place_append"] = True
 
 
-async def cli_roundtrip(work: Path, root: Path, report: dict, guard) -> None:
+async def cli_roundtrip(work: Path, root: Path, report: dict, guard, *, default_creation=False) -> None:
     import pytest
     import amplifier_core
     import amplifier_module_context_simple as context_module
@@ -1086,7 +1336,8 @@ async def cli_roundtrip(work: Path, root: Path, report: dict, guard) -> None:
     session_id = "installed-cli-utf8"
     home = Path(os.environ["AMPLIFIER_HOME"])
     directory = home / "projects" / get_project_slug() / "sessions" / session_id
-    private_directory(directory)  # BEFORE SessionStore's ordinary mkdir.
+    if not default_creation:
+        private_directory(directory)  # BEFORE SessionStore's ordinary mkdir in main cell only.
     prepared = PreparedBundle(
         mount_plan={"session": {"orchestrator": {"module": "loop-streaming"},
                                 "context": {"module": "context-simple"}}},
@@ -1796,7 +2047,18 @@ async def qualify(work: Path, consumer: str, report: dict, caller_sources=None) 
     assert report["synthetic_config_preserved"]
 
 
-def run_consumer(work: Path, consumer: str) -> int:
+def graph_identity(provenance: dict) -> list[dict]:
+    """Original metadata only, before public path/URL normalization."""
+    return [item for item in provenance["all_distributions"]
+            if item["name"].lower().replace("_", "-") != "amplifier-foundation"]
+
+
+def default_report_name(consumer: str, variant: str) -> str:
+    assert consumer in {"agent", "cli"} and variant in {"candidate", "baseline"}
+    return f"default-{variant}-{consumer}.json"
+
+
+def run_consumer(work: Path, consumer: str, *, default_creation=False, variant="candidate") -> int:
     report = {
         "status": "failed", "consumer": consumer, "checks": {},
         "python": sys.version, "executable": sys.executable, "os": platform.platform(),
@@ -1818,14 +2080,36 @@ def run_consumer(work: Path, consumer: str) -> int:
             "Optional CLI commit-date helper returns None; actual version identity and initializer stay real",
         ],
     }
+    name = default_report_name(consumer, variant) if default_creation else f"{consumer}.json"
+    report["cell"] = "default-creation" if default_creation else "privately-prepared"
+    report["foundation_variant"] = variant
+    if default_creation:
+        report["limits"][1] = "Only safe synthetic HOME is precreated; actual consumers create descendants"
     try:
         require_runner()
+        assert variant == "candidate" or default_creation, "Baseline is only the default-creation comparison"
+        assert not default_creation or os.name == "nt"
         preparation = json.loads((work / "private/preparation.json").read_text(encoding="utf-8"))
-        wheel = Path(preparation["candidate"]["wheel"])
-        assert digest(wheel) == preparation["candidate"]["wheel_sha256"]
+        selected = preparation[variant]
+        if variant == "baseline":
+            assert selected["revision"] == BASELINE_REV
+            assert selected["consumers"][consumer]["status"] == "passed"
+        report["foundation_source"] = {key: selected[key] for key in
+                                       (("revision", "tree") if variant == "baseline" else ("head", "tree"))}
+        wheel = Path(selected["wheel"])
+        assert digest(wheel) == selected["wheel_sha256"]
         report["provenance"] = {}
-        installed_audit(wheel, preparation["candidate"]["wheel_sha256"], consumer, report["provenance"])
-        asyncio.run(qualify(work, consumer, report, CallerSources(report["provenance"])))
+        installed_audit(wheel, selected["wheel_sha256"], consumer, report["provenance"])
+        identity = graph_identity(report["provenance"])
+        identity_path = work / "private" / f"candidate-graph-{consumer}.json"
+        if default_creation:
+            assert identity == json.loads(identity_path.read_text(encoding="utf-8")), "Other graph identities changed"
+            report["other_graph_identity_matches_candidate"] = True
+        else:
+            save_json(identity_path, identity)
+        check = qualify_default if default_creation else qualify
+        asyncio.run(check(work, consumer, report, CallerSources(report["provenance"])))
+        assert report["checks"], "No consumer check executed"
         assert all(item["status"] == "passed" for item in report["checks"].values())
         report["status"] = "passed"
     except (Exception, SystemExit) as exc:
@@ -1834,7 +2118,7 @@ def run_consumer(work: Path, consumer: str) -> int:
         report["imports"] = import_audit()
         if report["imports"]["source_shadowing"]:
             report["status"] = "failed"
-        save_public_json(work, f"{consumer}.json", report)
+        save_public_json(work, name, report)
     return int(report["status"] != "passed")
 
 
@@ -1878,8 +2162,64 @@ def run(work: Path) -> int:
                     report["consumers"][consumer]["status"] = "failed"
     if all(item["status"] == "passed" for item in report["consumers"].values()):
         report["status"] = "passed"
+    if os.name == "nt":
+        report["default_creation"] = run_defaults(work)
+        if report["default_creation"]["status"] != "passed":
+            report["status"] = "failed"
+    else:
+        report["default_creation"] = {"scope": "Windows-only; no additional Linux cell"}
     save_public_json(work, "execution.json", report)
     return int(report["status"] != "passed")
+
+
+def default_comparison(candidate: dict, baseline: dict) -> dict:
+    """A classification is not acceptance: both actual cells must pass."""
+    states = [candidate.get("status"), baseline.get("status")]
+    return {
+        "candidate": states[0], "baseline": states[1],
+        "status": "passed" if states == ["passed", "passed"] else "failed",
+        "interpretation": ("both default paths qualified" if states == ["passed", "passed"] else
+                           "candidate default cell failed while baseline passed; inspect failure domain"
+                           if states == ["failed", "passed"] else
+                           "baseline also failed; no regression verdict from this comparison"),
+    }
+
+
+def run_defaults(work: Path) -> dict:
+    """Four fresh Windows children; reuse candidate venvs, never reinstall them."""
+    assert os.name == "nt"
+    report = {"status": "failed", "cells": {}, "comparisons": {}}
+    for consumer in ("agent", "cli"):
+        states = {}
+        for variant in ("candidate", "baseline"):
+            name = default_report_name(consumer, variant)
+            detail = report["cells"][name] = {"status": "failed"}
+            location = detail["runtime_location"] = {}
+            try:
+                # Same qualified canonical-temp/private-HOME setup, new absent
+                # runtime parent for EACH process/cell. No guessed drive fallback.
+                root = windows_runtime_root(os.environ.get("TEMP", ""), evidence=location)
+                env = clean_environment(root, runtime=True)
+                base = work if variant == "candidate" else work / "b"
+                command([env_python(base, consumer), "-I", "-X", "utf8", SCRIPT,
+                         "--consumer", consumer, "--work", work, "--default-creation", "--variant", variant],
+                        cwd=work, env=env, timeout=300)
+                # Read a bounded generated receipt, not operational paths from it.
+                saved = work / "evidence" / name
+                assert saved.stat().st_size <= MAX_PUBLIC_BYTES
+                body = json.loads(saved.read_text(encoding="utf-8"))
+                assert body["status"] == "passed" and body["checks"]
+                assert body["cell"] == "default-creation" and body["foundation_variant"] == variant
+                assert body["other_graph_identity_matches_candidate"]
+                assert all(item["status"] == "passed" for item in body["checks"].values())
+                detail["status"] = "passed"
+            except Exception as exc:
+                detail["error"] = error_record(exc)  # Never reinterpret a refusal as expected success.
+            states[variant] = detail
+        report["comparisons"][consumer] = default_comparison(states["candidate"], states["baseline"])
+    if all(item["status"] == "passed" for item in report["comparisons"].values()):
+        report["status"] = "passed"
+    return report
 
 
 def main() -> int:
@@ -1889,11 +2229,15 @@ def main() -> int:
     mode.add_argument("--run", action="store_true")
     mode.add_argument("--check-public", action="store_true")
     mode.add_argument("--consumer", choices=("agent", "cli"))
+    parser.add_argument("--default-creation", action="store_true")
+    parser.add_argument("--variant", choices=("candidate", "baseline"), default="candidate")
     parser.add_argument("--work", required=True, type=Path)
     args = parser.parse_args()
     work = args.work.resolve()
     # Refuse before any allocation/install/consumer side effects outside CI.
     require_runner()
+    if args.default_creation or args.variant != "candidate":
+        assert args.consumer is not None and args.default_creation and os.name == "nt"
     if os.name == "nt":
         # The workflow computes the short root from RUNNER_TEMP. Refuse a
         # drive mismatch rather than trusting C: or repairing an unsafe volume.
@@ -1905,7 +2249,7 @@ def main() -> int:
         return prepare(work)
     if args.run:
         return run(work)
-    return run_consumer(work, args.consumer)
+    return run_consumer(work, args.consumer, default_creation=args.default_creation, variant=args.variant)
 
 
 if __name__ == "__main__":
