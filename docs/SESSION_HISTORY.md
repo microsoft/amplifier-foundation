@@ -80,6 +80,16 @@ Reads, including missing-root reads, never create directories or locks.
 Optional activity reads use the same validated private handles; their logger
 must provision private files separately, or the host can omit events.
 
+Read-only streams retain a validated file object, not a namespace lease. They
+hold traversal pins through the private file handle's open and validation, then
+release those pins before yielding the stream. Read, seek and peek use that
+same non-inheritable handle without reopening its pathname. Each future path
+open independently validates its ancestors and file again. This lets an ordinary
+atomic settings writer publish into an ancestor while a history reader remains
+open; it does not bypass a separately held ownership or write-operation lease.
+Ownership, publication, append/intent, metadata-lock and fork-reservation pins
+retain their existing lifetimes and sharing restrictions.
+
 Replacement writes complete and `FlushFileBuffers` the new private temporary
 before a same-directory native `NtSetInformationFile(FileRenameInformationEx)`
 replacement with `REPLACE_IF_EXISTS | POSIX_SEMANTICS`. The native request uses

@@ -110,8 +110,11 @@ class _API(win._API):
 class _Reader(io.RawIOBase):
     """BufferedReader supplies bounded readline/peek and lazy indexed seeks."""
 
-    def __init__(self, api, handle):
-        self.api, self.handle = api, handle
+    def __init__(self, api):
+        # Construct the owner before opening a native handle, so construction
+        # failure cannot strand one or leave two owners responsible for closing.
+        self.handle = None
+        self.api = api
 
     def readable(self):
         return True
@@ -137,7 +140,8 @@ class _Reader(io.RawIOBase):
     def close(self):
         if not self.closed:
             try:
-                self.api.close(self.handle)
+                if self.handle is not None:
+                    self.api.close(self.handle)
             finally:
                 super().close()
 
@@ -160,12 +164,17 @@ def _file(path, *, write=False, remove=False):
 def open_binary(path):
     path = win._absolute(path)
     api = _API()
-    with win._pinned(api, path.parent, root=path.parent) as pins:
-        if pins.missing:
-            raise FileNotFoundError(path)
-        # The stream owns the handle; the context retains every ancestor pin.
-        with io.BufferedReader(_Reader(api, api.open_history(path))) as stream:
-            yield stream
+    with ExitStack() as opened:
+        reader = opened.enter_context(_Reader(api))
+        with win._pinned(api, path.parent, root=path.parent) as pins:
+            if pins.missing:
+                raise FileNotFoundError(path)
+            reader.handle = api.open_history(path)
+            stream = io.BufferedReader(reader)
+            opened.callback(stream.close)
+        # Validation and handle ownership precede unpinning. Reads/seeks use
+        # only this handle: a read-only snapshot is not a namespace lease.
+        yield stream
 
 
 def stamp(path):

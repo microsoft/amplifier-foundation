@@ -1469,47 +1469,161 @@ def test_native_sibling_publication_refuses_wrong_parent_or_uncertain_completion
         assert "pending" in str(caught.value)
 
 
-def test_history_stream_read_seek_peek_keep_pins_and_close_handle(monkeypatch):
+def test_history_stream_read_seek_peek_keep_validated_object_not_namespace_lease(monkeypatch):
+    """Traversal protects the open, not the lifetime of a read-only snapshot."""
     import io
     from contextlib import contextmanager
 
     data, events = io.BytesIO(b"first\nsecond\n"), []
+    pinned = False
 
     class API:
         ok = staticmethod(win._API.ok)
 
         def open_history(self, path):
+            assert pinned and events == ["pin"]  # Exactly one validated path open.
             events.append("validated-open")
             return 123
 
         def ReadFile(self, handle, buffer, size, count, overlapped):
+            assert handle == 123 and not pinned
             raw = data.read(size)
             C.memmove(buffer, raw, len(raw))
             C.cast(count, win.PDWORD)[0] = len(raw)
             return True
 
         def seek(self, handle, offset, whence):
+            assert handle == 123
             return data.seek(offset, whence)
 
         def close(self, handle):
+            assert handle == 123 and not pinned
             events.append("close")
+
+    @contextmanager
+    def pins(*args, **kwargs):
+        nonlocal pinned
+        assert not kwargs.get("create")
+        pinned = True
+        events.append("pin")
+        yield type("Pins", (), {"missing": False})()
+        events.append("unpin")
+        pinned = False
+
+    monkeypatch.setattr(history_win, "_API", API)
+    monkeypatch.setattr(win, "_pinned", pins)
+    with history_win.open_binary(PureWindowsPath(r"C:\private\transcript.jsonl")) as stream:
+        assert events == ["pin", "validated-open", "unpin"]
+        assert not stream.closed
+        assert stream.readline() == b"first\n"
+        assert stream.peek(1)
+        stream.seek(6)
+        assert stream.read() == b"second\n"
+        assert events == ["pin", "validated-open", "unpin"]
+    assert stream.closed
+    assert events == ["pin", "validated-open", "unpin", "close"]
+
+
+@pytest.mark.parametrize("failure", [
+    "reader-construction", "reader-enter", "ancestor", "missing", "file-validation",
+    "buffer-construction", "buffer-partial", "unpin", "body", "read", "close",
+])
+def test_history_stream_lifetime_failures_close_owned_handle_without_yielding_unsafe_state(
+    monkeypatch, failure,
+):
+    import io
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    events, readers, buffers = [], [], []
+    error = OSError("synthetic stream failure")
+    raw_type, buffered_type = history_win._Reader, io.BufferedReader
+
+    class Reader(raw_type):
+        def __init__(self, api):
+            super().__init__(api)
+            readers.append(self)  # Retain partial objects: GC cannot supply cleanup.
+            events.append("reader")
+            if failure == "reader-construction":
+                raise error
+
+        def __enter__(self):
+            if failure == "reader-enter":
+                raise error
+            return super().__enter__()
+
+    class API:
+        ok = staticmethod(win._API.ok)
+
+        def open_history(self, path):
+            assert events[-1] == "pin"
+            if failure == "file-validation":
+                # open_history itself closes handles that fail validation; its
+                # lower-level type/ACL/alias cleanup is independently tested.
+                events.extend(["reject-file", "close-rejected-file"])
+                raise error
+            events.append("validated-open")
+            return 123
+
+        def ReadFile(self, *args):
+            raise error
+
+        def close(self, handle):
+            assert handle == 123
+            events.append("close")
+            if failure == "close":
+                raise error
+
+    def buffered(reader):
+        events.append("buffer")
+        if failure == "buffer-construction":
+            raise error
+        result = buffered_type(reader)
+        buffers.append(result)
+        if failure == "buffer-partial":
+            raise error
+        return result
 
     @contextmanager
     def pins(*args, **kwargs):
         assert not kwargs.get("create")
         events.append("pin")
-        yield type("Pins", (), {"missing": False})()
-        events.append("unpin")
+        if failure == "ancestor":
+            raise error
+        try:
+            yield SimpleNamespace(missing=failure == "missing")
+        finally:
+            if "validated-open" in events:
+                assert readers[0].handle == 123 and not readers[0].closed
+            events.append("unpin")
+            if failure == "unpin":
+                raise error
 
     monkeypatch.setattr(history_win, "_API", API)
+    monkeypatch.setattr(history_win, "_Reader", Reader)
+    monkeypatch.setattr(io, "BufferedReader", buffered)
     monkeypatch.setattr(win, "_pinned", pins)
-    with history_win.open_binary(PureWindowsPath(r"C:\private\transcript.jsonl")) as stream:
-        assert stream.readline() == b"first\n"
-        assert stream.peek(1)
-        stream.seek(6)
-        assert stream.read() == b"second\n"
-        assert events == ["pin", "validated-open"]
-    assert events == ["pin", "validated-open", "close", "unpin"]
+    with pytest.raises(FileNotFoundError if failure == "missing" else OSError) as caught:
+        with history_win.open_binary(PureWindowsPath(r"C:\private\transcript.jsonl")) as stream:
+            events.append("yield")
+            assert events[-2] == "unpin"
+            if failure == "read":
+                stream.read(1)
+            if failure == "body":
+                raise error
+    if failure != "missing":
+        assert caught.value is error
+    assert ("yield" in events) is (failure in {"body", "read", "close"})
+    acquired = "validated-open" in events
+    assert events.count("close") == int(acquired)
+    assert all(reader.closed for reader in readers) or failure in {"reader-construction", "reader-enter"}
+    assert all(buffer.closed for buffer in buffers)
+    if acquired:
+        assert readers[0].closed  # Explicit owner cleanup, no destructor reliance.
+    if failure in {"reader-construction", "reader-enter"}:
+        assert "pin" not in events and not acquired
+        readers[0].close()  # No native handle was opened before construction/enter.
+        assert "close" not in events
 
 
 @pytest.mark.parametrize("error", [5, 33])
@@ -1685,6 +1799,142 @@ def test_native_history_roundtrip_replace_old_reader_and_private_files(native_hi
         with history_win._file(path) as (api, handle):
             api.validate_acl(handle, private=True)
     assert not list(store.session_dir.glob(".history-*"))
+
+
+@native
+def test_native_history_snapshot_allows_ordinary_ancestor_settings_replace(tmp_path):
+    """No retained traversal lease may block an unrelated ancestor writer."""
+    from amplifier_foundation.session.history import SessionHistoryStore
+    from amplifier_foundation.settings import atomic_write
+
+    home = tmp_path / "settings-home"
+    store = SessionHistoryStore(home / "projects" / "fixture" / "sessions" / "history")
+    rows = [{"role": "user", "content": "old \u2603" + "x" * 131072}]
+    store.save(rows, {"turn": 1})
+    old = store.transcript_path.read_bytes()
+    settings = home / "settings.yaml"
+    atomic_write(settings, "bundle:\n  active: baseline-caf\u00e9\n")
+    old_settings = settings.stat().st_ino
+
+    with history_win.open_binary(store.transcript_path) as stream:
+        raw = stream.raw
+
+        def identity():
+            info = win.FILE_INFO()
+            raw.api.ok(raw.api.GetFileInformationByHandle(raw.handle, C.byref(info)))
+            return info.volume, (info.index_high << 32) | info.index_low
+
+        old_identity = identity()
+        assert stream.read(5) == old[:5]
+        assert raw.tell() < len(old)  # Replacement must not be hidden by buffering.
+        # The actual ordinary Foundation settings writer: tempfile/fsync/os.replace.
+        # The unchanged installed harness separately exercises AppSettings itself.
+        atomic_write(settings, "bundle:\n  active: overlap-Montr\u00e9al\n")
+        assert settings.read_text(encoding="utf-8") == "bundle:\n  active: overlap-Montr\u00e9al\n"
+        assert settings.stat().st_ino != old_settings
+        new_rows = rows + [{"role": "assistant", "content": "new \U0001f680"}]
+        store.save(new_rows, {"turn": 2})
+        assert store.transcript_path.stat().st_ino != old_identity[1]
+        assert stream.raw is raw and identity() == old_identity
+        assert stream.read() == old[5:]  # Includes data not fetched before replacement.
+        stream.seek(0)
+        assert stream.read() == old and identity() == old_identity
+        with history_win.open_binary(store.transcript_path) as fresh:
+            assert [json.loads(line) for line in fresh] == new_rows
+    assert stream.closed
+    assert store.load(include_events=False).messages == new_rows
+    assert store.load_metadata() == {"turn": 2}
+    assert not list(home.glob("*.tmp")) and not list(store.session_dir.glob("*.tmp"))
+
+
+@native
+@pytest.mark.parametrize("unsafe", ["hardlink", "acl"])
+def test_native_history_snapshot_does_not_trust_future_path_opens(native_history, tmp_path, unsafe):
+    store = native_history
+    rows = [{"role": "user", "content": "old validated object \u2603" + "x" * 131072}]
+    store.save(rows, {})
+    old = store.transcript_path.read_bytes()
+    with history_win.open_binary(store.transcript_path) as stream:
+        raw = stream.raw
+        original = win.FILE_INFO()
+        raw.api.ok(raw.api.GetFileInformationByHandle(raw.handle, C.byref(original)))
+        assert stream.read(5) == old[:5] and raw.tell() < len(old)
+        store.save(rows + [{"role": "assistant", "content": "replacement"}], {})
+        target = store.transcript_path
+        replacement, inode = target.read_bytes(), target.stat().st_ino
+        if unsafe == "hardlink":
+            alias = tmp_path / "unsafe-link"
+            os.link(target, alias)
+            match = "hardlink"
+        else:
+            api = raw.api
+            descriptor = win.PVOID()
+            api.ok(api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                f"O:{api.sid}D:P(A;;FA;;;{api.sid})(A;;GR;;;WD)",
+                1, C.byref(descriptor), None,
+            ))
+            setter = api.security.SetFileSecurityW
+            setter.argtypes, setter.restype = [C.c_wchar_p, win.DWORD, win.PVOID], win.BOOL
+            try:
+                api.ok(setter(str(target), 0x80000005, descriptor))
+            finally:
+                api.LocalFree(descriptor)
+            match = "foreign access"
+        # Each future path open revalidates. Neither an earlier safe stream nor
+        # a previously safe pathname authorizes the now-unsafe replacement.
+        for _ in range(2):
+            with pytest.raises(shared.SharedStateError, match=match):
+                with history_win.open_binary(target):
+                    pytest.fail("unsafe new path yielded a reader")
+        assert target.read_bytes() == replacement and target.stat().st_ino == inode
+        if unsafe == "hardlink":
+            assert target.stat().st_nlink == 2 and alias.read_bytes() == replacement
+        raw.api.validate_acl(raw.handle, private=True)
+        retained = win.FILE_INFO()
+        raw.api.ok(raw.api.GetFileInformationByHandle(raw.handle, C.byref(retained)))
+        assert (retained.volume, retained.index_high, retained.index_low) == (
+            original.volume, original.index_high, original.index_low,
+        )
+        assert stream.read() == old[5:]
+        stream.seek(0)
+        assert stream.read() == old
+    assert stream.closed
+
+
+@native
+@pytest.mark.parametrize("guard", ["ownership", "write", "metadata", "fork"])
+def test_native_read_snapshot_does_not_release_independent_namespace_guards(tmp_path, guard):
+    from contextlib import ExitStack, closing
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    root = tmp_path / "guard-root"
+    store = SessionHistoryStore(root / "history")
+    moved = root.with_name("guard-root-moved")
+
+    def assert_pinned():
+        with pytest.raises(OSError) as caught:
+            root.rename(moved)
+        assert caught.value.winerror == 32
+        assert root.is_dir() and not moved.exists()
+
+    with ExitStack() as held:
+        if guard == "ownership":
+            held.enter_context(closing(win.Ownership(store.session_dir, root=root)))
+        elif guard == "fork":
+            held.enter_context(history_win.reserve_new_session(store.session_dir))
+        store.save([{"role": "user", "content": "synthetic guarded history"}], {})
+        if guard == "write":
+            held.enter_context(history_win._file(store.transcript_path, write=True))
+        elif guard == "metadata":
+            held.enter_context(history_win.metadata_lock(store.session_dir))
+        assert_pinned()
+        with history_win.open_binary(store.transcript_path) as reader:
+            assert reader.read()
+            assert_pinned()  # Releasing read traversal must not release another lease.
+        assert_pinned()
+    root.rename(moved)  # Positive release control; all readers/leases closed.
+    assert (moved / "history" / "transcript.jsonl").read_bytes()
+    moved.rename(root)
 
 
 @native
