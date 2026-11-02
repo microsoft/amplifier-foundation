@@ -307,8 +307,8 @@ class TestFindSubcommand:
         if os.name == "nt":
             from amplifier_foundation.session.store import write_metadata, write_transcript
 
-            write_transcript(proj2_dir, _HEALTHY_ENTRIES)
-            write_metadata(proj2_dir, meta)
+            write_transcript(proj2_dir, _HEALTHY_ENTRIES, windows_policy="private")
+            write_metadata(proj2_dir, meta, windows_policy="private")
         else:
             proj2_dir.mkdir(parents=True, exist_ok=True)
             with open(proj2_dir / "transcript.jsonl", "w", encoding="utf-8") as f:
@@ -347,6 +347,53 @@ class TestFindSubcommand:
         assert isinstance(data, list)
         assert len(data) >= 1
         assert data[0]["session_id"] == "test-session-001"
+
+
+def test_find_project_filter_windows_fixture_actual_body(tmp_path, monkeypatch):
+    """Exercise both Windows creation branches and the real CLI filter on POSIX.
+
+    Only private creation is modeled; this is not native ACL qualification.
+    Legacy writes retain their real missing-directory precondition.
+    """
+    from types import SimpleNamespace
+    from amplifier_foundation.session import store
+
+    transcript, metadata = store.write_transcript, store.write_metadata
+    calls = []
+
+    def private_transcript(directory, entries, *, windows_policy="legacy"):
+        calls.append((directory, "transcript", windows_policy))
+        if windows_policy == "private":
+            assert not directory.exists()  # No ordinary mkdir before private creation.
+            directory.mkdir(parents=True)
+        # Real legacy writer deliberately cannot create missing directories:
+        # an omitted selection in the actual body below reproduces the failure.
+        transcript(directory, entries)
+
+    def private_metadata(directory, value, *, windows_policy="legacy"):
+        calls.append((directory, "metadata", windows_policy))
+        assert windows_policy == "private"
+        metadata(directory, value)
+
+    monkeypatch.setattr(sys.modules[__name__], "os", SimpleNamespace(
+        name="nt", environ=os.environ,
+    ))
+    monkeypatch.setattr(store, "write_transcript", private_transcript)
+    monkeypatch.setattr(store, "write_metadata", private_metadata)
+    # Do not reconstruct the fixture or replace _run: execute the maintained
+    # test's actual Windows branch and all its original filtering assertions.
+    TestFindSubcommand().test_find_with_project_filter(tmp_path)
+    first = tmp_path / "proj1" / "sessions" / "test-session-001"
+    second = tmp_path / "proj2" / "sessions" / "test-session-002"
+    assert calls == [
+        (first, "transcript", "private"), (first, "metadata", "private"),
+        (second, "transcript", "private"), (second, "metadata", "private"),
+    ]
+    result = _run("find", "--sessions-root", str(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert {entry["session_id"] for entry in json.loads(result.stdout)} == {
+        "test-session-001", "test-session-002",
+    }
 
 
 # ---------------------------------------------------------------------------
