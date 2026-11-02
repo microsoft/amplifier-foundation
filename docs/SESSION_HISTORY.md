@@ -96,11 +96,28 @@ replacement with `REPLACE_IF_EXISTS | POSIX_SEMANTICS`. The native request uses
 only the destination leaf name with a null root handle; the source handle's
 directory must match the pinned destination directory. Directory pins keep
 `FILE_LIST_DIRECTORY` access and deny write/delete sharing throughout publication.
-Readers share deletion:
-an already-open reader retains the complete old file while later readers see the
-new file. Unsupported native rename/disposition operations fail; there is no
+Adapter readers share deletion:
+an already-open adapter reader retains the complete old file while later readers
+see the new file. Unsupported native rename/disposition operations fail; there is no
 copy/delete, delete-first or less-safe sharing fallback. Native execution on
 the intended Windows version/filesystem is required before claiming qualification.
+
+On Windows, ordinary Python `open(..., "r")` / `open(..., "rb")` readers do not
+share deletion. This also applies to the low-level `session.store.read_jsonl`
+generator while suspended after yielding a row: it retains its builtin reader
+until exhausted or explicitly closed. Close these readers/generators before
+publishing to their file. A blocked adapter replacement raises
+`PermissionError` (`errno=13`, `winerror=32`), preserves the blocked target's
+bytes and identity, and can publish after the reader closes. The pre-adapter
+atomic writer also refuses such held readers; its measured error is an outer
+`OSError` caused by `PermissionError` (`errno=13`, `winerror=5`), not the same
+outer exception as the adapter. Native baseline comparisons cover the transcript
+writer or individual file publication, not whole historical-save parity.
+
+Combined saves publish transcript before metadata. If metadata is held by a
+builtin reader, the transcript may already contain the new complete version when
+metadata publication refuses. There is no transcript/metadata rollback promise;
+publication is atomic per file, not a file-pair transaction.
 
 `save(..., incremental=True)` retains the append optimization. A warm append
 copies only the previous tail into the backup, not the full transcript prefix.

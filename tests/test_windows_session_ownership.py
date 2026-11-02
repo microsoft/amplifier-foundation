@@ -1937,39 +1937,163 @@ def test_native_read_snapshot_does_not_release_independent_namespace_guards(tmp_
     moved.rename(root)
 
 
-@native
-@pytest.mark.parametrize("mode", ["rb", "r"])
-@pytest.mark.parametrize("filename", ["transcript.jsonl", "metadata.json"])
-def test_native_history_replace_preserves_builtin_open_reader(native_history, mode, filename):
-    """Legacy builtin readers, not only the adapter's delete-sharing handles."""
-    store = native_history
+def _assert_builtin_reader_sharing_boundary(store, mode, filename):
+    """Require precise refusal, unchanged blocked objects, and real recovery."""
+    from amplifier_foundation.session.history import SessionHistoryStore
+
     rows = [{"role": "user", "content": "old \u2603\U0001f680",
              "metadata": {"provider:continuation": "synthetic"}}]
     metadata = {"unknown": {"preserved": True}, "label": "old \u2603\U0001f680"}
     store.save(rows, metadata)
     path = store.session_dir / filename
-    old_bytes = path.read_bytes()
+    paths = (store.transcript_path, store.metadata_path)
+    before = [item.read_bytes() for item in paths]
+    identities = [(item.stat().st_dev, item.stat().st_ino) for item in paths]
+    blocked = paths.index(path)
+    old_bytes = before[blocked]
     options = {"encoding": "utf-8", "newline": ""} if mode == "r" else {}
     expected_old = old_bytes.decode("utf-8") if mode == "r" else old_bytes
     new_rows = rows + [{"role": "assistant", "content": "new \u2603\U0001f680"}]
     new_metadata = metadata | {"label": "new \u2603\U0001f680"}
-    with open(path, mode, **options) as reader:
+    expected = [
+        SessionHistoryStore._messages_content(new_rows, False, None).encode("utf-8"),
+        SessionHistoryStore._metadata_content(new_metadata).encode("utf-8"),
+    ]
+
+    def no_residue():
+        assert not list(store.session_dir.glob(".history-*"))
+        assert not list(store.session_dir.glob("*.tmp"))
+        assert not (store.session_dir / "transcript.jsonl.append-pending").exists()
+
+    reader = open(path, mode, **options)
+    try:
         # No pre-read: a Python buffer must not conceal replacement failure.
-        old_inode = os.fstat(reader.fileno()).st_ino
-        store.save(new_rows, new_metadata)
-        new_bytes = path.read_bytes()
-        assert new_bytes != old_bytes
-        assert path.stat().st_ino != old_inode
+        old_stat = os.fstat(reader.fileno())
+        old_identity = (old_stat.st_dev, old_stat.st_ino)
+        assert old_identity == identities[blocked] and reader.tell() == 0
+        with pytest.raises(PermissionError) as caught:
+            store.save(new_rows, new_metadata)  # Actual combined publication.
+        assert type(caught.value) is PermissionError
+        assert (caught.value.errno, caught.value.winerror) == (13, 32)
+        no_residue()  # Check before releasing the reader or allowing another save.
+        assert path.read_bytes() == old_bytes
+        assert (path.stat().st_dev, path.stat().st_ino) == old_identity
+        # Transcript is published first. A blocked metadata target does not roll
+        # that publication back; a blocked transcript must not update metadata.
+        after_refusal = [expected[0], before[1]] if blocked == 1 else before
+        assert [item.read_bytes() for item in paths] == after_refusal
+        current_identities = [(item.stat().st_dev, item.stat().st_ino) for item in paths]
+        assert current_identities[1] == identities[1]
+        assert (current_identities[0] != identities[0]) is (blocked == 1)
+        assert path.with_suffix(path.suffix + ".backup").read_bytes() == old_bytes
         assert not reader.closed
         assert reader.read() == expected_old
         reader.seek(0)
         assert reader.read() == expected_old
-        assert os.fstat(reader.fileno()).st_ino == old_inode
+        retained = os.fstat(reader.fileno())
+        assert (retained.st_dev, retained.st_ino) == old_identity
         with open(path, mode, **options) as fresh:
-            assert fresh.read() == (new_bytes.decode("utf-8") if mode == "r" else new_bytes)
+            assert fresh.read() == expected_old
+    finally:
+        reader.close()
+    assert reader.closed
+
+    store.save(new_rows, new_metadata)  # Same process, after explicit reader close.
+    assert [item.read_bytes() for item in paths] == expected
+    for item, identity, previous in zip(paths, current_identities, after_refusal):
+        assert (item.stat().st_dev, item.stat().st_ino) != identity
+        assert item.with_suffix(item.suffix + ".backup").read_bytes() == previous
     snapshot = store.load(include_events=False)
     assert snapshot.messages == new_rows and snapshot.metadata == new_metadata
-    assert not list(store.session_dir.glob(".history-*"))
+    no_residue()
+
+
+@native
+@pytest.mark.parametrize("mode", ["rb", "r"])
+@pytest.mark.parametrize("filename", ["transcript.jsonl", "metadata.json"])
+def test_native_history_builtin_reader_sharing_refusal_and_recovery(native_history, mode, filename):
+    """Builtin CRT readers lack delete sharing; close them before publication."""
+    _assert_builtin_reader_sharing_boundary(native_history, mode, filename)
+
+
+@pytest.mark.parametrize("fault", [
+    "none", "wrong-type", "wrong-errno", "wrong-winerror", "no-op",
+    "mutation-on-refusal", "metadata-order", "residue", "never-recovers",
+    "in-place-recovery", "bad-backup",
+])
+def test_builtin_sharing_boundary_oracles_reject_portable_faults(tmp_path, fault):
+    """Execute the boundary oracle with modeled outcomes, not Windows evidence.
+
+    One metadata/rb case covers partial combined-save ordering and both backups.
+    Native cases above exercise the actual backend in each reader/target mode.
+    """
+    from types import SimpleNamespace
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    class ModelStore:
+        def __init__(self):
+            self.session_dir = tmp_path / "boundary-model"
+            self.session_dir.mkdir()
+            self.transcript_path = self.session_dir / "transcript.jsonl"
+            self.metadata_path = self.session_dir / "metadata.json"
+            self.calls = 0
+
+        def save(self, rows, metadata):
+            self.calls += 1
+            payloads = (
+                SessionHistoryStore._messages_content(rows, False, None).encode("utf-8"),
+                SessionHistoryStore._metadata_content(metadata).encode("utf-8"),
+            )
+            if self.calls == 2 and fault == "no-op":
+                return
+            if self.calls == 3 and fault == "never-recovers":
+                raise PermissionError(13, "modeled permanent refusal")
+            for index, (path, content) in enumerate(zip(
+                (self.transcript_path, self.metadata_path), payloads,
+            )):
+                if path.exists():
+                    path.with_suffix(path.suffix + ".backup").write_bytes(path.read_bytes())
+                if self.calls == 2 and index == 1:
+                    if fault == "mutation-on-refusal":
+                        path.write_bytes(content)
+                    if fault == "metadata-order":
+                        # A spurious rollback must also be caught, not prescribed.
+                        self.transcript_path.write_bytes(
+                            self.transcript_path.with_suffix(".jsonl.backup").read_bytes()
+                        )
+                    if fault == "residue":
+                        (self.session_dir / ".history-retained.tmp").write_bytes(b"partial")
+                    if fault == "wrong-type":
+                        raise OSError(5, "modeled wrong exception type")
+                    error = PermissionError(5 if fault == "wrong-errno" else 13, "modeled refusal")
+                    error.winerror = 5 if fault == "wrong-winerror" else 32
+                    raise error
+                if self.calls == 3 and fault == "in-place-recovery":
+                    path.write_bytes(content)
+                else:
+                    temporary = path.with_suffix(".model.tmp")
+                    temporary.write_bytes(content)
+                    temporary.replace(path)
+                if self.calls == 3 and fault == "bad-backup":
+                    path.with_suffix(path.suffix + ".backup").write_bytes(b"bad backup")
+
+        def load(self, *, include_events):
+            assert include_events is False
+            return SimpleNamespace(
+                messages=[json.loads(line) for line in self.transcript_path.read_bytes().splitlines()],
+                metadata=json.loads(self.metadata_path.read_bytes()),
+            )
+
+    store = ModelStore()
+    if fault == "none":
+        _assert_builtin_reader_sharing_boundary(store, "rb", "metadata.json")
+        assert store.calls == 3
+    else:
+        expected = (pytest.fail.Exception if fault == "no-op" else
+                    OSError if fault == "wrong-type" else
+                    PermissionError if fault == "never-recovers" else AssertionError)
+        with pytest.raises(expected):
+            _assert_builtin_reader_sharing_boundary(store, "rb", "metadata.json")
 
 
 def _assert_pre_pr_atomic_writer():
