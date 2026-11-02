@@ -396,20 +396,60 @@ def clean_environment(root: Path, *, runtime: bool = False) -> dict[str, str]:
     return env
 
 
-def windows_runtime_root(original_temp: str) -> Path:
+def windows_runtime_root(original_temp: str, *, evidence=None) -> Path:
     """One native-pytest-style location, NOT a drive search or a trust decision.
 
     Capture the job's original TEMP before clean_environment replaces it. Build
     caches stay compact on RUNNER_TEMP's drive; storage fixtures must not inherit
-    that drive choice. The installed child alone validates/creates this root.
+    that drive choice. Like pytest's temproot, canonicalize the existing TEMP
+    before adding a new leaf. Unlike resolve alone, reject original/canonical
+    reparse components and require the same directory identity and local drive.
+    This is spelling normalization, NOT ACL approval: the installed child still
+    validates every canonical ancestor before privately creating anything.
     Do not call gettempdir/TemporaryDirectory here: both can write before native
     ancestor validation. No fallback to another drive if production refuses.
     """
     base = PureWindowsPath(original_temp)
     if (not base.is_absolute() or not re.fullmatch(r"[A-Za-z]:", base.drive)
-            or ".." in base.parts):
+            or ".." in base.parts or len(base.parts) > 129):
         raise HarnessPolicyError("Original TEMP is not an absolute local fixture location")
-    return Path(str(base)) / ("ic-" + os.urandom(8).hex())
+    detail = evidence if evidence is not None else {}
+    detail.update({
+        "basis": "original TEMP; strict existing-directory canonical spelling only",
+        "status": "inspecting-existing-temp",
+        "short_name_shaped_components": sum(bool(re.search(r"~[0-9]", part)) for part in base.parts),
+    })
+    original = Path(str(base))
+    canonical = None
+    identity = None
+    # lstat each component in order, before resolving: do not silently turn an
+    # original junction/symlink into an acceptable fixture at its target.
+    for label in ("original", "canonical"):
+        path = original if label == "original" else canonical
+        for component in reversed([path, *path.parents]):
+            info = component.lstat()
+            if (info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                    or not stat.S_ISDIR(info.st_mode)):
+                raise HarnessPolicyError("TEMP chain contains a reparse point or non-directory")
+        current = (info.st_dev, info.st_ino)
+        if (any(type(value) is not int for value in current) or info.st_ino <= 0):
+            raise HarnessPolicyError("TEMP directory identity is unavailable")
+        if label == "original":
+            identity = current
+            canonical = original.resolve(strict=True)
+            resolved = PureWindowsPath(canonical)
+            if (not resolved.is_absolute() or resolved.drive.casefold() != base.drive.casefold()
+                    or not re.fullmatch(r"[A-Za-z]:", resolved.drive)
+                    or ".." in resolved.parts or len(resolved.parts) > 129):
+                raise HarnessPolicyError("Canonical TEMP changed local volume or namespace")
+        elif current != identity:
+            raise HarnessPolicyError("Canonical TEMP does not identify the original directory")
+    detail.update({
+        "status": "canonical-spelling-selected; production preflight still required",
+        "spelling_changed": str(canonical).casefold() != str(original).casefold(),
+        "same_directory_identity": True, "reparse_components": False,
+    })
+    return canonical / ("ic-" + os.urandom(8).hex())
 
 
 def setup_path_budget(work: Path | PureWindowsPath, env: dict) -> dict:
@@ -818,7 +858,7 @@ def windows_ancestor_evidence(path: Path, win) -> dict:
             except FileNotFoundError:
                 detail["status"] = "missing"
                 break
-            except OSError as exc:
+            except Exception as exc:
                 detail["status"] = "open-refused"
                 detail["error"] = error_record(exc)
                 break
@@ -883,6 +923,7 @@ def prepare_runtime_home(report: dict) -> None:
         "Windows private state requires a protected DACL": "unprotected-dacl",
         "Windows state DACL grants foreign access": "foreign-ace",
         "unsupported Windows state ACE": "unsupported-ace",
+        "Windows state path has an alternate namespace alias": "namespace-alias",
     }
     for role, path in (("home", home), ("history-root", amplifier_home)):
         detail["stage"] = role
@@ -1802,12 +1843,13 @@ def run(work: Path) -> int:
     report = {"status": "failed", "consumers": {}}
     for consumer in ("agent", "cli"):
         compact = None
+        location = {}
         try:
             # Preparation failures do not suppress the other graph's evidence.
             with ExitStack() as resources:
                 root = work / "runtime" / consumer
                 if os.name == "nt":
-                    root = windows_runtime_root(os.environ.get("TEMP", ""))
+                    root = windows_runtime_root(os.environ.get("TEMP", ""), evidence=location)
                     # No mkdir here. The installed child must validate every
                     # existing ancestor and privately create the absent root.
                 else:
@@ -1827,6 +1869,8 @@ def run(work: Path) -> int:
         except Exception as exc:
             report["consumers"][consumer] = error_record(exc)
         finally:
+            if os.name == "nt":
+                report["consumers"][consumer]["runtime_location"] = location
             if compact is not None:
                 removed = not compact.exists()
                 report["consumers"][consumer]["compact_root_removed"] = removed

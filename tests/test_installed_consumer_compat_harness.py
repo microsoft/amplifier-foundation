@@ -1043,6 +1043,7 @@ def test_runtime_home_preexisting_directory_is_refused_without_repair(harness, t
     ("Windows state requires trusted ownership and a non-null DACL", "owner-or-null-dacl"),
     ("Windows private state requires a protected DACL", "unprotected-dacl"),
     ("Windows state DACL grants foreign access", "foreign-ace"),
+    ("Windows state path has an alternate namespace alias", "namespace-alias"),
 ])
 def test_private_creation_failure_reports_role_category_not_sid_or_path(
     harness, tmp_path, monkeypatch, failing_role, message, category,
@@ -2100,18 +2101,54 @@ def _fixture_function(name, namespace):
     return namespace[name]
 
 
-def test_windows_runtime_location_uses_original_native_temp_not_short_build_drive(harness, monkeypatch):
-    monkeypatch.setattr(harness, "Path", harness.PureWindowsPath)
+@pytest.fixture
+def temp_spelling_model(harness, monkeypatch):
+    """Read-only Windows path APIs, no real host TEMP inspection or Win32 calls."""
+    state = SimpleNamespace(
+        original=r"C:\Users\RUNNER~1\AppData\Local\Temp",
+        canonical=r"C:\Users\runneradmin\AppData\Local\Temp",
+        calls=[], reparse=None, non_directory=None, missing=None, different_identity=False,
+        identity=42,
+    )
+
+    class ModelPath(harness.PureWindowsPath):
+        def lstat(self):
+            text = str(self)
+            state.calls.append(("lstat", text))
+            if text == state.missing:
+                raise FileNotFoundError("synthetic private path withheld")
+            return SimpleNamespace(
+                st_file_attributes=(harness.stat.FILE_ATTRIBUTE_REPARSE_POINT
+                                    if text == state.reparse else 0),
+                st_mode=0o100600 if text == state.non_directory else 0o40700,
+                st_dev=1, st_ino=43 if (state.different_identity and text == state.canonical) else state.identity,
+            )
+
+        def resolve(self, *, strict):
+            assert strict is True and str(self) == state.original
+            state.calls.append(("resolve", str(self)))
+            return ModelPath(state.canonical)
+
+    monkeypatch.setattr(harness, "Path", ModelPath)
+    return state
+
+
+def test_windows_runtime_location_uses_original_native_temp_not_short_build_drive(
+    harness, monkeypatch, temp_spelling_model,
+):
+    state = temp_spelling_model
+    state.original = state.canonical  # Already-canonical existing TEMP is also valid.
     monkeypatch.setattr(harness.os, "urandom", lambda count: b"a" * count)
-    original = r"C:\Users\runneradmin\AppData\Local\Temp"
     monkeypatch.setenv("RUNNER_TEMP", r"D:\a\_temp")
-    root = harness.windows_runtime_root(original)
-    assert root.parent == harness.PureWindowsPath(original)
+    evidence = {}
+    root = harness.windows_runtime_root(state.original, evidence=evidence)
+    assert root.parent == harness.PureWindowsPath(state.original)
     assert root.name == "ic-" + (b"a" * 8).hex()
+    assert evidence["spelling_changed"] is False
     assert "mkdir" not in source("windows_runtime_root")
     # Call wiring must capture the parent's original TEMP before sanitization.
     body = source("run")
-    assert body.index('windows_runtime_root(os.environ.get("TEMP", ""))') < body.index("clean_environment(")
+    assert body.index('windows_runtime_root(os.environ.get("TEMP", ""), evidence=location)') < body.index("clean_environment(")
     assert "gettempdir(" not in body and "windows_runtime_root" in body
 
 
@@ -2274,3 +2311,201 @@ def test_production_preflight_cannot_escape_foreign_drive_owner_by_choosing_deep
     assert pins.missing and api.opens[-1].name == "ic-fixture"
     assert len(pins.handles) == 4  # All existing ancestors validated, no child created.
     pins.close()
+
+
+def test_existing_temp_alias_is_canonicalized_readonly_not_selected_as_new_location(
+    harness, temp_spelling_model,
+):
+    state = temp_spelling_model
+    evidence = {}
+    root = harness.windows_runtime_root(state.original, evidence=evidence)
+    assert root.parent == harness.PureWindowsPath(state.canonical)
+    assert root.parent != harness.PureWindowsPath(state.original)
+    assert evidence == {
+        "basis": "original TEMP; strict existing-directory canonical spelling only",
+        "status": "canonical-spelling-selected; production preflight still required",
+        "short_name_shaped_components": 1, "spelling_changed": True,
+        "same_directory_identity": True, "reparse_components": False,
+    }
+    # Every original ancestor is inspected BEFORE resolve; every canonical
+    # ancestor is inspected afterward. No missing/new fixture component is read.
+    index = state.calls.index(("resolve", state.original))
+    assert [path for op, path in state.calls[:index]] == [
+        str(path) for path in reversed([harness.PureWindowsPath(state.original),
+                                       *harness.PureWindowsPath(state.original).parents])
+    ]
+    assert all(op == "lstat" for op, path in state.calls[index + 1:])
+    assert all("ic-" not in path for op, path in state.calls)
+    harness.assert_public(harness.public_value(evidence, {}))
+    assert "runneradmin" not in json.dumps(evidence) and "RUNNER~1" not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize("fault", [
+    "original-reparse", "canonical-reparse", "non-directory", "missing-temp",
+    "different-directory", "other-volume", "unc-namespace",
+    "unknown-identity",
+])
+def test_temp_canonicalization_refuses_redirection_missing_or_unverified_identity(
+    harness, temp_spelling_model, fault,
+):
+    state = temp_spelling_model
+    if fault == "original-reparse":
+        state.reparse = r"C:\Users\RUNNER~1"
+    elif fault == "canonical-reparse":
+        state.reparse = r"C:\Users\runneradmin"
+    elif fault == "non-directory":
+        state.non_directory = state.original
+    elif fault == "missing-temp":
+        state.missing = state.original
+    elif fault == "different-directory":
+        state.different_identity = True
+    elif fault == "other-volume":
+        state.canonical = r"D:\somewhere\Temp"
+    elif fault == "unknown-identity":
+        state.identity = 0
+    else:
+        state.canonical = r"\\server\share\Temp"
+    evidence = {}
+    with pytest.raises((harness.HarnessPolicyError, FileNotFoundError)):
+        harness.windows_runtime_root(state.original, evidence=evidence)
+    assert evidence["status"] == "inspecting-existing-temp"
+    assert not evidence.get("same_directory_identity")
+    assert not any("ic-" in path for op, path in state.calls)
+    if fault in {"original-reparse", "non-directory", "missing-temp"}:
+        assert all(op != "resolve" for op, path in state.calls)
+
+
+def test_production_info_still_rejects_alias_and_reparse_after_temp_normalization(
+    harness, temp_spelling_model,
+):
+    """Real _API.info comparison, fake final-path/attribute Win32 results only."""
+    state = temp_spelling_model
+    root = harness.windows_runtime_root(state.original)
+    tree = ast.parse((ROOT / "amplifier_foundation/session/_windows_ownership.py").read_text())
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "_API")
+    method = copy.deepcopy(next(node for node in cls.body
+                                if isinstance(node, ast.FunctionDef) and node.name == "info"))
+    method.body = [node for node in method.body if not isinstance(node, ast.ImportFrom)]
+
+    class Buffer:
+        value = ""
+
+        def __len__(self):
+            return 32768
+
+    info = SimpleNamespace(attributes=16, links=1)
+    api = SimpleNamespace(
+        ok=lambda value: value if value else (_ for _ in ()).throw(AssertionError()),
+        GetFileInformationByHandle=lambda handle, output: True,
+        GetFinalPathNameByHandleW=lambda handle, output, length, flags: (
+            setattr(output, "value", "\\\\?\\" + state.canonical) or len(state.canonical) + 4
+        ),
+    )
+    namespace = {
+        "Path": harness.PureWindowsPath, "PureWindowsPath": harness.PureWindowsPath,
+        "FILE_INFO": lambda: info, "SharedStateError": RuntimeError,
+        "C": SimpleNamespace(byref=lambda value: value, create_unicode_buffer=lambda length: Buffer()),
+        "_REPARSE": 1024, "_DIRECTORY": 16,
+    }
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[])),
+                 "actual-production-path-info", "exec"), namespace)
+    actual_info = MethodType(namespace["info"], api)
+    with pytest.raises(RuntimeError, match="alternate namespace alias"):
+        actual_info(123, harness.PureWindowsPath(state.original), directory=True)
+    assert actual_info(123, root.parent, directory=True) is info
+    # Canonical spelling is not an exception for a reparse point or later alias.
+    info.attributes |= 1024
+    with pytest.raises(RuntimeError, match="reparse"):
+        actual_info(123, root.parent, directory=True)
+    info.attributes = 16
+    state.canonical = r"C:\somewhere-else"
+    with pytest.raises(RuntimeError, match="alternate namespace alias"):
+        actual_info(123, root.parent, directory=True)
+
+
+def test_canonical_temp_spelling_does_not_accept_foreign_ancestor_acl(
+    harness, temp_spelling_model, native_acl_model,
+):
+    root = harness.windows_runtime_root(temp_spelling_model.original)
+    win, api = native_acl_model
+    # Existing model executes ACTUAL production ACL validation. Its C-root has
+    # a foreign mutation ACE: canonicalization must not turn that into approval.
+    detail = harness.windows_ancestor_evidence(root / "home", win)
+    assert detail["components"][0]["status"] == "refused"
+    assert detail["components"][0]["role"] == "drive"
+    assert detail["components"][0]["acl"]["aces"][0]["principal"]["class"] == "other"
+    assert api.opens == [harness.PureWindowsPath("C:/")] and api.closes == api.opens
+
+
+def test_non_oserror_open_refusal_is_diagnosed_by_component_without_replacing_primary(
+    harness, native_acl_model,
+):
+    win, api = native_acl_model
+    api.sid_text = lambda pointer: api.sid  # Earlier components valid in this model.
+    real_open = api.open
+    original = RuntimeError("Windows state path has an alternate namespace alias")
+
+    def opened(path, **kwargs):
+        if path.name == "RUNNER~1":
+            api.opens.append(path)
+            raise original  # Production open closes its own failed handle.
+        return real_open(path, **kwargs)
+
+    api.open = opened
+    detail = harness.windows_ancestor_evidence(
+        harness.PureWindowsPath(r"C:\Users\RUNNER~1\AppData\Local\Temp\ic-fixture\home"), win,
+    )
+    component = detail["components"][-1]
+    assert component["depth"] == 2 and component["role"] == "ancestor"
+    assert component["status"] == "open-refused"
+    assert component["error"]["diagnostics"][0]["type"] == "RuntimeError"
+    assert api.closes == list(reversed(api.opens[:-1]))
+    assert "RUNNER~1" not in json.dumps(detail)
+    harness.assert_public(harness.public_value(detail, {}))
+
+
+@pytest.mark.parametrize("child_failure", [False, True])
+def test_run_transfers_only_canonical_fixture_paths_and_public_normalization_facts(
+    harness, temp_spelling_model, child_failure,
+):
+    """Actual run body with command double; never creates/launches a consumer."""
+    state = temp_spelling_model
+    commands, saved = [], {}
+    fake_os = SimpleNamespace(name="nt", environ={
+        "TEMP": state.original, "RUNNER_TEMP": r"D:\a\_temp",
+    }, devnull="NUL")
+    environment = _fixture_function("clean_environment", {
+        "Path": harness.Path, "os": fake_os,
+    })
+
+    def command(argv, *, cwd, env, timeout):
+        commands.append(env)
+        home = harness.PureWindowsPath(env["HOME"])
+        assert home.parent.parent == harness.PureWindowsPath(state.canonical)
+        assert env["RUNNER_TEMP"] == r"D:\a\_temp"  # Build volume unchanged, not state.
+        assert "RUNNER~1" not in env["HOME"]
+        if child_failure:
+            raise RuntimeError("SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f")
+
+    def save(work, name, report):
+        assert name == "execution.json"
+        public = harness.public_value(report, {})
+        harness.assert_public(public)
+        saved.update(public)
+
+    run = _fixture_function("run", {
+        "require_runner": lambda: None, "os": fake_os, "Path": harness.Path,
+        "ExitStack": __import__("contextlib").ExitStack,
+        "windows_runtime_root": harness.windows_runtime_root, "clean_environment": environment,
+        "env_python": lambda work, consumer: work / consumer / "Scripts/python.exe",
+        "command": command, "SCRIPT": HARNESS, "error_record": harness.error_record,
+        "save_public_json": save,
+    })
+    assert run(harness.PureWindowsPath("D:/ic-build")) == int(child_failure)
+    assert len(commands) == 2 and set(saved["consumers"]) == {"agent", "cli"}
+    assert saved["status"] == ("failed" if child_failure else "passed")
+    assert all(item["runtime_location"]["spelling_changed"] for item in saved["consumers"].values())
+    assert all(item["runtime_location"]["same_directory_identity"]
+               for item in saved["consumers"].values())
+    assert "runneradmin" not in json.dumps(saved)
+    assert "SYNTHETIC_PRIVATE_PERSON_PROJECT_a91f" not in json.dumps(saved)

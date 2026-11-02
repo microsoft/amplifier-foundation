@@ -67,8 +67,9 @@ jobs:
       # pinned consumers independently. Agent's Core==2.0.1 is not compatible
       # with the CLI/Unified Core>=2.0.2 graph. Never combine those environments.
       # Short build/install paths stay on the runner temp volume. Runtime state
-      # separately uses original TEMP, like native pytest, with full production
-      # ancestor validation before creation; neither volume is assumed trusted.
+      # separately uses canonical original TEMP, like native pytest, with full
+      # production ancestor validation before creation; neither volume is trusted
+      # merely because its path was selected or its spelling was normalized.
       - name: Select compact Windows fixture location
         id: windows-root
         if: ${{ runner.os == 'Windows' }}
