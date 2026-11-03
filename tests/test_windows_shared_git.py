@@ -592,21 +592,158 @@ def test_native_shared_git_exited_leader_helper_keeps_stdout_but_timeout_is_boun
 
     def close(handle):
         if handle == observed.get("member"):
-            assert original_exit(handle) is not None
+            # Job accounting/leader/pipe settlement is not an instantaneous
+            # wait fence for this independently opened member handle. Observe
+            # its exit within the SAME total operation+cleanup allowance, not
+            # a new wait budget or a one-shot assertion that vetoes the close.
+            while original_exit(handle) is None:
+                remaining = deadline - time.monotonic()
+                assert remaining > 0, "retained member exit was not confirmed"
+                api.wait(handle, remaining)
             observed["child_exited"] = True
         original_close(handle)
 
     api.exit_code, api.close = inspect_member, close
     owner = git._Operation([sys.executable, "-c", leader], 3, api=api)
     before = time.monotonic()
-    with pytest.raises(subprocess.TimeoutExpired) as caught:
-        owner.run()
-    assert caught.value.timeout == 3 and time.monotonic() - before < 9
-    assert observed.get("child_exited")
-    assert observed.get("leader_exited"), "must actually reach the exited-leader/held-pipe case"
-    assert owner.cleanup["tree_empty"] and owner.cleanup["process_exited"]
-    assert owner.cleanup["io_finalized"] and owner.cleanup["handles_closed"]
-    assert not owner.cleanup["errors"] and not git._PENDING
+    deadline = before + owner.timeout + git.CLEANUP_SECONDS
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            owner.run()
+        assert caught.value.timeout == 3 and time.monotonic() - before < 9
+        facts = caught.value.cleanup
+        assert observed.get("child_exited"), facts
+        assert observed.get("leader_exited"), "must actually reach the exited-leader/held-pipe case"
+        assert facts["tree_empty"] and facts["process_exited"], facts
+        assert facts["io_finalized"] and facts["handles_closed"], facts
+        assert not facts["errors"] and not git._PENDING, facts
+    finally:
+        # A failed observer/assertion must not poison later tests. Restore only
+        # THIS test's hooks and settle THIS retained owner; never clear _PENDING.
+        # Teardown is not retroactive evidence that the measured run passed.
+        api.exit_code, api.close = original_exit, original_close
+        if owner.handles or owner.read.pending:
+            teardown = owner.settle()
+            assert not teardown["errors"], teardown
+            assert all(teardown[key] for key in
+                       ("tree_empty", "process_exited", "io_finalized", "handles_closed")), teardown
+        assert id(owner) not in git._PENDING
+
+
+@pytest.mark.parametrize("fault", [None, "never_signals", "query_fault", "close_once"])
+def test_windows_git_inert_exited_member_can_signal_after_job_accounting(tmp_path, monkeypatch, fault):
+    """Run the actual native test body and production settlement, without a DLL.
+
+    Job accounting can report no active processes before the independent member
+    handle becomes signalled. The observer must not veto CloseHandle at that
+    intermediate point or inject a retained handle into the production owner.
+    """
+    from types import SimpleNamespace
+    import time
+
+    clock, owners, kernels, failures = Clock(), [], [], []
+    real_operation, native_api = git._Operation, git._API
+    (tmp_path / "child.json").write_text(json.dumps(8080))
+
+    class ObservedKernel(Kernel):
+        def __init__(self):
+            super().__init__(clock, blocks=[b"partial"])
+            self.child_ready = float("inf")
+            self.closed = []
+
+            def open_process(rights, inherit, pid):
+                assert (rights, inherit, pid) == (0x101000, False, 8080)
+                return 996
+
+            def membership(handle, job, member):
+                assert (handle, job) == (996, 11)
+                member._obj.value = True
+                return True
+
+            def wait(handle, milliseconds):
+                if milliseconds:
+                    clock.sleep(milliseconds / 1000)
+                if handle == 996:
+                    return 0 if clock() >= self.child_ready else git.WAIT_TIMEOUT
+                if handle == 12:
+                    return 0  # Leader has exited while its helper holds stdout.
+                assert handle == 15
+                return 0 if self.terminated else git.WAIT_TIMEOUT
+
+            def exit_code(handle, output):
+                assert handle in (12, 996)
+                if handle == 996:
+                    if fault == "query_fault":
+                        raise PermissionError("synthetic member query failure")
+                    assert clock() >= self.child_ready
+                output._obj.value = 0
+                return True
+
+            self.k = SimpleNamespace(
+                OpenProcess=open_process, IsProcessInJob=membership,
+                WaitForSingleObject=wait, GetExitCodeProcess=exit_code,
+            )
+            kernels.append(self)
+
+        handle = staticmethod(lambda value: value)
+        check = staticmethod(lambda value: value)
+        exit_code = native_api.exit_code
+        wait = native_api.wait
+
+        def terminate(self, owner):
+            super().terminate(owner)
+            self.child_ready = float("inf") if fault == "never_signals" else clock() + 0.1
+
+        def close(self, handle):
+            if fault == "close_once" and handle == 996 and not self.closed:
+                self.closed.append("fault")
+                raise OSError("synthetic observer close failure")
+            super().close(handle)
+            self.closed.append(handle)
+
+    def make(*args, **kwargs):
+        owner = real_operation(*args, **kwargs, clock=clock, sleep=clock.sleep)
+        owners.append(owner)
+        original_run = owner.run
+
+        def run():
+            try:
+                return original_run()
+            except subprocess.TimeoutExpired as failure:
+                failures.append(failure)
+                raise
+
+        owner.run = run
+        return owner
+
+    monkeypatch.setattr(git, "_API", ObservedKernel)
+    monkeypatch.setattr(git, "_Operation", make)
+    monkeypatch.setattr(time, "monotonic", clock)
+    try:
+        if fault:
+            with pytest.raises(AssertionError):
+                test_native_shared_git_exited_leader_helper_keeps_stdout_but_timeout_is_bounded(tmp_path)
+            # The measured cleanup failure is retained on the original timeout,
+            # even though finally settled this owner for the next test.
+            assert failures[0].timeout == 3
+            assert failures[0].cleanup["errors"] == [
+                {"stage": "close_handle", "winerror": None},
+            ]
+            assert not failures[0].cleanup["handles_closed"]
+        else:
+            test_native_shared_git_exited_leader_helper_keeps_stdout_but_timeout_is_bounded(tmp_path)
+            assert not failures[0].cleanup["errors"]
+            assert clock() < 8
+        assert owners[0].cleanup["handles_closed"] and not owners[0].cleanup["errors"]
+        assert kernels[0].closed.count(996) == 1
+        assert not owners[0].handles and id(owners[0]) not in git._PENDING
+    finally:
+        # Inert handles only: make pre-fix red execution safe for later tests.
+        for owner in owners:
+            owner.api.close = lambda handle: kernels[0].closed.append(handle)
+            if owner.handles:
+                assert owner.settle()["handles_closed"]
+            assert id(owner) not in git._PENDING
 
 
 @NATIVE
