@@ -282,10 +282,7 @@ async def remote_revision(url, ref):
         else ["refs/heads/" + ref, "refs/tags/" + ref, "refs/tags/" + ref + "^{}"]
     )
 
-    def read():
-        output = subprocess.check_output(
-            ["git", "ls-remote", url, *patterns], text=True, timeout=35
-        )
+    def select(output):
         found = {
             name: revision
             for line in output.splitlines()
@@ -302,6 +299,15 @@ async def remote_revision(url, ref):
         if branch and tag:
             raise ValueError("Ambiguous branch and tag; use an explicit refs path")
         return branch or tag
+
+    args = ["git", "ls-remote", url, *patterns]
+    if os.name == "nt":
+        from ._windows_git import check_output
+
+        return select(await check_output(args, timeout=35))
+
+    def read():
+        return select(subprocess.check_output(args, text=True, timeout=35))
 
     return await asyncio.to_thread(read)
 
