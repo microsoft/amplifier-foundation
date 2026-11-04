@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,10 @@ def _make_session(
     with a transcript.jsonl and metadata.json.
     """
     session_dir = sessions_root / project / "sessions" / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        session_dir.mkdir(parents=True, exist_ok=True)
+    # On Windows the canonical writers must create this valid-state fixture
+    # privately. Precreating it with inherited ACLs models unsafe legacy data.
 
     msgs = (
         messages
@@ -43,14 +47,14 @@ def _make_session(
             {"role": "assistant", "content": "Hi there"},
         ]
     )
-    write_transcript(session_dir, msgs)
+    write_transcript(session_dir, msgs, windows_policy="private")
 
     meta = dict(metadata) if metadata is not None else {}
     meta.setdefault("session_id", session_id)
     meta.setdefault("created", "2024-06-01T10:00:00+00:00")
     meta.setdefault("bundle", "test-bundle")
     meta.setdefault("model", "test-model")
-    write_metadata(session_dir, meta)
+    write_metadata(session_dir, meta, windows_policy="private")
 
     return session_dir
 

@@ -40,6 +40,32 @@ The stable lock is a sibling of the session directory,
 replace the lock inode. Destructive deletion must acquire this lock as well as
 the host's execution ownership lock. Never unlink the lock file.
 
+Metadata stores default to `windows_policy="legacy"`, preserving ordinary I/O
+and the existing FileLock route for unchanged callers on Windows. Updated hosts
+must prepare private directories before payload (not repair existing ACLs) and
+explicitly select the same immutable policy on both history and metadata stores:
+
+```python
+from amplifier_foundation.session import prepare_session_directory
+
+prepare_session_directory(session_dir)
+metadata = SessionMetadataStore(session_dir, windows_policy="private")
+```
+
+With `windows_policy="private"` on Windows this same sibling path uses `LockFileEx` with a private,
+non-inheritable, delete-denying handle. Acquisition waits up to ten seconds,
+matching the existing short-lock timeout. Access denial is not treated as lock
+contention. The lock is never truncated, replaced or removed, including after
+session deletion. Its local fixed NTFS ancestors are pinned and validated before
+creation. Metadata payloads and backups use protected private files and flushed
+same-volume replacement through the
+[bounded history adapter](SESSION_HISTORY.md#bounded-native-windows-history).
+Unsafe existing objects are refused, not repaired. This does not change the
+separate scoped-settings Windows ACL policy described below.
+Direct `metadata_lock(session_dir, windows_policy="private")` callers must select
+it explicitly too. Private refusal never retries via legacy I/O. POSIX behavior
+is unchanged for either policy; invalid policy values fail before I/O.
+
 Session execution still requires the separate Foundation ownership mechanism.
 Metadata-only edits may use the short metadata lock while an updated host owns
 execution. This does not grant permission to change transcripts, run tools,
@@ -55,6 +81,9 @@ SessionHistoryStore(session_dir).save(
     current_messages, runtime_metadata, merge_metadata=True
 )
 ```
+
+Use `SessionHistoryStore(session_dir, windows_policy="private")` for a host that
+has opted into private Windows history; do not mix writer policies on one store.
 
 `merge_metadata=True` preserves unknown existing metadata and current naming
 fields while applying the incoming runtime fields. Explicit renames use

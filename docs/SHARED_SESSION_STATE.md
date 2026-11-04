@@ -6,9 +6,9 @@ checkpoint for one canonical workspace and one exact root session ID.
 
 ## Supported boundary
 
-- Writers require the same host, the same OS user, POSIX, and a local filesystem
-  with the native locking primitive. Windows host policy is an application
-  concern; this library does not promise a Windows locking backend.
+- Checkpoint writers require the same host, the same OS user, POSIX, and a local
+  filesystem with the native locking primitive. Windows has only the bounded
+  ownership/read slice described below, not authoritative persistence.
 - All participants must use the existing workspace path (it is resolved
   canonically), the exact root UUID, and the same explicit `root` or
   `AMPLIFIER_SESSION_STATE_HOME`. The default root is
@@ -30,7 +30,81 @@ Applications implementing host migration can use the separate
 blocked after a saved writer releases its lock. This persists admission state
 beside native history and does not implement remote transfer or authentication.
 
-## Minimal participant pattern
+## Windows first slice
+
+The Windows backend uses Python 3.11+ standard-library `ctypes`, with explicit
+pointer-sized Win32 signatures. Advisory atomic replacement requires Windows 10
+version 1607 or later (including Windows 11), local NTFS, and support for
+`SetFileInformationByHandle(FileRenameInfoEx)` with
+`REPLACE_IF_EXISTS | POSIX_SEMANTICS`. Existing owner readers retain the old
+complete file; subsequent opens see the new complete file. Unsupported rename
+semantics fail explicitly, with no delete-first, truncate, legacy-move fallback
+or wait for readers to close. This is atomic visibility, not a namespace
+durability acknowledgment. The backend introduces no new dependency, state root,
+layout, application lock, lease or takeover protocol.
+
+| Operation | Windows boundary |
+| --- | --- |
+| `acquire()`, `HeldSession.check()`, `release()` | Exclusive nonblocking `LockFileEx` on the stable `session.lock`; the handle and all pinned coordination ancestors deny delete sharing and are non-inheritable. Closing/crashing releases the OS lock, not by deleting its target. |
+| `read()`, `stamp()`, `list_ids()` | Read-only access through validated handles and pinned ancestors on a local fixed NTFS volume. No missing directories are created. A stamp uses file identity, size, write time and creation time; it is not a durability acknowledgment. |
+| `transfer_fence()` and ordinary admission | Inspect the existing native marker safely without creating native directories. Existing valid fences block execution; malformed, foreign-owned or unsafe markers fail closed. Acquisition checks before publishing owner diagnostics. |
+| `owner.json` | Protected, complete temporary-file writes, file-buffer flush and atomic replacement for advisory display only. Only explicit advisory owner readers share deletion, so a diagnostic reader does not block replacement. Lock and directory pins still deny deletion. Release closes ownership even if advisory publication fails. No directory/ancestor power-loss persistence is claimed. |
+| Authority mutation and transfer recovery | Checkpoint `write()`/`delete_checkpoint()`, fence save/commit/clear, `acquire_transfer()` and `confirm_transfer_commit()` explicitly raise `SharedStateError` before authority mutation. Namespace persistence is not yet qualified. |
+
+All traversed components reject reparse points (including junctions), alternate
+namespace/short-name aliases and unsafe path forms. Regular state files must
+have one hardlink only. State-owned directories and files are created with an
+explicit current-user owner and protected private DACL **at creation**, not
+repaired afterward with `chmod`. Existing private objects must have the same
+owner, a protected non-null DACL and no ordinary-other-user allow ACEs, including
+read access or inherit-only grants. SYSTEM, built-in Administrators and the
+specific TrustedInstaller service SID retain normal OS authority; OWNER RIGHTS
+refers only to the verified owner. These exceptions do not include Users,
+Authenticated Users, arbitrary services or localized account names.
+Unsupported ACE types fail closed. Creation still grants only the current user;
+validation never silently tightens or repairs an existing DACL.
+
+Before opening or creating a descendant, **every** directory from the drive root
+is pinned and checked for trusted ownership and untrusted mutation rights.
+Nonprivate ancestors/native marker directories may be owned by the current user
+or those explicit OS authorities. They may allow ordinary reads. Above the
+configured state/native root, an effective create-subdirectory-only grant is
+also permitted: it does not authorize reparse conversion or deletion of a pinned
+parent. `FILE_ADD_FILE`/`FILE_WRITE_DATA`, `FILE_WRITE_ATTRIBUTES`, delete-child,
+ACL/owner changes and other mutation grants are not exempt. Inherit-only ACEs
+grant no access to a nonprivate parent; each existing child is checked separately,
+and new children receive protected DACLs.
+
+Win32 sharing does **not** exclude attribute-only access. The ACL checks, not
+the share mode, prevent untrusted reparse conversion before absolute-path
+creation. [MS-FSA FSCTL_SET_REPARSE_POINT](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/4aeefef8-92c3-4abc-af7a-a610caf8a165)
+requires `FILE_WRITE_DATA` **or** `FILE_WRITE_ATTRIBUTES`; both are rejected for
+untrusted effective grants. Default ACLs vary by Windows version and deployment.
+A shared temp or system-drive ancestor that grants ordinary users these rights
+is refused before descendant creation, even when the configured state root
+would be private. The error identifies the unsafe traversal directory; access
+denied and unsupported ACEs are never treated as successful validation.
+
+Exact Windows session IDs must be lowercase and not DOS device names
+(`con`, `nul`, `com1`, etc.). IDs are rejected rather than silently lowercased.
+Differently-cased existing owned directory/file names also fail closed. Keep
+the canonical workspace and the same explicit coordination root/native home
+across participants. Do not use UNC, mapped network, removable, non-NTFS or
+reparse-backed paths. All path chains are bounded to 128 components.
+Retained identities require the exact resolved Windows path string, not
+case-insensitive `Path` equality: a case alias or case-only rename fails closed
+rather than creating a second string-hashed lock address. An exact missing
+workspace remains retainable without being recreated when surviving ancestors
+still resolve to the same spelling.
+
+The OS user and code running as that user remain trusted. A handle is
+process-bound and non-copyable; applications must still capture the capability
+for each task and settle runtime work before release. No UID is fabricated.
+Cooperative release-request handoff is still POSIX-only; there is no Windows
+named-pipe or TCP substitute in this slice. This is not complete Windows host
+or runtime support, and tests skipped on POSIX do not qualify native behavior.
+
+## Minimal participant pattern (POSIX checkpoint writer)
 
 ```python
 from pathlib import Path
@@ -104,20 +178,21 @@ Under the configured root, version 1 addresses a session as:
 
 ```text
 v1/<sha256(UTF-8 canonical workspace path)>/<exact root ID>/
-    session.lock     # stable POSIX flock target; never unlink while in use
+    session.lock     # stable flock (POSIX) / LockFileEx (Windows) target; never unlink
     owner.json       # advisory display information, not a lease
     checkpoint.json  # atomically replaced authority
 ```
 
-The checkpoint has exactly these keys: `version` (1), `workspace`, `session_id`,
+On POSIX, the checkpoint has exactly these keys: `version` (1), `workspace`, `session_id`,
 `bundle`, `messages`, and `metadata`. State-owned directories are private to the
-OS user (0700); files are private (0600). Acquisition does not rewrite the
+OS user (0700); files are private (0600). Windows uses the private DACL boundary
+above instead of POSIX modes. Acquisition does not rewrite the
 checkpoint, so taking and releasing a lock alone does not invalidate its stamp.
 Read-only history may inspect an atomic checkpoint without becoming a writer;
 restoring a context for execution requires acquiring first and reading again.
 Do not synchronize or replay event logs, pending approvals, or interrupted tools.
 
-## Safe checkpoint deletion
+## Safe checkpoint deletion (POSIX only)
 
 After a host's own human confirmation, a live holder can remove only the
 authoritative checkpoint:
@@ -132,7 +207,7 @@ not remove or replace `session.lock` or the session directory. The same live
 holder may later call `write()` to recreate the checkpoint. Never delete the
 stable lock file or directory to try to take over a session.
 
-## Three-host acceptance matrix
+## Three-host acceptance matrix (POSIX checkpoint participants)
 
 | Situation | Expected result |
 | --- | --- |

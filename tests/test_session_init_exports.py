@@ -60,6 +60,15 @@ class TestExistingExports:
 class TestNewExports:
     """Verify newly added symbols are exported from the session package."""
 
+    def test_prepare_session_directory_export_is_canonical_callable(self):
+        from amplifier_foundation.session import prepare_session_directory
+        from amplifier_foundation.session.history import (
+            prepare_session_directory as history_prepare_session_directory,
+        )
+
+        assert prepare_session_directory is history_prepare_session_directory
+        assert callable(prepare_session_directory)
+
     def test_is_real_user_message_export(self):
         from amplifier_foundation.session import is_real_user_message  # noqa: F401
 
@@ -113,14 +122,15 @@ class TestFinderExports:
 class TestDunderAll:
     """Verify the public session utility names."""
 
-    def test_all_contains_63_names(self):
+    def test_all_contains_64_unique_names(self):
         import amplifier_foundation.session as session
 
         assert hasattr(session, "__all__"), "__all__ must be defined"
-        assert len(session.__all__) == 63, (
-            f"Expected 63 names in __all__, got {len(session.__all__)}: "
+        assert len(session.__all__) == 64, (
+            f"Expected 64 names in __all__, got {len(session.__all__)}: "
             f"{sorted(session.__all__)}"
         )
+        assert len(set(session.__all__)) == 64, "__all__ must not contain duplicates"
 
     def test_all_includes_new_names(self):
         import amplifier_foundation.session as session
@@ -154,6 +164,7 @@ class TestDunderAll:
             "SessionHistory",
             "SessionHistoryError",
             "SessionHistoryStore",
+            "prepare_session_directory",
             "associate_events",
             # Portable shared-state checkpoints
             "FileStamp",

@@ -763,3 +763,71 @@ async def test_full_clone_fallback_replaces_checkout_not_cleanup_custody(
     assert await store.ensure(url, revision) == target
     assert store.verify(url, revision) == target
     assert not list(target.parent.glob(".source-*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize(
+    "ref,rows,expected",
+    [
+        ("HEAD", [("a" * 40, "HEAD")], "a" * 40),
+        ("refs/heads/main", [("b" * 64, "refs/heads/main")], "b" * 64),
+        ("v1", [("a" * 40, "refs/tags/v1"), ("b" * 40, "refs/tags/v1^{}")], "b" * 40),
+        ("main", [("a" * 40, "refs/heads/main")], "a" * 40),
+        ("main", [("bad", "refs/heads/main"), ("a" * 40, "refs/heads/other")], None),
+        ("v1", [("a" * 40, "refs/heads/v1"), ("b" * 40, "refs/tags/v1")], ValueError),
+    ],
+)
+async def test_remote_revision_inert_routes_keep_ref_semantics(monkeypatch, windows, ref, rows, expected):
+    """Actual resolver body; all process/thread boundaries are inert doubles."""
+    from types import SimpleNamespace
+    from amplifier_foundation.sources import shared, _windows_git
+
+    calls = []
+    output = "".join(f"{revision}\t{name}\n" for revision, name in rows)
+    monkeypatch.setattr(shared, "os", SimpleNamespace(name="nt" if windows else "posix"))
+
+    def old_output(args, **kwargs):
+        calls.append(("posix", args, kwargs))
+        return output
+
+    async def native_output(args, **kwargs):
+        calls.append(("windows", args, kwargs))
+        return output
+
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(shared.subprocess, "check_output", old_output)
+    monkeypatch.setattr(_windows_git, "check_output", native_output)
+    monkeypatch.setattr(shared.asyncio, "to_thread", inline)
+    if expected is ValueError:
+        with pytest.raises(ValueError, match="Ambiguous"):
+            await shared.remote_revision("https://example.invalid/repo", ref)
+    else:
+        assert await shared.remote_revision("https://example.invalid/repo", ref) == expected
+    patterns = [ref] if ref == "HEAD" or ref.startswith("refs/") else [
+        "refs/heads/" + ref, "refs/tags/" + ref, "refs/tags/" + ref + "^{}",
+    ]
+    assert calls == [(
+        "windows" if windows else "posix",
+        ["git", "ls-remote", "https://example.invalid/repo", *patterns],
+        {"timeout": 35} if windows else {"text": True, "timeout": 35},
+    )]
+
+
+@pytest.mark.asyncio
+async def test_remote_revision_inert_failure_cannot_select_partial_output(monkeypatch):
+    from types import SimpleNamespace
+    from amplifier_foundation.sources import shared, _windows_git
+
+    failure = subprocess.TimeoutExpired(["synthetic"], 35, output=b"a" * 40 + b"\tHEAD\n")
+
+    async def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(shared, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(_windows_git, "check_output", fail)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        await shared.remote_revision("https://example.invalid/repo", "HEAD")
+    assert caught.value is failure

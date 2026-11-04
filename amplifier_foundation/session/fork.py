@@ -14,12 +14,14 @@ The forked session is independently resumable and addressable.
 from __future__ import annotations
 
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .events import slice_events_for_fork
+from .jsonl import _private_windows
 from .messages import (
     count_turns,
     find_orphaned_tool_calls,
@@ -68,6 +70,7 @@ def fork_session(
     target_dir: Path | None = None,
     include_events: bool = True,
     handle_orphaned_tools: str = "complete",
+    windows_policy: str = "legacy",
 ) -> ForkResult:
     """Fork a stored session from a specific turn.
 
@@ -83,6 +86,8 @@ def fork_session(
         target_dir: Base directory to create new session in.
                     Defaults to sibling of parent session.
         include_events: Whether to copy and slice events.jsonl (default: True).
+        windows_policy: "legacy" by default; "private" explicitly opts into
+            private Windows reads and create-only destination reservation.
         handle_orphaned_tools: How to handle tool_use without tool_result:
             - "complete": Add synthetic error result (default)
             - "remove": Remove the orphaned tool_use content
@@ -93,6 +98,7 @@ def fork_session(
 
     Raises:
         FileNotFoundError: If parent session doesn't exist or lacks transcript.
+        FileExistsError: In private Windows mode, if the destination already exists.
         ValueError: If turn number is invalid.
 
     Example:
@@ -102,7 +108,14 @@ def fork_session(
         ... )
         >>> print(f"Forked to {result.session_id} at turn {result.forked_from_turn}")
     """
-    parent_session_dir = Path(parent_session_dir).resolve()
+    private_windows = _private_windows(windows_policy)
+    if private_windows:
+        from ._windows_ownership import _absolute
+
+        # Do not resolve away a reparse ancestor before the private reader sees it.
+        parent_session_dir = _absolute(Path(parent_session_dir))
+    else:
+        parent_session_dir = Path(parent_session_dir).resolve()
 
     # Validate parent exists
     transcript_path = parent_session_dir / TRANSCRIPT_FILENAME
@@ -116,10 +129,16 @@ def fork_session(
         )
 
     # Load parent data
-    messages = load_transcript(parent_session_dir)
-    parent_metadata = (
-        load_metadata(parent_session_dir) if metadata_path.exists() else {}
-    )
+    if private_windows:
+        from .history import SessionHistoryStore
+
+        parent = SessionHistoryStore(parent_session_dir, windows_policy=windows_policy).load(include_events=False)
+        messages, parent_metadata = parent.messages, parent.metadata
+    else:
+        messages = load_transcript(parent_session_dir)
+        parent_metadata = (
+            load_metadata(parent_session_dir) if metadata_path.exists() else {}
+        )
     parent_id = parent_metadata.get("session_id", parent_session_dir.name)
 
     # Determine turn
@@ -138,21 +157,26 @@ def fork_session(
 
     # Generate new session ID
     session_id = new_session_id or str(uuid.uuid4())
+    if private_windows and (
+        Path(session_id).name != session_id or session_id in {".", ".."}
+    ):
+        raise ValueError("Windows fork ID must be a single path component")
 
     # Determine target directory
     if target_dir is None:
         # Create sibling to parent
         base_dir = parent_session_dir.parent
     else:
-        base_dir = Path(target_dir).resolve()
+        base_dir = (
+            _absolute(Path(target_dir)) if private_windows else Path(target_dir).resolve()
+        )
 
     new_session_dir = base_dir / session_id
 
-    # Create new session directory
-    new_session_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write forked transcript
-    write_jsonl(new_session_dir / TRANSCRIPT_FILENAME, sliced)
+    if not private_windows:
+        # Default legacy path is unchanged on both Windows and POSIX.
+        new_session_dir.mkdir(parents=True, exist_ok=True)
+        write_jsonl(new_session_dir / TRANSCRIPT_FILENAME, sliced)
 
     # Write metadata with lineage
     now = datetime.now(timezone.utc).isoformat()
@@ -167,27 +191,38 @@ def fork_session(
         "bundle": parent_metadata.get("bundle"),
         "model": parent_metadata.get("model"),
     }
-    write_metadata(new_session_dir, new_metadata)
+    with ExitStack() as publication:
+        if private_windows:
+            from ._windows_history import reserve_new_session
 
-    # Handle events.jsonl
-    events_count = 0
-    if include_events and events_path.exists():
-        try:
-            events_count = slice_events_for_fork(
-                events_path,
-                transcript_path,
-                turn,
-                new_session_dir / EVENTS_FILENAME,
-                new_session_id=session_id,
-                parent_session_id=parent_id,
+            # Create-only reservation, not exists-then-save: reject private
+            # destinations, self-forks and concurrent same-ID contenders alike.
+            publication.enter_context(reserve_new_session(new_session_dir))
+            SessionHistoryStore(new_session_dir, windows_policy=windows_policy).save(
+                sliced, new_metadata, preserve_system=True
             )
-        except Exception:
-            # Events slicing is best-effort - don't fail the fork
-            # Just create empty events file
+        else:
+            write_metadata(new_session_dir, new_metadata)
+
+        # Handle events.jsonl; Windows retains the reservation pins throughout.
+        events_count = 0
+        if include_events and events_path.exists():
+            try:
+                events_count = slice_events_for_fork(
+                    events_path,
+                    transcript_path,
+                    turn,
+                    new_session_dir / EVENTS_FILENAME,
+                    new_session_id=session_id,
+                    parent_session_id=parent_id,
+                )
+            except Exception:
+                # Events slicing is best-effort - don't fail the fork
+                # Just create empty events file
+                (new_session_dir / EVENTS_FILENAME).write_text("")
+        elif include_events:
+            # Create empty events file for consistency
             (new_session_dir / EVENTS_FILENAME).write_text("")
-    elif include_events:
-        # Create empty events file for consistency
-        (new_session_dir / EVENTS_FILENAME).write_text("")
 
     return ForkResult(
         session_id=session_id,

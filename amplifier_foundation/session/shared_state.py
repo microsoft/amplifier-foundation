@@ -1,7 +1,8 @@
 """Portable, process-exclusive checkpoints for shared root sessions.
 
-This is a narrow POSIX/local-filesystem mechanism.  Applications decide when a
-session is shared and which provider records belong in a checkpoint.
+POSIX supports authority checkpoints. Windows has a bounded local-NTFS ownership
+and safe-read backend only; authoritative persistence is deliberately refused.
+Applications decide when a session is shared and which records belong in a checkpoint.
 """
 
 from __future__ import annotations
@@ -123,9 +124,12 @@ def _retained_workspace(workspace: object) -> Path:
     path = Path(workspace)
     try:
         # The comparison rejects traversal, alternate spellings, and a new
-        # symlink in any surviving ancestor. No directory is created here.
+        # symlink in any surviving ancestor. Windows Path equality folds case,
+        # but the coordination key hashes the exact string. Never rewrite a
+        # retained identity or let a case alias acquire a separate lock.
         if (not path.is_absolute() or str(path) != workspace
-                or path.resolve(strict=False) != path
+                or (str(path.resolve(strict=False)) != workspace if os.name == "nt"
+                    else path.resolve(strict=False) != path)
                 or (path.exists() and not path.is_dir())):
             raise ValueError("retained workspace must remain a canonical directory address")
     except (OSError, RuntimeError) as exc:
@@ -136,6 +140,10 @@ def _retained_workspace(workspace: object) -> Path:
 def _session_id(session_id: str) -> str:
     if not isinstance(session_id, str) or not _ID_RE.fullmatch(session_id):
         raise ValueError("session_id must be 1-128 ASCII letters, digits, or hyphens")
+    if os.name == "nt":
+        from ._windows_ownership import validate_session_id
+
+        validate_session_id(session_id)
     return session_id
 
 
@@ -148,9 +156,43 @@ def _ensure_supported() -> None:
         raise RuntimeError("SharedSessionStore writing requires a POSIX local filesystem")
 
 
+def _require_authority_persistence() -> None:
+    if os.name == "nt":
+        raise SharedStateError(
+            "Windows first slice refuses authoritative checkpoint/fence mutations and "
+            "commit confirmation: namespace persistence is not qualified"
+        )
+
+
+def _windows_read_json(path: Path, *, root: Path, private_dirs: bool = True) -> dict[str, Any] | None:
+    from ._windows_ownership import read_bytes
+
+    raw = read_bytes(path, root=root, limit=_MAX_CHECKPOINT_BYTES, private_dirs=private_dirs)
+    if raw is None:
+        return None
+    if len(raw) > _MAX_CHECKPOINT_BYTES:
+        raise SharedStateError(f"{path.name} exceeds the size limit")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SharedStateError(f"{path.name} is not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise SharedStateError(f"{path.name} must contain a JSON object")
+    return value
+
+
+def _windows_publish_owner(ownership: Any, owner: dict[str, Any]) -> None:
+    encoded = json.dumps(owner, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > _MAX_CHECKPOINT_BYTES:
+        raise ValueError("owner diagnostics exceed the size limit")
+    ownership.publish_owner(encoded)
+
+
 def _validate_private_directory(path: Path, *, create: bool) -> None:
     """Create or validate one state-owned directory without following a link."""
 
+    if os.name == "nt":
+        raise SharedStateError("POSIX private-directory helper is unavailable on Windows; handoff is not supported")
     try:
         result = path.lstat()
     except FileNotFoundError:
@@ -294,6 +336,7 @@ def _read_json(path: Path, *, missing_ok: bool = False) -> dict[str, Any] | None
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    _require_authority_persistence()
     encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
     if len(encoded) > _MAX_CHECKPOINT_BYTES:
         raise ValueError("checkpoint exceeds the size limit")
@@ -375,7 +418,12 @@ def _owner_details(app: str, diagnostics: dict[str, Any], workspace: Path, sessi
     try:
         user = getpass.getuser()
     except (KeyError, OSError, ImportError):
-        user = str(os.getuid())
+        if os.name == "nt":
+            from ._windows_ownership import _API
+
+            user = _API().sid
+        else:
+            user = str(os.getuid())
     owner: dict[str, Any] = {
         "app": app,
         "hostname": socket.gethostname(),
@@ -445,8 +493,13 @@ class SharedSessionStore:
         self.workspace = workspace
         self.session_id = _session_id(session_id)
         self.root = Path(root).expanduser() if root is not None else _default_root()
+        if os.name == "nt":
+            from ._windows_ownership import _absolute
+
+            self.root = _absolute(self.root)
         self._directory = self.root / "v1" / _workspace_key(self.workspace) / self.session_id
-        home = Path(os.environ.get("AMPLIFIER_HOME") or Path.home() / ".amplifier").expanduser().absolute()
+        home_path = Path(os.environ.get("AMPLIFIER_HOME") or Path.home() / ".amplifier").expanduser()
+        home = _absolute(home_path) if os.name == "nt" else home_path.absolute()
         slug = str(self.workspace).replace("/", "-").replace("\\", "-").replace(":", "")
         self._native_root = home
         self._native_directory = home / "projects" / (slug if slug.startswith("-") else "-" + slug) / "sessions" / self.session_id
@@ -507,8 +560,11 @@ class SharedSessionStore:
 
     def transfer_fence(self) -> dict[str, Any] | None:
         """Inspect durable transfer state without acquiring or starting work."""
-        self._transfer_directory()
-        value = _read_json(self.transfer_fence_path, missing_ok=True)
+        if os.name == "nt":
+            value = _windows_read_json(self.transfer_fence_path, root=self._native_root, private_dirs=False)
+        else:
+            self._transfer_directory()
+            value = _read_json(self.transfer_fence_path, missing_ok=True)
         if value is None:
             return None
         required = {"version", "session_id", "transfer_id", "destination_host", "role", "phase"}
@@ -524,6 +580,7 @@ class SharedSessionStore:
         return value
 
     def _save_transfer_fence(self, record: dict[str, Any]) -> None:
+        _require_authority_persistence()
         self._transfer_directory(create=True)
         _fsync_ancestor_chain(self.transfer_fence_path.parent)
         _atomic_json(self.transfer_fence_path, record)
@@ -543,11 +600,16 @@ class SharedSessionStore:
 
     def stamp(self) -> FileStamp | None:
         """Return checkpoint metadata only; this does not parse JSON or create paths."""
+        if os.name == "nt":
+            from ._windows_ownership import stamp
+
+            return stamp(self.checkpoint_path, root=self.root)
         return file_stamp(self.checkpoint_path)
 
     def read(self) -> dict[str, Any] | None:
         """Read and validate a complete atomic checkpoint without taking ownership."""
-        value = _read_json(self.checkpoint_path, missing_ok=True)
+        value = (_windows_read_json(self.checkpoint_path, root=self.root)
+                 if os.name == "nt" else _read_json(self.checkpoint_path, missing_ok=True))
         if value is None:
             return None
         required = {"version", "workspace", "session_id", "bundle", "messages", "metadata"}
@@ -576,6 +638,7 @@ class SharedSessionStore:
         application must authenticate the transfer before clearing/committing.
         Committed source markers cannot be acquired through this API.
         """
+        _require_authority_persistence()
         _session_id(transfer_id)
         return cast("HeldTransfer", self._acquire(app=app, diagnostics=diagnostics, transfer_id=transfer_id))
 
@@ -585,6 +648,7 @@ class SharedSessionStore:
         This returns evidence only, never an execution or clearing capability.
         It cannot commit a staged marker or change the recorded destination.
         """
+        _require_authority_persistence()
         _session_id(transfer_id)
         held = cast("HeldTransfer", self._acquire(app=app, diagnostics=diagnostics,
                     transfer_id=transfer_id, committed_only=True))
@@ -595,6 +659,10 @@ class SharedSessionStore:
 
     def _acquire(self, *, app: str, diagnostics: dict[str, Any], transfer_id: str | None = None,
                  committed_only: bool = False) -> "HeldSession":
+        if os.name == "nt":
+            if transfer_id is not None or committed_only:
+                _require_authority_persistence()
+            return self._acquire_windows(app=app, diagnostics=diagnostics)
         _ensure_supported()
         owner = _owner_details(app, diagnostics, self.workspace, self.session_id, self.root)
         _ensure_private_state_path(self.root, self._directory)
@@ -640,12 +708,44 @@ class SharedSessionStore:
             return HeldTransfer(self, fd, owner, transfer_id)
         return HeldSession(self, fd, owner)
 
+    def _acquire_windows(self, *, app: str, diagnostics: dict[str, Any]) -> "HeldSession":
+        from ._windows_ownership import Ownership
+
+        owner = _owner_details(app, diagnostics, self.workspace, self.session_id, self.root)
+        # The native byte-range lock also excludes this process's other handles;
+        # there is no second Windows/application lock or replaceable lock target.
+        try:
+            ownership = Ownership(self._directory, root=self.root)
+        except BlockingIOError:
+            try:
+                advisory = _windows_read_json(self._owner_path, root=self.root)
+            except (OSError, SharedStateError):
+                advisory = None
+            if advisory is not None and advisory.get("active") is not True:
+                advisory = None
+            raise SessionBusyError(advisory) from None
+        try:
+            fence = self.transfer_fence()
+            if fence is not None:
+                raise SessionTransferFencedError(fence)
+            _windows_publish_owner(ownership, owner)
+            held = HeldSession(self, -1, owner)
+            held._windows = ownership
+            return held
+        except BaseException:
+            ownership.close()
+            raise
+
     @classmethod
     def list_ids(cls, workspace: str | os.PathLike[str], *, root: str | os.PathLike[str] | None = None) -> list[str]:
         """List checkpoint IDs for an existing workspace without creating state paths."""
         canonical = _canonical_workspace(workspace)
         root_path = Path(root).expanduser() if root is not None else _default_root()
         directory = root_path / "v1" / _workspace_key(canonical)
+        if os.name == "nt":
+            from ._windows_ownership import list_ids
+
+            return list_ids(directory, root=root_path)
         try:
             entries = list(directory.iterdir())
         except FileNotFoundError:
@@ -669,6 +769,7 @@ class HeldSession:
         self._mutex = threading.RLock()
         self._release_registration = None
         self._release_requests: dict[str, Any] = {}
+        self._windows: Any = None
 
     @property
     def owner(self) -> dict[str, Any]:
@@ -690,6 +791,8 @@ class HeldSession:
 
     def check(self) -> None:
         self._check_active()
+        if self._windows is not None:
+            self._windows.check()
         fence = self._store.transfer_fence()
         if fence is not None:
             raise SessionTransferFencedError(fence)
@@ -715,6 +818,7 @@ class HeldSession:
                   "destination_host": destination_host, "role": role, "phase": "staged"}
         with self._mutex:
             self._check_active()
+            _require_authority_persistence()
             existing = self._store.transfer_fence()
             if existing is not None:
                 if existing != record:
@@ -735,6 +839,7 @@ class HeldSession:
     def write(self, messages: list[dict[str, Any]], *, bundle: str, metadata: dict[str, Any] | None = None) -> FileStamp:
         """Atomically replace the checkpoint while this handle retains the OS lock."""
         self.check()
+        _require_authority_persistence()
         if not isinstance(bundle, str) or not bundle:
             raise ValueError("bundle must be a non-empty string")
         bundle = bundle.removeprefix("bundle:")
@@ -763,6 +868,7 @@ class HeldSession:
         """Delete only the checkpoint while retaining this session's stable lock."""
 
         self.check()
+        _require_authority_persistence()
         with self._mutex:
             self.check()
             _validate_private_file(self._store.checkpoint_path)
@@ -788,6 +894,12 @@ class HeldSession:
             released = dict(self._owner)
             released["active"] = False
             released["released_at"] = datetime.now(timezone.utc).isoformat()
+            if self._windows is not None:
+                try:
+                    _windows_publish_owner(self._windows, released)
+                finally:
+                    self._windows.close()
+                return
             try:
                 _atomic_json(self._store._owner_path, released)
             finally:
@@ -826,6 +938,7 @@ class HeldTransfer(HeldSession):
         """Permanently fence the source after the host verifies its transfer."""
         with self._mutex:
             self._check_active()
+            _require_authority_persistence()
             record = self._store.transfer_fence()
             if record is None or record["transfer_id"] != self._transfer_id:
                 raise SharedStateError("transfer commit requires the exact source fence")
@@ -842,6 +955,7 @@ class HeldTransfer(HeldSession):
         calling. Release this capability and acquire normally before execution.
         """
         with self._mutex:
+            _require_authority_persistence()
             self._staged()
             self._store.transfer_fence_path.unlink()
             _fsync_directory(self._store.transfer_fence_path.parent)
