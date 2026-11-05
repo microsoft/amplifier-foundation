@@ -1,8 +1,8 @@
 # Amplifier Ecosystem
 This is development OF the Amplifier ecosystem (kernel, modules, bundles, foundation), not general app work. The host's operating instructions still govern.
-- Respect dependency order: core → foundation → modules → bundles → apps; never push downstream before upstream is merged.
-- Validate cross-repo changes together in an isolated DTU; per-repo unit tests alone are insufficient.
-- Safe push order: push core-side first, wait for merge and CI, then push module/bundle/app.
+- Merge and release in dependency order: core → foundation → modules → bundles → apps. Dependent branches and draft PRs may be pushed earlier for parallel review; link the upstream PRs and state the dependency hold.
+- Validate cross-repo changes together in an isolated DTU; per-repo unit tests alone are insufficient. Keep candidate-graph evidence distinct from acceptance against merged upstream revisions.
+- Before merging or releasing a dependent change, resolve the upstream hold and verify the affected integration against accepted upstream revisions. Early review does not waive required checks, independent approvals or repository protections.
 - Before packaging recommendations, read `foundation:docs/BUNDLE_GUIDE.md`: behaviors first; preserve the chosen host; keep root manifests that anchor repo namespaces.
 - Never read `events.jsonl` directly: lines can exceed 100k tokens and crash the session. Use available Context Intelligence agents or a session-navigation capability.
 - For a session that will not resume, use Foundation's `python scripts/amplifier-session.py {diagnose,repair,rewind,info,find} <session-dir>`; there is no `amplifier session repair` subcommand. Routine transcript repair runs before each turn and on resume.
