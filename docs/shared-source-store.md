@@ -13,6 +13,33 @@ Branch/tag ambiguity requires an explicit ref. Credential-bearing URLs are not
 adopted into shared storage.
 The Git status API inspects the binding without cloning or replacing it.
 
+On POSIX, publication freezes the verified stage's descendants, renames its
+still-writable root, then seals that root while retaining the per-object writer
+lock. This ordering supports macOS filesystems that reject renaming write-disabled
+directories (Apple's archived documentation describes this restriction, but
+macOS 26.6.2 CI allowed the rename on both its default volume and HFS+).
+A root with write bits is incomplete: `verify()` and cached status
+reject it, and another `ensure()` waits for the writer. Windows retains its
+seal-before-rename ordering; directory attributes there are not POSIX access
+controls. Existing completed objects and bindings keep their format.
+
+Git clones into a child of an owned staging directory, so its full-clone
+fallback can replace the checkout inode without replacing cleanup custody.
+Failed publication removes only that stable staging directory (or the verified
+checkout's renamed, incomplete inode), restoring directory permissions without
+following symlinks. Cleanup
+failure is attached to the primary exception rather than replacing it; an
+incomplete residue is retained and rejected, not silently adopted or repaired.
+Cancellation drains the active I/O, including repeated cancellation, before
+releasing its writer lock. Successfully sealed objects survive caller
+cancellation.
+
+These are cooperative store API guarantees, not protection against unrelated
+filesystem writers. Older Foundation readers do not check the POSIX root seal;
+hosts sharing a store across versions must not expose an existing binding to an
+object being newly published by the corrected writer until all readers use the
+completion check. Normal binding creation still follows completed publication.
+
 A legacy source is preserved until the application adopts a verified staging
 copy. Dirty or ignored/untracked work and external Git directories cannot enter
 the store. A dirty legacy checkout remains authoritative over a binding; refresh
