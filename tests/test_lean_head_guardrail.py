@@ -121,9 +121,13 @@ REQUIRED_RULES = {
         "development OF the Amplifier ecosystem",
         "dependency order",
         "core → foundation → modules → bundles → apps",
-        "never push downstream before upstream is merged",
+        # Intentional sequencing change: review can precede upstream acceptance.
+        "Dependent branches and draft PRs may be pushed for parallel review",
+        "state the dependency hold",
         "DTU",
-        "push core-side first",
+        "Before downstream merge/release",
+        "accepted upstream revisions",
+        "does not waive checks, independent approvals or protections",
         "Never read `events.jsonl` directly",
         "100k tokens",
         # Restored during this change -- present in stock, absent from the v1
