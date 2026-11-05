@@ -211,6 +211,18 @@ Note what the anchors row shows: `bundles/anchors` mounts `tool-skills` with
 turning visibility off is a real lever and the reader should see what it
 bought.
 
+**Scope estimates to configured sources, not repository inventory.** Skill costs
+come from the manifest's configured directory catalogs, deduplicated by name in
+source-priority order; relative paths use runtime cwd, not the manifest directory
+or `namespace_root`. An own-repository identity hint maps Git subpaths but verifies
+neither checkout content nor ref. Unknown earlier sources can shadow later names:
+omit potentially shadowed contributions and name unknowns, including unmeasured
+ambient discovery. Correcting attribution is not a runtime saving. A raw
+direct-manifest subtotal is not a rendered head measurement or a guaranteed
+mathematical runtime lower bound; below-threshold partials do not certify fit.
+Factual validation reports render machine results, not analysis prose.
+Skipped or unknown checks never earn PASS from a narrative.
+
 ## V6 — Provider disposition: absolutes for invariants, decision rules for judgment
 
 Compliant models (measured: "sol complies") execute literal imperatives —

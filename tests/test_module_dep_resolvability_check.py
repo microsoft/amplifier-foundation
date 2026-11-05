@@ -25,6 +25,7 @@ These tests both:
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 import textwrap
@@ -60,11 +61,15 @@ def check_script(steps_by_id):
         pytest.skip("module-dep-resolvability-check step not found")
     command = step["command"]
     match = re.search(r"<< 'EOF'\n(.*)\nEOF\n?$", command, re.DOTALL)
-    assert match, "Could not extract heredoc body from module-dep-resolvability-check command"
+    assert match, (
+        "Could not extract heredoc body from module-dep-resolvability-check command"
+    )
     return match.group(1)
 
 
-def run_check(check_script: str, repo_dir: Path, published_distributions: str = "") -> dict:
+def run_check(
+    check_script: str, repo_dir: Path, published_distributions: str = ""
+) -> dict:
     """Run the extracted check script against repo_dir, returning parsed JSON.
 
     Substitutes the recipe's {{published_distributions}} template placeholder
@@ -81,7 +86,9 @@ def run_check(check_script: str, repo_dir: Path, published_distributions: str = 
     Runs as a subprocess (not imported/exec'd in-process, so a stray
     sys.exit() in the script can't take down the test runner).
     """
-    script = check_script.replace('"""{{published_distributions}}"""', repr(published_distributions))
+    script = check_script.replace(
+        '"""{{published_distributions}}"""', repr(published_distributions)
+    )
     env = dict(os.environ)
     env["VALIDATE_BUNDLE_REPO_PATH"] = str(repo_dir)
     proc = subprocess.run(
@@ -91,7 +98,9 @@ def run_check(check_script: str, repo_dir: Path, published_distributions: str = 
         timeout=30,
         env=env,
     )
-    assert proc.returncode == 0, f"Check script failed (exit {proc.returncode}): {proc.stderr}"
+    assert proc.returncode == 0, (
+        f"Check script failed (exit {proc.returncode}): {proc.stderr}"
+    )
     return json.loads(proc.stdout)
 
 
@@ -168,7 +177,9 @@ class TestQualityClassificationWiring:
 
     def test_error_severity_feeds_critical_count(self, recipe_data):
         _, content = recipe_data
-        assert 'critical_count += len([i for i in results["module_dep_issues"]' in content
+        assert (
+            'critical_count += len([i for i in results["module_dep_issues"]' in content
+        )
 
 
 class TestSynthesizeReportWiring:
@@ -176,32 +187,44 @@ class TestSynthesizeReportWiring:
         _, content = recipe_data
         assert "Module Dependency Resolvability" in content
 
-    def test_synthesize_report_references_output(self, steps_by_id):
-        step = steps_by_id["synthesize-report"]
-        assert "{{module_dep_resolvability_check}}" in step["prompt"]
+    def test_synthesize_report_references_output(
+        self, steps_by_id, tmp_path, check_script
+    ):
+        helpers = runpy.run_path(
+            str(Path(__file__).with_name("test_validate_bundle_repo_integration.py"))
+        )
+        _write(tmp_path / "pyproject.toml", '[project]\nname = "acme"\n')
+        _write(
+            tmp_path / "modules/mod/pyproject.toml",
+            '[project]\nname = "acme-mod"\ndependencies = ["acme"]\n',
+        )
+        finding = run_check(check_script, tmp_path)
+        envelope, doc = helpers["_report_fixture"]()
+        envelope["quality_classification"]["quality_level"] = "critical"
+        envelope["inputs"]["checks"]["module_dep_resolvability_check"] = finding
+        proc = helpers["_publish_report"](
+            steps_by_id["synthesize-report"], tmp_path, envelope, doc
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "### Module Dependency Resolvability" in proc.stdout
+        inventory = next(
+            b
+            for b in helpers["_fenced_json"](proc.stdout)
+            if isinstance(b, list) and b and "record" in b[0]
+        )
+        assert inventory[0]["record"] == finding["errors"][0]
+        assert inventory[0]["record"]["fix"]
 
 
 class TestVersionAndChangelog:
     def test_version_is_current(self, recipe_data):
-        """Pinned to the recipe's current release.
-
-        Bumped 3.11.0 -> 3.12.0 by the schema-v2 migration (dependency
-        manifest + enhance_diagrams guard), then 3.12.0 -> 3.13.0 by the
-        agent-classifier / description-status fix (lane dfni), then
-        3.13.0 -> 3.14.0 by the context-token estimator fix (lane j05m,
-        extracted from 8rug: `<namespace>:<path>` includes were charged a
-        flat 500 instead of being read), then 3.14.0 -> 3.15.0 by the
-        description-alignment checks (lane pwmy: char-based length cap,
-        skill descriptions, awareness redundancy, bundle head cost), then
-        3.15.0 -> 3.16.0 by behavior-first discovery and install guidance, then
-        3.16.0 -> 3.16.1 by the mode-command/path-token boundary repair, then
-        3.16.1 -> 3.17.0 by flat-root discovery and host-owned runtime checks,
-        then 3.17.0 -> 3.17.1 by lossless payload-file transport. The
-        v3.11.0 changelog entry below is unaffected -- changelog entries
-        accumulate.
-        """
-        data, _ = recipe_data
-        assert data["version"] == "3.17.2"
+        """Current declaration, header and newest changelog must agree."""
+        data, content = recipe_data
+        header = re.search(r"Recipe v(\d+\.\d+\.\d+)", content)
+        changelog = re.search(r"^# v(\d+\.\d+\.\d+)", content, re.MULTILINE)
+        assert header and changelog
+        assert data["version"] == header[1] == changelog[1]
+        assert data["context"]["validator_version"] == data["version"]
 
     def test_changelog_has_v3_11_0_entry(self, recipe_data):
         _, content = recipe_data
@@ -221,18 +244,24 @@ class TestVersionAndChangelog:
 
 class TestCheckLogicBareSiblingReference:
     def test_bare_dependency_on_root_package_is_error(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
             dependencies = ["acme-repo>=0.1.0"]
 
             [build-system]
             build-backend = "hatchling.build"
-        """)
+        """,
+        )
         result = run_check(check_script, tmp_path)
         assert result["passed"] is False
         assert result["modules_checked"] == 1
@@ -244,42 +273,62 @@ class TestCheckLogicBareSiblingReference:
         assert "not found in the package registry" in error["message"]
         assert "allow-direct-references" in error["fix"]  # hatchling backend
 
-    def test_bare_dependency_on_sibling_module_includes_subdirectory_hint(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+    def test_bare_dependency_on_sibling_module_includes_subdirectory_hint(
+        self, tmp_path, check_script
+    ):
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
-        """)
-        _write(tmp_path / "modules" / "mod-b" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-b" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-b"
             dependencies = ["acme-module-mod-a"]
-        """)
+        """,
+        )
         result = run_check(check_script, tmp_path)
         errors = [e for e in result["errors"] if e["module"] == "mod-b"]
         assert len(errors) == 1
         assert "#subdirectory=modules/mod-a" in errors[0]["fix"]
 
     def test_uv_sources_entry_provides_no_protection(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
-        """)
-        _write(tmp_path / "modules" / "mod-b" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-b" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-b"
             dependencies = ["acme-module-mod-a"]
 
             [tool.uv.sources]
             acme-module-mod-a = { path = "../mod-a", editable = true }
-        """)
+        """,
+        )
         result = run_check(check_script, tmp_path)
         errors = [e for e in result["errors"] if e["module"] == "mod-b"]
         assert len(errors) == 1
@@ -287,29 +336,41 @@ class TestCheckLogicBareSiblingReference:
         assert "no protection" in errors[0]["message"]
 
     def test_direct_url_reference_does_not_fire(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
             dependencies = ["acme-repo @ git+https://example.com/acme-repo@main"]
-        """)
+        """,
+        )
         result = run_check(check_script, tmp_path)
         assert result["passed"] is True
         assert result["errors"] == []
 
     def test_unrelated_external_dependency_does_not_fire(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
             dependencies = ["requests>=2.0", "amplifier-core>=1.0.0"]
-        """)
+        """,
+        )
         result = run_check(check_script, tmp_path)
         assert result["passed"] is True
         assert result["errors"] == []
@@ -317,36 +378,57 @@ class TestCheckLogicBareSiblingReference:
 
 class TestPublishedDistributionsEscapeHatch:
     def test_published_distribution_downgrades_to_info(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
             dependencies = ["acme-repo>=0.1.0"]
-        """)
-        result = run_check(check_script, tmp_path, published_distributions='["acme-repo"]')
+        """,
+        )
+        result = run_check(
+            check_script, tmp_path, published_distributions='["acme-repo"]'
+        )
         assert result["errors"] == []
         assert len(result["info"]) == 1
         assert result["info"][0]["type"] == "module_dep_bare_name_but_published"
         assert result["info"][0]["severity"] == "INFO"
 
-    def test_unpublished_sibling_still_fires_alongside_published_one(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+    def test_unpublished_sibling_still_fires_alongside_published_one(
+        self, tmp_path, check_script
+    ):
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
-        """)
-        _write(tmp_path / "modules" / "mod-b" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-b" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-b"
             dependencies = ["acme-repo>=0.1.0", "acme-module-mod-a"]
-        """)
-        result = run_check(check_script, tmp_path, published_distributions='["acme-repo"]')
+        """,
+        )
+        result = run_check(
+            check_script, tmp_path, published_distributions='["acme-repo"]'
+        )
         assert len(result["errors"]) == 1
         assert result["errors"][0]["dependency"] == "acme-module-mod-a"
         assert len(result["info"]) == 1
@@ -355,24 +437,33 @@ class TestPublishedDistributionsEscapeHatch:
 
 class TestSkipConditions:
     def test_no_modules_dir_skips(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
+        """,
+        )
         result = run_check(check_script, tmp_path)
         assert result["skipped"] is True
         assert result["passed"] is True
 
     def test_no_root_pyproject_still_checks_modules(self, tmp_path, check_script):
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
-        """)
-        _write(tmp_path / "modules" / "mod-b" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-b" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-b"
             dependencies = ["acme-module-mod-a"]
-        """)
+        """,
+        )
         result = run_check(check_script, tmp_path)
         assert result["skipped"] is False
         assert len(result["errors"]) == 1
@@ -381,17 +472,23 @@ class TestSkipConditions:
 
 class TestOptionalDependencies:
     def test_bare_sibling_in_optional_dependencies_fires(self, tmp_path, check_script):
-        _write(tmp_path / "pyproject.toml", """
+        _write(
+            tmp_path / "pyproject.toml",
+            """
             [project]
             name = "acme-repo"
-        """)
-        _write(tmp_path / "modules" / "mod-a" / "pyproject.toml", """
+        """,
+        )
+        _write(
+            tmp_path / "modules" / "mod-a" / "pyproject.toml",
+            """
             [project]
             name = "acme-module-mod-a"
 
             [project.optional-dependencies]
             extra = ["acme-repo>=0.1.0"]
-        """)
+        """,
+        )
         result = run_check(check_script, tmp_path)
         assert len(result["errors"]) == 1
         assert result["errors"][0]["field"] == "optional-dependencies.extra"

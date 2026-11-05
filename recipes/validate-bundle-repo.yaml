@@ -1,9 +1,32 @@
 # validate-bundle-repo.yaml
-# Repository-Wide Bundle Validator Recipe v3.17.2
+# Repository-Wide Bundle Validator Recipe v3.17.3
 # Validates an entire bundle repository against structural requirements, conventions,
 # and Amplifier bundle philosophy (context sink pattern, thin behaviors, tool placement)
 #
 # CHANGELOG:
+# v3.17.3 (2026-11-05) - BUGFIX: Reporting and configured skill attribution.
+#   ROOT CAUSE: reports carried stale version literals, hygiene counted warnings
+#   as errors, and head cost charged every repository skill to each skills mount.
+#   FIX: one declared version, explicit flags/execution/skips, severity-filtered
+#   counters, and ordered directory catalogs scoped to each manifest's config.
+#   Unknown sources/shadowing/ambient discovery remain explicit; the legacy
+#   is_lower_bound flag denotes a partial estimate, not a runtime guarantee.
+#   RESULT: auditable direct-manifest subtotals without changing gates/verdicts.
+#   SPEC REVIEW FIX (2026-11-05): Build execution is independent of success;
+#   build results use private payload files to preserve escaped ERROR details.
+#   Missing/malformed build output is unverified, never an earned PASS.
+#   Unexpandable home catalogs remain named unknowns rather than aborting scans.
+#   PUBLICATION REPAIR (2026-11-05): Final facts render deterministically from
+#   private structured payloads; skipped/unknown checks never earn PASS from
+#   analysis prose. Original run/report evidence is retained, not rewritten.
+#   ROOT CAUSE: agent synthesis contradicted structured skip facts despite
+#   explicit report instructions. FIX: publish only validated machine inputs.
+#   PUBLISHER SPEC FIX (2026-11-05): Compare explicit raw execution facts,
+#   reject contradictions with existing quality precedence, and accept only
+#   defined machine recipe-result fields, never flat analysis-bearing context.
+#   TRANSPORT FIX (2026-11-05): Bash result parsing extracted fenced JSON from
+#   raw Markdown. Persist complete private Markdown plus a hash receipt before
+#   emitting one JSON string scalar; parse_json restores that string exactly.
 # v3.17.2 (2026-10-06) - BUGFIX: Active Anchors guidance still named the removed
 #          flat entry point. Use bundles/anchors/bundle.md; discovery unchanged.
 #
@@ -612,11 +635,12 @@ description: |
   - All measurements use TOKENS (len/4), never line counts
   
   For single bundle validation, use validate-bundle.yaml instead.
-version: "3.17.2"
+version: &validator_version "3.17.3"
 author: "Amplifier Foundation Team"
 tags: ["bundle", "validation", "quality", "conventions", "repository", "packaging", "hygiene", "context-sink"]
 
 context:
+  validator_version: *validator_version  # Caller-overridable declaration, not execution provenance
   repo_path: ""  # Required: Path to bundle repository root
   validate_agents: "false"  # Optional: Also run agent validation (true/false)
   validate_recipes: "false"  # Optional: Also run recipe validation (true/false)
@@ -642,14 +666,18 @@ steps:
 
   - id: "environment-check"
     type: "bash"
+    env:
+      VALIDATE_VALIDATOR_VERSION: "{{validator_version}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
       import sys
       import subprocess
 
       results = {
           "phase": "environment_prerequisites",
+          "validator_version": os.environ["VALIDATE_VALIDATOR_VERSION"],
           "python_version": sys.version.split()[0],
           "capabilities": {
               "foundation_available": False,
@@ -762,13 +790,14 @@ steps:
       # Determine validation mode based on capabilities
       foundation = results["capabilities"]["foundation_available"]
       hatchling = results["capabilities"]["hatchling_available"]
+      build_ready = hatchling and results["capabilities"]["pip_wheel_available"]
 
-      if foundation and hatchling:
+      if foundation and build_ready:
           results["validation_mode"] = "full"
-          results["mode_description"] = "Full validation: all checks enabled"
+          results["mode_description"] = "Full mode: BundleRegistry and build prerequisites available; optional checks depend on requested flags and actual results"
       elif foundation:
           results["validation_mode"] = "full_no_build"
-          results["mode_description"] = "Full validation without build check (hatchling unavailable)"
+          results["mode_description"] = "BundleRegistry available without build prerequisites (hatchling or pip wheel unavailable)"
       elif hatchling:
           results["validation_mode"] = "hygiene_only"
           results["mode_description"] = "Hygiene-only: structural checks without BundleRegistry validation"
@@ -779,9 +808,9 @@ steps:
       # Summary
       results["summary"] = {
           "can_validate_bundles": foundation,
-          "can_validate_builds": hatchling and results["capabilities"]["pip_wheel_available"],
+          "can_validate_builds": build_ready,
           "limitations_count": len(results["limitations"]),
-          "full_validation_available": foundation and hatchling
+          "full_validation_available": foundation and build_ready
       }
 
       # Note: We do NOT auto-install anything. This is intentional for:
@@ -811,6 +840,11 @@ steps:
       validate_all = "{{validate_all}}"
       validate_agents = "{{validate_agents}}"
       validate_recipes = "{{validate_recipes}}"
+      requested_flags = {
+          "validate_all": validate_all,
+          "validate_agents": validate_agents,
+          "validate_recipes": validate_recipes,
+      }
 
       # If validate_all is 'true', enable both agent and recipe validation
       if validate_all == "true":
@@ -820,7 +854,8 @@ steps:
       result = {
           "validate_agents": validate_agents,
           "validate_recipes": validate_recipes,
-          "validate_all": validate_all
+          "validate_all": validate_all,
+          "requested_flags": requested_flags,
       }
 
       print(json.dumps(result))
@@ -1239,8 +1274,25 @@ steps:
       repo_path = os.environ["VALIDATE_BUNDLE_REPO_PATH"]
       env_check = json.loads('''{{env_check}}''')
 
+      def emit_result(result):
+          # Same private payload transport as repo-discovery: output remains
+          # inspectable/resumable, but escaped diagnostics never become Python.
+          if result.get("skipped"):
+              result["skip_reason"] = result["reason"]
+          root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+          if not root:
+              root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+          fd, payload_path = tempfile.mkstemp(prefix="build-", suffix=".json", dir=root)
+          with os.fdopen(fd, "w", encoding="utf-8") as payload:
+              json.dump(result, payload)
+          result["_payload_file"] = payload_path
+          print(json.dumps(result))
+
       result = {
           "phase": "build_check",
+          "performed": False,
+          "skipped": False,
+          "skip_reason": None,
           "build_tested": False,
           "errors": [],
           "warnings": [],
@@ -1252,7 +1304,7 @@ steps:
           result["skipped"] = True
           result["passed"] = True
           result["reason"] = "No pyproject.toml"
-          print(json.dumps(result))
+          emit_result(result)
           sys.exit(0)
 
       # v3.2.0: Check if build tools are available BEFORE attempting build
@@ -1270,7 +1322,7 @@ steps:
               "suggestion": "Install hatchling for full build validation: uv pip install hatchling"
           })
           result["environment_limitation"] = True
-          print(json.dumps(result))
+          emit_result(result)
           sys.exit(0)
 
       if not pip_wheel_available:
@@ -1283,12 +1335,13 @@ steps:
               "severity": "INFO"
           })
           result["environment_limitation"] = True
-          print(json.dumps(result))
+          emit_result(result)
           sys.exit(0)
 
       # Build tools available - proceed with actual build test
       try:
           with tempfile.TemporaryDirectory() as tmpdir:
+              result["performed"] = True  # Attempted, independently of success.
               proc = subprocess.run(
                   [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
                    "-w", tmpdir, repo_path],
@@ -1362,7 +1415,7 @@ steps:
           })
 
       result["passed"] = len(result["errors"]) == 0
-      print(json.dumps(result))
+      emit_result(result)
       EOF
     output: "build_check"
     parse_json: true
@@ -1375,12 +1428,27 @@ steps:
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
+      import os
+      import tempfile
+      from pathlib import Path
       result = {
           "phase": "build_check",
+          "performed": False,
+          "build_tested": False,
           "skipped": True,
           "passed": True,
-          "reason": "No pyproject.toml - not a Python package"
+          "reason": "No pyproject.toml - not a Python package",
+          "skip_reason": "No pyproject.toml - not a Python package",
+          "errors": [],
+          "warnings": []
       }
+      root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+      if not root:
+          root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+      fd, payload_path = tempfile.mkstemp(prefix="build-", suffix=".json", dir=root)
+      with os.fdopen(fd, "w", encoding="utf-8") as payload:
+          json.dump(result, payload)
+      result["_payload_file"] = payload_path
       print(json.dumps(result))
       EOF
     output: "build_check"
@@ -3522,7 +3590,9 @@ steps:
           "quality_level": "good",
           "summary": "Recipe validation not performed",
           "recipes_validated": 0,
-          "skipped": True
+          "skipped": True,
+          "performed": False,
+          "skip_reason": "disabled_by_flag"
       }
 
       print(json.dumps(result))
@@ -5010,9 +5080,8 @@ steps:
   # ============================================================================
   # PHASE 2.86: Bundle Head Cost (v3.15.0)
   #
-  # THE NUMBER A BUNDLE AUTHOR NEVER SEES: how many characters this bundle adds
-  # to EVERY root prompt of EVERY session that loads it, whether or not a
-  # single one of its capabilities is used.
+  # Direct-manifest raw-description estimate, NOT recursive runtime composition
+  # or a rendered prompt measurement. Unknown catalogs can shadow known names.
   #
   #   head_chars = context chars + agent description chars + skill description chars
   #
@@ -5023,22 +5092,22 @@ steps:
   #                   (for a polyglot bundle.md the body IS the root
   #                   instruction). A reference this repo does not carry is
   #                   NOT guessed at: it is listed in `unresolved_refs` and
-  #                   the total is marked `is_lower_bound`. A lower bound is a
-  #                   true statement; a flat guess folded into a number that
-  #                   reads as measured is the v3.14.0 defect.
+  #                   the total is marked `is_lower_bound` (legacy field name:
+  #                   qualified partial estimate, not a mathematical guarantee).
   #   agent chars     len(meta.description) for agents under this bundle's own
   #                   `agents/` directory -- or the repo-root `agents/` for a
   #                   repo-root bundle. Attribution by LOCATION, because an
   #                   `agents.include` list can name agents from other repos
   #                   that this scan cannot see.
-  #   skill chars     len(description) for every `skills/**/SKILL.md` in this
-  #                   repo, counted ONLY when this bundle file itself mounts
-  #                   `tool-skills` without `visibility.enabled: false`. A
-  #                   bundle that disables visibility does not pay this half;
-  #                   the amount is still reported, as
-  #                   `skill_description_chars_excluded`, because turning
-  #                   visibility off is a real lever and the reader should see
-  #                   what it bought.
+  #   skill chars     Only this manifest's tool-skills config.skills DIRECTORY
+  #                   catalogs, recursive SKILL.md, source order then sorted
+  #                   paths, first name wins (tool-skills 2f58408). Relative
+  #                   paths use candidate-root cwd, never namespace_root.
+  #                   Own Git subpaths need VALIDATE_BUNDLE_REPO_SOURCE identity
+  #                   hint; no fetch, cache or basename inference. Unknown
+  #                   earlier catalogs block potentially shadowed later names.
+  #                   Visibility false charges zero, with known excluded chars
+  #                   separately reported. Ambient discovery is unmeasured.
   #
   # THRESHOLD: WARNING at 4,000 chars. JUSTIFIED, not asserted -- measured
   # 2026-09-07 across the bundles on this host:
@@ -5061,6 +5130,7 @@ steps:
       import os
       import re
       from pathlib import Path
+      from urllib.parse import parse_qs, unquote, urlsplit
 
       try:
           import yaml
@@ -5127,34 +5197,135 @@ steps:
           d = fm["meta"].get("description")
           return d if isinstance(d, str) else None
 
-      def skill_description(p):
-          fm_text, _ = frontmatter_and_body(read(p))
+      def git_identity(source):
+          """Identity only; neither hint nor URI verifies checkout content/ref."""
+          if not isinstance(source, str):
+              return None
           try:
-              fm = yaml.safe_load(fm_text)
-          except Exception:
+              uri = urlsplit(source.removeprefix("git+"))
+              if uri.scheme != "https" or not uri.hostname or uri.username or uri.password:
+                  return None
+              repository = unquote(uri.path).split("@", 1)[0].strip("/")
+              parts = repository.removesuffix(".git").split("/")
+              if len(parts) != 2 or not all(parts):
+                  return None
+              return (uri.netloc.lower(), *parts)
+          except ValueError:
               return None
-          if not isinstance(fm, dict):
-              return None
-          d = fm.get("description")
-          return d if isinstance(d, str) else None
 
-      def mounts_visible_skills(data):
-          """(mounts_tool_skills, visibility_enabled) for one bundle's own tools."""
-          if not isinstance(data, dict):
-              return False, False
-          tools = data.get("tools")
-          if not isinstance(tools, list):
-              return False, False
-          for tool in tools:
-              if not isinstance(tool, dict):
+      def configured_skills(repo, data):
+          """Ordered, local-only directory catalogs; keep uncertainty auditable."""
+          tools = data.get("tools", []) if isinstance(data, dict) else []
+          tool = next((t for t in tools if isinstance(t, dict)
+                       and t.get("module") == "tool-skills"), None) if isinstance(tools, list) else None
+          if tool is None:
+              return False, False, [], []
+          raw_config = tool.get("config")
+          config = raw_config if isinstance(raw_config, dict) else {}
+          visibility = config.get("visibility") if isinstance(config.get("visibility"), dict) else {}
+          visible = bool(visibility.get("enabled", True))
+          sources = config.get("skills", [])
+          known, unknown, seen_sources, seen_names = [], [], set(), set()
+          blocked_by = None
+          own_identity = git_identity(os.environ.get("VALIDATE_BUNDLE_REPO_SOURCE", ""))
+
+          def unresolved(source, reason):
+              nonlocal blocked_by
+              unknown.append({"source": str(source), "reason": reason})
+              if blocked_by is None:
+                  blocked_by = str(source)
+
+          if not isinstance(sources, list):
+              unresolved("config.skills", "unsupported catalog list")
+              sources = []
+          for source in sources:
+              if not isinstance(source, str) or not source.strip():
+                  unresolved(source, "unsupported empty/non-string catalog source")
                   continue
-              if tool.get("module") != "tool-skills":
+              if source in seen_sources:
                   continue
-              config = tool.get("config") if isinstance(tool.get("config"), dict) else {}
-              visibility = config.get("visibility") if isinstance(config.get("visibility"), dict) else {}
-              enabled = visibility.get("enabled", True)
-              return True, bool(enabled)
-          return False, False
+              seen_sources.add(source)
+              try:
+                  if source.startswith(("git+", "https://", "http://")):
+                      identity = git_identity(source)
+                      if identity is None or own_identity is None or identity != own_identity:
+                          unresolved(source, "foreign or unverified Git identity; explicit matching VALIDATE_BUNDLE_REPO_SOURCE required")
+                          continue
+                      fragment = parse_qs(urlsplit(source.removeprefix("git+")).fragment)
+                      subpath = fragment.get("subdirectory", [""])[0]
+                      catalog = repo / subpath
+                  elif ":" in source:
+                      unresolved(source, "unsupported catalog source scheme/namespace")
+                      continue
+                  else:
+                      catalog = Path(source).expanduser()
+                      if not catalog.is_absolute():
+                          catalog = repo / catalog  # runtime candidate cwd, no fallback
+                  catalog = catalog.resolve()
+                  if not catalog.is_relative_to(repo):
+                      unresolved(source, "catalog outside target (including symlink escape)")
+                      continue
+                  if EXCLUDED_DIRS & set(catalog.relative_to(repo).parts):
+                      unresolved(source, "catalog excluded by scan policy")
+                      continue
+                  if not catalog.is_dir():
+                      unresolved(source, "catalog must be an existing directory, not a file")
+                      continue
+                  # os.walk exposes unreadable directories and escaping links instead
+                  # of treating a failed/partial recursive scan as an empty catalog.
+                  files = []
+                  def walk_error(error):
+                      unresolved(source, f"unreadable catalog: {error}")
+                  for root, dirs, filenames in os.walk(catalog, onerror=walk_error):
+                      base = Path(root)
+                      for dirname in sorted(dirs):
+                          child = base / dirname
+                          if dirname in EXCLUDED_DIRS:
+                              continue
+                          if child.is_symlink():
+                              unresolved(source, f"unscanned symlink directory: {child.relative_to(repo)}")
+                      dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_DIRS
+                                       and not (base / d).is_symlink())
+                      if "SKILL.md" in filenames:
+                          files.append(base / "SKILL.md")
+                  for skill_file in sorted(files):
+                      try:
+                          if not skill_file.resolve().is_relative_to(repo):
+                              raise ValueError("skill symlink outside target")
+                          content = skill_file.read_text(encoding="utf-8")
+                          match = FRONTMATTER_RE.match(content)
+                          metadata = yaml.safe_load(match.group(1)) if match else None
+                          if not isinstance(metadata, dict):
+                              raise ValueError("missing/malformed skill frontmatter")
+                          name, description = metadata.get("name"), metadata.get("description")
+                          if not isinstance(name, str) or not name.strip():
+                              raise ValueError("missing/invalid skill name")
+                          if not isinstance(description, str) or not description.strip():
+                              raise ValueError("missing/invalid skill description")
+                      except Exception as exc:
+                          unresolved(source, f"unreadable/malformed metadata at {skill_file.relative_to(repo)}: {exc}")
+                          continue
+                      if name in seen_names:
+                          continue
+                      seen_names.add(name)
+                      if blocked_by is not None:
+                          unknown.append({
+                              "source": source, "name": name,
+                              "reason": f"potentially shadowed by earlier unresolved source {blocked_by}; omitted from charged subtotal",
+                          })
+                          continue
+                      known.append({
+                          "source": source, "file": skill_file.relative_to(repo).as_posix(),
+                          "name": name, "description_chars": len(description),
+                      })
+              except (OSError, ValueError, RuntimeError) as exc:
+                  unresolved(source, f"unreadable/invalid catalog: {exc}")
+          if visible:
+              unknown.append({
+                  "source": "ambient workspace/user discovery",
+                  "reason": "unmeasured; direct configured catalogs only, no ambient filesystem/cache scan",
+              })
+          return True, visible, known, unknown
 
       path = Path(REPO_PATH).expanduser().resolve()
       if not path.exists() or yaml is None:
@@ -5166,18 +5337,6 @@ steps:
           results["summary"] = {"bundles_measured": 0, "errors": 0, "warnings": 0}
           print(json.dumps(results))
           raise SystemExit(0)
-
-      skill_files = [
-          f for f in sorted(path.rglob("SKILL.md"))
-          if not (EXCLUDED_DIRS & set(f.relative_to(path).parts))
-      ]
-      repo_skill_chars = 0
-      repo_skill_count = 0
-      for f in skill_files:
-          d = skill_description(f)
-          if isinstance(d, str) and d.strip():
-              repo_skill_chars += len(d)
-              repo_skill_count += 1
 
       bundle_files = []
       for pattern in ("bundle.md", "bundles/*.yaml", "bundles/**/*.md", "behaviors/*.yaml", "behaviors/*.md"):
@@ -5254,9 +5413,11 @@ steps:
                   agent_chars += len(d)
                   agent_count += 1
 
-          mounts_skills, visible = mounts_visible_skills(data)
-          skill_chars = repo_skill_chars if (mounts_skills and visible) else 0
-          excluded_skill_chars = repo_skill_chars if (mounts_skills and not visible) else 0
+          mounts_skills, visible, skill_sources, skill_unknowns = configured_skills(path, data)
+          known_skill_chars = sum(s["description_chars"] for s in skill_sources)
+          skill_chars = known_skill_chars if visible else 0
+          excluded_skill_chars = known_skill_chars if (mounts_skills and not visible) else 0
+          unresolved_refs.extend(skill_unknowns)
 
           head_chars = context_chars + agent_chars + skill_chars
           results["bundles_measured"] += 1
@@ -5267,18 +5428,27 @@ steps:
               "agent_description_chars": agent_chars,
               "agents_counted": agent_count,
               "skill_description_chars": skill_chars,
-              "skills_counted": repo_skill_count if skill_chars else 0,
+              "skills_counted": len(skill_sources) if visible else 0,
+              "skill_sources": skill_sources,
+              "estimate_scope": "direct-manifest context and raw descriptions; not recursive runtime composition",
+              "estimate_qualification": (
+                  "Partial estimate, not a guaranteed mathematical runtime lower bound: "
+                  "unknown higher-priority catalogs can shadow names; ambient discovery, "
+                  "includes and rendered framing are not measured. A subtotal below the "
+                  "threshold does not certify that the runtime head fits."
+              ),
               "is_lower_bound": bool(unresolved_refs),
           }
           if unresolved_refs:
               detail["unresolved_refs"] = unresolved_refs
-          if excluded_skill_chars:
+          if mounts_skills and not visible:
               detail["skill_description_chars_excluded"] = excluded_skill_chars
+              detail["skills_counted_excluded"] = len(skill_sources)
               detail["skill_exclusion_reason"] = "this bundle mounts tool-skills with visibility.enabled: false"
           results["bundle_details"].append(detail)
 
           if head_chars > HEAD_COST_WARN_CHARS:
-              bound = " (lower bound -- some refs are not in this repo)" if unresolved_refs else ""
+              bound = " (partial estimate; unresolved refs/shadowing may change runtime attribution)" if unresolved_refs else ""
               results["warnings"].append({
                   "type": "bundle_head_cost_high",
                   "file": detail["file"],
@@ -5288,14 +5458,14 @@ steps:
                   "skill_description_chars": skill_chars,
                   "severity": "WARNING",
                   "message": (
-                      f"{detail['file']} adds {head_chars} chars to every root prompt"
+                      f"{detail['file']} direct-manifest subtotal is {head_chars} raw chars"
                       f"{bound}: {context_chars} context + {agent_chars} agent descriptions "
                       f"({agent_count}) + {skill_chars} skill descriptions "
                       f"(>{HEAD_COST_WARN_CHARS} threshold)."
                   ),
                   "fix": (
-                      "Every byte here is paid on every request of every session that loads this "
-                      "bundle, used or not. Measured comparison: the two bundles engineered for "
+                      "This is a scoped estimate, not a rendered runtime head measurement. "
+                      "Historical comparison: the two bundles engineered for "
                       "head cost sit at 2,483 and 1,760 chars. Move always-on prose into an agent "
                       "(paid only when delegated to) or a skill (paid only when loaded), shorten "
                       "the descriptions (see description-authoring-principles.md V5), or split "
@@ -5794,16 +5964,20 @@ steps:
       VALIDATE_DISCOVERY_PAYLOAD: "{{discovery_results._payload_file}}"
       VALIDATE_INDIVIDUAL_PAYLOAD: "{{individual_validation._payload_file}}"
       VALIDATE_TOOLS_PAYLOAD: "{{tool_placement_results._payload_file}}"
+      VALIDATE_BUILD_PAYLOAD: "{{build_check._payload_file}}"
+      VALIDATE_REPORT_ENHANCE_DIAGRAMS: "{{enhance_diagrams}}"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import os
       import sys
+      import tempfile
       from pathlib import Path
 
       # Parse all results
       individual = json.loads(Path(os.environ["VALIDATE_INDIVIDUAL_PAYLOAD"]).read_text(encoding="utf-8"))
       discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
+      validation_flags = json.loads('''{{validation_flags}}''')
       packaging = json.loads('''{{packaging_check}}''')
       
       # v3.2.0: Parse environment check for environment status tracking
@@ -5813,11 +5987,24 @@ steps:
       except (json.JSONDecodeError, ValueError):
           env_check = {"capabilities": {}, "limitations": [], "install_instructions": [], "validation_mode": "unknown"}
       
-      build_check_raw = '''{{build_check}}'''
       try:
-          build = json.loads(build_check_raw)
-      except (json.JSONDecodeError, ValueError):
-          build = {"passed": True, "skipped": True, "reason": "build check output not available"}
+          build = json.loads(Path(os.environ["VALIDATE_BUILD_PAYLOAD"]).read_text(encoding="utf-8"))
+          if (not isinstance(build, dict) or build.get("phase") != "build_check"
+                  or not isinstance(build.get("passed"), bool)
+                  or not isinstance(build.get("performed"), bool)
+                  or not isinstance(build.get("errors"), list)
+                  or not all(isinstance(error, dict) for error in build["errors"])):
+              raise ValueError("invalid build result shape")
+      except (OSError, ValueError, TypeError) as exc:
+          build = {
+              "passed": False, "performed": False, "skipped": True,
+              "unverified": True, "skip_reason": "output_unavailable",
+              "errors": [{
+                  "type": "build_check_unverified",
+                  "message": "Build check output unavailable or malformed; build not verified",
+                  "details": str(exc), "severity": "ERROR",
+              }],
+          }
 
       # NEW in v3.0.0: Parse new validation phase results
       behavior_hygiene_raw = '''{{behavior_hygiene_results}}'''
@@ -5857,7 +6044,32 @@ steps:
       try:
           recipe_validation = json.loads(recipe_validation_raw)
       except (json.JSONDecodeError, ValueError):
-          recipe_validation = {"quality_level": "good", "skipped": True, "summary": "Recipe validation not performed"}
+          recipe_validation = {"skipped": True, "performed": False, "skip_reason": "output_unavailable"}
+      # A sub-recipe returns its full context, not just its classification.
+      # Preserve explicit execution/skip facts independently of quality_level.
+      recipe_context = recipe_validation
+      recipe_validation = recipe_context.get("quality_classification", recipe_context)
+      recipe_has_result = ("recipes_validated" in recipe_validation
+                           or isinstance(recipe_validation.get("recipes"), list)
+                           or isinstance(recipe_validation.get("summary"), dict)
+                           and "total" in recipe_validation["summary"])
+      recipe_skipped = recipe_validation.get("skipped", recipe_context.get(
+          "skipped", not recipe_validation.get("performed", recipe_has_result)))
+      recipe_performed = recipe_validation.get("performed", recipe_context.get(
+          "performed", recipe_has_result and not recipe_skipped))
+      recipe_skip_reason = recipe_validation.get("skip_reason", recipe_validation.get(
+          "reason", recipe_context.get("skip_reason", recipe_context.get(
+              "reason", "output_unavailable" if recipe_skipped else None))))
+      recipe_validation_summary = {
+          "performed": recipe_performed,
+          "skipped": recipe_skipped,
+          "skip_reason": recipe_skip_reason,
+          "quality_level": recipe_validation.get("quality_level", "unknown"),
+          "summary": recipe_validation.get("summary", recipe_validation.get("message", "Recipe validation output unavailable")),
+          "recipes_validated": recipe_validation.get("recipes_validated", recipe_validation.get("summary", {}).get(
+              "total", 0) if isinstance(recipe_validation.get("summary"), dict) else 0),
+          "validation_flags": validation_flags,
+      }
 
       # v3.4.0: Parse YAML structure lint results
       structure_lint_raw = '''{{structure_lint}}'''
@@ -5925,6 +6137,84 @@ steps:
       except (json.JSONDecodeError, ValueError):
           module_dep_resolvability = {"passed": True, "skipped": True, "errors": [], "warnings": [], "info": []}
 
+      def execution_scope():
+          checks = {}
+          for name, payload in {
+              "individual_validation": individual, "build_check": build,
+              "behavior_hygiene": behavior_hygiene, "standalone_completeness": standalone,
+              "experiments": experiments, "context_sink": context_sink,
+              "tool_placement": tool_placement, "structure_lint": structure_lint,
+              "behavior_reference_hygiene": behavior_ref_hygiene,
+              "mode_validation": mode_validation, "body_instruction": body_instruction,
+              "agent_descriptions": agent_description_validation,
+              "skill_descriptions": skill_description_validation,
+              "awareness_redundancy": awareness_redundancy, "bundle_head_cost": bundle_head_cost,
+              "readme_convention": readme_convention, "module_dependencies": module_dep_resolvability,
+          }.items():
+              skipped = payload.get("skipped", not bool(payload))
+              performed = payload.get("performed", bool(payload) and not skipped)
+              checks[name] = {
+                  "performed": performed,
+                  "skipped": skipped,
+                  "skip_reason": payload.get("skip_reason") or payload.get("reason") or (
+                      "output_unavailable" if skipped else None),
+                  "unverified": payload.get("unverified", False),
+              }
+          checks["recipe_validation"] = recipe_validation_summary
+          # validate_agents is expanded for compatibility but this recipe has no
+          # optional agent-validator invocation. Its unconditional description
+          # check is separate; a requested flag is not evidence of execution.
+          checks["optional_agent_validation"] = {
+              "performed": False, "skipped": True,
+              "skip_reason": "no_optional_agent_validator_step",
+          }
+          return {
+              "validator_version": env_check.get("validator_version", "unknown"),
+              "validation_flags": validation_flags,
+              "recipe_validation_summary": recipe_validation_summary,
+              "checks_performed": checks,
+          }
+
+      def emit_classification(result: dict) -> None:
+          envelope = {
+              "schema_version": 1,
+              "quality_classification": result,
+              "inputs": {
+                  "env_check": env_check, "validation_flags": validation_flags,
+                  "packaging_check": packaging, "discovery_results": discovery,
+                  "individual_validation": individual, "build_check": build,
+                  "checks": {
+                      "behavior_hygiene_results": behavior_hygiene,
+                      "behavior_reference_hygiene_results": behavior_ref_hygiene,
+                      "standalone_completeness_results": standalone,
+                      "experiments_validation_results": experiments,
+                      "context_sink_results": context_sink,
+                      "tool_placement_results": tool_placement,
+                      "recipe_validation": recipe_context,
+                      "structure_lint": structure_lint,
+                      "mode_validation_results": mode_validation,
+                      "body_instruction_check_results": body_instruction,
+                      "agent_description_validation_results": agent_description_validation,
+                      "skill_description_validation_results": skill_description_validation,
+                      "awareness_redundancy_results": awareness_redundancy,
+                      "bundle_head_cost_results": bundle_head_cost,
+                      "readme_install_convention_results": readme_convention,
+                      "module_dep_resolvability_check": module_dep_resolvability,
+                  },
+              },
+              "requested_options": {
+                  "enhance_diagrams": os.environ["VALIDATE_REPORT_ENHANCE_DIAGRAMS"],
+              },
+          }
+          root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+          if not root:
+              root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+          fd, report_path = tempfile.mkstemp(prefix="report-", suffix=".json", dir=root)
+          with os.fdopen(fd, "w", encoding="utf-8") as report_file:
+              json.dump(envelope, report_file, ensure_ascii=False)
+          result["_report_payload_file"] = report_path
+          print(json.dumps(result))
+
       # Handle case where individual validation was skipped
       if individual.get("skipped", False):
           # v3.2.0: Check if this is an environment limitation (not a bundle problem)
@@ -5985,7 +6275,8 @@ steps:
                   "completeness_issues": [],
                   "message": f"⚠️ Bundle validation could not run: {individual.get('reason', 'unknown reason')}"
               }
-          print(json.dumps(result))
+          result.update(execution_scope())
+          emit_classification(result)
           sys.exit(0)
 
       def classify_bundle(bundle: dict) -> dict:
@@ -6123,7 +6414,7 @@ steps:
                       "type": error.get("type", "build_error"),
                       "message": error.get("message", "Unknown build error"),
                       "severity": "critical",
-                      "details": error.get("details", "")[:500]
+                      "details": error.get("details", "")
                   })
           
           # v3.2.0: Track build environment limitations (INFO, not errors)
@@ -6459,12 +6750,16 @@ steps:
               
               results["message"] = f"⚠️ Issues found: {', '.join(issues)}. {good}/{total} bundles are good."
           
-          # v3.0.0 hygiene summary
+          # Same population in all three counters; WARNING is never an ERROR.
+          hygiene_issues = (results["hygiene_issues"] + results["completeness_issues"]
+                            + results["experiment_issues"])
           results["hygiene_summary"] = {
               "behavior_hygiene_passed": behavior_hygiene.get("passed", True),
               "standalone_completeness_passed": standalone.get("passed", True),
               "experiments_passed": experiments.get("passed", True),
-              "total_hygiene_errors": len(results["hygiene_issues"]) + len(results["completeness_issues"]) + len(results["experiment_issues"]),
+              "total_hygiene_errors": sum(i.get("severity") == "ERROR" for i in hygiene_issues),
+              "total_hygiene_warnings": sum(i.get("severity") == "WARNING" for i in hygiene_issues),
+              "total_hygiene_issues": len(hygiene_issues),
               "context_sink_warnings": len([i for i in results["context_sink_issues"] if i.get("severity") == "WARNING"]),
               "tool_placement_suggestions": len(results["tool_placement_issues"]),
               "structure_lint_errors": len(results["structure_lint_issues"]),
@@ -6484,13 +6779,7 @@ steps:
               "module_dep_errors": len([i for i in results["module_dep_issues"] if i.get("severity") == "ERROR"])  # v3.11.0
           }
 
-          # v3.3.0: Recipe validation summary
-          results["recipe_validation_summary"] = {
-              "performed": not recipe_validation.get("skipped", False),
-              "quality_level": recipe_validation.get("quality_level", "good"),
-              "summary": recipe_validation.get("summary", "Recipe validation not performed"),
-              "recipes_validated": recipe_validation.get("recipes_validated", 0)
-          }
+          results.update(execution_scope())
           
           # v3.2.0: Add environment limitations summary
           results["environment_summary"] = {
@@ -6500,7 +6789,7 @@ steps:
               "environment_info_count": len(results["environment_info"])
           }
           
-          print(json.dumps(results))
+          emit_classification(results)
 
       classify_repo()
       EOF
@@ -6508,7 +6797,7 @@ steps:
     parse_json: true
     timeout: 60
     on_error: "fail"
-    depends_on: ["validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation", "body-instruction-check", "agent-description-validation", "readme-install-convention-check", "module-dep-resolvability-check"]
+    depends_on: ["validate-all-flags", "validate-all-bundles", "behavior-hygiene-validation", "behavior-reference-hygiene", "standalone-completeness-validation", "experiments-validation", "context-sink-compliance", "tool-placement-analysis", "validate-recipes", "set-default-recipe-validation", "yaml-structure-lint", "mode-validation", "body-instruction-check", "agent-description-validation", "readme-install-convention-check", "module-dep-resolvability-check"]
 
   # ============================================================================
   # PHASE 2.75: Initialize Optional Outputs
@@ -6809,7 +7098,18 @@ steps:
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json, os, re, sys
+      import tempfile
       from pathlib import Path
+
+      def emit_doc_results(results):
+          root = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+          if not root:
+              root = tempfile.mkdtemp(prefix=".validate-bundle-payloads-", dir=Path.cwd())
+          fd, payload_path = tempfile.mkstemp(prefix="doc-freshness-", suffix=".json", dir=root)
+          with os.fdopen(fd, "w", encoding="utf-8") as payload:
+              json.dump(results, payload, ensure_ascii=False)
+          results["_payload_file"] = payload_path
+          print(json.dumps(results))
 
       discovery = json.loads(Path(os.environ["VALIDATE_DISCOVERY_PAYLOAD"]).read_text(encoding="utf-8"))
       repo_path = Path(discovery.get("repo_path", "")).resolve()
@@ -6842,7 +7142,7 @@ steps:
               ),
               "detail": "",
           })
-          print(json.dumps(results))
+          emit_doc_results(results)
           raise SystemExit(0)
 
       # Generate fresh structural DOT and check bundle.dot freshness
@@ -6886,7 +7186,7 @@ steps:
               "detail": str(exc),
           })
 
-      print(json.dumps(results))
+      emit_doc_results(results)
       EOF
     output: "bundle_doc_freshness"
     parse_json: true
@@ -7088,496 +7388,419 @@ steps:
     timeout: 120
 
   # ============================================================================
-  # PHASE 5: Final Report Synthesis
+  # PHASE 5: Deterministic Final Report Publication
   # Enhanced in v3.0.0 with hygiene sections
   # ============================================================================
 
   - id: "synthesize-report"
-    agent: "foundation:zen-architect"
-    mode: "ANALYZE"
-    prompt: |
-      Synthesize all validation results into a comprehensive repository validation report.
-
-      **Repository:** {{repo_path}}
-
-      **Quality Classification:**
-      ```json
-      {{quality_classification}}
-      ```
-
-      **Environment Prerequisites (v3.2.0):**
-      ```json
-      {{env_check}}
-      ```
-      
-      **IMPORTANT v3.2.0 - Environment Limitations:**
-      - If `validation_mode` != "full", some checks were skipped due to missing tools
-      - Environment limitations are INFO, not errors - they don't affect the bundle quality
-      - Report clearly what was validated vs what was skipped
-
-      **Packaging Check:**
-      ```json
-      {{packaging_check}}
-      ```
-
-      **Build Check:**
-      ```json
-      {{build_check}}
-      ```
-
-      **Discovery:**
-      ```json
-      {{discovery_results}}
-      ```
-
-      **Individual Bundle Validation:**
-      ```json
-      {{individual_validation}}
-      ```
-
-      **Behavior Hygiene (v3.0.0):**
-      ```json
-      {{behavior_hygiene_results}}
-      ```
-
-      **Standalone Completeness (v3.0.0):**
-      ```json
-      {{standalone_completeness_results}}
-      ```
-
-      **Experiments Validation (v3.0.0):**
-      ```json
-      {{experiments_validation_results}}
-      ```
-
-      **Context Sink Compliance (v3.0.0):**
-      ```json
-      {{context_sink_results}}
-      ```
-
-      **Tool Placement Analysis (v3.0.0):**
-      ```json
-      {{tool_placement_results}}
-      ```
-
-      **Recipe Validation (v3.3.0):**
-      ```json
-      {{recipe_validation}}
-      ```
-
-      **YAML Structure Lint (v3.4.0):**
-      ```json
-      {{structure_lint}}
-      ```
-
-      **Behavior Reference Hygiene (v3.5.0):**
-      ```json
-      {{behavior_reference_hygiene_results}}
-      ```
-
-      **Mode Validation (v3.6.0):**
-      ```json
-      {{mode_validation_results}}
-      ```
-
-      **Body Instruction Check (v3.7.0):**
-      ```json
-      {{body_instruction_check_results}}
-      ```
-
-      **Agent Description Budget Validation (Phase 2.8):**
-      ```json
-      {{agent_description_validation_results}}
-
-      SKILL DESCRIPTION VALIDATION RESULTS (v3.15.0):
-      {{skill_description_validation_results}}
-
-      AWARENESS REDUNDANCY RESULTS (v3.15.0):
-      {{awareness_redundancy_results}}
-
-      BUNDLE HEAD COST RESULTS (v3.15.0):
-      {{bundle_head_cost_results}}
-      ```
-
-      **README Install-Instructions Convention Check (v3.16.0):
-      behavior-first capability installation and explicit supporting roots**
-      ```json
-      {{readme_install_convention_results}}
-      ```
-
-      **Module Dependency Resolvability Check (v3.11.0):**
-      ```json
-      {{module_dep_resolvability_check}}
-      ```
-
-      **Bundle Doc Freshness (Phase 6 v3):**
-      ```json
-      {{bundle_doc_freshness}}
-      ```
-
-      **Quick Approval Summary:**
-      {{approval_summary}}
-
-      **Composition Analysis:**
-      {{composition_analysis}}
-
-      **Repository Conventions:**
-      {{repo_conventions}}
-
-      **REPORT GENERATION RULES:**
-
-      1. If quality_level == "good": Generate a PASS report celebrating clean bill of health
-      2. If quality_level == "polish": Generate a PASS WITH SUGGESTIONS report
-      3. If quality_level == "needs_work": Generate a PASS WITH WARNINGS report
-      4. If quality_level == "critical": Generate a FAIL report
-
-      **Generate this report structure:**
-
-      # Bundle Repository Validation Report v3.6.0
-
-      ## Executive Summary
-      - **Overall Verdict**: [✅ PASS | ✅ PASS WITH SUGGESTIONS | ⚠️ PASS WITH WARNINGS | ℹ️ LIMITED VALIDATION | ❌ FAIL]
-      - **Repository**: path
-      - **Validation Mode**: full | full_no_build | hygiene_only | structural_only (v3.2.0)
-      - **Bundles Found**: X total (Y root, Z behaviors, W standalone, V experiments, ...)
-      - **Quality Breakdown**: X good, Y polish, Z needs_work, W critical
-      - **Packaging**: PASS/FAIL/SKIPPED
-      - **Hygiene**: PASS/FAIL (v3.0.0 checks)
-      - **Module Dependency Resolvability**: PASS/FAIL (v3.11.0 -- 0 module_dep_unresolvable_no_sources errors = PASS)
-      - **Issues**: X errors, Y warnings, Z suggestions
-
-      ## Environment Status (v3.2.0)
-      
-      **Always include this section showing what validation level was achieved:**
-      
-      | Capability | Status | Impact |
-      |------------|--------|--------|
-      | amplifier_foundation | ✅/❌ | BundleRegistry validation |
-      | hatchling | ✅/❌ | Python package builds |
-      | pip wheel | ✅/❌ | Build dry-run |
-      
-      **Validation Mode**: [mode] - [description]
-      
-      **If any limitations exist:**
-      - What checks were skipped
-      - Clarify: "Environment limitations are NOT bundle problems"
-      - Include clear install instructions from `install_instructions` in env_check:
-      
-      ### Enable Full Validation
-      
-      Install missing dependencies, then **re-run this recipe** for complete validation.
-      
-      **Standard uv pip install:**
-      ```bash
-      [commands from install_instructions.standard]
-      ```
-      
-      **PEP 668 systems (externally-managed Python):**
-      ```bash
-      [commands from install_instructions.pep668]
-      ```
-      
-      > After installing, re-run: `amplifier tool invoke recipes operation=execute recipe_path=foundation:recipes/validate-bundle-repo.yaml context='{"repo_path": "/path/to/repo"}'`
-
-      ## Bundle Discovery
-      Summary of what was found in the repository by category.
-
-      ## Python Packaging Status
-      (if applicable)
-
-      ## Quality Classification Summary
-
-      | Bundle | Category | Quality | Issues |
-      |--------|----------|---------|--------|
-      | name   | category | level   | count  |
-
-      ## v3.0.0 Hygiene Validation
-
-      ### Behavior Hygiene
-      | Behavior | Issues | Status |
-      |----------|--------|--------|
-      
-      Issues:
-      - [ERROR] Root bundle includes
-      - [ERROR] Session config in behavior
-      - [ERROR] Providers in behavior
-      - [ERROR] context.include >2000 tokens
-      - [WARNING] context.include >1000 tokens
-      - [WARNING] >3 context.include files
-      - [WARNING] >2 tools
-
-      ### Behavior Reference Hygiene (v3.5.0)
-      | Behavior | Issue Type | Reference/Name | Status |
-      |----------|------------|----------------|--------|
-      
-      Issues:
-      - [WARNING] cross_repo_root_bundle_ref: behavior includes bare git URL without #subdirectory=
-      - [WARNING] name_collision_with_root: behavior bundle name equals root bundle name
-
-      ### Mode Validation (v3.6.0)
-      Use mode_validation_results to report:
-      - modes_checked: total number of modes/*.md files with a usable mode: block
-      - If `non_mode_count` > 0, a NON-MODES table (REQUIRED -- v3.13.0),
-        every row verbatim from `non_modes_found`:
-        | File | Reason |
-        These files matched the modes/ scan and were not validated as modes.
-        Before v3.13.0 they were skipped with nothing in the output to say so,
-        so a mode whose frontmatter broke silently stopped being checked.
-      - For each ERROR of type mode_frontmatter_invalid (v3.13.0):
-        - [ERROR] the message verbatim -- the file declares or attempts a
-          `mode:` block that could not be read; neither mode check ran on it.
-      - For each ERROR of type mode_description_excessive (>800 tokens):
-        - [ERROR] "Mode '<name>' description is N tokens — must shorten to <500"
-        - Refer author to foundation:context/shared/description-authoring-principles.md (V5)
-          and modes/.../mode-design-discipline skill
-      - For each WARNING of type mode_description_high (>500 tokens):
-        - [WARNING] "Mode '<name>' description is N tokens — consider trimming toward <500"
-        - Same reference links as above
-      - For each ERROR of type unadvertised_but_referenced:
-        - [ERROR] "Mode '<name>' has advertised: false but is named in: <file list>"
-        - The fix: either set advertised: true OR remove the /<name> / name="<name>" references
-        - Per mode-design-discipline §4 advertising rule: the LLM infers modes by name
-      - If no issues: "Mode validation: all N modes passed description budget and advertising checks"
-      - If mode_validation_results.skipped == true: "Mode validation: skipped (no modes/*.md files found)"
-
-      ### Body Instruction Check (v3.7.0)
-      Use body_instruction_check_results to report:
-      - files_checked: total number of bundle.md and agents/*.md files checked
-      - For each WARNING of type prose_below_frontmatter:
-        - [WARNING] the file's message (names the file, prose char count, and a preview)
-        - The fix: everything below the frontmatter is sent to the model as system
-          instruction -- move descriptive prose into the frontmatter description
-          field (metadata, never sent) or delete it; keep @mention pointers to
-          instruction files
-      - If no issues: "Body instruction check: all N files have instruction-only bodies"
-
-      ### Agent Description Budget Validation (Phase 2.8)
-      Use agent_description_validation_results to report:
-      - Report BOTH numbers, never only one (v3.13.0):
-        "N files matched the agent scan, M were classified as agents by `meta:`
-        presence, K were not." Take them verbatim from `candidates_scanned`,
-        `agents_checked` and `non_agent_count`.
-      - agents_checked: number of files CLASSIFIED AS AGENTS (a top-level
-        `meta:` key in the frontmatter -- docs/AGENT_AUTHORING.md). NOT the
-        number of files under an agents/ directory: before v3.13.0 this counted
-        every candidate, including context documents that are not agents.
-      - **Then, if `non_agent_count` > 0, a NON-AGENTS table (REQUIRED --**
-        **never omit it, never summarise it as a count alone):**
-        | File | Reason |
-        Take every row verbatim from `non_agents_found`. These files matched
-        the scan and were NOT validated as agents. Printing them is what keeps
-        the classifier auditable: a real agent that lost its `meta:` block
-        appears in this table instead of vanishing from the run.
-      - For each ERROR of type agent_frontmatter_invalid (v3.13.0):
-        - [ERROR] "<file>: agent frontmatter could not be read (<reason>)"
-        - Before v3.13.0 this file passed clean with an empty description.
-      - For each ERROR of type agent_description_missing (v3.13.0):
-        - [ERROR] "<file>: no usable meta.description (<reason>)"
-      - For each ERROR of type agent_scan_path_error (v3.13.0):
-        - [ERROR] the message verbatim. NOTHING was scanned; this is a
-          run-ending condition, not evidence that the repo's agents are clean.
-      - For each ERROR of type agent_description_excessive (>1,200 chars, 2x the cap):
-        - [ERROR] "Agent description in <file> is N chars -- must shorten to <=600"
-        - Refer author to foundation:context/shared/description-authoring-principles.md V5,
-          and to `recipes/refresh-descriptions.yaml` for a proposed rewrite WITH a
-          fidelity table (the whole risk in shortening is dropping a routing fact)
-      - For each WARNING of type agent_description_high (>600 chars):
-        - [WARNING] "Agent description in <file> is N chars -- consider trimming toward <=600"
-        - Same reference as above
-      - For each ERROR of type commentary_present (v3.10.0 -- was WARNING):
-        - [ERROR] "<file>: description has N <commentary> tag(s) -- rejected entirely (V3)"
-      - For each ERROR of type example_block_present (v3.10.0 -- replaces too_many_examples, was WARNING at >2):
-        - [ERROR] "<file>: description has N <example> block(s) -- example blocks are rejected entirely, not merely capped (V3)"
-      - If no issues: "Agent description validation: all N agents within budget, no commentary/example blocks"
-      - If agent_description_validation_results.skipped == true: "Agent description validation: skipped (no agents/*.md files found)"
-      - If body_instruction_check_results.skipped == true: "Body instruction check: skipped (no bundle.md or agents/*.md files found)"
-      - commentary_present and example_block_present ARE blocking (ERROR); the token-budget findings above stay WARNING/ERROR per their own thresholds
-
-      ### Skill Description Validation (v3.15.0)
-      Use skill_description_validation_results to report:
-      - skills_checked: how many SKILL.md files were read.
-      - For each ERROR of type skill_frontmatter_invalid / skill_description_missing:
-        - [ERROR] the message verbatim, with its `reason`.
-      - For each ERROR of type skill_description_excessive (>800 chars, 2x the 400 cap):
-        - [ERROR] "Skill description in <file> is N chars -- must shorten to <=400"
-      - For each WARNING of type skill_description_high (>400 chars):
-        - [WARNING] "Skill description in <file> is N chars -- consider trimming"
-      - For each ERROR of type example_block_present / commentary_present:
-        - [ERROR] the message verbatim. This half of the #341 policy was
-          enforced by NO recipe before v3.15.0, in any repository -- a sweep
-          across 6 repos found 29 files still carrying example blocks.
-      - If no issues: "Skill description validation: all N skills within cap, no example/commentary blocks"
-      - If skipped == true: "Skill description validation: skipped (no SKILL.md files found)"
-
-      ### Awareness Redundancy (v3.15.0)
-      Use awareness_redundancy_results to report:
-      - context_files_checked and catalog_entries, both verbatim.
-      - STATE THE RULE, from `rule`, so the reader can audit the finding rather
-        than trust it: a sentence counts as covered when >= `sentence_cover` of
-        its key terms appear in a catalog description; a file is redundant when
-        >= `file_redundant` of its substantive sentences are covered; a file is
-        pointer-only when it invokes delegate()/load_skill() naming an in-repo
-        entry and >= `trigger_share` of its sentences are trigger-shaped.
-      - For each WARNING of type awareness_redundant_with_catalog:
-        - [WARNING] "<file> duplicates <entry> (<coverage> covered)" -- ALWAYS
-          name the entry. A redundancy finding that does not say what it is
-          redundant WITH is not actionable.
-      - For each WARNING of type awareness_is_pointer_only:
-        - [WARNING] the message verbatim, including the trigger share.
-      - If no issues: "Awareness redundancy: N context files checked against M
-        catalog entries, none redundant"
-
-      ### Bundle Head Cost (v3.15.0)
-      Use bundle_head_cost_results to report, ALWAYS -- this line prints whether
-      or not anything exceeded the threshold, because the number is the point:
-      - A table, largest first, from `bundle_details`:
-        | Bundle | head chars | context | agent descriptions | skill descriptions |
-      - The head-cost line for the repo: "Largest bundle head cost: N chars
-        (threshold <threshold_chars>)".
-      - Mark any row with `is_lower_bound` as a LOWER BOUND and name its
-        `unresolved_refs`. A reference this repo does not carry is never
-        guessed at.
-      - Where `skill_description_chars_excluded` is present, say so: that bundle
-        mounts tool-skills with visibility disabled and does not pay that half.
-      - For each WARNING of type bundle_head_cost_high:
-        - [WARNING] the message verbatim, then the comparison: the two bundles
-          engineered for head cost measure 2,483 and 1,760 chars.
-
-      ### README Install-Instructions Convention Check (v3.16.0)
-      Use readme_install_convention_results to report:
-      - If skipped == true: "README install-instructions convention check: skipped (<reason from info>)"
-      - For each finding of type readme_recommends_root_bundle:
-        - [NEEDS WORK] the finding's message (README's primary capability install is not a canonical behavior URI)
-        - The fix: lead with `amplifier bundle add "<repo>#subdirectory=behaviors/<name>.yaml" --app`. A new complete host can explicitly register/select the Anchors supporting base (`git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md`); root_bundle_repo: "true" remains for a genuine root-product repo.
-      - For each finding of type readme_missing_app_flag:
-        - [NEEDS WORK] the finding's message (behavior installation commands missing --app)
-        - The fix: add --app to each behavior `amplifier bundle add` command. Do not add it merely to register/select a supporting root.
-      - For each finding of type readme_pip_install:
-        - [NEEDS WORK] the finding's message (README shows bare `pip install`)
-        - The fix: `uv tool install git+https://...` for CLI tools, `uv pip install` for libraries
-      - For each finding of type readme_missing_git_install:
-        - [NEEDS WORK] the finding's message (repo ships a CLI, README shows an install command, but no git+https:// form anywhere)
-        - The fix: always show a git+https:// install form; PyPI may be offered additionally, never as a replacement
-      - INFO findings (no_readme, no_bundle_add_commands, docs_pip_install) are informational only -- do not treat as defects
-      - If no warnings: "README install-instructions convention: no findings"
-      - Severity is "needs_work" for all warnings here -- these feed needs_work_count, not critical_count
-
-      ### Module Dependency Resolvability Check (v3.11.0)
-      Use module_dep_resolvability_check to report:
-      - modules_checked: total number of modules/*/pyproject.toml files checked
-      - repo_defined_distributions: list of distribution names this repo itself defines (root + modules)
-      - For each ERROR of type module_dep_unresolvable_no_sources:
-        - [ERROR] the finding's message (names the module, the bare sibling dependency, and the
-          exact `amplifier update` failure mode: `uv pip install -e ... --no-sources` resolves
-          bare names against the package registry only, and an already-installed editable is
-          NOT a resolution candidate)
-        - The fix: the finding's own `fix` field (PEP 508 direct git reference, with
-          `#subdirectory=modules/<name>` when the dependency is a sibling module, plus the
-          hatchling `allow-direct-references = true` note when applicable)
-        - If the message mentions a [tool.uv.sources] entry, make clear that entry provides
-          NO protection here -- `--no-sources` is exactly what disables it
-      - For each INFO of type module_dep_bare_name_but_published: informational only -- the
-        dependency is listed in published_distributions, so uv can resolve it against the real
-        registry even under --no-sources; do not treat as a defect
-      - If module_dep_resolvability_check.skipped == true: "Module dependency resolvability
-        check: skipped (no modules/*/pyproject.toml files found)"
-      - If no errors: "Module dependency resolvability: all N modules' sibling-distribution
-        dependencies use resolvable references"
-      - This check is ERROR severity (feeds critical_count, not needs_work_count) -- unlike the
-        README convention check above, this is a real `amplifier update` breakage, not a style
-        suggestion. Real-world precedent: amplifier-engram (all 3 modules broke the updater's
-        refresh on a live host) and amplifier-browser-bridge modules/tool-browser-bridge (same
-        latent pattern, fix in a parallel PR)
-
-      ### Standalone Completeness
-      | Bundle | Orchestrator | Context | Provider | Status |
-      |--------|--------------|---------|----------|--------|
-
-      ### Experiments Validation
-      | Experiment | Naming | Warning | Complete | Status |
-      |------------|--------|---------|----------|--------|
-
-      ### Context Sink Compliance
-      - Root context files: X
-      - Root context tokens: Y
-      - Large files (>2000 tokens): [list]
-      - Root context ratio: Z%
-
-      ### Tool Placement (v3.1.0 Inheritance-Aware)
-      - Universal tools: X
-      - Specialized tools: Y
-      - exclude_tools config: [list from delegate tool, default: ["delegate"]]
-      - Redundant agent tool declarations: X (tools agents declare but already inherit)
-      - Suggestions: [list]
-
-      ## Detailed Findings
-
-      **For PASS verdict:** Highlight what's done well.
-
-      **For other verdicts:**
-
-      ### Errors (Must Fix) - HIGH Priority
-      Hygiene violations, completeness failures, load errors
-
-      ### Warnings (Should Fix) - MEDIUM Priority
-      Context bloat, naming conventions, structural issues
-
-      ### Suggestions (Consider) - LOW Priority
-      Tool placement optimizations, context sink improvements
-
-      ### YAML Structure Lint (v3.4.0)
-      If structure_lint.passed == false:
-      - [CRITICAL ERROR] These are the HIGHEST PRIORITY findings — they cause SILENT DATA LOSS
-      - List each error with type, affected bundle, message, and fix
-      - For nested_includes: "X include(s) are silently invisible — agents/behaviors won't load"
-      - For unrecognized_include_key: "Entry silently dropped — only 'bundle:' key is recognized"
-      - Link to the root cause in the parser code
-      If structure_lint.passed == true:
-      - Note: "All bundles passed YAML structure lint — no silent-failure patterns detected"
-
-      ### Behavior Reference Hygiene (v3.5.0)
-      Use behavior_reference_hygiene_results to report:
-      - Root bundle name checked for name collision
-      - For each ERROR of type behavior_frontmatter_invalid (v3.13.0):
-        - [ERROR] the message verbatim. Neither hygiene check below could run
-          against that behavior; before v3.13.0 it passed both.
-      - For each ERROR of type root_bundle_frontmatter_invalid (v3.13.0):
-        - [ERROR] the message verbatim. The name-collision check did not run
-          at all -- "no collisions" would be false reassurance.
-      - For each WARNING of type cross_repo_root_bundle_ref:
-        - [WARNING] "Behavior X includes bare root-bundle ref Y — should reference Y#subdirectory=behaviors/<name>.yaml"
-        - The fix: add #subdirectory=behaviors/<name>.yaml to pin the specific behavior file
-        - This prevents pulling the entire foreign repo root bundle into the behavior's include chain
-      - For each WARNING of type name_collision_with_root:
-        - [WARNING] "Behavior name 'X' collides with root bundle name 'X' — rename to X-behavior"
-        - Effect: causes BundleState["X"].included_by = ["X", ...] self-referential registry entry
-      - If no warnings: "Behavior reference hygiene: no cross-repo root refs or name collisions detected"
-
-      ### Bundle Doc Freshness (Phase 6 v3)
-      If `bundle_doc_freshness.dot_available` is true, report:
-      - bundle.dot status: fresh/stale/missing
-      - List BUNDLE_DOT_STALE findings as WARNINGs (should regenerate via generate-bundle-docs)
-      - List BUNDLE_DOT_MISSING findings as SUGGESTIONs (optional but useful)
-      - If dot_available is false, briefly note doc checks were skipped
-
-      ## Recommendations
-
-      Prioritized list of actions with clear HIGH/MEDIUM/LOW labels.
-
-      ## Metadata
-      - Validated: [timestamp]
-      - Recipe: validate-bundle-repo v3.16.1
-      - Validation Mode: [mode from env_check]
-      - Foundation: [version or "not available"]
-      - Quality Thresholds:
-        - All bundles must load via BundleRegistry
-        - Behaviors must be thin (no root includes, limited context)
-        - Standalones must be complete (orchestrator + context)
-        - Context sink pattern enforced (heavy context → agents)
-        - Python packaging must build successfully (if present)
-        - Mode descriptions: <500 tokens OK / 500-800 WARNING / >800 ERROR (v3.6.0)
-        - Unadvertised modes must not be referenced in agent-readable files (v3.6.0)
+    type: "bash"
+    env:
+      VALIDATE_REPORT_PAYLOAD: "{{quality_classification._report_payload_file}}"
+      VALIDATE_DOC_PAYLOAD: "{{bundle_doc_freshness._payload_file}}"
+    command: |
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import hashlib
+      import html
+      import json
+      import os
+      import re
+      import stat
+      import sys
+      import tempfile
+      from collections import Counter
+      from pathlib import Path
+      from typing import Any
+
+      # Analysis outputs, including quick approval, are not report inputs.
+      SECTIONS = {
+          "behavior_hygiene_results": "Behavior Hygiene",
+          "behavior_reference_hygiene_results": "Behavior Reference Hygiene",
+          "standalone_completeness_results": "Standalone Completeness",
+          "experiments_validation_results": "Experiments Validation",
+          "context_sink_results": "Context Sink Compliance",
+          "tool_placement_results": "Tool Placement",
+          "structure_lint": "YAML Structure Lint",
+          "mode_validation_results": "Mode Validation",
+          "body_instruction_check_results": "Body Instruction Check",
+          "agent_description_validation_results": "Agent Description Budget Validation",
+          "skill_description_validation_results": "Skill Description Validation",
+          "awareness_redundancy_results": "Awareness Redundancy",
+          "bundle_head_cost_results": "Bundle Head Cost",
+          "readme_install_convention_results": "README Install-Instructions Convention Check",
+          "module_dep_resolvability_check": "Module Dependency Resolvability",
+          "recipe_validation": "Recipe Validation",
+      }
+      QUALITY = {
+          "good": "PASS", "polish": "PASS WITH SUGGESTIONS",
+          "needs_work": "PASS WITH WARNINGS", "critical": "FAIL",
+          "limited": "LIMITED VALIDATION",
+      }
+      EXECUTION_SOURCES = {
+          "behavior_hygiene": "behavior_hygiene_results",
+          "behavior_reference_hygiene": "behavior_reference_hygiene_results",
+          "standalone_completeness": "standalone_completeness_results",
+          "experiments": "experiments_validation_results",
+          "context_sink": "context_sink_results",
+          "tool_placement": "tool_placement_results",
+          "structure_lint": "structure_lint",
+          "mode_validation": "mode_validation_results",
+          "body_instruction": "body_instruction_check_results",
+          "agent_descriptions": "agent_description_validation_results",
+          "skill_descriptions": "skill_description_validation_results",
+          "awareness_redundancy": "awareness_redundancy_results",
+          "bundle_head_cost": "bundle_head_cost_results",
+          "readme_convention": "readme_install_convention_results",
+          "module_dependencies": "module_dep_resolvability_check",
+          "recipe_validation": "recipe_validation",
+      }
+
+      def require(condition: bool, message: str) -> None:
+          if not condition:
+              raise ValueError(message)
+
+      def object_at(parent: dict, key: str) -> dict:
+          value = parent.get(key)
+          if not isinstance(value, dict):
+              raise ValueError(f"missing/invalid object: {key}")
+          return value
+
+      def load_report_inputs(path: Path) -> dict:
+          value = json.loads(path.expanduser().read_text(encoding="utf-8"))
+          require(isinstance(value, dict), f"expected JSON object in {path}")
+          return value
+
+      def source_json(value: Any) -> str:
+          text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+          longest = max((len(m[0]) for m in re.finditer(r"`+", text)), default=0)
+          fence = "`" * max(3, longest + 1)
+          return f"{fence}json\n{text}\n{fence}\n"
+
+      def cell(value: Any) -> str:
+          text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+          return (html.escape(text, quote=True).replace("|", "&#124;")
+                  .replace("`", "&#96;").replace("\r", "\\r").replace("\n", "\\n"))
+
+      def recipe_machine_result(context: dict) -> dict:
+          payload = context.get("quality_classification", context)
+          require(isinstance(payload, dict), "invalid recipe machine result")
+          allowed = {
+              "phase", "quality_level", "summary", "recipes", "recipes_validated",
+              "cross_recipe_findings", "requires_llm_analysis", "message", "payload_path",
+              "performed", "skipped", "unverified", "skip_reason", "reason",
+              "environment_limitation", "validation_mode", "validation_flags", "passed",
+              "errors", "warnings", "info", "suggestions", "critical_issues",
+              "needs_work_issues", "polish_issues", "good_issues", "structural_issues",
+          }
+          require(not set(payload) - allowed, "unexpected fields in recipe machine result")
+          return payload
+
+      def finding_inventory(qc: dict, inputs: dict, doc: dict) -> list[dict]:
+          inventory = []
+          def add(source: str, records: Any, default: str) -> None:
+              require(isinstance(records, list), f"{source}: findings must be a list")
+              for record in records:
+                  require(isinstance(record, (dict, str)), f"{source}: invalid finding record")
+                  severity = record.get("severity", "UNSPECIFIED") if isinstance(record, dict) else default
+                  require(isinstance(severity, str) and bool(severity), f"{source}: missing severity")
+                  inventory.append({"source": source, "severity": severity, "record": record})
+          add("classification.structural_issues", qc.get("structural_issues", []), "NEEDS_WORK")
+          for bundle in inputs["individual_validation"].get("bundles", []):
+              for collection, severity in (("errors", "ERROR"), ("warnings", "WARNING")):
+                  add("individual:" + str(bundle.get("path", bundle.get("name", ""))) + "." + collection,
+                      bundle.get(collection, []), severity)
+          for name, payload in {
+              "packaging_check": inputs["packaging_check"],
+              "build_check": inputs["build_check"], **inputs["checks"],
+          }.items():
+              nested_recipe = name == "recipe_validation" and isinstance(payload.get("quality_classification"), dict)
+              if nested_recipe:
+                  payload = payload["quality_classification"]
+              else:
+                  for collection, severity in (("errors", "ERROR"), ("warnings", "WARNING"),
+                                               ("info", "INFO"), ("suggestions", "SUGGESTION")):
+                      add(name + "." + collection, payload.get(collection, []), severity)
+              if name == "recipe_validation":
+                  for key, records in payload.items():
+                      if key.endswith("_issues"):
+                          add(name + "." + key, records, "ERROR")
+          add("bundle_doc_freshness.findings", doc["findings"], "INFO")
+          return inventory
+
+      def render_report(envelope: dict, doc_freshness: dict) -> str:
+          require(type(envelope.get("schema_version")) is int and envelope["schema_version"] == 1,
+                  "unsupported report envelope schema_version")
+          qc = object_at(envelope, "quality_classification")
+          inputs = object_at(envelope, "inputs")
+          options = object_at(envelope, "requested_options")
+          require(isinstance(options.get("enhance_diagrams"), str), "missing requested enhance_diagrams")
+          for name in ("env_check", "validation_flags", "packaging_check", "discovery_results",
+                       "individual_validation", "build_check", "checks"):
+              object_at(inputs, name)
+          env, flags = inputs["env_check"], inputs["validation_flags"]
+          checks = inputs["checks"]
+          for name in SECTIONS:
+              object_at(checks, name)
+          recipe_result = recipe_machine_result(checks["recipe_validation"])
+          version = qc.get("validator_version")
+          require(isinstance(version, str) and bool(version.strip()) and version != "unknown",
+                  "missing declared validator_version")
+          require(version == env.get("validator_version"), "mismatched declared versions")
+          quality = qc.get("quality_level")
+          if not isinstance(quality, str) or quality not in QUALITY:
+              raise ValueError("missing/invalid quality_level")
+          mode = env.get("validation_mode")
+          require(mode in ("full", "full_no_build", "hygiene_only", "structural_only"),
+                  "missing/invalid validation_mode")
+          require(qc.get("validation_mode", mode) == mode
+                  and qc.get("environment_status", {}).get("validation_mode", mode) == mode,
+                  "inconsistent validation modes")
+          capabilities = object_at(env, "capabilities")
+          if mode == "full":
+              require(all(capabilities.get(k) is True for k in (
+                  "foundation_available", "hatchling_available", "pip_wheel_available")),
+                  "full mode disagrees with available capabilities")
+          require(isinstance(env.get("limitations"), list), "missing environment limitations")
+          require(flags == qc.get("validation_flags"), "inconsistent validation_flags")
+          requested = object_at(flags, "requested_flags")
+          for key in ("validate_all", "validate_agents", "validate_recipes"):
+              require(flags.get(key) in ("true", "false") and requested.get(key) in ("true", "false"),
+                      f"invalid validation flag: {key}")
+              expected = ("true" if requested["validate_all"] == "true"
+                          and key != "validate_all" else requested[key])
+              require(flags[key] == expected, f"inconsistent expanded flag: {key}")
+          execution = object_at(qc, "checks_performed")
+          require(bool(execution), "missing checks_performed inventory")
+          for name in (*EXECUTION_SOURCES, "individual_validation", "build_check", "optional_agent_validation"):
+              object_at(execution, name)
+          for name, entry in execution.items():
+              require(isinstance(entry, dict), f"{name}: invalid execution object")
+              for field in ("performed", "skipped"):
+                  require(type(entry.get(field)) is bool, f"{name}: missing boolean {field}")
+              require(type(entry.get("unverified", False)) is bool, f"{name}: invalid unverified")
+              # A performed build attempt can subsequently report an environment
+              # skip, but only if the actual producer also reports that pair.
+              require(not (entry["performed"] and entry["skipped"])
+                      or (name == "build_check" and inputs["build_check"].get("skipped") is True
+                          and inputs["build_check"].get("performed") is True),
+                      f"{name}: inconsistent execution flags")
+              require(not entry["skipped"] or isinstance(entry.get("skip_reason"), str)
+                      and bool(entry["skip_reason"]), f"{name}: missing skip_reason")
+          raw_unverified = set()
+          def compare_execution(name: str, *payloads: dict) -> None:
+              for field in ("performed", "skipped", "unverified"):
+                  explicit = [p[field] for p in (execution[name], *payloads) if field in p]
+                  require(all(type(value) is bool for value in explicit),
+                          f"{name}: invalid explicit {field}")
+                  require(not explicit or all(value == explicit[0] for value in explicit),
+                          f"{name}: raw {field} disagrees with execution")
+              if any(p.get("unverified") is True for p in payloads):
+                  raw_unverified.add(name)
+
+          for name, raw_name in EXECUTION_SOURCES.items():
+              payload = checks[raw_name]
+              if name == "recipe_validation":
+                  require(not execution[name]["performed"] or flags["validate_recipes"] == "true",
+                          "disabled recipe validation reported performed")
+                  compare_execution(name, payload, recipe_result)
+              else:
+                  compare_execution(name, payload)
+          build = inputs["build_check"]
+          discovery, individual = inputs["discovery_results"], inputs["individual_validation"]
+          compare_execution("build_check", build)
+          compare_execution("individual_validation", individual)
+          optional_agent = execution["optional_agent_validation"]
+          require(optional_agent["performed"] is False and optional_agent["skipped"] is True
+                  and optional_agent["skip_reason"] == "no_optional_agent_validator_step",
+                  "optional_agent_validation: this recipe has no optional agent-validator step")
+          found = object_at(discovery, "bundles_found")
+          require(all(isinstance(v, list) for v in found.values()), "invalid discovery category lists")
+          discovered = sum(len(v) for v in found.values())
+          require(discovery.get("total_count") == discovered, "discovery total disagrees with lists")
+          summary = object_at(qc, "summary")
+          for key in ("total", "good", "polish", "needs_work", "critical"):
+              require(type(summary.get(key)) is int and summary[key] >= 0, f"invalid summary {key}")
+          require(sum(summary[k] for k in ("good", "polish", "needs_work", "critical"))
+                  + summary.get("not_validated", 0) == summary["total"], "quality summary total mismatch")
+          require(not summary["critical"] or quality == "critical", "critical bundles contradict quality")
+          require(not summary["needs_work"] or quality in ("critical", "needs_work"),
+                  "needs_work bundles contradict quality")
+          require(not summary["polish"] or quality != "good", "polish bundles contradict good quality")
+          bundles = individual.get("bundles")
+          require(isinstance(bundles, list) and all(isinstance(b, dict) for b in bundles),
+                  "missing individual bundle results")
+          loaded = sum(not bool(b.get("errors")) for b in bundles)
+          failed = len(bundles) - loaded
+          require(summary["total"] == discovered or quality == "critical" and not bundles,
+                  "quality/discovery total mismatch")
+          if not individual.get("skipped", False):
+              require(len(bundles) == discovered, "individual/discovery count mismatch")
+              actual_summary = object_at(individual, "summary")
+              require(actual_summary.get("total") == len(bundles)
+                      and actual_summary.get("failed") == failed
+                      and actual_summary.get("passed", actual_summary.get("loaded")) == loaded,
+                      "individual summary inconsistent with results")
+              classified = qc.get("bundles")
+              if not isinstance(classified, list) or len(classified) != len(bundles):
+                  raise ValueError("classification bundle count mismatch")
+              counts = Counter(b.get("quality") for b in classified)
+              require(all(counts[k] == summary[k] for k in ("good", "polish", "needs_work", "critical")),
+                      "quality breakdown disagrees with classified bundles")
+          require(type(doc_freshness.get("dot_available")) is bool, "missing doc dot_available")
+          doc_summary = object_at(doc_freshness, "summary")
+          require(isinstance(doc_summary.get("bundle_dot_status"), str), "missing doc status")
+          require(isinstance(doc_freshness.get("findings"), list), "missing doc findings")
+          inventory = finding_inventory(qc, inputs, doc_freshness)
+          counts = Counter(item["severity"].upper() for item in inventory)
+          blocking = counts["ERROR"] + counts["CRITICAL"]
+          require(not blocking or quality in ("critical", "limited"), "ERROR contradicts classification")
+          pre_doc_warning = any(i["severity"].upper() == "WARNING"
+                                and not i["source"].startswith("bundle_doc_freshness") for i in inventory)
+          require(not (quality == "good" and pre_doc_warning), "WARNING contradicts good classification")
+          require(not failed or quality == "critical", "failed bundle contradicts quality")
+          # Existing classifier precedence is a consistency constraint here,
+          # not a second classifier or a mutation of upstream quality.
+          if quality != "limited":
+              recipe_quality = recipe_result.get("quality_level")
+              require(recipe_quality != "critical" or quality == "critical",
+                      "critical recipe quality contradicts classification")
+              structural_needs_work = any(
+                  item["source"] == "classification.structural_issues"
+                  and item["severity"] == "needs_work" for item in inventory)
+              require(not (structural_needs_work or recipe_quality == "needs_work")
+                      or quality in ("critical", "needs_work"),
+                      "needs_work source contradicts classification")
+              require(recipe_quality != "polish" or quality != "good",
+                      "polish recipe quality contradicts classification")
+          verdict = QUALITY[quality]
+          unverified = bool(raw_unverified) or any(
+              e.get("unverified", False) or e.get("skip_reason") == "output_unavailable"
+              for e in execution.values())
+          if quality not in ("critical", "limited") and inputs["packaging_check"].get("has_pyproject", False) and mode == "full":
+              require(all(build.get(k) is True for k in ("performed", "build_tested", "build_success", "passed"))
+                      and not build.get("skipped", False), "required build is failed or untested")
+          if quality == "good":
+              require(inputs["packaging_check"].get("passed") is True, "packaging not verified")
+              if mode != "full" or unverified or individual.get("skipped", False):
+                  verdict = "LIMITED VALIDATION"
+              elif counts["WARNING"]:
+                  verdict = "PASS WITH WARNINGS"
+          elif unverified and quality != "critical":
+              verdict = "LIMITED VALIDATION"
+          if counts["UNSPECIFIED"] and quality != "critical":
+              verdict = "LIMITED VALIDATION"
+
+          lines = [
+              "# Bundle Repository Validation Report v" + cell(version), "",
+              "## Executive Summary", f"- **Overall Verdict**: {verdict}",
+              "- **Validation Mode**: " + cell(mode),
+              f"- Bundles found: {discovered}; individual results: {loaded} loaded; {failed} failed",
+              "- Finding-record counts (not bundle quality counts): " + ", ".join(
+                  f"{s}={counts[s]}" for s in sorted(set(counts) | {
+                      "ERROR", "WARNING", "INFO", "SUGGESTION", "NEEDS_WORK", "CRITICAL"})),
+              "Skipped checks: " + str(sum(e["skipped"] for e in execution.values())), "",
+              "## Environment Status", source_json(env),
+              "Full mode describes available prerequisites, not universal execution.", "",
+              "### Checks Performed",
+              "| Check | performed | skipped | unverified | Status | skip_reason |",
+              "|---|---|---|---|---|---|",
+          ]
+          for name, entry in sorted(execution.items()):
+              unavailable = (name in raw_unverified or entry.get("unverified")
+                             or entry.get("skip_reason") == "output_unavailable")
+              status = ("SKIPPED / UNVERIFIED" if entry["skipped"] and unavailable
+                        else "SKIPPED" if entry["skipped"] else "UNVERIFIED" if unavailable
+                        else "PERFORMED" if entry["performed"] else "NOT PERFORMED")
+              lines.append("| " + " | ".join(cell(v) for v in (
+                  name, entry["performed"], entry["skipped"], entry.get("unverified"),
+                  status, entry.get("skip_reason"))) + " |")
+          lines += ["", "Skipped checks were not evaluated; no PASS is asserted for them.", "",
+                    "### Validation Flags", source_json(flags),
+                    "Diagram-label enhancement requested (not evidence of execution):",
+                    source_json(options), "## Bundle Discovery", source_json(discovery),
+                    "## Python Packaging Status", source_json(inputs["packaging_check"]), source_json(build),
+                    "## Quality Classification Summary", source_json(qc), source_json(individual),
+                    "## v3.0.0 Hygiene Validation"]
+          for name, title in SECTIONS.items():
+              lines += ["### " + title]
+              if name == "bundle_head_cost_results":
+                  lines += ["Raw direct-manifest subtotals, not rendered runtime head measurements.",
+                            "is_lower_bound is a legacy partial-estimate flag, not a mathematical runtime guarantee.",
+                            "Below-threshold partial estimates do not certify runtime fit; unknown sources can shadow names."]
+              payload = checks[name]
+              if name == "recipe_validation":
+                  # A sub-recipe context can also carry LLM analysis outputs.
+                  # Publish its normalized machine classification, not that prose.
+                  payload = recipe_result
+              lines.append(source_json(payload))
+          lines += ["### Bundle Doc Freshness",
+                    "Separate post-classification findings; later regeneration does not erase this status.",
+                    source_json(doc_freshness), "## Detailed Findings", source_json(inventory),
+                    "## Recommendations"]
+          recommendations: dict[str, list] = {}
+          for item in inventory:
+              record = item["record"]
+              if isinstance(record, dict):
+                  for field in ("fix", "suggestion"):
+                      if record.get(field):
+                          recommendations.setdefault(item["severity"].upper(), []).append(
+                              {"source": item["source"], field: record[field]})
+          for severity in sorted(recommendations):
+              lines += ["### " + cell(severity), source_json(recommendations[severity])]
+          lines += ["## Metadata",
+                    "Declared version (caller-overridable, not authenticated execution provenance): " + cell(version),
+                    "Executed recipe SHA: retained in external run evidence.",
+                    source_json({"environment": env, "validation_flags": flags, "requested_options": options})]
+          return "\n".join(lines) + "\n"
+
+      def persist_report(report: str, envelope: dict) -> Path:
+          encoded = report.encode("utf-8")
+          scratch = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR")
+          directory = (Path(scratch).expanduser() if scratch else
+                       Path(os.environ["VALIDATE_REPORT_PAYLOAD"]).expanduser().parent).resolve()
+          fd, name = tempfile.mkstemp(prefix="synthesize-report-", suffix=".md", dir=directory)
+          artifact = Path(name).resolve()
+          with os.fdopen(fd, "wb") as stream:
+              os.fchmod(stream.fileno(), 0o600)
+              stream.write(encoded)
+              stream.flush()
+              os.fsync(stream.fileno())
+              mode = stat.S_IMODE(os.fstat(stream.fileno()).st_mode)
+          receipt = {
+              "schema_version": 1,
+              "step_id": "synthesize-report",
+              "validator_version": envelope["quality_classification"]["validator_version"],
+              "artifact_path": str(artifact),
+              "utf8_bytes": len(encoded),
+              "sha256": hashlib.sha256(encoded).hexdigest(),
+              "mode": f"{mode:04o}",
+              "input_sha256": {
+                  key: hashlib.sha256(Path(os.environ[key]).expanduser().read_bytes()).hexdigest()
+                  for key in ("VALIDATE_REPORT_PAYLOAD", "VALIDATE_DOC_PAYLOAD")
+              },
+          }
+          receipt_path = artifact.with_suffix(".md.receipt.json")
+          receipt_fd = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(receipt_fd, "wb") as stream:
+              os.fchmod(stream.fileno(), 0o600)
+              stream.write((json.dumps(receipt, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
+              stream.flush()
+              os.fsync(stream.fileno())
+          # A receipt proves artifact completeness, not consumer acceptance.
+          return receipt_path
+
+      try:
+          envelope = load_report_inputs(Path(os.environ["VALIDATE_REPORT_PAYLOAD"]))
+          doc = load_report_inputs(Path(os.environ["VALIDATE_DOC_PAYLOAD"]))
+          report = render_report(envelope, doc)
+          receipt_path = persist_report(report, envelope)
+      except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
+          print(f"Report publication refused: {exc}. Check structured report/doc payloads.", file=sys.stderr)
+          raise SystemExit(1)
+      print(f"Report artifact receipt: {receipt_path}", file=sys.stderr)
+      sys.stdout.write(json.dumps(report, ensure_ascii=False) + "\n")
+      EOF
     output: "final_report"
-    timeout: 300
+    parse_json: true
+    timeout: 30
     on_error: "fail"
-    depends_on: ["quality-classification", "quick-approval", "composition-analysis", "repo-conventions", "set-default-approval-summary", "set-default-composition-analysis", "set-default-repo-conventions", "set-default-recipe-validation", "bundle-doc-regen-detail", "bundle-overview-regen-write"]
+    depends_on: ["validate-all-flags", "quality-classification", "quick-approval", "composition-analysis", "repo-conventions", "set-default-approval-summary", "set-default-composition-analysis", "set-default-repo-conventions", "set-default-recipe-validation", "bundle-doc-freshness-check", "bundle-doc-regen-detail", "bundle-overview-regen-write"]

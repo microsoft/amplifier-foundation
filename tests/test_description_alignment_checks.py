@@ -40,6 +40,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).parent.parent
 RECIPE_DIR = Path(os.environ.get("ALIGNMENT_RECIPE_DIR", REPO_ROOT / "recipes"))
@@ -64,13 +65,17 @@ def _step_body(recipe: Path, step_id: str) -> str:
     """Extract the named bash step's ``<< 'EOF' ... EOF`` Python body, verbatim."""
     lines = recipe.read_text(encoding="utf-8").splitlines()
     try:
-        step = next(i for i, ln in enumerate(lines) if ln.strip() == f'- id: "{step_id}"')
+        step = next(
+            i for i, ln in enumerate(lines) if ln.strip() == f'- id: "{step_id}"'
+        )
     except StopIteration:  # pragma: no cover - only on a pre-change recipe
         pytest.fail(
             f"step {step_id!r} does not exist in {recipe}. On the pre-change recipes this "
             f"is the expected FAIL-BEFORE: the check had not been written yet."
         )
-    start = next(i for i in range(step, len(lines)) if lines[i].rstrip().endswith("<< 'EOF'"))
+    start = next(
+        i for i in range(step, len(lines)) if lines[i].rstrip().endswith("<< 'EOF'")
+    )
     end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "EOF")
     indent = len(lines[start]) - len(lines[start].lstrip())
     return "\n".join(ln[indent:] for ln in lines[start + 1 : end])
@@ -85,7 +90,9 @@ def _run(recipe: Path, step_id: str, repo_path: Path, env_var: str) -> dict:
         text=True,
         env=env,
     )
-    assert proc.returncode == 0, f"step {step_id} exited {proc.returncode}\nSTDERR:\n{proc.stderr}"
+    assert proc.returncode == 0, (
+        f"step {step_id} exited {proc.returncode}\nSTDERR:\n{proc.stderr}"
+    )
     return json.loads(proc.stdout)
 
 
@@ -139,7 +146,9 @@ def run_agents_structural(repo_path: Path) -> dict:
         DISCOVERY_SUBSTITUTION, "json.loads(os.environ['ALIGNMENT_DISCOVERY_JSON'])"
     )
     env["ALIGNMENT_DISCOVERY_JSON"] = discovery.stdout.strip()
-    proc = subprocess.run([sys.executable, "-c", body], capture_output=True, text=True, env=env)
+    proc = subprocess.run(
+        [sys.executable, "-c", body], capture_output=True, text=True, env=env
+    )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -317,7 +326,9 @@ def test_a_broken_skill_does_not_pass_clean(tmp_path: Path) -> None:
         "---\nname: broken\ndescription: [unclosed\n---\n\nBody.\n", encoding="utf-8"
     )
     result = run_repo_step("skill-description-validation", repo)
-    assert types_of(result, "errors"), "a skill with broken frontmatter must not pass clean"
+    assert types_of(result, "errors"), (
+        "a skill with broken frontmatter must not pass clean"
+    )
     assert result["errors"][0]["type"] in {
         "skill_frontmatter_invalid",
         "skill_description_missing",
@@ -331,7 +342,9 @@ def test_a_broken_skill_does_not_pass_clean(tmp_path: Path) -> None:
 
 def test_awareness_redundancy_names_the_entry_it_duplicates() -> None:
     result = run_repo_step("awareness-redundancy-check", FIXTURE)
-    hits = [w for w in result["warnings"] if w["type"] == "awareness_redundant_with_catalog"]
+    hits = [
+        w for w in result["warnings"] if w["type"] == "awareness_redundant_with_catalog"
+    ]
     assert hits, "the fixture's awareness file restates its agent description"
     assert hits[0]["entry"] == "agent:fixture-agent"
     assert hits[0]["coverage"] >= result["rule"]["file_redundant"]
@@ -415,7 +428,9 @@ def test_the_engineered_bundles_stay_under_the_threshold() -> None:
 
 def test_visibility_disabled_skills_are_excluded_but_still_reported() -> None:
     """Turning skill visibility off is a real lever; the report must show what it bought."""
-    result = run_repo_step("bundle-head-cost", REPO_ROOT)
+    result = _head_cost(
+        REPO_ROOT, source_hint="https://github.com/microsoft/amplifier-foundation.git"
+    )
     anchors = next(
         d for d in result["bundle_details"] if d["file"] == "bundles/anchors/bundle.md"
     )
@@ -428,7 +443,261 @@ def test_an_unresolvable_reference_is_a_lower_bound_never_a_guess() -> None:
     result = run_repo_step("bundle-head-cost", REPO_ROOT)
     estimated = [d for d in result["bundle_details"] if d.get("is_lower_bound")]
     for detail in estimated:
-        assert detail["unresolved_refs"], "is_lower_bound must name what could not be read"
+        assert detail["unresolved_refs"], (
+            "is_lower_bound must name what could not be read"
+        )
+
+
+def _head_cost(repo: Path, source_hint: str = "") -> dict:
+    """Run the actual heredoc with an explicit (never ambient) source identity."""
+    env = dict(os.environ, VALIDATE_BUNDLE_REPO_PATH=str(repo))
+    env["VALIDATE_BUNDLE_REPO_SOURCE"] = source_hint
+    proc = subprocess.run(
+        [sys.executable, "-c", _step_body(BUNDLE_REPO_RECIPE, "bundle-head-cost")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def _catalog_skill(repo: Path, relative: str, name: str, description: str) -> None:
+    target = repo / relative / "SKILL.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "---\n"
+        + yaml.safe_dump({"name": name, "description": description})
+        + "---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+
+def _skill_mount(repo: Path, sources: list[str], visible: bool = True) -> None:
+    target = repo / "behaviors/navigation.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        yaml.safe_dump(
+            {
+                "bundle": {"name": "navigation", "namespace_root": ".."},
+                "tools": [
+                    {
+                        "module": "tool-skills",
+                        "config": {
+                            "skills": sources,
+                            "visibility": {"enabled": visible},
+                        },
+                    }
+                ],
+                "agents": {"include": ["a", "b", "c"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _navigation_detail(repo: Path, source_hint: str = "") -> dict:
+    return next(
+        d
+        for d in _head_cost(repo, source_hint)["bundle_details"]
+        if d["file"] == "behaviors/navigation.yaml"
+    )
+
+
+@pytest.mark.parametrize("git_source", [False, True])
+def test_head_cost_scopes_configured_skills(tmp_path: Path, git_source: bool) -> None:
+    """Repository-wide attribution overcharges a two-skill behavior by 2,796 chars."""
+    _catalog_skill(tmp_path, "skills/navigation", "navigation", "n" * 200)
+    _catalog_skill(tmp_path, "skills/transcript", "transcript", "t" * 132)
+    _catalog_skill(tmp_path, "skills/unrelated", "unrelated", "u" * 2796)
+    for name, length in (("a", 526), ("b", 572), ("c", 1081)):
+        target = tmp_path / f"agents/{name}.md"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(
+            "---\n"
+            + yaml.safe_dump(
+                {
+                    "meta": {"name": name, "description": "a" * length},
+                }
+            )
+            + "---\nBody.\n",
+            encoding="utf-8",
+        )
+    sources = ["skills/navigation", "skills/transcript"]
+    if git_source:
+        sources = [
+            f"git+https://EXAMPLE.com/owner/repo.git@main#subdirectory={s}"
+            for s in sources
+        ]
+    _skill_mount(tmp_path, sources)
+    detail = _navigation_detail(
+        tmp_path, "https://example.com/owner/repo@other#subdirectory=behaviors"
+    )
+    assert detail["skill_description_chars"] == 332
+    assert detail["skills_counted"] == 2
+    assert {s["name"] for s in detail["skill_sources"]} == {"navigation", "transcript"}
+    assert detail["head_chars"] == 2511
+    assert detail["is_lower_bound"] is True  # ambient discovery is not measured
+    assert any("ambient" in str(ref) for ref in detail["unresolved_refs"])
+
+
+@pytest.mark.parametrize("reverse,expected", [(False, 17), (True, 29)])
+def test_head_cost_source_priority_and_recursion(
+    tmp_path: Path, reverse: bool, expected: int
+) -> None:
+    _catalog_skill(tmp_path, "first/nested/a", "duplicate", "a" * 11)
+    _catalog_skill(tmp_path, "first/z", "unique", "b" * 6)
+    _catalog_skill(tmp_path, "second/a", "duplicate", "c" * 23)
+    sources = ["first", "second"] if not reverse else ["second", "first"]
+    _skill_mount(tmp_path, sources + sources)
+    detail = _navigation_detail(tmp_path)
+    assert detail["skill_description_chars"] == expected
+    assert detail["skills_counted"] == 2
+
+
+@pytest.mark.parametrize("source", ["skills/only/SKILL.md", "beside"])
+def test_head_cost_rejects_file_and_manifest_relative_fallback(
+    tmp_path: Path, source: str
+) -> None:
+    _catalog_skill(tmp_path, "skills/only", "only", "known")
+    _catalog_skill(tmp_path, "behaviors/beside", "beside", "not runtime cwd")
+    _skill_mount(tmp_path, [source])
+    detail = _navigation_detail(tmp_path)
+    assert detail["skills_counted"] == 0
+    assert detail["skill_description_chars"] == 0
+    assert any(source in str(ref) for ref in detail["unresolved_refs"])
+
+
+@pytest.mark.parametrize(
+    "unknown",
+    [
+        "git+https://foreign.example/owner/repo@main#subdirectory=skills/known",
+        "git+https://example.com/owner/repo@main#subdirectory=skills/known",
+        "missing",
+        "skills/broken",
+        "../outside",
+        "skills/escape",
+        "namespace:skills",
+        "~validator_review_no_such_account_6592/catalog",
+    ],
+)
+@pytest.mark.parametrize("unknown_first", [True, False])
+def test_head_cost_unknown_sources_and_visibility(
+    tmp_path: Path, unknown: str, unknown_first: bool
+) -> None:
+    repo = tmp_path / "repo"
+    _catalog_skill(repo, "skills/known", "known", "visible")
+    _catalog_skill(tmp_path, "outside", "escaped", "outside")
+    (repo / "skills/escape").symlink_to(tmp_path / "outside", target_is_directory=True)
+    broken = repo / "skills/broken/SKILL.md"
+    broken.parent.mkdir()
+    broken.write_text("---\nname: broken\ndescription: [unclosed\n---\nBody.\n")
+    sources = [unknown, "skills/known"] if unknown_first else ["skills/known", unknown]
+    _skill_mount(repo, sources)
+    detail = _navigation_detail(repo)  # absent hint must not guess repo identity
+    assert detail["skill_description_chars"] == (0 if unknown_first else 7)
+    assert detail["skills_counted"] == (0 if unknown_first else 1)
+    assert detail["is_lower_bound"] is True
+    assert any(unknown in str(ref) for ref in detail["unresolved_refs"])
+    if unknown.startswith("~validator_review"):
+        assert any("home directory" in str(ref) for ref in detail["unresolved_refs"])
+    assert any("ambient" in str(ref) for ref in detail["unresolved_refs"])
+    if unknown_first:
+        assert any("shadow" in str(ref) for ref in detail["unresolved_refs"])
+    _skill_mount(repo, sources, visible=False)
+    hidden = _navigation_detail(repo)
+    assert hidden["skill_description_chars"] == 0
+    assert hidden["skills_counted"] == 0
+    assert hidden["skill_description_chars_excluded"] == (0 if unknown_first else 7)
+    assert "visibility" in hidden["skill_exclusion_reason"]
+
+
+def test_head_cost_hint_mismatch_and_no_mount(tmp_path: Path) -> None:
+    _catalog_skill(tmp_path, "skills/known", "known", "visible")
+    uri = "git+https://example.com/owner/repo@main#subdirectory=skills"
+    _skill_mount(tmp_path, [uri])
+    detail = _navigation_detail(tmp_path, "https://other.example/owner/repo")
+    assert detail["skills_counted"] == 0
+    assert any(uri in str(ref) for ref in detail["unresolved_refs"])
+    (tmp_path / "behaviors/navigation.yaml").write_text("bundle:\n  name: navigation\n")
+    detail = _navigation_detail(tmp_path)
+    assert detail["skill_description_chars"] == 0
+    assert not detail["is_lower_bound"]
+
+
+@pytest.mark.parametrize("source", ["./catalog", "~/catalog"])
+def test_head_cost_candidate_cwd_utf8_and_exclusions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _catalog_skill(tmp_path, "catalog/nested", "selected", "é雪ab")
+    for excluded in ("tests", "test-fixtures", ".venv", ".git", "node_modules"):
+        _catalog_skill(tmp_path, f"catalog/{excluded}/hidden", "excluded", "unrelated")
+    _catalog_skill(tmp_path, "behaviors/catalog/wrong", "wrong-cwd", "unrelated")
+    _skill_mount(tmp_path, [source])
+    detail = _navigation_detail(tmp_path)
+    assert detail["skill_description_chars"] == 4  # characters, not UTF-8 bytes
+    assert detail["skills_counted"] == 1
+    assert detail["skill_sources"][0]["file"] == "catalog/nested/SKILL.md"
+    skill_unknowns = [ref for ref in detail["unresolved_refs"] if isinstance(ref, dict)]
+    assert len(skill_unknowns) == 1  # ambient only, not excluded metadata
+    assert skill_unknowns[0]["source"] == "ambient workspace/user discovery"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"---\nname: missing-description\n---\nBody.\n",
+        b"---\ndescription: missing-name\n---\nBody.\n",
+        b"---\nname: malformed\ndescription: \xff\n---\nBody.\n",
+    ],
+)
+def test_head_cost_invalid_metadata_remains_unknown(
+    tmp_path: Path, content: bytes
+) -> None:
+    target = tmp_path / "catalog/SKILL.md"
+    target.parent.mkdir()
+    target.write_bytes(content)
+    _skill_mount(tmp_path, ["catalog"])
+    detail = _navigation_detail(tmp_path)
+    assert detail["skill_description_chars"] == 0
+    assert detail["skills_counted"] == 0
+    assert any("metadata" in str(ref) for ref in detail["unresolved_refs"])
+
+
+def test_head_cost_threshold_stays_live_with_partial_estimates(tmp_path: Path) -> None:
+    _catalog_skill(tmp_path, "skills/large", "large", "x" * 4001)
+    _skill_mount(tmp_path, ["skills/large"])
+    result = _head_cost(tmp_path)
+    assert result["warnings"][0]["severity"] == "WARNING"
+    assert result["warnings"][0]["head_chars"] == 4001
+    _catalog_skill(tmp_path, "skills/large", "large", "x" * 4000)
+    result = _head_cost(tmp_path)
+    assert not result["warnings"]
+    assert result["bundle_details"][0]["is_lower_bound"]
+    assert "not" in result["bundle_details"][0]["estimate_qualification"].lower()
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+def test_tool_count_still_warns_on_three_direct_tools(
+    tmp_path: Path, count: int
+) -> None:
+    target = tmp_path / "behaviors/unrelated.yaml"
+    target.parent.mkdir()
+    target.write_text(
+        yaml.safe_dump(
+            {
+                "bundle": {"name": "unrelated"},
+                "tools": [{"module": f"tool-{n}"} for n in range(count)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = run_repo_step("behavior-hygiene-validation", tmp_path)
+    hits = [w for w in result["warnings"] if w["type"] == "tool_count_high"]
+    assert len(hits) == (1 if count == 3 else 0)
+    assert not hits or hits[0]["severity"] == "WARNING"
 
 
 # =============================================================================
@@ -459,7 +728,9 @@ def _mini_repo(tmp_path: Path, agent_description: str) -> Path:
     agent = repo / "agents" / "a.md"
     agent.parent.mkdir(parents=True)
     agent.write_text(
-        "---\nmeta:\n  name: a\n  description: " + json.dumps(agent_description) + "\n---\n\nBody.\n",
+        "---\nmeta:\n  name: a\n  description: "
+        + json.dumps(agent_description)
+        + "\n---\n\nBody.\n",
         encoding="utf-8",
     )
     return repo

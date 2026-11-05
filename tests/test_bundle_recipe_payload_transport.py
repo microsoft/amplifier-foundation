@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
+import runpy
 import shlex
 import signal
 import stat
@@ -30,8 +32,129 @@ POSIX_RECIPE_EXECUTION = pytest.mark.skipif(
 )
 
 
+@POSIX_RECIPE_EXECUTION
+@pytest.mark.parametrize("length", [0, 70_000, 110_000])
+@pytest.mark.parametrize("use_scratch", [False, True])
+def test_report_transport_scalar_and_complete_private_artifact(
+    tmp_path: Path, length: int, use_scratch: bool
+) -> None:
+    helpers = runpy.run_path(
+        str(REPO_ROOT / "tests/test_validate_bundle_repo_integration.py")
+    )
+    step = _steps()["synthesize-report"]
+    assert step["parse_json"] is True
+    envelope, doc = helpers["_report_fixture"]()
+    content = (
+        '雪 "quote" \\\\path\n```json\n{"embedded":"not the report"}\n```\n'
+        + "x" * length
+    )
+    envelope["inputs"]["checks"]["bundle_head_cost_results"]["transport_fixture"] = (
+        content
+    )
+    report_path, doc_path = tmp_path / "input.json", tmp_path / "doc.json"
+    report_path.write_text(json.dumps(envelope, ensure_ascii=False), encoding="utf-8")
+    doc_path.write_text(json.dumps(doc), encoding="utf-8")
+    before = report_path.read_bytes(), doc_path.read_bytes()
+    scratch = tmp_path / "scratch" if use_scratch else None
+    if scratch is not None:
+        scratch.mkdir(mode=0o700)
+    run = helpers["_run_report_paths"]
+    first = run(
+        step, tmp_path, report_path, doc_path, decode_report=False, scratch=scratch
+    )
+    second = run(
+        step, tmp_path, report_path, doc_path, decode_report=False, scratch=scratch
+    )
+    assert first.returncode == second.returncode == 0, first.stderr
+    assert first.stdout == second.stdout
+    report = json.loads(first.stdout)
+    assert type(report) is str and report.startswith(
+        "# Bundle Repository Validation Report"
+    )
+    assert first.stdout == json.dumps(report, ensure_ascii=False) + "\n"
+    assert any(
+        block.get("transport_fixture") == content
+        for block in helpers["_fenced_json"](report)
+        if isinstance(block, dict)
+    )
+    receipts = [
+        Path(proc.stderr.split("Report artifact receipt: ", 1)[1].splitlines()[0])
+        for proc in (first, second)
+    ]
+    assert receipts[0] != receipts[1]  # Unique files, deterministic report bytes.
+    for receipt_path in receipts:
+        receipt = json.loads(receipt_path.read_text())
+        data = Path(receipt["artifact_path"]).read_bytes()
+        assert data == report.encode("utf-8")
+        assert receipt["sha256"] == hashlib.sha256(data).hexdigest()
+        assert receipt["utf8_bytes"] == len(data) > length
+        assert data.startswith(
+            b"# Bundle Repository Validation Report"
+        ) and data.endswith(b"\n")
+        assert receipt_path.stat().st_mode & 0o777 == 0o600
+    if length:
+        assert len(report.encode("utf-8")) > length
+        assert len(report.encode("utf-8")[-65536:]) < len(report.encode("utf-8"))
+    assert before == (report_path.read_bytes(), doc_path.read_bytes())
+
+
+@POSIX_RECIPE_EXECUTION
+@pytest.mark.parametrize(
+    "failure", ["artifact_create", "artifact_write", "receipt_create", "receipt_write"]
+)
+def test_report_transport_write_failures_have_no_stdout(
+    tmp_path: Path, failure: str
+) -> None:
+    helpers = runpy.run_path(
+        str(REPO_ROOT / "tests/test_validate_bundle_repo_integration.py")
+    )
+    step = dict(_steps()["synthesize-report"])
+    envelope, doc = helpers["_report_fixture"]()
+    p, d = tmp_path / "input.json", tmp_path / "doc.json"
+    p.write_text(json.dumps(envelope))
+    d.write_text(json.dumps(doc))
+    before = p.read_bytes(), d.read_bytes()
+    scratch = tmp_path / "scratch"
+    if failure == "artifact_create":
+        scratch.write_text("not a directory")
+    else:
+        scratch.mkdir(mode=0o700)
+        # Execute the actual YAML body under bounded OS fault conditions.
+        # RLIMIT_FSIZE makes the real file write fail; no fake writer/renderer.
+        prelude = "import resource\nimport signal\nsignal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
+        if failure == "artifact_write":
+            prelude += "resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))\n"
+        else:
+            prelude += (
+                "import sys\n"
+                "def receipt_fault(event, args):\n"
+                "    if event == 'open' and str(args[0]).endswith('.receipt.json'):\n"
+            )
+            prelude += (
+                "        raise PermissionError('controlled receipt create failure')\n"
+                if failure == "receipt_create"
+                else "        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))\n"
+            )
+            prelude += "sys.addaudithook(receipt_fault)\n"
+        step["command"] = step["command"].replace(
+            "<< 'EOF'\n", "<< 'EOF'\n" + prelude, 1
+        )
+    proc = helpers["_run_report_paths"](step, tmp_path, p, d, scratch=scratch)
+    assert proc.returncode != 0 and proc.stdout == "" and proc.stderr
+    assert before == (p.read_bytes(), d.read_bytes())
+    if failure.startswith("receipt"):
+        artifacts = list(scratch.glob("*.md"))
+        assert len(artifacts) == 1
+        assert (
+            artifacts[0]
+            .read_bytes()
+            .startswith(b"# Bundle Repository Validation Report")
+        )
+
+
 def _render(template: str, context: dict) -> str:
     """Match recipe substitution for strings and JSON-valued placeholders."""
+
     def replace(match: re.Match) -> str:
         value = context
         for part in match.group(1).split("."):
@@ -42,10 +165,15 @@ def _render(template: str, context: dict) -> str:
 
 
 def _steps() -> dict:
-    return {step["id"]: step for step in yaml.safe_load(RECIPE.read_text(encoding="utf-8"))["steps"]}
+    return {
+        step["id"]: step
+        for step in yaml.safe_load(RECIPE.read_text(encoding="utf-8"))["steps"]
+    }
 
 
-def _run_bash(command: str, cwd: Path, env: dict, *, timeout: float = 60) -> subprocess.CompletedProcess:
+def _run_bash(
+    command: str, cwd: Path, env: dict, *, timeout: float = 60
+) -> subprocess.CompletedProcess:
     """Bound execution; signal the owned group only while its leader is unreaped.
 
     Drained pipes/leader exit do not prove arbitrary descendant containment.
@@ -56,8 +184,13 @@ def _run_bash(command: str, cwd: Path, env: dict, *, timeout: float = 60) -> sub
     env = dict(env, HOME=str(home), AMPLIFIER_HOME=str(home / ".amplifier"))
     args = ["bash", "-c", command]
     proc = subprocess.Popen(
-        args, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, start_new_session=True,
+        args,
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         try:
@@ -77,12 +210,16 @@ def _run_bash(command: str, cwd: Path, env: dict, *, timeout: float = 60) -> sub
                                 os.killpg(proc.pid, signal.SIGKILL)
                         proc.communicate(timeout=5)
             except BaseException as cleanup:
-                failure.add_note(f"Owned Bash group {proc.pid} cleanup failed: {cleanup}")
+                failure.add_note(
+                    f"Owned Bash group {proc.pid} cleanup failed: {cleanup}"
+                )
             raise
         return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
     finally:
-        proc.stdout.close()
-        proc.stderr.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
 
 
 def _run(step: dict, context: dict, cwd: Path, *, scratch: Path | None) -> dict:
@@ -93,7 +230,9 @@ def _run(step: dict, context: dict, cwd: Path, *, scratch: Path | None) -> dict:
     env.pop("AMPLIFIER_RECIPE_SCRATCH_DIR", None)
     if scratch is not None:
         env["AMPLIFIER_RECIPE_SCRATCH_DIR"] = str(scratch)
-    env.update({name: _render(value, context) for name, value in step.get("env", {}).items()})
+    env.update(
+        {name: _render(value, context) for name, value in step.get("env", {}).items()}
+    )
     proc = _run_bash(command, cwd, env)
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
@@ -112,9 +251,235 @@ def _classification_defaults(context: dict, step: dict) -> None:
     for name in re.findall(r"\{\{([^{}]+)\}\}", step["command"]):
         if name not in context:
             context[name] = {
-                "passed": True, "skipped": True, "errors": [], "warnings": [],
+                "passed": True,
+                "skipped": True,
+                "errors": [],
+                "warnings": [],
             }
     context["packaging_check"] = {"passed": True}
+    context["enhance_diagrams"] = "false"
+    # Build now shares the private payload contract. Execute its real skipped
+    # producer rather than inventing a pointer or copying its result shape.
+    scratch = Path(context["repo_path"])
+    context.update(
+        validate_all="false", validate_agents="false", validate_recipes="false"
+    )
+    _run(_steps()["validate-all-flags"], context, scratch, scratch=scratch)
+    _run(_steps()["set-default-build-check"], context, scratch, scratch=scratch)
+
+
+@POSIX_RECIPE_EXECUTION
+def test_report_envelope_producers_and_large_transport(tmp_path: Path) -> None:
+    helpers = runpy.run_path(
+        str(REPO_ROOT / "tests/test_validate_bundle_repo_integration.py")
+    )
+    steps = _steps()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    context = {
+        "repo_path": str(repo),
+        "enhance_diagrams": "false",
+        "env_check": {
+            "validator_version": "3.17.3",
+            "validation_mode": "full",
+            "capabilities": {
+                "foundation_available": True,
+                "hatchling_available": True,
+                "pip_wheel_available": True,
+            },
+            "limitations": [],
+        },
+    }
+    discovery = _run(steps["repo-discovery"], context, tmp_path, scratch=tmp_path)
+    # Actual classifier uses real file transport with a large raw findings object.
+    individual = {"bundles": [], "summary": {"total": 0, "loaded": 0, "failed": 0}}
+    tools = {
+        "suggestions": [
+            {
+                "type": f"late-{n}",
+                "message": "''' | ``` $(touch NEVER)\nC:\\x\\new",
+                "fix": "x" * 1100,
+                "severity": "INFO",
+            }
+            for n in range(150)
+        ]
+    }
+    for name, value in (
+        ("individual_validation", individual),
+        ("tool_placement_results", tools),
+    ):
+        p = tmp_path / f"{name}.json"
+        p.write_text(json.dumps(value), encoding="utf-8")
+        context[name] = {"_payload_file": str(p)}
+    _classification_defaults(context, steps["quality-classification"])
+    context["module_dep_resolvability_check"] = {
+        "passed": False,
+        "errors": [
+            {
+                "type": "late-error",
+                "severity": "ERROR",
+                "message": "late diagnostic",
+                "fix": "keep full fix",
+            }
+        ],
+    }
+    classified = _run(
+        steps["quality-classification"], context, tmp_path, scratch=tmp_path
+    )
+    envelope_path = Path(classified["_report_payload_file"])
+    assert envelope_path.stat().st_size > 128 * 1024
+    assert stat.S_IMODE(envelope_path.stat().st_mode) == 0o600
+    stored = json.loads(envelope_path.read_text())
+    assert stored["inputs"]["checks"]["tool_placement_results"] == tools
+    assert stored["quality_classification"] == {
+        k: v for k, v in classified.items() if k != "_report_payload_file"
+    }
+    doc = _run(steps["bundle-doc-freshness-check"], context, tmp_path, scratch=tmp_path)
+    doc_path = Path(doc["_payload_file"])
+    assert stat.S_IMODE(doc_path.stat().st_mode) == 0o600
+    before = (
+        envelope_path.read_bytes(),
+        doc_path.read_bytes(),
+        Path(discovery["_payload_file"]).read_bytes(),
+    )
+    proc = helpers["_run_report_paths"](
+        steps["synthesize-report"], tmp_path, envelope_path, doc_path
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "**Overall Verdict**: FAIL" in proc.stdout
+    assert "late diagnostic" in proc.stdout and "keep full fix" in proc.stdout
+    assert tools in helpers["_fenced_json"](proc.stdout)
+    assert before == (
+        envelope_path.read_bytes(),
+        doc_path.read_bytes(),
+        Path(discovery["_payload_file"]).read_bytes(),
+    )
+    assert not (tmp_path / "NEVER").exists()
+
+
+@POSIX_RECIPE_EXECUTION
+def test_report_early_classification_and_no_dot_exports(tmp_path: Path) -> None:
+    helpers = runpy.run_path(
+        str(REPO_ROOT / "tests/test_validate_bundle_repo_integration.py")
+    )
+    steps = _steps()
+    (tmp_path / "repo").mkdir()
+    context = {
+        "repo_path": str(tmp_path / "repo"),
+        "enhance_diagrams": "false",
+        "env_check": {
+            "validator_version": "3.17.3",
+            "validation_mode": "structural_only",
+            "capabilities": {"foundation_available": False},
+            "limitations": [],
+        },
+    }
+    _run(steps["repo-discovery"], context, tmp_path, scratch=tmp_path)
+    individual = tmp_path / "limited.json"
+    individual.write_text(
+        json.dumps(
+            {
+                "skipped": True,
+                "environment_limitation": True,
+                "validation_mode": "structural_only",
+                "reason": "missing Foundation",
+                "bundles": [],
+            }
+        )
+    )
+    tools = tmp_path / "tools.json"
+    tools.write_text("{}")
+    context.update(
+        individual_validation={"_payload_file": str(individual)},
+        tool_placement_results={"_payload_file": str(tools)},
+    )
+    _classification_defaults(context, steps["quality-classification"])
+    classified = _run(
+        steps["quality-classification"], context, tmp_path, scratch=tmp_path
+    )
+    assert classified["quality_level"] == "limited"
+    no_dot = dict(steps["bundle-doc-freshness-check"])
+    no_dot["command"] = no_dot["command"].replace(
+        "from amplifier_foundation.bundle_docs import bundle_repo_dot",
+        "raise ImportError('controlled no-DOT prerequisite')",
+    )
+    doc = _run(no_dot, context, tmp_path, scratch=tmp_path)
+    assert doc["dot_available"] is False
+    proc = helpers["_run_report_paths"](
+        steps["synthesize-report"],
+        tmp_path,
+        Path(classified["_report_payload_file"]),
+        Path(doc["_payload_file"]),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "**Overall Verdict**: LIMITED VALIDATION" in proc.stdout
+    assert (
+        json.loads(Path(doc["_payload_file"]).read_text())["findings"]
+        == doc["findings"]
+    )
+    assert "DOT_TOOL_UNAVAILABLE" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "fault", ["absent", "truncated", "bad_json", "schema", "bad_doc", "missing_pointer"]
+)
+def test_report_payload_failure_stops_publication(tmp_path: Path, fault: str) -> None:
+    helpers = runpy.run_path(
+        str(REPO_ROOT / "tests/test_validate_bundle_repo_integration.py")
+    )
+    envelope, doc = helpers["_report_fixture"]()
+    report_path, doc_path = tmp_path / "report.json", tmp_path / "doc.json"
+    if fault == "schema":
+        envelope["schema_version"] = "1"
+    report_path.write_text(json.dumps(envelope), encoding="utf-8")
+    doc_path.write_text(json.dumps(doc), encoding="utf-8")
+    if fault == "absent":
+        report_path.unlink()
+    elif fault in ("truncated", "bad_json"):
+        report_path.write_text(
+            '{"schema_version":' if fault == "truncated" else "not-json"
+        )
+    elif fault == "bad_doc":
+        doc_path.write_text("{}")
+    elif fault == "missing_pointer":
+        report_path = Path("")
+    proc = helpers["_run_report_paths"](
+        _steps()["synthesize-report"], tmp_path, report_path, doc_path
+    )
+    assert proc.returncode != 0
+    assert proc.stdout == "" and proc.stderr
+
+
+@POSIX_RECIPE_EXECUTION
+def test_report_keeps_doc_warning_after_later_write(tmp_path: Path) -> None:
+    helpers = runpy.run_path(
+        str(REPO_ROOT / "tests/test_validate_bundle_repo_integration.py")
+    )
+    steps = _steps()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bundle.yaml").write_text("bundle:\n  name: local\n  version: 1.0.0\n")
+    (repo / "bundle.dot").write_text('digraph old { source_hash="000000"; }\n')
+    context = {"repo_path": str(repo)}
+    _run(steps["repo-discovery"], context, tmp_path, scratch=tmp_path)
+    doc = _run(steps["bundle-doc-freshness-check"], context, tmp_path, scratch=tmp_path)
+    assert doc["summary"]["bundle_dot_status"] == "stale"
+    assert doc["findings"][0]["code"] == "BUNDLE_DOT_STALE"
+    doc_path = Path(doc["_payload_file"])
+    original_payload = doc_path.read_bytes()
+    # Model the later structural DOT write; it must not erase the earlier check.
+    (repo / "bundle.dot").write_text(doc["overview_structural_dot"])
+    envelope, _ = helpers["_report_fixture"]()
+    report_path = tmp_path / "envelope.json"
+    report_path.write_text(json.dumps(envelope))
+    proc = helpers["_run_report_paths"](
+        steps["synthesize-report"], tmp_path, report_path, doc_path
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "**Overall Verdict**: PASS WITH WARNINGS" in proc.stdout
+    assert "BUNDLE_DOT_STALE" in proc.stdout
+    assert json.loads(original_payload) in helpers["_fenced_json"](proc.stdout)
+    assert doc_path.read_bytes() == original_payload
 
 
 def _assert_large_payload(payload: Path, repo: str) -> None:
@@ -125,11 +490,16 @@ def _assert_large_payload(payload: Path, repo: str) -> None:
 
 
 @pytest.mark.parametrize("kind", ["large", "small", "long-root-only"])
-def test_payload_size_oracle_rejects_small_or_path_padded_data(tmp_path: Path, kind: str) -> None:
+def test_payload_size_oracle_rejects_small_or_path_padded_data(
+    tmp_path: Path, kind: str
+) -> None:
     repo = "/root-" + "x" * 1000
     payload = tmp_path / "payload.json"
-    data = ([repo] * 200 if kind == "long-root-only" else
-            {"payload": "x" * (128 * 1024 if kind == "large" else 1)})
+    data = (
+        [repo] * 200
+        if kind == "long-root-only"
+        else {"payload": "x" * (128 * 1024 if kind == "large" else 1)}
+    )
     payload.write_text(json.dumps(data), encoding="utf-8")
     if kind == "large":
         _assert_large_payload(payload, repo)
@@ -139,7 +509,9 @@ def test_payload_size_oracle_rejects_small_or_path_padded_data(tmp_path: Path, k
 
 
 @POSIX_RECIPE_EXECUTION
-def test_large_payloads_execute_producers_and_classifier_losslessly(tmp_path: Path) -> None:
+def test_large_payloads_execute_producers_and_classifier_losslessly(
+    tmp_path: Path,
+) -> None:
     steps = _steps()
     repo = tmp_path / "repo"
     behaviors = repo / "behaviors"
@@ -162,14 +534,18 @@ def test_large_payloads_execute_producers_and_classifier_losslessly(tmp_path: Pa
     root_tools = "".join(f"  - module: tool-root-{n:04d}\n" for n in range(256))
     (repo / "bundle.yaml").write_text(
         "bundle:\n  name: fixture\n  version: 1.0.0\n  description: Fixture\n"
-        f"tools:\n{root_tools}", encoding="utf-8",
+        f"tools:\n{root_tools}",
+        encoding="utf-8",
     )
     # An error at the end must survive classification, not disappear in a prefix.
     (behaviors / "zz-broken.yaml").write_text("bundle: [invalid\n", encoding="utf-8")
     context = {
         "repo_path": str(repo),
-        "env_check": {"capabilities": {"foundation_available": True},
-                      "validation_mode": "full", "summary": {}},
+        "env_check": {
+            "capabilities": {"foundation_available": True},
+            "validation_mode": "full",
+            "summary": {},
+        },
     }
     for step_id in SPOOLED:
         result = _run(steps[step_id], context, tmp_path, scratch=scratch)
@@ -179,7 +555,9 @@ def test_large_payloads_execute_producers_and_classifier_losslessly(tmp_path: Pa
     individual = context["individual_validation"]
     tools = context["tool_placement_results"]
     _classification_defaults(context, steps["quality-classification"])
-    classified = _run(steps["quality-classification"], context, tmp_path, scratch=scratch)
+    classified = _run(
+        steps["quality-classification"], context, tmp_path, scratch=scratch
+    )
     _assert_lossless_results(discovery, individual, tools, classified)
 
     # The renderer no longer puts any of the large results in a bash argument.
@@ -189,7 +567,9 @@ def test_large_payloads_execute_producers_and_classifier_losslessly(tmp_path: Pa
     assert legacy_size > 128 * 1024
 
 
-def _assert_lossless_results(discovery: dict, individual: dict, tools: dict, classified: dict) -> None:
+def _assert_lossless_results(
+    discovery: dict, individual: dict, tools: dict, classified: dict
+) -> None:
     """The integration test and sensitivity probes use the same lossless oracle."""
     assert discovery["total_count"] == 258
     assert individual["summary"]["total"] == 258
@@ -198,19 +578,40 @@ def _assert_lossless_results(discovery: dict, individual: dict, tools: dict, cla
     assert len(tools["suggestions"]) == 256
     assert classified["summary"]["total"] == 258
     assert classified["quality_level"] == "critical"
-    assert any(bundle["path"].endswith("zz-broken.yaml")
-               and bundle["quality"] == "critical" for bundle in classified["bundles"])
+    assert any(
+        bundle["path"].endswith("zz-broken.yaml") and bundle["quality"] == "critical"
+        for bundle in classified["bundles"]
+    )
     assert len(classified["tool_placement_issues"]) == len(tools["suggestions"])
-    assert classified["tool_placement_issues"][-1]["tool"] == tools["suggestions"][-1]["tool"]
-    assert classified["tool_placement_issues"][-1]["message"] == tools["suggestions"][-1]["message"]
+    assert (
+        classified["tool_placement_issues"][-1]["tool"]
+        == tools["suggestions"][-1]["tool"]
+    )
+    assert (
+        classified["tool_placement_issues"][-1]["message"]
+        == tools["suggestions"][-1]["message"]
+    )
 
 
-@pytest.mark.parametrize("fault", [
-    "none", "discovery-prefix", "validation-prefix", "lost-error", "inventory-prefix",
-    "suggestion-prefix", "classification-prefix", "lost-late-error",
-    "issue-prefix", "last-tool", "last-message",
-])
-def test_lossless_oracle_rejects_truncation_and_missing_late_results(fault: str) -> None:
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "discovery-prefix",
+        "validation-prefix",
+        "lost-error",
+        "inventory-prefix",
+        "suggestion-prefix",
+        "classification-prefix",
+        "lost-late-error",
+        "issue-prefix",
+        "last-tool",
+        "last-message",
+    ],
+)
+def test_lossless_oracle_rejects_truncation_and_missing_late_results(
+    fault: str,
+) -> None:
     """Models exercise assertions only; the integration above uses real payloads."""
     import copy
 
@@ -218,10 +619,13 @@ def test_lossless_oracle_rejects_truncation_and_missing_late_results(fault: str)
     individual = {"summary": {"total": 258, "failed": 1}}
     tools = {
         "tool_inventory": [{} for _ in range(512)],
-        "suggestions": [{"tool": f"tool-{n}", "message": f"message-{n}"} for n in range(256)],
+        "suggestions": [
+            {"tool": f"tool-{n}", "message": f"message-{n}"} for n in range(256)
+        ],
     }
     classified = {
-        "summary": {"total": 258}, "quality_level": "critical",
+        "summary": {"total": 258},
+        "quality_level": "critical",
         "bundles": [{"path": "/r/behaviors/zz-broken.yaml", "quality": "critical"}],
         "tool_placement_issues": copy.deepcopy(tools["suggestions"]),
     }
@@ -263,8 +667,14 @@ def test_bash_subprocess_home_is_isolated(tmp_path: Path) -> None:
         "print(json.dumps([str(Path.home()),os.environ['AMPLIFIER_HOME']]))"
     )
     result = _run_bash(
-        '"${AMPLIFIER_PYTHON}" -c ' + shlex.quote(code), tmp_path,
-        dict(os.environ, AMPLIFIER_PYTHON=sys.executable, HOME=str(foreign), AMPLIFIER_HOME=str(foreign)),
+        '"${AMPLIFIER_PYTHON}" -c ' + shlex.quote(code),
+        tmp_path,
+        dict(
+            os.environ,
+            AMPLIFIER_PYTHON=sys.executable,
+            HOME=str(foreign),
+            AMPLIFIER_HOME=str(foreign),
+        ),
     )
     home = tmp_path / ".validator-home"
     assert result.returncode == 0, result.stderr
@@ -274,7 +684,9 @@ def test_bash_subprocess_home_is_isolated(tmp_path: Path) -> None:
 
 
 @POSIX_RECIPE_EXECUTION
-def test_bash_timeout_terminates_owned_child_without_signalling_other_group(tmp_path: Path, monkeypatch) -> None:
+def test_bash_timeout_terminates_owned_child_without_signalling_other_group(
+    tmp_path: Path, monkeypatch
+) -> None:
     real_popen, real_killpg = subprocess.Popen, os.killpg
     ready, reaped = tmp_path / "ready.json", tmp_path / "reaped.json"
     # Parent receives TERM with its child, reaps it, then exits. This distinguishes
@@ -299,7 +711,9 @@ def test_bash_timeout_terminates_owned_child_without_signalling_other_group(tmp_
                 owned.append(self)
                 deadline = time.monotonic() + 5
                 while not ready.exists():
-                    assert time.monotonic() < deadline, "timeout fixture did not become ready"
+                    assert time.monotonic() < deadline, (
+                        "timeout fixture did not become ready"
+                    )
                     time.sleep(0.01)
             return super().communicate(*args, **kwargs)
 
@@ -310,15 +724,18 @@ def test_bash_timeout_terminates_owned_child_without_signalling_other_group(tmp_
         return real_killpg(group, signum)
 
     with real_popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True,
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
     ) as unrelated:
         try:
             monkeypatch.setattr(subprocess, "Popen", ReadyPopen)
             monkeypatch.setattr(os, "killpg", killpg)
             with pytest.raises(subprocess.TimeoutExpired) as caught:
                 _run_bash(
-                    'exec "${AMPLIFIER_PYTHON}" -c ' + shlex.quote(code), tmp_path,
-                    dict(os.environ, AMPLIFIER_PYTHON=sys.executable), timeout=0.05,
+                    'exec "${AMPLIFIER_PYTHON}" -c ' + shlex.quote(code),
+                    tmp_path,
+                    dict(os.environ, AMPLIFIER_PYTHON=sys.executable),
+                    timeout=0.05,
                 )
             assert caught.value.timeout == 0.05  # Original timeout remains failure.
             parent, child, group = json.loads(ready.read_text())
@@ -334,7 +751,9 @@ def test_bash_timeout_terminates_owned_child_without_signalling_other_group(tmp_
 
 
 @POSIX_RECIPE_EXECUTION
-def test_bash_decode_failure_after_exit_never_signals_reaped_group(tmp_path: Path, monkeypatch) -> None:
+def test_bash_decode_failure_after_exit_never_signals_reaped_group(
+    tmp_path: Path, monkeypatch
+) -> None:
     """communicate may reap successfully before raising while decoding output."""
     real_popen = subprocess.Popen
     owned, failures, signals = [], [], []
@@ -355,11 +774,14 @@ def test_bash_decode_failure_after_exit_never_signals_reaped_group(tmp_path: Pat
 
     monkeypatch.setattr(subprocess, "Popen", InvalidOutputPopen)
     # Observe an unsafe request without sending any signal, including pre-fix.
-    monkeypatch.setattr(os, "killpg", lambda group, signum: signals.append((group, signum)))
+    monkeypatch.setattr(
+        os, "killpg", lambda group, signum: signals.append((group, signum))
+    )
     code = "import os; os.write(1, bytes([255]))"
     with pytest.raises(UnicodeDecodeError) as caught:
         _run_bash(
-            'exec "${AMPLIFIER_PYTHON}" -c ' + shlex.quote(code), tmp_path,
+            'exec "${AMPLIFIER_PYTHON}" -c ' + shlex.quote(code),
+            tmp_path,
             dict(os.environ, AMPLIFIER_PYTHON=sys.executable),
         )
     assert caught.value is failures[0]
@@ -370,10 +792,16 @@ def test_bash_decode_failure_after_exit_never_signals_reaped_group(tmp_path: Pat
 
 @POSIX_RECIPE_EXECUTION
 @pytest.mark.parametrize("interrupted", [False, True])
-def test_bash_cleanup_escalation_is_bounded_and_only_targets_its_owned_group(tmp_path, monkeypatch, interrupted):
+def test_bash_cleanup_escalation_is_bounded_and_only_targets_its_owned_group(
+    tmp_path, monkeypatch, interrupted
+):
     import io
 
-    failure = KeyboardInterrupt() if interrupted else subprocess.TimeoutExpired("owned command", 60)
+    failure = (
+        KeyboardInterrupt()
+        if interrupted
+        else subprocess.TimeoutExpired("owned command", 60)
+    )
     calls = []
 
     class Process:
@@ -401,20 +829,27 @@ def test_bash_cleanup_escalation_is_bounded_and_only_targets_its_owned_group(tmp
         return proc
 
     monkeypatch.setattr(subprocess, "Popen", popen)
-    monkeypatch.setattr(os, "killpg", lambda group, signum: calls.append(("signal", group, signum)))
+    monkeypatch.setattr(
+        os, "killpg", lambda group, signum: calls.append(("signal", group, signum))
+    )
     with pytest.raises(type(failure)) as caught:
         _run_bash("synthetic", tmp_path, {})
     assert caught.value is failure
     assert calls == [
-        ("communicate", 60), ("signal", proc.pid, signal.SIGTERM),
-        ("communicate", 1), ("signal", proc.pid, signal.SIGKILL), ("communicate", 5),
+        ("communicate", 60),
+        ("signal", proc.pid, signal.SIGTERM),
+        ("communicate", 1),
+        ("signal", proc.pid, signal.SIGKILL),
+        ("communicate", 5),
     ]
     assert proc.stdout.closed and proc.stderr.closed
 
 
 @POSIX_RECIPE_EXECUTION
 @pytest.mark.parametrize("phase", ["reaped-during-grace", "signal-failed"])
-def test_bash_cleanup_preserves_failure_and_rechecks_leader_before_kill(tmp_path, monkeypatch, phase):
+def test_bash_cleanup_preserves_failure_and_rechecks_leader_before_kill(
+    tmp_path, monkeypatch, phase
+):
     import io
 
     failure = subprocess.TimeoutExpired("owned command", 60)
@@ -456,19 +891,25 @@ def test_bash_cleanup_preserves_failure_and_rechecks_leader_before_kill(tmp_path
     assert not any(call[-1] == signal.SIGKILL for call in calls if call[0] == "signal")
     if phase == "reaped-during-grace":
         assert calls == [
-            ("communicate", 60), ("signal", proc.pid, signal.SIGTERM),
-            ("communicate", 1), ("communicate", 5),
+            ("communicate", 60),
+            ("signal", proc.pid, signal.SIGTERM),
+            ("communicate", 1),
+            ("communicate", 5),
         ]
         assert not getattr(failure, "__notes__", [])
     else:
         assert calls == [("communicate", 60), ("signal", proc.pid, signal.SIGTERM)]
-        assert any("cleanup failed" in note and "synthetic group signal refusal" in note
-                   for note in failure.__notes__)
+        assert any(
+            "cleanup failed" in note and "synthetic group signal refusal" in note
+            for note in failure.__notes__
+        )
     assert proc.stdout.closed and proc.stderr.closed
 
 
 @POSIX_RECIPE_EXECUTION
-def test_payload_files_are_unique_in_workspace_without_runtime_scratch(tmp_path: Path) -> None:
+def test_payload_files_are_unique_in_workspace_without_runtime_scratch(
+    tmp_path: Path,
+) -> None:
     context = {"repo_path": str(tmp_path)}
     step = _steps()["repo-discovery"]
     first = _run(step, context, tmp_path, scratch=None)
@@ -482,8 +923,10 @@ def test_payload_files_are_unique_in_workspace_without_runtime_scratch(tmp_path:
 
 @pytest.mark.parametrize("contents", [None, "{broken json"])
 @POSIX_RECIPE_EXECUTION
-def test_classifier_refuses_missing_or_corrupt_payloads(tmp_path: Path, contents: str | None) -> None:
-    context = {"repo_path": str(tmp_path)}
+def test_classifier_refuses_missing_or_corrupt_payloads(
+    tmp_path: Path, contents: str | None
+) -> None:
+    context: dict[str, object] = {"repo_path": str(tmp_path)}
     steps = _steps()
     discovered = _run(steps["repo-discovery"], context, tmp_path, scratch=tmp_path)
     context["individual_validation"] = {
