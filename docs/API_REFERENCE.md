@@ -29,6 +29,27 @@ from amplifier_foundation import Bundle, BundleRegistry, load_bundle
 | `validate_bundle` | `validator.py` | Validate bundle, return result |
 | `validate_bundle_or_raise` | `validator.py` | Validate bundle, raise on error |
 
+## Pure Model Patterns
+
+These functions are exported from `amplifier_foundation` and
+`amplifier_foundation.model_patterns`. They use only the supplied inventory;
+provider recommendation/default policy and account selection remain caller-owned.
+
+| Export | Purpose |
+|--------|---------|
+| `is_glob_pattern` | Detect existing `*`, `?`, `[` syntax |
+| `model_matches_pattern` | Case-insensitive, OS-independent matching |
+| `model_pattern_sort_key` | Comparable key for descending natural model-ID order |
+| `match_model_pattern` | All matching original IDs, best first |
+| `select_model_pattern` | Best original ID or `None` |
+
+See [the module docstrings](../amplifier_foundation/model_patterns.py) for
+snapshot grammar, malformed-pattern semantics and deterministic tie-breaks.
+This is lexical/numeric selection, not a universal quality/cost ranking.
+Use specific patterns for product tiers. The async `resolve_model_pattern`
+still passes exact IDs through without requiring catalog membership; the pure
+inventory helpers do not. Existing `spawn_utils.is_glob_pattern` imports work.
+
 ## Exceptions
 
 | Export | Source | Purpose |

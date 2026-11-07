@@ -10,7 +10,6 @@ when spawning sub-sessions. It supports:
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import inspect
 import logging
 import os
@@ -18,6 +17,10 @@ import time
 import weakref
 from dataclasses import dataclass, field
 from typing import Any
+
+from amplifier_foundation.model_patterns import is_glob_pattern
+from amplifier_foundation.model_patterns import match_model_pattern
+from amplifier_foundation.model_patterns import model_matches_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -374,18 +377,6 @@ class ModelResolutionResult:
     provider: str | None = None
 
 
-def is_glob_pattern(model_hint: str) -> bool:
-    """Check if model_hint contains glob pattern characters.
-
-    Args:
-        model_hint: Model name or pattern to check.
-
-    Returns:
-        True if the string contains glob wildcards (*, ?, [).
-    """
-    return any(c in model_hint for c in "*?[")
-
-
 async def resolve_model_pattern(
     model_hint: str,
     provider_name: str | None,
@@ -413,8 +404,8 @@ async def resolve_model_pattern(
     Resolution strategy:
         1. If not a glob pattern, return as-is
         2. Query the selected provider instance for available models
-        3. Filter with fnmatch
-        4. Sort descending (latest date/version wins)
+        3. Match using the pure model-pattern helper
+        4. Rank naturally; prefer aliases, then newest snapshots of the same base
         5. Return the best match, or a failure signal (resolved_model=None)
            if the provider is unavailable, its catalog cannot be queried, it
            has no models, or none of them match the pattern.
@@ -552,17 +543,7 @@ async def resolve_model_pattern(
             provider=provider_name,
         ))
 
-    # Match pattern against available models: case-insensitive, OS-independent.
-    # Raw fnmatch.filter() uses os.path.normcase, which is case-sensitive on
-    # Linux/Mac and case-insensitive on Windows -- an OS-dependent
-    # inconsistency. Lowercasing both sides before comparing matches the
-    # canonical model-glob semantics used by the routing-matrix resolver
-    # (amplifier_module_hooks_routing.resolver) and the unified-llm-client
-    # reference implementation, so a pattern like "qwen3.6-*" deterministically
-    # matches "Qwen3.6-35B-A3B-..." on every platform. Original casing of the
-    # matched model name is preserved in the result.
-    lowered_hint = model_hint.lower()
-    matched = [m for m in available_models if fnmatch.fnmatch(m.lower(), lowered_hint)]
+    matched = match_model_pattern(model_hint, available_models)
 
     if not matched:
         return finish(ModelResolutionResult(
@@ -574,9 +555,6 @@ async def resolve_model_pattern(
             provider=provider_name,
         ))
 
-    # Sort descending (latest date/version typically sorts last alphabetically,
-    # so reverse sort puts newest first)
-    matched.sort(reverse=True)
     resolved = matched[0]
 
     logger.info(
@@ -815,7 +793,7 @@ def _model_hint_matches(model_name: str, model_hint: str) -> bool:
     hint that selects the instance here. Exact (non-glob) hints work too --
     fnmatch treats a pattern with no wildcard as an equality test.
     """
-    return fnmatch.fnmatch(model_name.lower(), model_hint.lower())
+    return model_matches_pattern(model_name, model_hint)
 
 
 def _resolve_provider_index(

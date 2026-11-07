@@ -84,12 +84,18 @@ from amplifier_foundation.registry import load_bundle
 from amplifier_foundation.serialization import sanitize_for_json
 from amplifier_foundation.serialization import sanitize_message
 
+# Pure model-pattern utilities
+from amplifier_foundation.model_patterns import is_glob_pattern
+from amplifier_foundation.model_patterns import match_model_pattern
+from amplifier_foundation.model_patterns import model_matches_pattern
+from amplifier_foundation.model_patterns import model_pattern_sort_key
+from amplifier_foundation.model_patterns import select_model_pattern
+
 # Spawn utilities
 from amplifier_foundation.spawn_utils import ModelResolutionResult
 from amplifier_foundation.spawn_utils import ProviderPreference
 from amplifier_foundation.spawn_utils import apply_provider_preferences
 from amplifier_foundation.spawn_utils import apply_provider_preferences_with_resolution
-from amplifier_foundation.spawn_utils import is_glob_pattern
 from amplifier_foundation.spawn_utils import resolve_model_pattern
 
 # Subprocess runner
@@ -210,6 +216,10 @@ __all__ = [
     "apply_provider_preferences",
     "apply_provider_preferences_with_resolution",
     "is_glob_pattern",
+    "match_model_pattern",
+    "model_matches_pattern",
+    "model_pattern_sort_key",
+    "select_model_pattern",
     "resolve_model_pattern",
     # Subprocess runner
     "run_session_in_subprocess",

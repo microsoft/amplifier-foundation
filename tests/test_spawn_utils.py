@@ -1416,9 +1416,9 @@ class TestListModelsCacheHardening:
         # entry is gone and a fresh, real catalog is fetched and resolved
         # correctly -- not permanently poisoned.
         assert provider.list_models.await_count == 2
-        # Two matches ("qwen3.6-35b-a3b", "qwen3.6-8b"); descending sort picks
-        # "qwen3.6-8b" ("8" > "3" at the first differing character).
-        assert recovered.resolved_model == "qwen3.6-8b"
+        # Pure natural ranking compares numeric runs: 35 > 8. Catalog refresh,
+        # TTL and instance ownership assertions above are unchanged.
+        assert recovered.resolved_model == "qwen3.6-35b-a3b"
 
     @pytest.mark.asyncio
     async def test_concurrent_failure_shared_once_then_fresh_fetch(self) -> None:
