@@ -83,7 +83,7 @@ For changes that span multiple repos or need isolation, use the **amplifier-test
 
 ```
 delegate(agent="amplifier-tester:setup-digital-twin",
-         instruction="Set up a DTU validating my changes to <repo-paths>",
+         instruction="Validate <repo-paths>: <exact checks, live DTU count, remaining budget and cleanup owner>",
          context_depth="all", context_scope="full")
 ```
 
@@ -91,9 +91,21 @@ For follow-up checks against an existing DTU:
 
 ```
 delegate(agent="amplifier-tester:validator",
-         instruction="Validate DTU <instance-id>: verify <what>",
+         instruction="Using <complete setup handoff>, verify <exact checks> within existing authorization",
          context_depth="recent", context_scope="agents")
 ```
+
+New ordinary tests use the tester's selected Docker Compose Smart Tool. Keep its
+executable/source, daemon/endpoint, state root, operation and instance bindings
+from setup through validation and cleanup. The complete setup handoff is defined
+in `amplifier-tester:agents/validator.md`; resolve every required field, including
+profile identity, evidence destination, resource budget and cleanup owner, before
+execution. The caller enforces the cumulative cap across sibling delegations,
+accounts for Gitea/gateway sidecars, and must not assume automatic teardown.
+Preserve managed admission and durable jobs where the host supplies them.
+Use synthetic homes; do not infer permission
+to pass provider credentials or make paid calls. Existing Incus resources retain
+their original operator and evidence; never infer an operator from an ID alone.
 
 ### When to Use DTU Validation
 
@@ -197,8 +209,9 @@ pytest tests/
 
 # 2. DTU validation with dependent modules
 # Delegate to amplifier-tester:setup-digital-twin with the paths to
-# amplifier-core and each affected module. Then run tests via
-# amplifier-digital-twin exec <instance-id> "pytest"
+# amplifier-core and each affected module, exact checks, live count and budget.
+# Pass its complete binding/cleanup handoff to amplifier-tester:validator
+# for the focused dependent-module checks; use the selected tool interface.
 
 # 3. If passing, push core first
 git push origin feat/contract-change
@@ -234,7 +247,14 @@ amplifier  # Start interactive session with the active bundle
 
 ### DTU Validation Issues
 
-For DTU-specific troubleshooting (Gitea mirror failures, profile generation issues, container provisioning), consult the `digital-twin-universe` skill or delegate to `digital-twin-universe:dtu-profile-builder`.
+For DTU-specific troubleshooting (Gitea mirror failures, profile generation
+issues, container provisioning), use the existing tester owner and its saved
+binding/evidence. Inspect the source of the `digital-twin-universe` skill before
+loading: legacy Incus and Smart Tool sources can expose the same skill name.
+Report the collision; do not silently reorder host sources. The migrated
+tester uses its selected Smart Tool's canonical help; do not silently fall back
+to the old profile builder, launch another environment, or replay an uncertain
+operation.
 
 ### Integration Test Failures
 

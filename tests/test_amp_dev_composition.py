@@ -1,7 +1,15 @@
-"""Real registry composition and resources of the nested-only host roots."""
+"""Real registry composition and resources of the nested-only host roots.
+
+Default runs follow the public tester behavior at main. Before a coordinated
+tester change lands, set AMPLIFIER_TESTER_COMPOSITION_REVISION to its full commit
+SHA to qualify that candidate explicitly, without changing manifests or global
+registrations. This only binds this test module's exact tester include.
+"""
 import io
 import logging
+import os
 from pathlib import Path
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,9 +27,17 @@ from amplifier_foundation.paths.resolution import ResolvedSource, parse_uri
 
 ROOT = Path(__file__).resolve().parents[1]
 FOUNDATION = "git+https://github.com/microsoft/amplifier-foundation@main"
+TESTER_BEHAVIOR = (
+    "git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main"
+    "#subdirectory=behaviors/amplifier-tester.yaml"
+)
+SMART_TOOL_SKILL = (
+    "git+https://github.com/microsoft/amplifier-smart-tool-digital-twin-universe@"
+    "88d9d84149eee914372c1ca8d68e9eb9f4ba3290#subdirectory=skills"
+)
 ADDED_AGENTS = {
     "amp-dev:amplifier-dev-expert", "amplifier-tester:setup-digital-twin",
-    "amplifier-tester:validator", "digital-twin-universe:dtu-profile-builder",
+    "amplifier-tester:validator",
 }
 
 
@@ -35,19 +51,67 @@ def registry_home(tmp_path_factory):
     return tmp_path_factory.mktemp("nested-bundle-registry")
 
 
+def _tester_candidate_source():
+    revision = os.environ.get("AMPLIFIER_TESTER_COMPOSITION_REVISION")
+    if revision is None:
+        return None
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("AMPLIFIER_TESTER_COMPOSITION_REVISION must be a full lowercase commit SHA")
+    return TESTER_BEHAVIOR.replace("@main#", f"@{revision}#")
+
+
 def registry(home):
+    tester_source = _tester_candidate_source()
+
     def candidate(source):
         prefix = FOUNDATION + "#subdirectory="
         if source.startswith(prefix):
             return str(ROOT / source[len(prefix):])
+        if source == TESTER_BEHAVIOR:
+            return tester_source
         return None
     return BundleRegistry(home=home, persist=False, read_persisted=False,
                           strict=True, include_source_resolver=candidate)
 
 
+def test_candidate_binding_is_explicit_immutable_and_tester_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("AMPLIFIER_TESTER_COMPOSITION_REVISION", raising=False)
+    assert registry(tmp_path / "public")._include_source_resolver(TESTER_BEHAVIOR) is None
+    revision = "bdbb452102795e04e1cfb29bbd81295601c1b665"
+    monkeypatch.setenv("AMPLIFIER_TESTER_COMPOSITION_REVISION", revision)
+    binding = registry(tmp_path / "candidate")._include_source_resolver
+    assert binding(TESTER_BEHAVIOR) == TESTER_BEHAVIOR.replace("@main#", f"@{revision}#")
+    assert binding(TESTER_BEHAVIOR.replace("amplifier-tester@", "other-tester@")) is None
+    assert binding(FOUNDATION + "#subdirectory=behaviors/amp-dev.yaml") == str(ROOT / "behaviors/amp-dev.yaml")
+
+
+@pytest.mark.parametrize("revision", ["", "main", "bdbb452", "../source", "A" * 40])
+def test_candidate_binding_rejects_nonimmutable_revision(tmp_path, monkeypatch, revision):
+    monkeypatch.setenv("AMPLIFIER_TESTER_COMPOSITION_REVISION", revision)
+    with pytest.raises(ValueError, match="full lowercase commit SHA"):
+        registry(tmp_path)
+
+
 def resolver(bundle):
     prepared = PreparedBundle({}, BundleModuleResolver(module_paths={}), bundle)
     return BaseMentionResolver(bundles=prepared._build_bundles_for_resolver(bundle))
+
+
+def assert_tester_resources(bundle):
+    """Resolve the actual tester namespace; do not manufacture a resource root."""
+    resources = resolver(bundle)
+    tester_root = bundle.source_base_paths["amplifier-tester"]
+    for name in ("setup-digital-twin", "validator"):
+        reference = f"@amplifier-tester:agents/{name}.md"
+        assert resources.resolve(reference) == tester_root / f"agents/{name}.md"
+        assert resources.resolve(reference).is_file()
+    awareness = resources.resolve("@amplifier-tester:context/amplifier-tester-awareness.md")
+    assert awareness == tester_root / "context/amplifier-tester-awareness.md"
+    assert "Docker Compose DTUs" in read_utf8(awareness)
+    bundle.resolve_pending_context()
+    assert not any(name.startswith(("digital-twin-universe:", "gitea:"))
+                   for name in bundle.context)
+    return awareness
 
 
 def entry(name, form):
@@ -141,7 +205,9 @@ async def test_prompt_oracle_uses_utf8_with_cp1252_default(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_behavior_is_portable_and_preserves_both_host_runtimes(tmp_path, monkeypatch):
+async def test_behavior_is_portable_and_preserves_both_host_runtimes(
+    tmp_path, monkeypatch, record_property
+):
     monkeypatch.chdir(tmp_path)
     behavior = await registry(tmp_path / "registry").load(str(ROOT / "behaviors/amp-dev.yaml"))
     host = Bundle(name="host", session={
@@ -166,12 +232,17 @@ async def test_behavior_is_portable_and_preserves_both_host_runtimes(tmp_path, m
     assert "@anchors:" not in read_utf8(ROOT / "agents/amplifier-dev-expert.md")
     assert "provider_preferences" not in expert
     skills = next(row for row in behavior.tools if row["module"] == "tool-skills")["config"]["skills"]
-    assert any("amplifier-bundle-gitea@" in path for path in skills)
-    assert any("amplifier-bundle-digital-twin-universe@" in path for path in skills)
+    assert skills == [SMART_TOOL_SKILL]
+    awareness = assert_tester_resources(behavior)
     head = await prompt(combined, tmp_path, monkeypatch)
     assert head.startswith(host.instruction)
     assert head.count(read_utf8(ROOT / "context/amplifier-dev/amplifier-ecosystem.md")) == 1
     assert read_utf8(ROOT / "bundles/anchors/context/system.md") not in head
+    assert head.count(read_utf8(awareness)) == 1
+    assert "amplifier-digital-twin" not in head
+    record_property("tester_source", _tester_candidate_source() or TESTER_BEHAVIOR)
+    record_property("tester_resource_root", str(awareness.parents[1]))
+    record_property("smart_tool_skill", SMART_TOOL_SKILL)
 
 
 @pytest.mark.asyncio
@@ -225,8 +296,8 @@ async def test_nested_roots_compose_source_local_without_cycles(
         "@routing-matrix:skills",
         "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills",
         "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=skills",
-        "git+https://github.com/microsoft/amplifier-bundle-gitea@main#subdirectory=skills",
-        "git+https://github.com/microsoft/amplifier-bundle-digital-twin-universe@main#subdirectory=skills"]
+        SMART_TOOL_SKILL]
+    awareness = assert_tester_resources(amp_dev)
     assert resolver(amp_dev).resolve("@anchors:context/system.md") == ROOT / "bundles/anchors/context/system.md"
     assert resolver(anchors).resolve("@anchors:agents/builder.md") == ROOT / "bundles/anchors/agents/builder.md"
     assert resolver(amp_dev).resolve("@amp-dev:agents/amplifier-dev-expert.md") == ROOT / "agents/amplifier-dev-expert.md"
@@ -247,6 +318,8 @@ async def test_nested_roots_compose_source_local_without_cycles(
     assert head.count(system) == 1
     assert head.count(ecosystem) == 1
     assert head.index(system) < head.index(ecosystem)
+    assert head.count(read_utf8(awareness)) == 1
+    assert "amplifier-digital-twin" not in head
     assert read_utf8(ROOT / "bundles/anchors/context/agent-baseline.md") not in head
     assert not caplog.records, [(row.name, row.getMessage()) for row in caplog.records]
 
@@ -333,3 +406,20 @@ def test_behavior_contains_entire_delta_without_root_inclusion():
         "git+https://github.com/microsoft/amplifier-bundle-amplifier-tester@main#subdirectory=behaviors/amplifier-tester.yaml"}]
     assert behavior["agents"]["include"] == ["amp-dev:amplifier-dev-expert"]
     assert behavior["context"]["include"] == ["amp-dev:context/amplifier-dev/amplifier-ecosystem.md"]
+
+
+@pytest.mark.parametrize("path", [
+    "context/amplifier-tester-tests.md", "context/amplifier-dev/testing-patterns.md",
+])
+def test_caller_guidance_preserves_binding_budget_and_legacy_exception(path):
+    text = re.sub(r"\s+", " ", read_utf8(ROOT / path))
+    for required in (
+        "amplifier-tester:setup-digital-twin", "amplifier-tester:validator",
+        "complete setup handoff", "cleanup owner", "synthetic homes",
+        "Smart Tool", "Docker Compose", "managed admission",
+        "cumulative cap", "Gitea/gateway sidecars", "automatic teardown",
+        "original operator", "canonical help", "same skill name",
+    ):
+        assert required in text
+    assert "amplifier-digital-twin exec" not in text
+    assert "digital-twin-universe:dtu-profile-builder" not in text
