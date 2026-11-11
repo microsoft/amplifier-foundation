@@ -285,28 +285,40 @@ def append_messages(path: Path, messages: list[dict[str, Any]], *, windows_polic
     Backup remains the previous complete transcript without copying its prefix
     on every save. This path is opt-in until hosts use intent-aware readers.
     """
+    return _append_messages(path, messages, windows_policy=windows_policy)[0]
+
+
+def _append_messages(
+    path: Path, messages: list[dict[str, Any]], *, windows_policy: str = "legacy"
+) -> tuple[bool, TranscriptIndex | None]:
+    """Retain a validated index only for the caller's same-save replacement.
+
+    Every False outcome precedes source writes. The caller must recheck this
+    payload-free revision after encoding its replacement; cache eviction is not
+    a reason to validate the unchanged file twice within that operation.
+    """
     from .history import _InvalidFile
 
     pending = intent_path(path)
     if _exists(pending, windows_policy=windows_policy):
-        return False
+        return False, None
     try:
         current = indexed(path, windows_policy=windows_policy)
     except (FileNotFoundError, _InvalidFile):
-        return False
+        return False, None
     if not current.terminated or len(messages) < len(current):
-        return False
+        return False, current
     tail = []
     for position, value in enumerate(messages):
         raw = encode(value)
         if position < len(current):
             if hashlib.sha256(raw).digest() != current.rows[position].digest:
-                return False
+                return False, current
         else:
             tail.append(raw + b"\n")
     current.check()
     if not tail:
-        return True
+        return True, None
     backup = path.with_suffix(path.suffix + ".backup")
     try:
         old = indexed(backup, windows_policy=windows_policy)
@@ -318,7 +330,7 @@ def append_messages(path: Path, messages: list[dict[str, Any]], *, windows_polic
     ):
         # Replacing a hardlinked backup changes the primary's ctime. Use the
         # ordinary atomic primary replacement path instead of mutating it.
-        return False
+        return False, current
     if (
         old is not None
         and old.terminated
@@ -379,4 +391,4 @@ def append_messages(path: Path, messages: list[dict[str, Any]], *, windows_polic
             key: list(values) for key, values in current._projections.items()
         }
     _remember(updated)
-    return True
+    return True, None
