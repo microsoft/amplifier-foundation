@@ -115,6 +115,28 @@ def clean_checkout(root):
     return not dirty and not extras
 
 
+def _index_refresh_owned(root):
+    """Optional index writes require ordinary metadata wholly inside this copy."""
+    git_dir = root / ".git"
+    for name in ("commondir", "gitdir", "objects/info/alternates", "objects/info/http-alternates"):
+        if (git_dir / name).exists() or (git_dir / name).is_symlink():
+            return False
+    for parent, directories, files in os.walk(git_dir, followlinks=False):
+        if any((Path(parent) / name).is_symlink() for name in directories + files):
+            return False
+    paths = subprocess.check_output(
+        _with_longpaths([
+            "git", "rev-parse", "--show-toplevel", "--absolute-git-dir",
+            "--git-common-dir", "--git-path", "index", "--git-path", "objects",
+        ]), cwd=root, text=True,
+    ).splitlines()
+    expected = (root, git_dir, git_dir, git_dir / "index", git_dir / "objects")
+    return len(paths) == len(expected) and all(
+        (root / value).resolve() == path.resolve()
+        for value, path in zip(paths, expected)
+    )
+
+
 class SharedSourceStore:
     def __init__(self, root):
         self.root = Path(root).expanduser().resolve()
@@ -182,9 +204,7 @@ class SharedSourceStore:
                         GitSourceHandler()._clone_at_commit, url, revision, stage
                     )
 
-                def publish():
-                    nonlocal incomplete
-
+                def prepare():
                     # copytree copies the source root's mode, including a seal
                     # when adopting an already immutable checkout.
                     stage.chmod(0o700)
@@ -202,11 +222,33 @@ class SharedSourceStore:
                         cwd=stage,
                         text=True,
                     ).strip()
+                    if actual != revision or not clean_checkout(stage):
+                        raise ValueError(
+                            "Only exact, clean sources may enter the shared store"
+                        )
+                    # Finish worktree mode changes before Git records their
+                    # stat data. Re-sealing these files after status would make
+                    # that newly refreshed index stale again.
+                    for path in stage.rglob("*"):
+                        if (
+                            path.relative_to(stage).parts[0] != ".git"
+                            and not path.is_symlink()
+                        ):
+                            path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+                    # Only this unpublished copy may refresh its index, even
+                    # when the existing source was already sealed. Windows also
+                    # needs the copied index's read-only attribute cleared.
+                    if not _index_refresh_owned(stage):
+                        return  # Preserve read-only publication for other layouts.
+                    git_dir = stage / ".git"
+                    git_dir.chmod(stat.S_IMODE(git_dir.stat().st_mode) | 0o700)
+                    index = git_dir / "index"
+                    if index.exists() and not index.is_symlink():
+                        index.chmod(stat.S_IMODE(index.stat().st_mode) | 0o200)
                     dirty = subprocess.check_output(
                         _with_longpaths(
                             [
                                 "git",
-                                "--no-optional-locks",
                                 "status",
                                 "--porcelain",
                                 "--untracked-files=no",
@@ -214,15 +256,27 @@ class SharedSourceStore:
                         ),
                         cwd=stage,
                         text=True,
+                        env={**os.environ, "GIT_OPTIONAL_LOCKS": "1"},
                     )
-                    if actual != revision or dirty or not clean_checkout(stage):
+                    if dirty:
                         raise ValueError(
                             "Only exact, clean sources may enter the shared store"
                         )
-                    # Builds must use writable build views, never modify this tree.
-                    for path in stage.rglob("*"):
+
+                # A cancelled refresh settles before cleanup, without entering
+                # publication. Completed publications still survive cancellation.
+                await complete_io(prepare)
+
+                def publish():
+                    nonlocal incomplete
+
+                    # Builds must use writable build views, never modify this
+                    # tree. Worktree modes are already final; seal only Git here.
+                    git_dir = stage / ".git"
+                    for path in git_dir.rglob("*"):
                         if not path.is_symlink():
                             path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+                    git_dir.chmod(stat.S_IMODE(git_dir.stat().st_mode) & ~0o222)
                     stage_stat = stage.stat()
                     identity = (stage_stat.st_dev, stage_stat.st_ino)
                     if os.name == "nt":

@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -353,6 +354,148 @@ async def wait_for_thread(event):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX index stat data and final file modes")
+@pytest.mark.parametrize("sealed_source", [False, True])
+async def test_published_index_matches_final_modes_without_mutating_source(
+    tmp_path, monkeypatch, repository, sealed_source
+):
+    repo, _ = repository
+    outside = tmp_path / "outside"
+    outside.write_text("external")
+    (repo / "external-link").symlink_to(outside)
+    executable = repo / "run.sh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "mode and symlink fixture")
+    revision = git(repo, "rev-parse", "HEAD")
+    url = "https://example.invalid/repo"
+    if sealed_source:
+        repo = await SharedSourceStore(tmp_path / "first").ensure(
+            url, revision, existing=repo
+        )
+    original_index = (repo / ".git/index").read_bytes()
+    original_modes = {
+        str(path.relative_to(repo)): path.lstat().st_mode
+        for path in (repo, *repo.rglob("*"))
+    }
+    original_mapping = git(repo, "ls-files", "--stage")
+    original_outside = outside.stat()
+    # A read-only caller environment must not disable the private preparation's
+    # index write. Published/existing source inspections still request no writes.
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "0")
+    store = SharedSourceStore(tmp_path / "second")
+    target = await store.ensure(url, revision, existing=repo)
+    assert git(target, "rev-parse", "HEAD") == revision
+    assert git(target, "ls-files", "--stage") == original_mapping
+    assert os.readlink(target / "external-link") == str(outside)
+    assert outside.stat() == original_outside
+    assert stat.S_IMODE((target / "run.sh").stat().st_mode) == 0o555
+    for relative in ("bundle.md", "skills/SKILL.md", "run.sh"):
+        path = target / relative
+        actual = path.stat()
+        debug = git(target, "ls-files", "--debug", "--", relative)
+        for field in ("ctime", "mtime"):
+            seconds, nanos = re.search(rf"{field}: (\d+):(\d+)", debug).groups()
+            assert int(seconds) * 1_000_000_000 + int(nanos) == getattr(actual, f"st_{field}_ns")
+        assert int(re.search(r"ino: (\d+)", debug).group(1)) == actual.st_ino & 0xFFFFFFFF
+        assert path.read_bytes() == (repo / relative).read_bytes()
+    assert store.verify(url, revision) == target
+    assert (repo / ".git/index").read_bytes() == original_index
+    assert {
+        str(path.relative_to(repo)): path.lstat().st_mode
+        for path in (repo, *repo.rglob("*"))
+    } == original_modes
+    for path in (target, *target.rglob("*")):
+        if not path.is_symlink():
+            assert not path.stat().st_mode & 0o222
+    assert not list(target.parent.glob(".source-*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["worktree", "staged-restored", "head"])
+async def test_preparation_rejects_changed_stage_without_repairing_authority(
+    tmp_path, monkeypatch, repository, mutation
+):
+    from amplifier_foundation.sources import shared
+
+    repo, revision = repository
+    original_index = (repo / ".git/index").read_bytes()
+    original_mapping = git(repo, "ls-files", "--stage")
+    copytree = shared.shutil.copytree
+
+    def mutate_copy(source, destination, *args, **kwargs):
+        result = copytree(source, destination, *args, **kwargs)
+        if Path(destination).name == "checkout":
+            if mutation == "head":
+                git(destination, "commit", "--allow-empty", "-m", "different HEAD")
+            else:
+                (Path(destination) / "bundle.md").write_text("local change")
+                if mutation == "staged-restored":
+                    git(destination, "add", "bundle.md")
+                    (Path(destination) / "bundle.md").write_text("bundle")
+        return result
+
+    monkeypatch.setattr(shared.shutil, "copytree", mutate_copy)
+    store = SharedSourceStore(tmp_path / "store")
+    url = "https://example.invalid/repo"
+    target = store.checkout(url, revision)
+    with pytest.raises(ValueError, match="exact, clean"):
+        await store.ensure(url, revision, existing=repo)
+    assert not target.exists()
+    assert not list(target.parent.glob(".source-*"))
+    assert git(repo, "rev-parse", "HEAD") == revision
+    assert git(repo, "ls-files", "--stage") == original_mapping
+    assert (repo / ".git/index").read_bytes() == original_index
+    assert (repo / "bundle.md").read_text() == "bundle"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "redirect", ["index-environment", "git-environment", "worktree-config", "alternates", "index-symlink"]
+)
+async def test_redirected_metadata_keeps_read_only_publication(
+    tmp_path, monkeypatch, repository, redirect
+):
+    repo, revision = repository
+    external_index = tmp_path / "external-index"
+    external_index.write_bytes((repo / ".git/index").read_bytes())
+    if redirect == "index-environment":
+        monkeypatch.setenv("GIT_INDEX_FILE", str(external_index))
+    elif redirect == "git-environment":
+        monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    elif redirect == "worktree-config":
+        git(repo, "config", "core.worktree", str(repo))
+    elif redirect == "index-symlink":
+        if os.name == "nt":
+            pytest.skip("POSIX symbolic index fixture")
+        (repo / ".git/index").unlink()
+        (repo / ".git/index").symlink_to(external_index)
+    else:
+        objects = tmp_path / "external-objects"
+        objects.mkdir()
+        (repo / ".git/objects/info/alternates").write_text(str(objects) + "\n")
+    original_index = (repo / ".git/index").read_bytes()
+    original_external = external_index.read_bytes()
+    check_output = subprocess.check_output
+
+    def only_read_status(args, **kwargs):
+        if "status" in args:
+            assert "--no-optional-locks" in args
+        return check_output(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "check_output", only_read_status)
+    store = SharedSourceStore(tmp_path / "store")
+    url = "https://example.invalid/repo"
+    target = await store.ensure(url, revision, existing=repo)
+    assert store.verify(url, revision) == target
+    assert (target / "bundle.md").read_text() == "bundle"
+    assert (target / ".git/index").read_bytes() == original_index
+    assert (repo / ".git/index").read_bytes() == original_index
+    assert external_index.read_bytes() == original_external
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="POSIX final root seal")
 async def test_unsealed_publication_rejects_readers_and_serializes_ensure(
     tmp_path, monkeypatch, repository
@@ -403,7 +546,7 @@ async def test_unsealed_publication_rejects_readers_and_serializes_ensure(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("point", ["rename", "descendant", "seal"])
+@pytest.mark.parametrize("point", ["refresh", "rename", "descendant", "seal"])
 async def test_publication_failure_removes_only_owned_tree(
     tmp_path, monkeypatch, repository, point
 ):
@@ -416,6 +559,12 @@ async def test_publication_failure_removes_only_owned_tree(
     cache = tmp_path / "cache"
     original = PermissionError(errno.EACCES, "injected " + point)
     rename, chmod = Path.rename, Path.chmod
+    check_output = subprocess.check_output
+
+    def fail_refresh(args, **kwargs):
+        if point == "refresh" and "status" in args and "--no-optional-locks" not in args:
+            raise original
+        return check_output(args, **kwargs)
 
     def fail_rename(path, destination):
         if point == "rename" and (
@@ -434,6 +583,7 @@ async def test_publication_failure_removes_only_owned_tree(
 
     monkeypatch.setattr(Path, "rename", fail_rename)
     monkeypatch.setattr(Path, "chmod", fail_chmod)
+    monkeypatch.setattr(subprocess, "check_output", fail_refresh)
     with pytest.raises(PermissionError) as caught:
         await store.bind(cache, url, "main", revision, existing=repo)
     assert caught.value is original
@@ -444,6 +594,7 @@ async def test_publication_failure_removes_only_owned_tree(
     # A subsequent independent attempt can publish; no stale partial was adopted.
     monkeypatch.setattr(Path, "rename", rename)
     monkeypatch.setattr(Path, "chmod", chmod)
+    monkeypatch.setattr(subprocess, "check_output", check_output)
     assert await store.ensure(url, revision, existing=repo) == target
 
 
@@ -535,7 +686,7 @@ async def test_failed_seal_never_deletes_replaced_target(tmp_path, monkeypatch, 
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="POSIX final root seal")
-@pytest.mark.parametrize("point", ["copy", "seal", "cleanup"])
+@pytest.mark.parametrize("point", ["copy", "refresh", "seal", "cleanup"])
 async def test_repeated_cancellation_keeps_writer_lock_until_io_settles(
     tmp_path, monkeypatch, repository, point
 ):
@@ -547,6 +698,8 @@ async def test_repeated_cancellation_keeps_writer_lock_until_io_settles(
     target = store.checkout(url, revision)
     reached, release = threading.Event(), threading.Event()
     copytree, chmod, remove = shared.shutil.copytree, Path.chmod, shared._remove_owned_stage
+    check_output, rename = subprocess.check_output, Path.rename
+    refreshed, renamed = [], []
     original = PermissionError("original publication failure")
     held = False
 
@@ -575,9 +728,22 @@ async def test_repeated_cancellation_keeps_writer_lock_until_io_settles(
             hold_once()
         return remove(*args)
 
+    def hold_refresh(args, **kwargs):
+        if "status" in args and "--no-optional-locks" not in args:
+            refreshed.append(Path(kwargs["cwd"]))
+            if point == "refresh":
+                hold_once()
+        return check_output(args, **kwargs)
+
+    def record_rename(path, destination):
+        renamed.append(path)
+        return rename(path, destination)
+
     monkeypatch.setattr(shared.shutil, "copytree", hold_copy)
     monkeypatch.setattr(Path, "chmod", hold_seal)
     monkeypatch.setattr(shared, "_remove_owned_stage", hold_cleanup)
+    monkeypatch.setattr(subprocess, "check_output", hold_refresh)
+    monkeypatch.setattr(Path, "rename", record_rename)
     writer = asyncio.create_task(store.ensure(url, revision, existing=repo))
     waiter = None
     try:
@@ -602,6 +768,10 @@ async def test_repeated_cancellation_keeps_writer_lock_until_io_settles(
     else:
         assert isinstance(results[0], asyncio.CancelledError)
     assert results[1] == target
+    if point == "refresh":
+        assert len(refreshed) == 2
+        assert refreshed[0] not in renamed  # Cancelled preparation never publishes.
+        assert refreshed[1] in renamed
     assert store.verify(url, revision) == target
     assert not list(target.parent.glob(".source-*"))
 

@@ -23,6 +23,15 @@ reject it, and another `ensure()` waits for the writer. Windows retains its
 seal-before-rename ordering; directory attributes there are not POSIX access
 controls. Existing completed objects and bindings keep their format.
 
+Before publication, the private stage receives its final worktree permissions,
+then ordinary Git status refreshes its copied index's stat data. Git metadata is
+sealed afterward, without changing tracked-file permissions again. This does not
+change HEAD, staged content, or Git's racy-timestamp checks. Existing sources and
+published objects remain read-only inputs; their indexes are never refreshed.
+A failed or cancelled preparation is drained and removed without publication.
+The refresh applies only to ordinary Git metadata contained in the stage;
+redirected or symbolic metadata keeps the existing read-only validation path.
+
 Git clones into a child of an owned staging directory, so its full-clone
 fallback can replace the checkout inode without replacing cleanup custody.
 Failed publication removes only that stable staging directory (or the verified
