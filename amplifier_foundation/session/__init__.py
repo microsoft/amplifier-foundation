@@ -171,8 +171,10 @@ from .handoff import (
     register_release_handler,
     request_release,
 )
+from .activation import Activation, ActivationGate
 
 __all__ = [
+    "Activation", "ActivationGate",
     "CannotRelease", "ReadyToRelease", "ReleaseRegistration", "ReleaseRequest",
     "ReleaseResult", "register_release_handler", "request_release",
     # Core fork operations
