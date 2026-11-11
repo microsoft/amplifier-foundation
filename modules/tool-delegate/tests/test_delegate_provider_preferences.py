@@ -71,6 +71,32 @@ def _make_delegate_tool(
 # =============================================================================
 
 
+def test_provider_schema_explains_exact_connection_identity():
+    tool = _make_delegate_tool()
+    preference = tool.input_schema["properties"]["provider_preferences"]["items"]
+    provider = preference["properties"]["provider"]
+    assert provider["type"] == "string"
+    assert "exact configured connection ID" in provider["description"]
+    assert "instance_id or legacy id" in provider["description"]
+    assert "take precedence over module-name matching" in provider["description"]
+    assert set(preference["properties"]) == {"provider", "model"}
+
+
+@pytest.mark.asyncio
+async def test_exact_connection_id_is_forwarded_without_normalization():
+    tool = _make_delegate_tool(agents={"worker": {"description": "worker"}})
+    await tool.execute({
+        "agent": "worker",
+        "instruction": "Work",
+        "provider_preferences": [{"provider": "provider-work", "model": "selected-*"}],
+    })
+    spawn_fn = tool.coordinator.get_capability("session.spawn")
+    spawn_fn.assert_awaited_once()
+    prefs = spawn_fn.call_args.kwargs["provider_preferences"]
+    assert prefs[0].provider == "provider-work"
+    assert prefs[0].model == "selected-*"
+
+
 class TestAgentProviderPreferences:
     """Tests for agent-level default provider_preferences in execute()."""
 
