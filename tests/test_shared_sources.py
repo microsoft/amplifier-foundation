@@ -12,6 +12,7 @@ import threading
 
 import pytest
 
+from amplifier_foundation.sources.git import _with_longpaths
 from amplifier_foundation.sources.shared import (
     SharedSourceStore,
     build_view,
@@ -20,7 +21,9 @@ from amplifier_foundation.sources.shared import (
 
 
 def git(root, *args):
-    return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+    return subprocess.check_output(
+        _with_longpaths(["git", *args]), cwd=root, text=True
+    ).strip()
 
 
 @pytest.fixture
@@ -474,7 +477,9 @@ async def test_redirected_metadata_keeps_read_only_publication(
     else:
         objects = tmp_path / "external-objects"
         objects.mkdir()
-        (repo / ".git/objects/info/alternates").write_text(str(objects) + "\n")
+        (repo / ".git/objects/info/alternates").write_bytes(
+            (objects.as_posix() + "\n").encode()
+        )
     original_index = (repo / ".git/index").read_bytes()
     original_external = external_index.read_bytes()
     check_output = subprocess.check_output
