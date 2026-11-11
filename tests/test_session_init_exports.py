@@ -60,6 +60,13 @@ class TestExistingExports:
 class TestNewExports:
     """Verify newly added symbols are exported from the session package."""
 
+    def test_transcript_guard_exports_are_canonical(self):
+        from amplifier_foundation.session import NativeTranscriptConflict, NativeTranscriptGuard
+        from amplifier_foundation.session import transcript_guard
+
+        assert NativeTranscriptConflict is transcript_guard.NativeTranscriptConflict
+        assert NativeTranscriptGuard is transcript_guard.NativeTranscriptGuard
+
     def test_activation_exports_are_canonical(self):
         from amplifier_foundation.session import Activation, ActivationGate
         from amplifier_foundation.session import activation
@@ -129,12 +136,12 @@ class TestFinderExports:
 class TestDunderAll:
     """Verify the public session utility names."""
 
-    def test_all_contains_66_unique_names(self):
+    def test_all_contains_68_unique_names(self):
         import amplifier_foundation.session as session
 
         assert hasattr(session, "__all__"), "__all__ must be defined"
-        assert len(session.__all__) == 66, (
-            f"Expected 66 names in __all__, got {len(session.__all__)}: "
+        assert len(session.__all__) == 68, (
+            f"Expected 68 names in __all__, got {len(session.__all__)}: "
             f"{sorted(session.__all__)}"
         )
         assert len(set(session.__all__)) == len(session.__all__), "__all__ must not contain duplicates"
@@ -143,6 +150,8 @@ class TestDunderAll:
         import amplifier_foundation.session as session
 
         expected_new = {
+            "NativeTranscriptConflict",
+            "NativeTranscriptGuard",
             "is_real_user_message",
             "TRANSCRIPT_FILENAME",
             "METADATA_FILENAME",

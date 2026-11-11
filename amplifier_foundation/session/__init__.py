@@ -172,9 +172,11 @@ from .handoff import (
     request_release,
 )
 from .activation import Activation, ActivationGate
+from .transcript_guard import NativeTranscriptConflict, NativeTranscriptGuard
 
 __all__ = [
     "Activation", "ActivationGate",
+    "NativeTranscriptConflict", "NativeTranscriptGuard",
     "CannotRelease", "ReadyToRelease", "ReleaseRegistration", "ReleaseRequest",
     "ReleaseResult", "register_release_handler", "request_release",
     # Core fork operations

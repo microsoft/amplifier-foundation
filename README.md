@@ -9,6 +9,7 @@ Foundation provides:
 - **Shared session history** - CLI-compatible transcripts and metadata with optional Context Intelligence activity enrichment
 - **Session ownership** - POSIX-local exclusive root-session locking; bounded Windows/local-NTFS ownership and safe reads (no Windows checkpoint or transfer-fence mutations)
 - **Activation fencing** - [Task-local authority](docs/session-activation.md) rejects stale work after a session releases or replaces its activation
+- **Native transcript conflicts** - [Metadata-only detection](docs/session-transcript-guard.md) preserves history changed outside a cooperating writer's lock
 - **Reference Content** - Reusable providers, agents, behaviors, and context files
 - **Optional application libraries** - Independently installed scheduling, operations, worktrees, and Recall mechanisms; see [`libraries/`](libraries/README.md). These are not loaded by the base Foundation package.
 
