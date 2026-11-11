@@ -60,6 +60,13 @@ class TestExistingExports:
 class TestNewExports:
     """Verify newly added symbols are exported from the session package."""
 
+    def test_activation_exports_are_canonical(self):
+        from amplifier_foundation.session import Activation, ActivationGate
+        from amplifier_foundation.session import activation
+
+        assert Activation is activation.Activation
+        assert ActivationGate is activation.ActivationGate
+
     def test_prepare_session_directory_export_is_canonical_callable(self):
         from amplifier_foundation.session import prepare_session_directory
         from amplifier_foundation.session.history import (
@@ -122,15 +129,15 @@ class TestFinderExports:
 class TestDunderAll:
     """Verify the public session utility names."""
 
-    def test_all_contains_64_unique_names(self):
+    def test_all_contains_66_unique_names(self):
         import amplifier_foundation.session as session
 
         assert hasattr(session, "__all__"), "__all__ must be defined"
-        assert len(session.__all__) == 64, (
-            f"Expected 64 names in __all__, got {len(session.__all__)}: "
+        assert len(session.__all__) == 66, (
+            f"Expected 66 names in __all__, got {len(session.__all__)}: "
             f"{sorted(session.__all__)}"
         )
-        assert len(set(session.__all__)) == 64, "__all__ must not contain duplicates"
+        assert len(set(session.__all__)) == len(session.__all__), "__all__ must not contain duplicates"
 
     def test_all_includes_new_names(self):
         import amplifier_foundation.session as session
