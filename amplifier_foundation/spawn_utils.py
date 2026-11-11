@@ -654,7 +654,7 @@ def _runtime_provider_name(
 
     claimed = {
         entry.get("instance_id") or entry.get("id")
-        for entry in provider_specs
+        for entry in [*provider_specs, *_get_provider_specs(coordinator)]
         if entry.get("instance_id") or entry.get("id")
     }
     aliases = dict.fromkeys((module, module.removeprefix("provider-")))
@@ -671,7 +671,7 @@ def _runtime_provider_name(
         if all(providers[name] is providers[first] for name in mounted):
             return first
         return None
-    if any(name in claimed for name in aliases):
+    if any(name in claimed or providers.get(name) is not None for name in aliases):
         return None
     # Do not borrow a healthy sibling. The host check can retain its actionable
     # failure for this missing/failed module; an exact catalog lookup will miss.
@@ -1201,7 +1201,23 @@ async def apply_provider_preferences_with_resolution(
             continue
 
         target = providers[target_idx]
-        runtime_provider = _runtime_provider_name(target, coordinator, providers)
+        try:
+            runtime_provider = _runtime_provider_name(target, coordinator, providers)
+        except Exception:
+            if availability is None and not is_glob_pattern(pref.model):
+                # An exact model without host isolation historically needs no
+                # registry read. Preserve that behavior, not a catalog fallback.
+                runtime_provider = (
+                    target.get("instance_id") or target.get("id") or target.get("module")
+                )
+            else:
+                attempt_results.append(ModelResolutionResult(
+                    resolved_model=None,
+                    pattern=pref.model if is_glob_pattern(pref.model) else None,
+                    status="catalog_query_failed",
+                    provider=pref.provider,
+                ))
+                continue
         if runtime_provider is None:
             attempt_results.append(ModelResolutionResult(
                 resolved_model=None,

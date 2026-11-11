@@ -252,19 +252,21 @@ async def test_selected_explicit_catalog_key_never_flexibly_matches_another_id()
 
 
 @pytest.mark.asyncio
-async def test_alias_of_named_sibling_cannot_stand_in_for_unnamed_entry():
+@pytest.mark.parametrize("alias", ["anthropic", "provider-anthropic"])
+@pytest.mark.parametrize("model", ["selected-model", "selected-*"])
+async def test_alias_of_named_sibling_cannot_stand_in_for_unnamed_entry(alias, model):
     specs = [
         {"module": "provider-anthropic", "config": {"priority": 0}},
         {"module": "provider-anthropic", "instance_id": "work", "config": {"priority": 1}},
     ]
     sibling = SimpleNamespace(list_models=AsyncMock(return_value=["selected-model"]))
-    coordinator, checked = runtime_host(specs, {"work": sibling, "anthropic": sibling})
+    coordinator, checked = runtime_host(specs, {"work": sibling, alias: sibling})
     with pytest.raises(ValueError):
         await apply_provider_preferences_with_resolution(
-            {"providers": specs}, [ProviderPreference("anthropic", "selected-*")],
+            {"providers": specs}, [ProviderPreference("anthropic", model)],
             coordinator,
         )
-    assert checked == ["provider-anthropic"]  # Host retains the missing entry's error.
+    assert checked == []
     sibling.list_models.assert_not_awaited()
 
 
@@ -284,3 +286,59 @@ async def test_instance_id_precedes_legacy_id_for_check_and_catalog():
     assert checked == ["work"]
     assert diagnostics[-1].provider == "work"
     provider.list_models.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["selected-model", "selected-*"])
+async def test_parent_connection_ownership_excludes_child_alias(model):
+    child_specs = [{"module": "provider-anthropic", "config": {}}]
+    parent_specs = [{"module": "provider-openai", "instance_id": "anthropic", "config": {}}]
+    other_account = SimpleNamespace(list_models=AsyncMock(return_value=["selected-model"]))
+    coordinator, checked = runtime_host(parent_specs, {"anthropic": other_account})
+    plan = {"providers": child_specs}
+    with pytest.raises(ValueError, match="default provider was not substituted"):
+        await apply_provider_preferences_with_resolution(
+            plan, [ProviderPreference("anthropic", model)], coordinator,
+        )
+    assert checked == []
+    other_account.list_models.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host_policy", [False, True])
+async def test_unnamed_registry_error_is_controlled_not_cold_resume(host_policy):
+    specs = [{"module": "provider-anthropic", "config": {"default_model": "selected-model"}}]
+    coordinator, checked = runtime_host(specs, {})
+    def failed_registry(_):
+        raise RuntimeError("registry unavailable")
+    coordinator.get = failed_registry
+    if not host_policy:
+        coordinator.get_capability = lambda _: None
+    plan = {"providers": specs}
+    diagnostics = []
+    if host_policy:
+        with pytest.raises(ValueError, match="default provider was not substituted"):
+            await apply_provider_preferences_with_resolution(
+                plan, [ProviderPreference("anthropic", "selected-*")], coordinator,
+                diagnostics=diagnostics,
+            )
+    else:
+        assert await apply_provider_preferences_with_resolution(
+            plan, [ProviderPreference("anthropic", "selected-*")], coordinator,
+            diagnostics=diagnostics,
+        ) is plan
+    assert diagnostics[-1].status == "catalog_query_failed"
+    assert checked == []
+
+
+@pytest.mark.asyncio
+async def test_exact_model_without_host_policy_does_not_require_readable_registry():
+    specs = [{"module": "provider-anthropic", "config": {}}]
+    def failed_registry(_):
+        raise RuntimeError("registry unavailable")
+    coordinator = SimpleNamespace(get=failed_registry, get_capability=lambda _: None)
+    result = await apply_provider_preferences_with_resolution(
+        {"providers": specs}, [ProviderPreference("anthropic", "selected-model")],
+        coordinator,
+    )
+    assert result["providers"][0]["config"]["default_model"] == "selected-model"
