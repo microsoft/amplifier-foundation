@@ -1119,7 +1119,12 @@ class DelegateTool:
                         "properties": {
                             "provider": {
                                 "type": "string",
-                                "description": "Provider name (e.g., 'anthropic', 'openai')",
+                                "description": (
+                                    "Provider module name (e.g., 'anthropic', 'openai') "
+                                    "or exact configured connection ID (instance_id or legacy id). "
+                                    "Use the exact ID to select a specific account; exact IDs "
+                                    "take precedence over module-name matching."
+                                ),
                             },
                             "model": {
                                 "type": "string",

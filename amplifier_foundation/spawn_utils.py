@@ -298,6 +298,8 @@ class ProviderPreference:
     Attributes:
         provider: Provider identifier (e.g., "anthropic", "openai", "azure").
             Supports flexible matching - "anthropic" matches "provider-anthropic".
+            An exact configured connection ID (``instance_id`` or legacy ``id``)
+            selects that connection ahead of module-name matching.
         model: Model name or glob pattern (e.g., "claude-haiku-*", "gpt-5-mini").
             Patterns are resolved to concrete model names at runtime.
         config: Optional routing/preference config to merge into the provider's
@@ -384,6 +386,7 @@ async def resolve_model_pattern(
     *,
     diagnostics: list[ModelResolutionResult] | None = None,
     fallback_default_model: str | None = None,
+    exact_provider: bool = False,
 ) -> ModelResolutionResult:
     """Resolve a model pattern to a concrete model name.
 
@@ -397,6 +400,9 @@ async def resolve_model_pattern(
             warning so a preference-chain caller can report once at the end.
         fallback_default_model: Concrete selected-entry default allowed only
             when the coordinator or provider registry is unavailable.
+        exact_provider: Query only the supplied runtime registry key. Used after
+            a mount-plan entry has already been selected, to prevent alias or
+            priority matching from substituting a different connection.
 
     Returns:
         ModelResolutionResult with resolved model and resolution metadata.
@@ -496,7 +502,11 @@ async def resolve_model_pattern(
     if not isinstance(providers, dict):
         return finish(matching_fallback_default() or catalog_unavailable())
 
-    provider = _find_provider_instance(providers, provider_name, coordinator)
+    provider = (
+        providers.get(provider_name)
+        if exact_provider
+        else _find_provider_instance(providers, provider_name, coordinator)
+    )
     if provider is None:
         return finish(ModelResolutionResult(
             resolved_model=None,
@@ -616,13 +626,56 @@ def _module_type_of(spec: dict[str, Any] | None) -> str | None:
     return module.replace("provider-", "")
 
 
-def _runtime_provider_name(spec: dict[str, Any]) -> str:
-    """Return the runtime registry key for a selected mount-plan entry."""
-    for key in ("instance_id", "id", "module"):
+def _runtime_provider_name(
+    spec: dict[str, Any],
+    coordinator: Any,
+    provider_specs: list[dict[str, Any]],
+) -> str | None:
+    """Bind a selected entry to its runtime key, without selecting another row.
+
+    Core remaps explicitly named connections to ``instance_id``. Legacy ``id``
+    remains exact too. Without either, native providers usually mount under
+    their short name, while custom hosts may use the literal module ID. Accept
+    these aliases only when mounted and not owned by an explicit connection.
+    Distinct objects at both aliases are ambiguous, not a priority decision.
+    """
+    for key in ("instance_id", "id"):
         value = spec.get(key)
         if isinstance(value, str) and value:
             return value
-    return ""
+
+    module = spec.get("module", "")
+    if not isinstance(module, str) or not module:
+        return None
+    get_providers = getattr(coordinator, "get", None)
+    providers = get_providers("providers") if callable(get_providers) else None
+    if not isinstance(providers, dict):
+        return module  # Preserve cold-resume/legacy behavior without a registry.
+
+    claimed = {
+        entry.get("instance_id") or entry.get("id")
+        for entry in [*provider_specs, *_get_provider_specs(coordinator)]
+        if entry.get("instance_id") or entry.get("id")
+    }
+    aliases = dict.fromkeys((module, module.removeprefix("provider-")))
+    mounted = [
+        name for name in aliases
+        if name not in claimed
+        and providers.get(name) is not None
+        and not any(
+            providers[name] is providers.get(owner) for owner in claimed
+        )
+    ]
+    if mounted:
+        first = mounted[0]
+        if all(providers[name] is providers[first] for name in mounted):
+            return first
+        return None
+    if any(name in claimed or providers.get(name) is not None for name in aliases):
+        return None
+    # Do not borrow a healthy sibling. The host check can retain its actionable
+    # failure for this missing/failed module; an exact catalog lookup will miss.
+    return module
 
 
 def _find_provider_instance(
@@ -1148,7 +1201,31 @@ async def apply_provider_preferences_with_resolution(
             continue
 
         target = providers[target_idx]
-        runtime_provider = _runtime_provider_name(target)
+        try:
+            runtime_provider = _runtime_provider_name(target, coordinator, providers)
+        except Exception:
+            if availability is None and not is_glob_pattern(pref.model):
+                # An exact model without host isolation historically needs no
+                # registry read. Preserve that behavior, not a catalog fallback.
+                runtime_provider = (
+                    target.get("instance_id") or target.get("id") or target.get("module")
+                )
+            else:
+                attempt_results.append(ModelResolutionResult(
+                    resolved_model=None,
+                    pattern=pref.model if is_glob_pattern(pref.model) else None,
+                    status="catalog_query_failed",
+                    provider=pref.provider,
+                ))
+                continue
+        if runtime_provider is None:
+            attempt_results.append(ModelResolutionResult(
+                resolved_model=None,
+                pattern=pref.model if is_glob_pattern(pref.model) else None,
+                status="provider_not_mounted",
+                provider=pref.provider,
+            ))
+            continue
         if availability is not None:
             try:
                 checked = availability(runtime_provider)
@@ -1174,6 +1251,7 @@ async def apply_provider_preferences_with_resolution(
                 coordinator,
                 diagnostics=attempt_results,
                 fallback_default_model=default_model,
+                exact_provider=True,
             )
         else:
             result = ModelResolutionResult(

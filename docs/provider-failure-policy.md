@@ -67,7 +67,13 @@ synchronous `provider.check_available(instance_id)` capability. Returning means
 the mounted account is available; raising preserves its actionable failure.
 `apply_provider_preferences_with_resolution` calls it for the exact configured
 account before an exact model or catalog lookup, honoring Core `instance_id`
-before the older `id` field. Only another entry in the declared preference list
+before the older `id` field. Entries without either ID bind to their mounted
+native short name (for example, `anthropic` for `provider-anthropic`) or literal
+module-key mount. Aliases claimed by another explicitly named connection, or
+aliases pointing to distinct mounted objects, cannot select that unnamed entry.
+The same bound key is used for availability, catalog lookup, and diagnostics;
+catalog lookup does not reselect a sibling by alias or priority.
+Only another entry in the declared preference list
 may provide fallback. If all entries fail or no model resolves, it raises rather
 than leaving the default account selected. Cancellation is never fallback.
 Without this capability, legacy no-match behavior remains unchanged.
