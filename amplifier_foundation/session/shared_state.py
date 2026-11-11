@@ -7,6 +7,7 @@ Applications decide when a session is shared and which records belong in a check
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import errno
 import getpass
@@ -630,6 +631,41 @@ class SharedSessionStore:
     def acquire(self, *, app: str, **diagnostics: Any) -> "HeldSession":
         """Acquire the stable OS lock and publish advisory owner diagnostics."""
         return self._acquire(app=app, diagnostics=diagnostics)
+
+    async def acquire_async(self, *, app: str, **diagnostics: Any) -> "HeldSession":
+        """Acquire off-loop without abandoning a writer when the caller cancels.
+
+        Cancellation waits for the already-started acquisition and releases any
+        resulting handle before completing. Repeated cancellation cannot interrupt
+        that settlement. An acquisition or release failure during cancellation is
+        chained to the original CancelledError; ordinary acquire errors are unchanged.
+        This does not retry acquisition or change synchronous/transfer ownership.
+        """
+        acquisition = asyncio.create_task(
+            asyncio.to_thread(self.acquire, app=app, **diagnostics)
+        )
+        try:
+            return await asyncio.shield(acquisition)
+        except asyncio.CancelledError as cancelled:
+            async def release_acquisition() -> None:
+                held = await acquisition
+                await asyncio.to_thread(held.release)
+
+            settlement = asyncio.create_task(release_acquisition())
+            while not settlement.done():
+                try:
+                    await asyncio.shield(settlement)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    # Retrieve the settled error below without replacing the
+                    # caller's original cancellation with a cleanup exception.
+                    break
+            try:
+                settlement.result()
+            except BaseException as failure:
+                raise cancelled from failure
+            raise
 
     def acquire_transfer(self, transfer_id: str, *, app: str, **diagnostics: Any) -> "HeldTransfer":
         """Acquire only a matching staged fence for explicit adapter recovery.

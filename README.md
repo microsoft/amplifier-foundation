@@ -8,6 +8,7 @@ Foundation provides:
 - **Utilities** - YAML/frontmatter I/O, dict merging, path handling, caching
 - **Shared session history** - CLI-compatible transcripts and metadata with optional Context Intelligence activity enrichment
 - **Session ownership** - POSIX-local exclusive root-session locking; bounded Windows/local-NTFS ownership and safe reads (no Windows checkpoint or transfer-fence mutations)
+- **Async acquisition** - [Cancellation-safe writer acquisition](docs/session-async-acquisition.md) releases late handles before cancelled callers complete
 - **Activation fencing** - [Task-local authority](docs/session-activation.md) rejects stale work after a session releases or replaces its activation
 - **Native transcript conflicts** - [Metadata-only detection](docs/session-transcript-guard.md) preserves history changed outside a cooperating writer's lock
 - **Reference Content** - Reusable providers, agents, behaviors, and context files
