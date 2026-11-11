@@ -660,7 +660,11 @@ def _runtime_provider_name(
     aliases = dict.fromkeys((module, module.removeprefix("provider-")))
     mounted = [
         name for name in aliases
-        if name not in claimed and providers.get(name) is not None
+        if name not in claimed
+        and providers.get(name) is not None
+        and not any(
+            providers[name] is providers.get(owner) for owner in claimed
+        )
     ]
     if mounted:
         first = mounted[0]

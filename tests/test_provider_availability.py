@@ -249,3 +249,38 @@ async def test_selected_explicit_catalog_key_never_flexibly_matches_another_id()
     assert diagnostics[-1].status == "provider_not_mounted"
     assert diagnostics[-1].provider == "provider-work"
     sibling.list_models.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_alias_of_named_sibling_cannot_stand_in_for_unnamed_entry():
+    specs = [
+        {"module": "provider-anthropic", "config": {"priority": 0}},
+        {"module": "provider-anthropic", "instance_id": "work", "config": {"priority": 1}},
+    ]
+    sibling = SimpleNamespace(list_models=AsyncMock(return_value=["selected-model"]))
+    coordinator, checked = runtime_host(specs, {"work": sibling, "anthropic": sibling})
+    with pytest.raises(ValueError):
+        await apply_provider_preferences_with_resolution(
+            {"providers": specs}, [ProviderPreference("anthropic", "selected-*")],
+            coordinator,
+        )
+    assert checked == ["provider-anthropic"]  # Host retains the missing entry's error.
+    sibling.list_models.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_instance_id_precedes_legacy_id_for_check_and_catalog():
+    specs = [{
+        "module": "provider-anthropic", "instance_id": "work", "id": "legacy",
+        "config": {},
+    }]
+    provider = SimpleNamespace(list_models=AsyncMock(return_value=["selected-model"]))
+    coordinator, checked = runtime_host(specs, {"work": provider})
+    diagnostics = []
+    await apply_provider_preferences_with_resolution(
+        {"providers": specs}, [ProviderPreference("work", "selected-*")], coordinator,
+        diagnostics=diagnostics,
+    )
+    assert checked == ["work"]
+    assert diagnostics[-1].provider == "work"
+    provider.list_models.assert_awaited_once()
