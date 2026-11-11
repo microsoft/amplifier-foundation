@@ -34,14 +34,22 @@ def graph_signature():
 def source_signature(root):
     root = Path(root)
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
+    paths = []
+    pending = [root]
+    while pending:
+        for path in pending.pop().glob("*"):
+            if (
+                path.name in {".git", ".venv", "node_modules", "__pycache__", "build", "dist"}
+                or path.name.endswith(".egg-info")
+            ):
+                continue
+            paths.append(path)
+            if not path.is_symlink() and path.is_dir():
+                pending.append(path)
+    # Keep the existing digest order, but never traverse excluded build/cache
+    # trees merely to discard their descendants afterward.
+    for path in sorted(paths):
         relative = path.relative_to(root)
-        if any(
-            part in {".git", ".venv", "node_modules", "__pycache__", "build", "dist"}
-            or part.endswith(".egg-info")
-            for part in relative.parts
-        ):
-            continue
         if path.is_symlink():
             if not path.resolve().is_relative_to(root.resolve()):
                 # External build inputs can change independently. Unknown
