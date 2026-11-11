@@ -268,3 +268,139 @@ def test_hardlinked_backup_does_not_append_to_primary(tmp_path):
     save(store, rows(3))
     assert store.load_messages() == rows(3)
     assert [json.loads(line) for line in backup.read_text().splitlines()] == rows(2)
+
+
+def _fixture_bytes(path, content):
+    if os.name == "nt":
+        from amplifier_foundation.session._windows_history import _replace
+
+        _replace(path, [content])
+    else:
+        path.write_bytes(content)
+
+
+def _fixture_pending(path):
+    if os.name == "nt":
+        from amplifier_foundation.session._windows_history import write_pending
+
+        write_pending(path)
+    else:
+        path.write_text('{"version":1}\n')
+
+
+def test_replacement_reuses_over_budget_index_without_losing_nested_edit(tmp_path, monkeypatch):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    data = rows(3)
+    data[-1]["metadata"] = {"nested": {"value": "before"}}
+    save(store, data)
+    before = store.transcript_path.read_bytes()
+    monkeypatch.setattr(jsonl, "_MAX_ROWS", 1)
+    calls = []
+    digest = jsonl._digest
+
+    def counted(value):
+        calls.append(value["role"])
+        return digest(value)
+
+    monkeypatch.setattr(jsonl, "_digest", counted)
+    data[-1]["metadata"]["nested"]["value"] = "AFTER!"
+    save(store, data)
+    assert calls == [row["role"] for row in data]  # One disk validation, not two.
+    assert store.load_messages() == data
+    assert store.transcript_path.stat().st_size == len(before)
+    assert store.transcript_path.with_suffix(".jsonl.backup").read_bytes() == before
+    assert not any(key[0] == store.transcript_path.absolute() for key in jsonl._CACHE)
+    assert jsonl.append_messages(store.transcript_path, data, windows_policy="private") is True
+    assert jsonl.append_messages(store.transcript_path, [], windows_policy="private") is False
+
+
+@pytest.mark.parametrize("mutation", ["same-size", "corrupt", "missing", "pending"])
+def test_replacement_revalidates_changed_primary_and_preserves_recovery(tmp_path, monkeypatch, mutation):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    old, current = rows(2), rows(3)
+    store.save(old, {})
+    store.save(current, {})  # Previous complete backup differs from the primary.
+    path = store.transcript_path
+    backup = path.with_suffix(".jsonl.backup")
+    backup_before = backup.read_bytes()
+    source_before = path.read_bytes()
+    stamp = path.stat()
+    candidate = rows(3)
+    candidate[-1]["content"] += " edited"
+    original = store._messages_content
+    observations = []
+
+    def encode_then_change(*args):
+        content = original(*args)
+        if mutation == "same-size":
+            # Preserve size and mtime while changing the actual prefix.
+            _fixture_bytes(path, source_before.replace(b"xxx", b"XXX", 1))
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        elif mutation == "corrupt":
+            _fixture_bytes(path, b"invalid JSON\n")
+        elif mutation == "missing":
+            path.unlink()
+        else:
+            # Intent changes without changing the primary's stamp.
+            _fixture_pending(jsonl.intent_path(path))
+        return content
+
+    real_indexed = jsonl.indexed
+
+    def indexed(path, **kwargs):
+        observations.append(path)
+        return real_indexed(path, **kwargs)
+
+    monkeypatch.setattr(store, "_messages_content", encode_then_change)
+    monkeypatch.setattr(jsonl, "indexed", indexed)
+    save(store, candidate)
+    assert store.load_messages() == candidate
+    if mutation == "same-size":
+        assert observations == [path, path]
+        assert backup.read_bytes() == source_before.replace(b"xxx", b"XXX", 1)
+    elif mutation == "pending":
+        assert observations == [path, backup]
+        assert backup.read_bytes() == backup_before
+    elif mutation == "corrupt":
+        assert observations == [path, path, backup]
+        assert backup.read_bytes() == backup_before
+    else:
+        assert observations == [path, path]
+        assert backup.read_bytes() == backup_before
+    assert not jsonl.intent_path(path).exists()
+
+
+@pytest.mark.parametrize("mismatch", ["path", "policy"])
+def test_replacement_witness_cannot_validate_another_path_or_policy(tmp_path, monkeypatch, mismatch):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    save(store, rows(2))
+    current = store.indexed_messages()
+    witness = jsonl.TranscriptIndex(
+        tmp_path / "other.jsonl" if mismatch == "path" else current.path,
+        current.stamp, current.rows, current.terminated,
+        windows_policy="legacy" if mismatch == "policy" else "private",
+    )
+    calls = []
+
+    def reader(path, **kwargs):
+        calls.append((path, kwargs))
+        return jsonl.indexed(path, **kwargs)
+
+    assert store._prepare_write(store.transcript_path, reader, validated=witness) is False
+    assert calls == [(store.transcript_path, {"windows_policy": "private"})]
+
+
+def test_replacement_validated_source_does_not_skip_invalid_late_input(tmp_path):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    store.save(rows(2), {})
+    store.save(rows(3), {})
+    paths = [store.transcript_path, store.transcript_path.with_suffix(".jsonl.backup"),
+             store.metadata_path, store.metadata_path.with_suffix(".json.backup")]
+    before = [path.read_bytes() for path in paths]
+    invalid = rows(3)
+    invalid[0]["content"] = "prefix edit"
+    invalid[-1]["metadata"] = {"nested": {"invalid": float("nan")}}
+    with pytest.raises(ValueError):
+        save(store, invalid)
+    assert [path.read_bytes() for path in paths] == before
+    assert not jsonl.intent_path(store.transcript_path).exists()

@@ -487,7 +487,7 @@ class SessionHistoryStore:
         except (TypeError, ValueError):
             raise ValueError("Metadata is not JSON serializable") from None
 
-    def _prepare_write(self, path: Path, reader: Callable[..., Any]) -> bool:
+    def _prepare_write(self, path: Path, reader: Callable[..., Any], *, validated=None) -> bool:
         # Validate existing state before changing either file. Never rotate a
         # damaged primary over the only readable backup. The return value means
         # preserve that backup when replacing the damaged primary.
@@ -497,7 +497,14 @@ class SessionHistoryStore:
             self._recover(path, "transcript", reader, [])
             return True
         try:
-            reader(path, windows_policy=self.windows_policy)
+            # An append comparison may already have validated this exact file.
+            # Keep that witness local to one save, including when it exceeds
+            # the process cache budget; intent, identity and policy still win.
+            if not (validated is not None
+                    and validated.path == (path if path.is_absolute() else Path.cwd() / path)
+                    and validated.windows_policy == self.windows_policy
+                    and file_stamp(path, windows_policy=self.windows_policy) == validated.stamp):
+                reader(path, windows_policy=self.windows_policy)
         except FileNotFoundError:
             pass
         except _InvalidFile:
@@ -572,7 +579,7 @@ class SessionHistoryStore:
     def _save_incremental(
         self, messages, metadata, preserve_system, sanitizer, merge_metadata
     ):
-        from .jsonl import append_messages, indexed, intent_path
+        from .jsonl import _append_messages, indexed, intent_path
 
         if not isinstance(messages, list):
             raise ValueError("messages must be a list")  # noqa: TRY004 - validation API
@@ -605,7 +612,8 @@ class SessionHistoryStore:
             preserve_metadata = self._prepare_write(self.metadata_path, _read_metadata)
             # Validation and comparison in append_messages are read-only until
             # the entire append has been encoded. Replacement validates below.
-            if not append_messages(self.transcript_path, values, windows_policy=self.windows_policy):
+            appended, validated = _append_messages(self.transcript_path, values, windows_policy=self.windows_policy)
+            if not appended:
                 content = self._messages_content(values, True, None)
                 pending = intent_path(self.transcript_path)
                 if _exists(pending, windows_policy=self.windows_policy):
@@ -613,7 +621,7 @@ class SessionHistoryStore:
                     self._recover(self.transcript_path, "transcript", indexed, [])
                     preserve_backup = True
                 else:
-                    preserve_backup = self._prepare_write(self.transcript_path, indexed)
+                    preserve_backup = self._prepare_write(self.transcript_path, indexed, validated=validated)
                 self._write_prepared(self.transcript_path, content, preserve_backup)
                 if _exists(pending, windows_policy=self.windows_policy):
                     _remove_pending(pending, windows_policy=self.windows_policy)
