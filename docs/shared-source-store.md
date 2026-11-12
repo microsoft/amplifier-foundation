@@ -62,6 +62,43 @@ resolution. Existing mutable/local sources preserve their editable behavior and
 original install path. Stored objects and build views are retained: consumers
 must prove all readers and references before implementing object collection.
 
+Build views use the existing `builds/<repository-and-commit-id>.lock` for both
+materialization and backend execution. A unique owned sibling stage is copied,
+made writable and given matching Git provenance, `immutable: false`,
+`buildInput: true` and `buildViewVersion: 1` before rename into the final path.
+Readers never use mere directory existence as completion. Failed preparation
+removes only the invocation's identity-checked stage; cleanup errors are notes on
+the original failure. A completed publication survives later cleanup failure.
+Atomic visibility is not a power-loss durability/fsync guarantee.
+
+Copy policy is based on `lstat` type, not names: actual sockets and FIFOs are
+runtime endpoints and omitted without opening them, including nested Git
+fsmonitor endpoints. Regular files with the same names remain build content.
+Other unsupported special files fail preparation. Contained relative symlinks
+are copied literally (including dangling links); escaping or absolute links are
+rejected for builds, so a writable backend cannot follow them back to the
+immutable source or an external destination. This is stricter than object
+storage, which can retain such links without building from them. Preparation
+never chmods, refreshes an index, rewrites metadata or repairs the source object.
+
+Reuse validates ordinary control directories/files, matching exact provenance,
+completion flags and a contained existing requested subpath. Legacy completed
+views whose final metadata has `immutable: false, buildInput: true` remain
+compatible after the same validation; generated backend files are expected, so
+reuse does not require a clean Git tree. `build_lock()` rejects damaged or
+incomplete build views instead of silently returning an unlocked context.
+
+An old direct-copy failure can leave matching immutable source metadata in a
+partial build target. Under the same lock, recovery prepares a fresh completed
+view, then moves the attributable old directory into a unique
+`builds/.<id>.incomplete-*/checkout` sibling before publishing. All old entries,
+including unknown additions, are retained, not merged or recursively deleted.
+That metadata establishes attribution, not that every retained entry is ours.
+Missing, malformed, mismatched or symbolic control paths are ambiguous: they
+are left untouched and rejected for operator inspection. Interrupted stages and
+quarantines are not automatically collected. These cooperative API guarantees
+do not protect against unrelated writers changing paths outside the locks.
+
 `AMPLIFIER_INSTALL_PREPARATION` can name one isolated preparation attempt with
 a fresh 32-character hexadecimal token. With explicit dependency refresh, a
 duplicate installation can reuse that attempt's receipt only when source content,
