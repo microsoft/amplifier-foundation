@@ -686,6 +686,14 @@ def test_real_resolve_symlink_then_parent_selects_same_package_and_backend(
             "reparse_tag": getattr(info, "st_reparse_tag", None),
             "target": os.readlink(link) if link.is_symlink() else None,
         }
+        try:
+            links[label]["standalone_resolve"] = link.resolve(strict=True).relative_to(base).as_posix()
+        except OSError as error:
+            # Diagnostic only: raw child access and full requested selection
+            # below must still succeed. Never swallow a selected-path error.
+            links[label]["standalone_resolve_error"] = {
+                "errno": error.errno, "winerror": getattr(error, "winerror", None),
+            }
         assert link.is_symlink(), links
         assert os.readlink(link).replace("\\", "/") == "../b/sub"
         assert (link / ".keep").read_text() == "tracked directory"

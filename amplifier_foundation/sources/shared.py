@@ -566,15 +566,24 @@ def _build_subpath(root, relative):
             if raw.is_symlink():
                 # The parent uses native selection; literal target traversal
                 # still rejects anchored/escaping links and file slash/dot.
-                parent = raw.parent.resolve(strict=True)
+                parent = selected
                 if not parent.is_relative_to(root):
                     raise ValueError(f"Build input subpath escapes its root: {relative}")
-                _walk_build_subpath(root, parent.relative_to(root) / raw.name)
-            selected = raw.resolve(strict=True)
+                selected = _walk_build_subpath(
+                    root, parent.relative_to(root) / raw.name
+                )
+                # Do not open a handle to the reparse point merely to validate
+                # a cancelled prefix. Windows can deny GetFinalPathName on a
+                # sealed directory link even when child file access works.
+            else:
+                selected = raw.resolve(strict=True)
             if not selected.is_relative_to(root):
                 raise ValueError(f"Build input subpath escapes its root: {relative}")
             if index + 1 < len(relative.parts) and not selected.is_dir():
                 raise ValueError(f"Build input subpath is unavailable: {root / relative}")
+        selected = raw.resolve(strict=True)  # Native selection of the full request.
+        if not selected.is_relative_to(root):
+            raise ValueError(f"Build input subpath escapes its root: {relative}")
     except (FileNotFoundError, NotADirectoryError) as error:
         raise ValueError(f"Build input subpath is unavailable: {root / relative}") from error
     return selected
