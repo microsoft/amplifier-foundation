@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from filelock import AsyncFileLock
+from filelock import AsyncFileLock, FileLock
 
 from amplifier_foundation.paths.resolution import ResolvedSource, parse_uri
 from amplifier_foundation.sources.git import _with_longpaths
@@ -446,6 +446,245 @@ async def resolve_shared_source(uri, cache, *, refresh=False):
     return await SharedSourceStore(root).resolve(uri, cache, refresh=refresh)
 
 
+def _build_metadata(root):
+    marker = root / ".amplifier_cache_meta.json"
+    if not stat.S_ISREG(marker.lstat().st_mode):
+        raise ValueError(f"Build provenance must be an ordinary file: {marker}")
+    data = json.loads(marker.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid build provenance: {marker}")
+    return data
+
+
+def _build_key(data):
+    url, revision = data.get("git_url"), data.get("commit")
+    if not isinstance(url, str) or not url or not isinstance(revision, str):
+        raise ValueError("Build input requires exact Git provenance")
+    if not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", revision):
+        raise ValueError("Build input requires an exact source revision")
+    return source_id(url, revision)
+
+
+def _build_directory(path):
+    if not stat.S_ISDIR(path.lstat().st_mode):
+        raise ValueError(f"Build control path must be an ordinary directory: {path}")
+
+
+def _build_links(root):
+    """Do not let a writable build follow a link back into immutable inputs.
+
+    Relative contained links are preserved literally, including dangling links.
+    Absolute links would still address the original tree after copying.
+    """
+    def unreadable(error):
+        raise error
+
+    for parent, directories, files in os.walk(
+        root, followlinks=False, onerror=unreadable
+    ):
+        for name in directories + files:
+            path = Path(parent) / name
+            if name == ".git":
+                _build_directory(path)
+                for redirect in (
+                    "commondir", "gitdir", "objects/info/alternates",
+                    "objects/info/http-alternates",
+                ):
+                    control = path / redirect
+                    if control.exists() or control.is_symlink():
+                        raise ValueError(f"Build input redirects Git metadata: {control}")
+            if path.is_symlink() and (
+                Path(os.readlink(path)).anchor
+                or not path.resolve().is_relative_to(root)
+            ):
+                raise ValueError(f"Build input contains an escaping symlink: {path}")
+
+
+def _walk_build_subpath(root, relative):
+    """Validate a relative traversal and its literal link targets.
+
+    Inspect only the requested traversal, including link chains. Reject a link
+    or parent step that leaves custody even if later steps would reenter it.
+    Full-tree link validation belongs to publication and backend acquisition.
+    """
+    from collections import deque
+
+    if relative.anchor:
+        raise ValueError("Build input subpath must be relative")
+    path = root
+    pending = deque(relative.parts)
+    links = 0
+    try:
+        while pending:
+            part = pending.popleft()
+            if part == "..":
+                path = path.parent
+                if not path.is_relative_to(root):
+                    raise ValueError(f"Build input subpath escapes its root: {relative}")
+                continue
+            path = path / part
+            if not path.is_relative_to(root):
+                raise ValueError(f"Build input subpath escapes its root: {relative}")
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                text = os.readlink(path)
+                destination = Path(text)
+                links += 1
+                if destination.anchor or links > 40:
+                    raise ValueError(f"Build input contains an escaping symlink: {path}")
+                path = path.parent
+                # Path.parts discards trailing separators and '.', which would
+                # incorrectly accept a link to 'ordinary-file/.' or 'file/'.
+                if os.altsep:
+                    text = text.replace(os.altsep, os.sep)
+                pending.extendleft(reversed([
+                    component or "." for component in text.split(os.sep)
+                ]))
+            elif (pending or part == ".") and not stat.S_ISDIR(mode):
+                raise ValueError(f"Build input subpath is unavailable: {root / relative}")
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise ValueError(f"Build input subpath is unavailable: {root / relative}") from error
+    return path
+
+
+def _build_subpath(root, relative):
+    """Keep native file-access selection within the lexical owning root.
+
+    POSIX follows each link before '..'. Ordinary Win32 paths normalize parent
+    components before following reparse points. Do not install a POSIX-emulated
+    package when Windows file access selected a different one. Inspect native
+    prefixes too, so a cancelled escaping link is still rejected conservatively.
+    """
+    if os.name != "nt":
+        return _walk_build_subpath(root, relative)
+    if relative.anchor:
+        raise ValueError("Build input subpath must be relative")
+    raw = selected = root
+    try:
+        for index, part in enumerate(relative.parts):
+            raw = raw / part
+            if raw.is_symlink():
+                # The parent uses native selection; literal target traversal
+                # still rejects anchored/escaping links and file slash/dot.
+                parent = selected
+                if not parent.is_relative_to(root):
+                    raise ValueError(f"Build input subpath escapes its root: {relative}")
+                selected = _walk_build_subpath(
+                    root, parent.relative_to(root) / raw.name
+                )
+                # Do not open a handle to the reparse point merely to validate
+                # a cancelled prefix. Windows can deny GetFinalPathName on a
+                # sealed directory link even when child file access works.
+            else:
+                selected = raw.resolve(strict=True)
+            if not selected.is_relative_to(root):
+                raise ValueError(f"Build input subpath escapes its root: {relative}")
+            if index + 1 < len(relative.parts) and not selected.is_dir():
+                raise ValueError(f"Build input subpath is unavailable: {root / relative}")
+        selected = raw.resolve(strict=True)  # Native selection of the full request.
+        if not selected.is_relative_to(root):
+            raise ValueError(f"Build input subpath escapes its root: {relative}")
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise ValueError(f"Build input subpath is unavailable: {root / relative}") from error
+    return selected
+
+
+def _build_target_state(target, data):
+    """Classify only attributable old partials; never adopt arbitrary residue."""
+    _build_directory(target)
+    actual = _build_metadata(target)
+    if _build_key(actual) != _build_key(data):
+        raise ValueError(f"Build input provenance changed; retained {target}")
+    _build_directory(target / ".git")
+    if actual.get("immutable") is False and actual.get("buildInput") is True:
+        if actual.get("buildViewVersion", 1) != 1:
+            raise ValueError(f"Unsupported build input format; retained {target}")
+        if not target.stat().st_mode & 0o200:
+            raise ValueError(f"Build input is not writable; retained {target}")
+        return "complete"
+    if actual.get("immutable") is True and "buildInput" not in actual:
+        # The old direct copy could leave the source marker in a partial tree.
+        # It is not completion evidence or permission to delete its contents.
+        return "partial"
+    raise ValueError(f"Incomplete or unowned build input; retained {target}")
+
+
+def _build_ignore(directory, names):
+    """Sockets/FIFOs are runtime endpoints, not build content. Never open them."""
+    ignored = []
+    for name in names:
+        path = Path(directory) / name
+        mode = path.lstat().st_mode
+        if stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode):
+            ignored.append(name)
+        elif not (
+            stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)
+        ):
+            raise ValueError(f"Unsupported special file in build input: {path}")
+    return ignored
+
+
+def _publish_build(root, target, data, relative, partial_identity):
+    staging = Path(tempfile.mkdtemp(prefix=".build-", dir=target.parent))
+    info = staging.stat()
+    identity = (info.st_dev, info.st_ino)
+    stage = staging / "checkout"
+    failure = None
+    try:
+        _build_links(root)
+        shutil.copytree(root, stage, symlinks=True, ignore=_build_ignore)
+        # Top-down traversal restores directory access before visiting children.
+        for parent, directories, files in os.walk(stage, followlinks=False):
+            directory = Path(parent)
+            directory.chmod(stat.S_IMODE(directory.stat().st_mode) | 0o700)
+            for name in files:
+                path = directory / name
+                if not path.is_symlink():
+                    path.chmod(stat.S_IMODE(path.stat().st_mode) | 0o200)
+        _build_links(stage)  # Relative containment must survive relocation too.
+        _build_subpath(stage, relative)
+        atomic(
+            stage / ".amplifier_cache_meta.json",
+            {**data, "immutable": False, "buildInput": True, "buildViewVersion": 1},
+        )
+        if partial_identity is not None:
+            current = target.lstat()
+            if (current.st_dev, current.st_ino) != partial_identity:
+                raise ValueError(f"Build recovery ownership changed; retained {target}")
+            # Preserve all old contents, including unknown additions. This is
+            # recovery, not garbage collection; consumers own eventual removal.
+            quarantine = Path(
+                tempfile.mkdtemp(prefix=f".{target.name}.incomplete-", dir=target.parent)
+            )
+            retained = quarantine / "checkout"
+            mode = stat.S_IMODE(current.st_mode)
+            # Moving a directory between parents can require write access to
+            # the directory itself. Restore its exact mode at either location.
+            target.chmod(mode | 0o700)
+            try:
+                target.rename(retained)
+            except BaseException as error:
+                try:
+                    target.chmod(mode)
+                except BaseException as restore:
+                    error.add_note(f"Build recovery mode restore failed: {restore!r}")
+                raise
+            retained.chmod(mode)
+        elif target.exists() or target.is_symlink():
+            raise ValueError(f"Build publication target appeared; retained {target}")
+        stage.rename(target)  # Completion metadata and writable modes already final.
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        try:
+            _remove_owned_stage(staging, identity)
+        except BaseException as error:
+            if failure is None:
+                raise
+            failure.add_note(f"Build cleanup failed; inspect {staging}: {error!r}")
+
+
 def build_view(source):
     """A stable writable build input; immutable checkout remains untouched.
 
@@ -453,47 +692,123 @@ def build_view(source):
     uv's wheel cache reuses artifacts; no editable package is shared by hosts.
     """
     original = Path(source)
-    source = original.resolve()
-    for root in (source, *source.parents):
+    # Inspect lexical ancestors before resolving the requested subpath, so an
+    # escaping module symlink cannot silently bypass its immutable parent.
+    source = original if original.is_absolute() else Path.cwd() / original
+    ancestors = (source, *source.parents)
+    roots = [
+        root for root in ancestors
+        if root.parent.parent.name == "objects"
+        and re.fullmatch(r"[a-f0-9]{64}", root.parent.name)
+        and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", root.name)
+    ]
+    if not roots and any(
+        root.parent.parent.name == "objects"
+        and re.fullmatch(r"[a-f0-9]{64}", root.parent.name)
+        and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", root.name)
+        for root in (source.resolve(), *source.resolve().parents)
+    ):
+        raise ValueError("Build input aliases managed source storage")
+    # The outer owning object wins over content that mimics a store layout.
+    for root in roots[-1:] or ancestors:
         marker = root / ".amplifier_cache_meta.json"
-        if not marker.is_file() or not (root / ".git").is_dir():
+        if not roots and not marker.exists() and not marker.is_symlink():
             continue
-        data = json.loads(marker.read_text())
-        if not data.get("immutable"):
+        data = _build_metadata(root)
+        if data.get("immutable") is not True:
+            if roots:
+                raise ValueError(f"Immutable build input metadata changed: {root}")
             return original, False
+        _build_directory(root / ".git")
+        key = _build_key(data)
         store = root.parent.parent.parent
-        target = store / "builds" / source_id(data["git_url"], data["commit"])
+        if (
+            root != root.resolve()
+            or root.parent.parent.name != "objects"
+            or root.parent.name != source_id(data["git_url"], "")
+            or root.name != data["commit"]
+        ):
+            raise ValueError("Immutable build input is outside its owned source store")
+        relative = _build_subpath(root, source.relative_to(root)).relative_to(root)
+        target = store / "builds" / key
         from filelock import FileLock
 
         target.parent.mkdir(parents=True, exist_ok=True)
+        _build_directory(target.parent)
+        if Path(str(target) + ".lock").is_symlink():
+            raise ValueError("Build input lock must not be a symlink")
         with FileLock(str(target) + ".lock"):
-            if not target.exists():
-                shutil.copytree(root, target, symlinks=True)
-                for path in (target, *target.rglob("*")):
-                    if not path.is_symlink():
-                        path.chmod(stat.S_IMODE(path.stat().st_mode) | 0o200)
-                atomic(
-                    target / ".amplifier_cache_meta.json",
-                    {**data, "immutable": False, "buildInput": True},
-                )
-        return target / source.relative_to(root), True
+            partial_identity = None
+            if target.exists() or target.is_symlink():
+                state = _build_target_state(target, data)
+                if state == "complete":
+                    return _build_subpath(target, relative), True
+                info = target.lstat()
+                partial_identity = (info.st_dev, info.st_ino)
+            _publish_build(root, target, data, relative, partial_identity)
+            return _build_subpath(target, relative), True
     return original, False
+
+
+class _BuildLock(FileLock):
+    """Retain FileLock's identity while validating only under backend custody."""
+
+    def __init__(self, root, relative):
+        super().__init__(str(root) + ".lock")
+        self.root = root
+        self.relative = relative
+
+    def acquire(self, *args, **kwargs):
+        acquired = super().acquire(*args, **kwargs)
+        try:
+            data = _build_metadata(self.root)
+            if (
+                self.root != self.root.resolve()
+                or self.root.name != _build_key(data)
+                or _build_target_state(self.root, data) != "complete"
+            ):
+                raise ValueError(f"Invalid build input; retained {self.root}")
+            # One full validation per acquisition, not per sibling lookup.
+            # Even reentrant user code may have mutated the writable tree.
+            # No validation result survives backend code or lock release.
+            _build_links(self.root)
+            _build_subpath(self.root, self.relative)
+        except BaseException:
+            self.release()
+            raise
+        return acquired
 
 
 def build_lock(source):
     """A build backend may write metadata; serialize all users of its view."""
     from contextlib import nullcontext
 
-    from filelock import FileLock
-
-    source = Path(source).resolve()
-    for root in (source, *source.parents):
+    source = Path(source)
+    source = source if source.is_absolute() else Path.cwd() / source
+    ancestors = (source, *source.parents)
+    # A nested package marker must not mask the canonical build root's lock.
+    roots = [
+        root for root in ancestors
+        if root.parent.name == "builds" and re.fullmatch(r"[a-f0-9]{64}", root.name)
+    ]
+    if not roots and any(
+        root.parent.name == "builds" and re.fullmatch(r"[a-f0-9]{64}", root.name)
+        for root in (source.resolve(), *source.resolve().parents)
+    ):
+        raise ValueError("Build input aliases managed build storage")
+    if roots:
+        root = roots[-1]
+        _build_directory(root.parent)
+        if root.parent != root.parent.resolve():
+            raise ValueError("Build storage must not be redirected")
+        if Path(str(root) + ".lock").is_symlink():
+            raise ValueError("Build input lock must not be a symlink")
+        return _BuildLock(root, relative=source.relative_to(root))
+    for root in ancestors:
         marker = root / ".amplifier_cache_meta.json"
-        if marker.is_file() and (root / ".git").is_dir():
-            data = json.loads(marker.read_text())
-            return (
-                FileLock(str(root) + ".lock")
-                if data.get("buildInput")
-                else nullcontext()
-            )
+        if marker.exists() or marker.is_symlink():
+            data = _build_metadata(root)
+            if data.get("buildInput"):
+                raise ValueError(f"Invalid build input; retained {root}")
+            return nullcontext()
     return nullcontext()
