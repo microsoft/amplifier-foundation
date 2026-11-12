@@ -658,7 +658,10 @@ def test_real_resolve_symlink_then_parent_selects_same_package_and_backend(
     unselected = "b" if os.name == "nt" else "a"
     (repo / unselected / "missing").mkdir()
     (repo / unselected / "missing/sentinel").write_text("must not select this")
-    symlink(repo / "a/link", "../b/sub", target_is_directory=True)
+    # Windows stores link target text literally; forward slashes can create a
+    # reparse point that lstat recognizes but traversal rejects with EINVAL.
+    symlink(repo / "a/link", str(Path("..") / "b/sub"), target_is_directory=True)
+    assert (repo / "a/link/.keep").read_text() == "tracked directory"
     git(repo, "add", ".")
     git(repo, "commit", "-m", "distinguishable packages and contained alias")
     revision = git(repo, "rev-parse", "HEAD")
