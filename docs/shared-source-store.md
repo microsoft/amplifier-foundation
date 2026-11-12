@@ -88,6 +88,26 @@ compatible after the same validation; generated backend files are expected, so
 reuse does not require a clean Git tree. `build_lock()` rejects damaged or
 incomplete build views instead of silently returning an unlocked context.
 
+Ownership is found from the uncollapsed input spelling; requested subpaths are
+then traversed component by component, following relative links before `..`.
+For example, `a/link -> ../b/sub` makes `a/link/../pkg` select `b/pkg`, not
+`a/pkg`. Absolute/escaping link traversals, missing components and non-directory
+intermediate components fail instead of falling back to a different package.
+The backend lock resolves its requested path after acquiring custody, not while
+another backend may still be changing links.
+
+Reuse is a completion/provenance and requested-path check, not permission to run
+a backend without `build_lock()`. Publication validates the full source and
+relocated stage. Each backend lock acquisition validates the whole writable
+view once under custody, including accumulated generated files; reuse does not
+repeat that scan for each sibling module. The existing dependency batch
+deduplicates repository lock identities, so M sibling lookups over N entries
+need one full backend scan plus path-depth work per lookup, not M full scans.
+There is no process-global validation cache, mtime shortcut or validation receipt
+reused after backend code or release. Separate acquisitions (including reentrant
+acquisitions after user code could mutate the tree) require fresh validation.
+The ordinary context-entry path does not perform duplicate validation.
+
 An old direct-copy failure can leave matching immutable source metadata in a
 partial build target. Under the same lock, recovery prepares a fresh completed
 view, then moves the attributable old directory into a unique

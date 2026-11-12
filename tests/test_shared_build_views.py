@@ -3,6 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,10 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import threading
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from filelock import FileLock, Timeout
@@ -612,3 +616,319 @@ def test_all_lock_acquisition_forms_validate_and_release_on_failure(source, usag
     assert not lock.is_locked
     with FileLock(str(target) + ".lock", timeout=0):
         pass
+
+
+def baseline_build_views():
+    """Optional exact pre-correction source, supplied by the evidence runner."""
+    path = os.environ.get("AMPLIFIER_BUILD_VIEW_BASELINE")
+    if not path:
+        return None
+    spec = importlib.util.spec_from_file_location(
+        "amplifier_foundation.sources.baseline_build_views", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def retain_measurement(tmp_path, name, data):
+    folder = Path(os.environ.get("AMPLIFIER_TEST_ARTIFACTS", tmp_path))
+    (folder / name).write_text(json.dumps(data, indent=2))
+
+
+@pytest.mark.parametrize("relative_input", [False, True])
+def test_real_resolve_symlink_then_parent_selects_same_package_and_backend(
+    tmp_path, monkeypatch, relative_input
+):
+    repo = tmp_path / "selection-repository"
+    repo.mkdir()
+    git(repo, "init", "-b", "main")
+    git(repo, "config", "user.name", "Fixture")
+    git(repo, "config", "user.email", "fixture@example.invalid")
+    for name in ("a", "b"):
+        package = repo / name / "pkg"
+        package.mkdir(parents=True)
+        (package / "pyproject.toml").write_text(
+            f'[project]\nname="package-{name}"\nversion="1"\n'
+        )
+    (repo / "b/sub").mkdir()
+    (repo / "b/sub/.keep").write_text("tracked directory")
+    (repo / "a/missing").mkdir()
+    (repo / "a/missing/sentinel").write_text("must not select this")
+    symlink(repo / "a/link", "../b/sub", target_is_directory=True)
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "distinguishable packages and contained alias")
+    revision = git(repo, "rev-parse", "HEAD")
+    store = shared.SharedSourceStore(tmp_path / "store")
+    cache = tmp_path / "generation/cache"
+    monkeypatch.setenv("AMPLIFIER_SOURCE_STORE", str(store.root))
+
+    async def resolve():
+        await store.bind(cache, URL, "main", revision, existing=repo)
+        return await shared.resolve_shared_source(
+            "git+" + URL + "@main#subdirectory=a/link/../pkg", cache
+        )
+
+    result = asyncio.run(resolve())
+    root = result.source_root
+    assert result.active_path.resolve() == root / "b/pkg"
+    assert "package-b" in (result.active_path / "pyproject.toml").read_text()
+    before = snapshot(root)
+    selected = result.active_path
+    if relative_input:
+        monkeypatch.chdir(tmp_path)
+        selected = selected.relative_to(tmp_path)
+    build, immutable = shared.build_view(selected)
+    target = target_for(root)
+    assert immutable and build == target / "b/pkg"
+    assert "package-b" in (build / "pyproject.toml").read_text()
+    assert shared.build_view(selected) == (build, True)
+    with pytest.raises(ValueError, match="subpath"):
+        shared.build_view(root / "a/link/../missing")
+    with pytest.raises(ValueError, match="subpath"):
+        with shared.build_lock(target / "a/link/../missing"):
+            pytest.fail("missing B cannot select existing A")
+    with pytest.raises(ValueError, match="subpath"):
+        asyncio.run(shared.resolve_shared_source(
+            "git+" + URL + "@main#subdirectory=a/link/../missing", cache
+        ))
+    # Direct backend path validation follows the same non-normalized traversal.
+    alias = target / "a/link/../pkg"
+    with shared.build_lock(alias) as lock:
+        assert lock.lock_file == str(target) + ".lock"
+        assert lock.relative == Path("a/link/../pkg")
+        assert shared._build_subpath(target, lock.relative) == build
+    baseline = baseline_build_views()
+    negative = None
+    if baseline is not None:
+        wrong, _ = baseline.build_view(selected)
+        assert wrong == target / "a/pkg"
+        assert "package-a" in (wrong / "pyproject.toml").read_text()
+        negative = {"selected": "a/pkg", "package": "package-a"}
+    assert snapshot(root) == before
+    retain_measurement(tmp_path, f"foundation1292-selection-{relative_input}.json", {
+        "requested": "a/link/../pkg", "link": "../b/sub",
+        "relative_input": relative_input, "resolved": "b/pkg",
+        "candidate_build": "b/pkg", "candidate_package": "package-b",
+        "baseline_b124": negative, "immutable_snapshot_unchanged": True,
+    })
+
+
+@pytest.mark.parametrize("modules,outputs", [(1, 0), (4, 64), (16, 256)])
+def test_sibling_reuse_work_is_not_full_tree_per_module(
+    source, tmp_path, monkeypatch, modules, outputs
+):
+    root, _ = source
+    siblings = [root / f"module-{index}" for index in range(modules)]
+    root.chmod(0o700)
+    for sibling in siblings:
+        sibling.mkdir()
+        (sibling / "pyproject.toml").write_text(
+            f"[project]\nname='{sibling.name}'\nversion='1'\n"
+        )
+    root.chmod(0o555)
+    shared.build_view(siblings[0])
+    target = target_for(root)
+    with shared.build_lock(target):
+        generated = target / "backend-output"
+        generated.mkdir()
+        for index in range(outputs):
+            (generated / f"output-{index}").write_text("accumulated backend output")
+    before = snapshot(root)
+    original_walk = os.walk
+    counts = {"walks": 0, "entries": 0}
+
+    def walk(path, *args, **kwargs):
+        observed = path == target
+        if observed:
+            counts["walks"] += 1
+        for item in original_walk(path, *args, **kwargs):
+            if observed:
+                counts["entries"] += len(item[1]) + len(item[2])
+            yield item
+
+    monkeypatch.setattr(os, "walk", walk)
+
+    def batch(api):
+        counts.update(walks=0, entries=0)
+        views = [api.build_view(path)[0] for path in siblings]
+        locks = {}
+        for path in views:
+            lock = api.build_lock(path)
+            locks.setdefault(lock.lock_file, lock)
+        assert len(locks) == 1
+        for lock in locks.values():
+            with lock:
+                pass
+        return dict(counts)
+
+    baseline = baseline_build_views()
+    negative = batch(baseline) if baseline is not None else None
+    candidate = batch(shared)
+    assert candidate["walks"] == 1
+    if negative is not None:
+        assert negative["walks"] == modules + 1
+        assert negative["entries"] == candidate["entries"] * (modules + 1)
+    # Exercise the production batch integration, replacing only installer I/O.
+    from amplifier_foundation.modules.batch import DependencyBatch
+
+    counts.update(walks=0, entries=0)
+    installer = Mock()
+    monkeypatch.setattr(subprocess, "run", installer)
+    owner = SimpleNamespace(
+        refresh_dependencies=True, install_python=sys.executable,
+        install_constraints=None, install_overrides=None,
+        _needs_python_install=lambda p: True,
+        _install_state=SimpleNamespace(mark_installed=Mock()), finalize=Mock(),
+    )
+    actual = DependencyBatch()
+    for sibling in siblings:
+        actual.add(owner, sibling)
+    asyncio.run(actual.install())
+    actual_counts = dict(counts)
+    assert installer.call_count == 1 and actual_counts == candidate
+    assert all(str(target / sibling.name) in installer.call_args.args[0] for sibling in siblings)
+    counts.update(walks=0, entries=0)
+    lock = shared.build_lock(target)
+    with lock:
+        assert counts["walks"] == 1  # Context entry does not double-validate.
+        for _ in range(modules):
+            with lock:
+                pass
+        assert counts["walks"] == modules + 1
+    with lock:
+        pass
+    assert counts["walks"] == modules + 2  # No validation cache survives release.
+    assert snapshot(root) == before
+    retain_measurement(tmp_path, f"foundation1292-work-{modules}-{outputs}.json", {
+        "sibling_modules": modules, "backend_output_files": outputs,
+        "operation": "materialize/reuse each sibling, deduplicate lock_file, acquire backend once",
+        "candidate": candidate, "actual_DependencyBatch": actual_counts,
+        "baseline_b124": negative,
+        "walks_per_acquisition": 1, "reentrant_acquisitions_revalidate": True,
+        "timing_gate": None, "immutable_snapshot_unchanged": True,
+    })
+
+
+@pytest.mark.parametrize("damage", ["escape", "git-redirect", "provenance", "partial"])
+def test_backend_reacquisition_revalidates_mutations_after_release(source, tmp_path, damage):
+    root, module = source
+    build, _ = shared.build_view(module)
+    target = target_for(root)
+    lock = shared.build_lock(build)
+    with lock:
+        if damage == "escape":
+            symlink(build / "escape", tmp_path, target_is_directory=True)
+        elif damage == "git-redirect":
+            (target / ".git/commondir").write_text(str(tmp_path))
+        else:
+            marker = target / ".amplifier_cache_meta.json"
+            data = json.loads(marker.read_text())
+            data.update({"commit": "f" * 40} if damage == "provenance" else {"buildInput": False})
+            marker.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        with lock:
+            pytest.fail("previous custody cannot authorize a mutated tree")
+    assert not lock.is_locked
+
+
+def test_subpath_file_parent_is_not_a_directory(source):
+    root, module = source
+    with pytest.raises(ValueError, match="subpath"):
+        shared.build_view(module / "regular.sock/../pyproject.toml")
+
+
+def test_escaping_traversal_then_parent_cannot_be_collapsed_to_safe_path(source, tmp_path):
+    root, module = source
+    outside = tmp_path / "external"
+    outside.mkdir()
+    add_link(root, "escape", str(outside))
+    before = snapshot(root)
+    with pytest.raises(ValueError, match="escaping symlink"):
+        shared.build_view(module / "escape/../regular.sock")
+    assert snapshot(root) == before
+
+
+def test_reentrant_mutation_is_not_hidden_by_uninterrupted_lock(source, tmp_path):
+    root, module = source
+    build, _ = shared.build_view(module)
+    lock = shared.build_lock(build)
+    with lock:
+        symlink(build / "escape", tmp_path, target_is_directory=True)
+        with pytest.raises(ValueError, match="escaping symlink"):
+            with lock:
+                pytest.fail("reentrant code may mutate the tree too")
+        assert lock.is_locked  # Failed nested acquire releases only its level.
+        (build / "escape").unlink()
+    assert not lock.is_locked
+
+
+@pytest.mark.parametrize("damage", ["escape", "git-redirect"])
+def test_cheap_sibling_reuse_does_not_authorize_mutated_backend_tree(
+    source, tmp_path, damage
+):
+    root, module = source
+    build, _ = shared.build_view(module)
+    target = target_for(root)
+    unrelated = target / "backend-generated/unrelated"
+    unrelated.mkdir(parents=True)
+    with shared.build_lock(build):
+        if damage == "escape":
+            symlink(unrelated / "escape", tmp_path, target_is_directory=True)
+        else:
+            control = unrelated / ".git"
+            control.mkdir()
+            (control / "commondir").write_text(str(tmp_path))
+    before = snapshot(root)
+    # Metadata/subpath reuse intentionally does not walk unrelated output.
+    assert shared.build_view(module) == (build, True)
+    with pytest.raises(ValueError, match="escaping symlink|redirects Git metadata"):
+        with shared.build_lock(build):
+            pytest.fail("lookup is not backend authorization")
+    assert snapshot(root) == before
+
+
+def test_external_alias_cannot_bypass_managed_input_or_backend_lock(source, tmp_path):
+    root, module = source
+    alias = tmp_path / "module-alias"
+    symlink(alias, module, target_is_directory=True)
+    with pytest.raises(ValueError, match="aliases managed"):
+        shared.build_view(alias)
+    build, _ = shared.build_view(module)
+    backend_alias = tmp_path / "backend-alias"
+    symlink(backend_alias, build, target_is_directory=True)
+    with pytest.raises(ValueError, match="aliases managed"):
+        shared.build_lock(backend_alias)
+
+
+@pytest.mark.parametrize("text", ["regular.sock/.", "regular.sock/"])
+def test_symlink_target_retains_required_directory_semantics(source, text):
+    root, module = source
+    add_link(root, "needs-directory", text)
+    before = snapshot(root)
+    assert not (module / "needs-directory").exists()
+    with pytest.raises(ValueError, match="subpath"):
+        shared.build_view(module / "needs-directory")
+    assert snapshot(root) == before
+    build, _ = shared.build_view(module)
+    with pytest.raises(ValueError, match="subpath"):
+        with shared.build_lock(build / "needs-directory"):
+            pytest.fail("file slash or dot is not a valid selected package")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows rooted link syntax")
+def test_windows_rooted_link_cannot_reset_managed_subpath(source, tmp_path):
+    root, module = source
+    build, _ = shared.build_view(module)
+    target = target_for(root)
+    # A drive-less rooted target is anchored but is_absolute() is false.
+    text = str(tmp_path)[len(tmp_path.drive):]
+    assert Path(text).anchor and not Path(text).is_absolute()
+    add_link(root, "rooted", text)
+    symlink(build / "rooted", text, target_is_directory=True)
+    with pytest.raises(ValueError, match="escaping symlink"):
+        shared.build_view(module / "rooted")
+    with pytest.raises(ValueError, match="escaping symlink"):
+        with shared.build_lock(build / "rooted"):
+            pytest.fail("rooted target must never reach backend")
+    assert target.is_dir()

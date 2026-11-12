@@ -494,16 +494,56 @@ def _build_links(root):
                     if control.exists() or control.is_symlink():
                         raise ValueError(f"Build input redirects Git metadata: {control}")
             if path.is_symlink() and (
-                Path(os.readlink(path)).is_absolute()
+                Path(os.readlink(path)).anchor
                 or not path.resolve().is_relative_to(root)
             ):
                 raise ValueError(f"Build input contains an escaping symlink: {path}")
 
 
 def _build_subpath(root, relative):
-    path = root / relative
-    if not path.resolve().is_relative_to(root) or not path.exists():
-        raise ValueError(f"Build input subpath is unavailable: {path}")
+    """Select the filesystem path, never normalize '..' before following links.
+
+    Inspect only the requested traversal, including link chains. Reject a link
+    or parent step that leaves custody even if later steps would reenter it.
+    Full-tree link validation belongs to publication and backend acquisition.
+    """
+    from collections import deque
+
+    if relative.anchor:
+        raise ValueError("Build input subpath must be relative")
+    path = root
+    pending = deque(relative.parts)
+    links = 0
+    try:
+        while pending:
+            part = pending.popleft()
+            if part == "..":
+                path = path.parent
+                if not path.is_relative_to(root):
+                    raise ValueError(f"Build input subpath escapes its root: {relative}")
+                continue
+            path = path / part
+            if not path.is_relative_to(root):
+                raise ValueError(f"Build input subpath escapes its root: {relative}")
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                text = os.readlink(path)
+                destination = Path(text)
+                links += 1
+                if destination.anchor or links > 40:
+                    raise ValueError(f"Build input contains an escaping symlink: {path}")
+                path = path.parent
+                # Path.parts discards trailing separators and '.', which would
+                # incorrectly accept a link to 'ordinary-file/.' or 'file/'.
+                if os.altsep:
+                    text = text.replace(os.altsep, os.sep)
+                pending.extendleft(reversed([
+                    component or "." for component in text.split(os.sep)
+                ]))
+            elif (pending or part == ".") and not stat.S_ISDIR(mode):
+                raise ValueError(f"Build input subpath is unavailable: {root / relative}")
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise ValueError(f"Build input subpath is unavailable: {root / relative}") from error
     return path
 
 
@@ -519,7 +559,6 @@ def _build_target_state(target, data):
             raise ValueError(f"Unsupported build input format; retained {target}")
         if not target.stat().st_mode & 0o200:
             raise ValueError(f"Build input is not writable; retained {target}")
-        _build_links(target)
         return "complete"
     if actual.get("immutable") is True and "buildInput" not in actual:
         # The old direct copy could leave the source marker in a partial tree.
@@ -613,7 +652,7 @@ def build_view(source):
     original = Path(source)
     # Inspect lexical ancestors before resolving the requested subpath, so an
     # escaping module symlink cannot silently bypass its immutable parent.
-    source = Path(os.path.abspath(original))
+    source = original if original.is_absolute() else Path.cwd() / original
     ancestors = (source, *source.parents)
     roots = [
         root for root in ancestors
@@ -621,6 +660,13 @@ def build_view(source):
         and re.fullmatch(r"[a-f0-9]{64}", root.parent.name)
         and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", root.name)
     ]
+    if not roots and any(
+        root.parent.parent.name == "objects"
+        and re.fullmatch(r"[a-f0-9]{64}", root.parent.name)
+        and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", root.name)
+        for root in (source.resolve(), *source.resolve().parents)
+    ):
+        raise ValueError("Build input aliases managed source storage")
     # The outer owning object wins over content that mimics a store layout.
     for root in roots[-1:] or ancestors:
         marker = root / ".amplifier_cache_meta.json"
@@ -641,8 +687,7 @@ def build_view(source):
             or root.name != data["commit"]
         ):
             raise ValueError("Immutable build input is outside its owned source store")
-        relative = source.relative_to(root)
-        _build_subpath(root, relative)
+        relative = _build_subpath(root, source.relative_to(root)).relative_to(root)
         target = store / "builds" / key
         from filelock import FileLock
 
@@ -681,6 +726,10 @@ class _BuildLock(FileLock):
                 or _build_target_state(self.root, data) != "complete"
             ):
                 raise ValueError(f"Invalid build input; retained {self.root}")
+            # One full validation per acquisition, not per sibling lookup.
+            # Even reentrant user code may have mutated the writable tree.
+            # No validation result survives backend code or lock release.
+            _build_links(self.root)
             _build_subpath(self.root, self.relative)
         except BaseException:
             self.release()
@@ -692,13 +741,19 @@ def build_lock(source):
     """A build backend may write metadata; serialize all users of its view."""
     from contextlib import nullcontext
 
-    source = Path(os.path.abspath(source))
+    source = Path(source)
+    source = source if source.is_absolute() else Path.cwd() / source
     ancestors = (source, *source.parents)
     # A nested package marker must not mask the canonical build root's lock.
     roots = [
         root for root in ancestors
         if root.parent.name == "builds" and re.fullmatch(r"[a-f0-9]{64}", root.name)
     ]
+    if not roots and any(
+        root.parent.name == "builds" and re.fullmatch(r"[a-f0-9]{64}", root.name)
+        for root in (source.resolve(), *source.resolve().parents)
+    ):
+        raise ValueError("Build input aliases managed build storage")
     if roots:
         root = roots[-1]
         _build_directory(root.parent)
