@@ -500,8 +500,8 @@ def _build_links(root):
                 raise ValueError(f"Build input contains an escaping symlink: {path}")
 
 
-def _build_subpath(root, relative):
-    """Select the filesystem path, never normalize '..' before following links.
+def _walk_build_subpath(root, relative):
+    """Validate a relative traversal and its literal link targets.
 
     Inspect only the requested traversal, including link chains. Reject a link
     or parent step that leaves custody even if later steps would reenter it.
@@ -545,6 +545,39 @@ def _build_subpath(root, relative):
     except (FileNotFoundError, NotADirectoryError) as error:
         raise ValueError(f"Build input subpath is unavailable: {root / relative}") from error
     return path
+
+
+def _build_subpath(root, relative):
+    """Keep native file-access selection within the lexical owning root.
+
+    POSIX follows each link before '..'. Ordinary Win32 paths normalize parent
+    components before following reparse points. Do not install a POSIX-emulated
+    package when Windows file access selected a different one. Inspect native
+    prefixes too, so a cancelled escaping link is still rejected conservatively.
+    """
+    if os.name != "nt":
+        return _walk_build_subpath(root, relative)
+    if relative.anchor:
+        raise ValueError("Build input subpath must be relative")
+    raw = selected = root
+    try:
+        for index, part in enumerate(relative.parts):
+            raw = raw / part
+            if raw.is_symlink():
+                # The parent uses native selection; literal target traversal
+                # still rejects anchored/escaping links and file slash/dot.
+                parent = raw.parent.resolve(strict=True)
+                if not parent.is_relative_to(root):
+                    raise ValueError(f"Build input subpath escapes its root: {relative}")
+                _walk_build_subpath(root, parent.relative_to(root) / raw.name)
+            selected = raw.resolve(strict=True)
+            if not selected.is_relative_to(root):
+                raise ValueError(f"Build input subpath escapes its root: {relative}")
+            if index + 1 < len(relative.parts) and not selected.is_dir():
+                raise ValueError(f"Build input subpath is unavailable: {root / relative}")
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise ValueError(f"Build input subpath is unavailable: {root / relative}") from error
+    return selected
 
 
 def _build_target_state(target, data):

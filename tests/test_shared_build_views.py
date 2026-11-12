@@ -634,6 +634,7 @@ def baseline_build_views():
 def retain_measurement(tmp_path, name, data):
     folder = Path(os.environ.get("AMPLIFIER_TEST_ARTIFACTS", tmp_path))
     (folder / name).write_text(json.dumps(data, indent=2))
+    print(name, json.dumps(data, sort_keys=True))
 
 
 @pytest.mark.parametrize("relative_input", [False, True])
@@ -653,8 +654,10 @@ def test_real_resolve_symlink_then_parent_selects_same_package_and_backend(
         )
     (repo / "b/sub").mkdir()
     (repo / "b/sub/.keep").write_text("tracked directory")
-    (repo / "a/missing").mkdir()
-    (repo / "a/missing/sentinel").write_text("must not select this")
+    expected = "a" if os.name == "nt" else "b"
+    unselected = "b" if os.name == "nt" else "a"
+    (repo / unselected / "missing").mkdir()
+    (repo / unselected / "missing/sentinel").write_text("must not select this")
     symlink(repo / "a/link", "../b/sub", target_is_directory=True)
     git(repo, "add", ".")
     git(repo, "commit", "-m", "distinguishable packages and contained alias")
@@ -671,8 +674,39 @@ def test_real_resolve_symlink_then_parent_selects_same_package_and_backend(
 
     result = asyncio.run(resolve())
     root = result.source_root
-    assert result.active_path.resolve() == root / "b/pkg"
-    assert "package-b" in (result.active_path / "pyproject.toml").read_text()
+    links = {}
+    for label, base in (("repository", repo), ("published", root)):
+        link = base / "a/link"
+        info = link.lstat()
+        links[label] = {
+            "mode": info.st_mode, "is_symlink": link.is_symlink(),
+            "reparse_tag": getattr(info, "st_reparse_tag", None),
+            "target": os.readlink(link) if link.is_symlink() else None,
+        }
+        assert link.is_symlink(), links
+        assert os.readlink(link).replace("\\", "/") == "../b/sub"
+        assert (link / ".keep").read_text() == "tracked directory"
+    config = subprocess.run(
+        ["git", "config", "--get", "core.symlinks"], cwd=repo,
+        text=True, capture_output=True, check=False,
+    )
+    native = result.active_path.resolve(strict=True)
+    access = result.active_path / "pyproject.toml"
+    direct_name = "package-a" if "package-a" in access.read_text() else "package-b"
+    identity = {
+        name: access.samefile(root / name / "pkg/pyproject.toml")
+        for name in ("a", "b")
+    }
+    observation = {
+        "os_name": os.name, "python": sys.version, "links": links,
+        "core_symlinks": config.stdout.strip() if config.returncode == 0 else "unset",
+        "git_index_mode": git(repo, "ls-files", "--stage", "a/link").split()[0],
+        "native_resolved": native.relative_to(root).as_posix(),
+        "direct_access_package": direct_name, "direct_samefile": identity,
+    }
+    print("native-selection-observation", json.dumps(observation, sort_keys=True))
+    assert native == root / expected / "pkg", observation
+    assert direct_name == f"package-{expected}" and identity[expected], observation
     before = snapshot(root)
     selected = result.active_path
     if relative_input:
@@ -680,14 +714,14 @@ def test_real_resolve_symlink_then_parent_selects_same_package_and_backend(
         selected = selected.relative_to(tmp_path)
     build, immutable = shared.build_view(selected)
     target = target_for(root)
-    assert immutable and build == target / "b/pkg"
-    assert "package-b" in (build / "pyproject.toml").read_text()
+    assert immutable and build == target / expected / "pkg"
+    assert f"package-{expected}" in (build / "pyproject.toml").read_text()
     assert shared.build_view(selected) == (build, True)
     with pytest.raises(ValueError, match="subpath"):
         shared.build_view(root / "a/link/../missing")
     with pytest.raises(ValueError, match="subpath"):
         with shared.build_lock(target / "a/link/../missing"):
-            pytest.fail("missing B cannot select existing A")
+            pytest.fail("missing native selection cannot use the other existing package")
     with pytest.raises(ValueError, match="subpath"):
         asyncio.run(shared.resolve_shared_source(
             "git+" + URL + "@main#subdirectory=a/link/../missing", cache
@@ -704,12 +738,16 @@ def test_real_resolve_symlink_then_parent_selects_same_package_and_backend(
         wrong, _ = baseline.build_view(selected)
         assert wrong == target / "a/pkg"
         assert "package-a" in (wrong / "pyproject.toml").read_text()
-        negative = {"selected": "a/pkg", "package": "package-a"}
+        negative = {
+            "selected": "a/pkg", "package": "package-a",
+            "wrong_on_this_platform": os.name != "nt",
+        }
     assert snapshot(root) == before
     retain_measurement(tmp_path, f"foundation1292-selection-{relative_input}.json", {
         "requested": "a/link/../pkg", "link": "../b/sub",
-        "relative_input": relative_input, "resolved": "b/pkg",
-        "candidate_build": "b/pkg", "candidate_package": "package-b",
+        "relative_input": relative_input, "resolved": f"{expected}/pkg",
+        "candidate_build": f"{expected}/pkg", "candidate_package": f"package-{expected}",
+        "native_observation": observation,
         "baseline_b124": negative, "immutable_snapshot_unchanged": True,
     })
 

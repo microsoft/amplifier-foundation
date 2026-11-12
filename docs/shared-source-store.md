@@ -88,10 +88,14 @@ compatible after the same validation; generated backend files are expected, so
 reuse does not require a clean Git tree. `build_lock()` rejects damaged or
 incomplete build views instead of silently returning an unlocked context.
 
-Ownership is found from the uncollapsed input spelling; requested subpaths are
-then traversed component by component, following relative links before `..`.
-For example, `a/link -> ../b/sub` makes `a/link/../pkg` select `b/pkg`, not
-`a/pkg`. Absolute/escaping link traversals, missing components and non-directory
+Ownership is found from the uncollapsed input spelling; requested subpaths keep
+native file-access semantics. On POSIX, `a/link -> ../b/sub` makes
+`a/link/../pkg` select `b/pkg`, not `a/pkg`. Ordinary Win32 paths normalize parent
+components before reparse-point traversal and select `a/pkg`; the build must
+agree with direct file access there rather than emulate POSIX selection.
+Native prefixes and literal link targets are still guarded before returning a
+contained selection. Absolute/escaping link traversals (even cancelled by a
+later parent step), missing components and non-directory
 intermediate components fail instead of falling back to a different package.
 The backend lock resolves its requested path after acquiring custody, not while
 another backend may still be changing links.

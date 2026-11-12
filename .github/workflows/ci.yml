@@ -56,7 +56,7 @@ jobs:
           uname -m
           id -u
           git rev-parse HEAD
-          shasum -a 256 uv.lock amplifier_foundation/sources/shared.py
+          shasum -a 256 uv.lock amplifier_foundation/sources/shared.py tests/test_shared_build_views.py
           uv sync --locked
           uv run --no-sync python --version
       - name: Old-source contract discriminator (expected failure, not native reproduction)
@@ -79,8 +79,8 @@ jobs:
           test "$result" -eq 1
           grep -E '^>[[:space:]]+assert path.stat\(\).st_mode & stat.S_IWUSR$' "$RUNNER_TEMP/old-source-result.txt"
           grep -E '^E[[:space:]]+AssertionError:' "$RUNNER_TEMP/old-source-result.txt"
-      - name: Source publication and native rename controls
-        run: uv run --no-sync pytest tests/test_shared_sources.py tests/test_gap_rmtree_readonly.py -q --tb=short -rA
+      - name: Source publication, build views and native rename controls
+        run: uv run --no-sync pytest tests/test_shared_sources.py tests/test_shared_build_views.py tests/test_gap_rmtree_readonly.py -q --tb=short -rA
       - name: Install exact wheel and check outside the source tree
         shell: bash
         run: |
@@ -89,7 +89,7 @@ jobs:
           shasum -a 256 dist/*.whl
           uv pip install --python .venv/bin/python --reinstall --no-deps dist/*.whl
           mkdir -p "$RUNNER_TEMP/shared-source-installed"
-          cp tests/test_shared_sources.py tests/test_gap_rmtree_readonly.py "$RUNNER_TEMP/shared-source-installed/"
+          cp tests/test_shared_sources.py tests/test_shared_build_views.py tests/test_gap_rmtree_readonly.py "$RUNNER_TEMP/shared-source-installed/"
           cd "$RUNNER_TEMP/shared-source-installed"
           "$GITHUB_WORKSPACE/.venv/bin/python" -I -c "from pathlib import Path; import amplifier_foundation as f; p = Path(f.__file__).resolve(); print(p); assert 'site-packages' in p.parts"
           "$GITHUB_WORKSPACE/.venv/bin/python" -I -m pytest . --import-mode=importlib -o asyncio_mode=strict -o asyncio_default_fixture_loop_scope=function -q --tb=short -rA
