@@ -12,6 +12,8 @@ import platform
 import re
 import subprocess
 import time
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +29,33 @@ from amplifier_foundation.sources._rmtree import rmtree_robust
 from amplifier_foundation.sources.protocol import SourceStatus
 
 logger = logging.getLogger(__name__)
+
+# A finite host can own Git outside a disposable caller process. The scoped
+# runner receives the exact invocation and must settle its processes before
+# returning or raising. Ordinary Foundation consumers keep the local runner.
+GitSubprocessRunner = Callable[
+    [list[str], Path | None, float], subprocess.CompletedProcess[str]
+]
+_git_subprocess_runner: ContextVar[GitSubprocessRunner | None] = ContextVar(
+    "git_subprocess_runner", default=None
+)
+
+
+@contextlib.contextmanager
+def git_subprocess_runner(runner: GitSubprocessRunner) -> Iterator[None]:
+    """Delegate finite Git execution to its host's lifetime owner.
+
+    The runner must preserve stdout/stderr and command errors, enforce the
+    supplied timeout, and finish cleanup before returning. Cleanup failures must
+    remain distinct from CalledProcessError/GitCloneTimeoutError so clone retry
+    or cache removal cannot hide unconfirmed writer custody. Context propagation
+    follows Python's normal rules (including asyncio.to_thread).
+    """
+    token = _git_subprocess_runner.set(runner)
+    try:
+        yield
+    finally:
+        _git_subprocess_runner.reset(token)
 
 # Metadata file name for tracking cache info
 CACHE_METADATA_FILE = ".amplifier_cache_meta.json"
@@ -268,6 +297,9 @@ def _run_git_subprocess(
     A bare ``subprocess.run(..., timeout=...)`` only kills the direct child on
     expiry, which is not sufficient here: see ``_kill_process_tree``.
     """
+    runner = _git_subprocess_runner.get()
+    if runner is not None:
+        return runner(args, cwd, timeout_s)
     creationflags = 0
     start_new_session = False
     if platform.system() == "Windows":
