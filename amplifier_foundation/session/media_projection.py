@@ -82,6 +82,19 @@ def _policy_value(store: Any) -> Any:
     return _json_value(policy)
 
 
+def _effective_options(options: Any, request: ChatRequest, model: Any) -> Any:
+    """Equivalent explicit defaults normalize; changed wire options never do."""
+    value = _json_value(options)
+    if type(value) is dict:
+        value = dict(value)
+        selected_model = model if model is not None else request.model
+        if "model" in value and value["model"] == selected_model:
+            del value["model"]
+        if "reasoning_effort" in value and value["reasoning_effort"] == request.reasoning_effort:
+            del value["reasoning_effort"]
+    return value
+
+
 def _expired(ref: dict[str, Any]) -> bool:
     expiry = ref["provenance"]["expires_at"]
     if expiry is None:
@@ -215,6 +228,13 @@ class PreparedMediaRequestV1:
         self._binding_digest = self._current_binding_digest()
         self._released = False
         self._unregistered = False
+        self._binding_validator = None
+
+    def set_binding_validator(self, validator: Any) -> None:
+        """Host-only live selected-provider gate, never canonical metadata."""
+        if self._released or not callable(validator):
+            _refuse("invalid live media binding validator")
+        self._binding_validator = validator
 
     def _current_binding_digest(self) -> str:
         return _digest({
@@ -243,9 +263,14 @@ class PreparedMediaRequestV1:
     def validate(self, *, request_options: Any = _UNSET) -> dict[str, bool]:
         if self._released:
             _refuse("media preparation is released")
+        if self._binding_validator is not None:
+            if self._binding_validator() is not True:
+                _refuse("live selected-provider binding changed")
         if self._current_binding_digest() != self._binding_digest:
             _refuse("media preparation binding changed")
-        if request_options is not _UNSET and _digest(request_options) != _digest(self._request_options):
+        if request_options is not _UNSET and _digest(
+            _effective_options(request_options, self._request, self._model)
+        ) != _digest(_effective_options(self._request_options, self._request, self._model)):
             _refuse("media request options changed")
         if _digest(self._canonical) != self._canonical_digest:
             _refuse("canonical media request changed")
@@ -265,6 +290,8 @@ class PreparedMediaRequestV1:
                 continue  # The same unavailable source warning was fitted.
             if not allowed or state == "source_policy":
                 _refuse("media source policy changed after preparation")
+            if state == "unsupported":
+                continue  # This route must not hydrate even for inspection.
             data = _read_asset(self._store, ref)
             if (data is None) != (state == "missing"):
                 _refuse("media asset availability changed after preparation")
@@ -293,6 +320,7 @@ class PreparedMediaRequestV1:
             # must not traverse that graph or retain the canonical conversation.
             self._request.messages = []
             self._assets.clear()
+            self._binding_validator = None
             self._canonical = None  # type: ignore[assignment]
             self._store.unregister_prepared(self)
             self._unregistered = True
@@ -349,9 +377,12 @@ async def prepare_media_request(
                 store.verify_checkpoint(ref)
                 expired = _expired(ref)
                 allowed = False if expired else _source_allowed(store, ref)
-                data = _read_asset(store, ref) if allowed else None
+                supported = _can_hydrate(provider_identity, execution_scope, message.role)
+                # Unsupported positions/nested/text-only never read pixels.
+                data = _read_asset(store, ref) if allowed and supported else None
                 state = (
                     "expired" if expired else "source_policy" if not allowed
+                    else "unsupported" if not supported
                     else "missing" if data is None else "available"
                 )
                 assets.append((ref, state))
@@ -360,7 +391,7 @@ async def prepare_media_request(
                     block = _warning("session image expired")
                 elif not allowed:
                     block = _warning("source owner does not permit this session image")
-                elif not _can_hydrate(provider_identity, execution_scope, message.role):
+                elif not supported:
                     block = _warning("provider or execution scope does not support this image position")
                 elif data is None:
                     block = _warning("session image bytes are missing")

@@ -109,7 +109,7 @@ class PlainProvider:
 
 
 class Provider(PlainProvider):
-    def get_media_support(self, model):
+    def get_media_request_support(self, *, model, request_options=None):
         return {"v": 1, "positions": ["user", "tool"]}
 
     def request_budget(self, projected, *, context_estimate, request_options=None):
@@ -252,7 +252,7 @@ class MediaProviderTests(unittest.IsolatedAsyncioTestCase):
         prepared = self.capability.prepared[-1]
         self.assertEqual(
             prepared.binding["provider_identity"]["media_support"],
-            self.provider.get_media_support("fixture"),
+            self.provider.get_media_request_support(model="fixture"),
         )
         self.wrapper.close()
 
@@ -498,7 +498,7 @@ class MediaProviderTests(unittest.IsolatedAsyncioTestCase):
         for name in ("request_budget", "refit_request", "stream", "compact_context"):
             self.assertFalse(hasattr(plain, name), name)
             self.assertTrue(callable(getattr(self.wrapper, name, None)), name)
-        self.assertFalse(hasattr(plain, "get_media_support"))
+        self.assertFalse(hasattr(plain, "get_media_request_support"))
         self.assertNotIn("__getattr__", MediaPreparedProvider.__dict__)
 
     async def test_noncallable_optional_attributes_are_not_exposed(self):

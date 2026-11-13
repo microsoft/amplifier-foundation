@@ -9,7 +9,6 @@ import asyncio
 import base64
 import binascii
 import copy
-import dataclasses
 import hashlib
 import io
 import json
@@ -263,6 +262,7 @@ class SessionMediaStore:
         self.epoch, self._closed = 0, False
         self._lock = threading.RLock()
         self._prepared: dict[int, Any] = {}
+        self._checkpoints: dict[str, Any] = {}
         self._root = _root_descriptor(self.root)
         self._dirs: dict[str, int] = {}
         self._ownership: int | None = None
@@ -606,37 +606,56 @@ class SessionMediaStore:
         self._check()
         if self.checkpoint_verifier is None:
             raise MediaRefusal("host has no durable checkpoint verifier")
-        refs = list(self.checkpoint_verifier(receipt))
-        serialized = dataclasses.asdict(receipt) if dataclasses.is_dataclass(receipt) else receipt
-        if hasattr(serialized, "model_dump"):
-            serialized = serialized.model_dump(mode="json")
+        # Local checkpoint authority stays in memory. Its seal/HMAC/private path
+        # must never be serialized or reconstructed from a journal.
+        serialized = receipt.verify() if callable(getattr(receipt, "verify", None)) else receipt
         serialized = json.loads(_json(serialized))
-        with self._lock:
-            for ref in refs:
+        if isinstance(serialized, dict) and serialized.get("session_id", self.session_id) != self.session_id:
+            raise MediaRefusal("checkpoint belongs to a different canonical session")
+        checkpoint_key = _key(serialized)
+        count = 0
+        # Disk spool bounds memory by one ref and exhausts the source verifier
+        # BEFORE any acceptance is bound (its final checks may still refuse).
+        with self._lock, tempfile.TemporaryFile(mode="w+b") as pending:
+            for ref in self.checkpoint_verifier(receipt):
                 self.validate_ref(ref, committed=False, check_expiry=False)
                 record = self._read(self._dirs["records"], _key(ref) + ".json")
                 if record["state"] not in {"published", "committed"}:
                     raise MediaRefusal("checkpoint references unpublished media")
-                # ACK verifies retained bytes, not renewed delivery consent/TTL.
-                # Already-committed expired refs may retain text after pixel cleanup.
+                if record["retention"] != "durable":
+                    raise MediaRefusal("request-only observation cannot become durable")
                 expiry = ref["provenance"]["expires_at"]
                 expired = expiry is not None and _date(expiry) <= datetime.now(timezone.utc)
-                if record["state"] == "committed" and expired:
-                    continue
-                with self._open_verified(ref, self._dirs["assets"], ref["sha256"]):
-                    pass
-            for ref in refs:
+                metadata_only = record.get("metadata_only") is True
+                if metadata_only and not expired:
+                    raise MediaRefusal("metadata-only adoption requires expired original")
+                if not ((record["state"] == "committed" or metadata_only) and expired):
+                    with self._open_verified(ref, self._dirs["assets"], ref["sha256"]):
+                        pass
+                pending.write(_json(ref) + b"\n")
+                count += 1
+            pending.seek(0)
+            for line in pending:
+                ref = json.loads(line)
                 record = self._read(self._dirs["records"], _key(ref) + ".json")
                 record.update(state="committed", checkpoint=serialized)
                 self._write(self._dirs["records"], _key(ref) + ".json", record)
+            self._checkpoints = {checkpoint_key: receipt}
         return {"state": "committed", "durability": "legacy-checkpoint-backed",
-                "refs": copy.deepcopy(refs)}
+                "ref_count": count}
 
     def verify_checkpoint(self, ref: dict) -> None:
         record = self._read(self._dirs["records"], _key(ref) + ".json")
         if not record or record["state"] != "committed" or self.checkpoint_verifier is None:
             raise MediaRefusal("no verified canonical media checkpoint")
-        if ref not in self.checkpoint_verifier(record["checkpoint"]):
+        receipt = self._checkpoints.get(_key(record["checkpoint"]))
+        if receipt is None:
+            raise MediaRefusal("resumed host must acknowledge current canonical source")
+        # Exhaust source-verifying iterators, even after finding the wanted ref.
+        found = False
+        for accepted in self.checkpoint_verifier(receipt):
+            found = found or _json(ref) == _json(accepted)
+        if not found:
             raise MediaRefusal("media is no longer in verified canonical prefix")
 
     async def adopt(self, refs: list, source_store: SessionMediaStore) -> list:
@@ -651,7 +670,7 @@ class SessionMediaStore:
         adopted = []
         grouped: dict[str, list] = {}
         for ref in refs:
-            source_store.validate_ref(ref)
+            source_store.validate_ref(ref, check_expiry=False)
             grouped.setdefault(_key(ref["provenance"]), []).append(ref)
         for group in grouped.values():
             origin = group[0]["provenance"]
@@ -659,8 +678,22 @@ class SessionMediaStore:
             with self._lock:
                 target_refs = []
                 for ref in group:
-                    with source_store.resolve_ref(ref) as stream:
-                        replacement = self._stage(stream, origin, self.policy)
+                    expiry = origin["expires_at"]
+                    if expiry is not None and _date(expiry) <= datetime.now(timezone.utc):
+                        replacement = {**copy.deepcopy(ref), "session_id": self.session_id}
+                        name = _key(replacement) + ".json"
+                        previous = self._read(self._dirs["records"], name)
+                        if previous is None:
+                            self._write(self._dirs["records"], name, {
+                                "v": 1, "ref": replacement, "state": "published",
+                                "staging": None, "retention": "durable", "checkpoint": None,
+                                "intended_owner": self.session_id, "metadata_only": True,
+                                "source_acceptance": {"session_id": source_store.session_id,
+                                                      "ref_key": _key(ref)},
+                            })
+                    else:
+                        with source_store.resolve_ref(ref) as stream:
+                            replacement = self._stage(stream, origin, self.policy)
                     target_refs.append(replacement)
                 key = _key({k: origin[k] for k in ("kind", "session_id", "id")})
                 prior = self._read(self._dirs["origins"], key + ".json")
@@ -675,7 +708,7 @@ class SessionMediaStore:
                 adopted.extend(target_refs)
         return adopted
 
-    def import_verified(self, ref: dict, stream: BinaryIO, *, receipt: Any,
+    def import_verified(self, ref: dict, stream: BinaryIO | None, *, receipt: Any,
                         verifier: Callable[..., Any]) -> dict:
         """Host-only package adoption; integrity is not import authority.
 
@@ -691,7 +724,22 @@ class SessionMediaStore:
             raise MediaRefusal("package owner did not authorize exact media import")
         expires = original["provenance"]["expires_at"]
         if expires is not None and _date(expires) <= datetime.now(timezone.utc):
-            raise MediaRefusal("expired image cannot be imported as fresh", code="expired")
+            if stream is not None:
+                raise MediaRefusal("expired import must be metadata-only", code="expired")
+            target = {**original, "session_id": self.session_id}
+            with self._lock:
+                name = _key(target) + ".json"
+                if self._read(self._dirs["records"], name) is None:
+                    self._write(self._dirs["records"], name, {
+                        "v": 1, "ref": target, "state": "published", "staging": None,
+                        "retention": "durable", "checkpoint": None, "metadata_only": True,
+                        "intended_owner": self.session_id,
+                        "source_acceptance": {"session_id": original["session_id"],
+                                              "ref_key": _key(original), "kind": "host-verified-package"},
+                    })
+            return target
+        if stream is None:
+            raise MediaRefusal("unexpired import requires verified original bytes")
         with self._lock:
             target = self._stage(stream, original["provenance"], self.policy)
             if target != {**original, "session_id": self.session_id}:
@@ -702,6 +750,8 @@ class SessionMediaStore:
     def _publish_adopted(self, refs: list) -> None:
         for ref in refs:
             record = self._read(self._dirs["records"], _key(ref) + ".json")
+            if record.get("metadata_only") is True:
+                continue
             with self._open_verified(ref, self._dirs["staging"], record["staging"]) as source:
                 try:
                     fd = os.open(ref["sha256"], os.O_WRONLY | os.O_CREAT | os.O_EXCL |
@@ -776,7 +826,7 @@ class SessionMediaCapability:
         return await self._store.publish(refs, origin=origin, disposition=disposition)
 
     def validate(self, value, *, purpose, request_options=None):
-        if purpose in {"count", "transport"}:
+        if purpose in {"count", "transport", "provider-count", "provider-send"}:
             prepared = self._store._prepared.get(id(value))
             if prepared is None or prepared.request is not value:
                 raise MediaRefusal("unknown private media projection")
@@ -833,6 +883,11 @@ def bind_session_media(coordinator: Any, *, store: SessionMediaStore,
                 raise MediaRefusal("no trusted current-task tool call identity")
             return {"kind": "tool", "session_id": store.session_id, "id": call_id}
         store.origin_resolver = current_origin
+    if store.nested_verifier is None:
+        def verify_nested(parent_origin, ref):
+            verifier = coordinator.get_capability("session.media.nested_verifier")
+            return callable(verifier) and verifier(parent_origin, ref) is True
+        store.nested_verifier = verify_nested
     capability = SessionMediaCapability(store, enabled=enabled)
     coordinator.register_capability(MEDIA_NAMESPACE, capability)
     return capability

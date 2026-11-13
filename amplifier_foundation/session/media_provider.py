@@ -63,7 +63,7 @@ class MediaPreparedProvider:
 
     ``provider_identity`` is a JSON mapping (or a zero-argument getter for live
     account/generation identity). Media support always comes from the actual
-    provider's synchronous ``get_media_support(model)``, or is empty if absent.
+    provider's ``get_media_request_support(model=..., request_options=...)``.
     ``model`` may likewise be a zero-argument getter.
 
     The host must call ``close``/``aclose`` on session teardown. They release this
@@ -104,9 +104,9 @@ class MediaPreparedProvider:
         ):
             if callable(getattr(provider, name, None)):
                 setattr(self, name, implementation)
-        support = getattr(provider, "get_media_support", None)
+        support = getattr(provider, "get_media_request_support", None)
         if callable(support):
-            self.get_media_support = support
+            self.get_media_request_support = support
 
     @property
     def name(self) -> Any:
@@ -185,9 +185,10 @@ class MediaPreparedProvider:
         if not isinstance(identity, Mapping):
             raise ValueError("provider_identity must be a mapping")
         identity = copy.deepcopy(dict(identity))
-        support = getattr(self._provider, "get_media_support", None)
+        support = getattr(self._provider, "get_media_request_support", None)
         identity["media_support"] = (
-            support(model) if callable(support) else {"v": 1, "positions": []}
+            support(model=model, request_options=copy.deepcopy(options))
+            if callable(support) else {"v": 1, "positions": []}
         )
         key = tuple(
             _fingerprint(value)
@@ -227,6 +228,9 @@ class MediaPreparedProvider:
         candidate = _Candidate(request, key, prepared)
         self._active.append(prepared)
         try:
+            setter = getattr(prepared, "set_binding_validator", None)
+            if callable(setter):
+                setter(lambda: not self._closed and self._binding(request, options)[0] == key)
             if self._closed or self._binding(request, options)[0] != key:
                 raise ValueError("Media candidate changed during preparation")
             prepared.validate(request_options=options)

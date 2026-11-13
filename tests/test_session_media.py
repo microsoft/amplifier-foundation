@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -12,7 +13,7 @@ from unittest.mock import patch
 
 from PIL import Image
 from amplifier_core import ToolResult
-from amplifier_core.message_models import ImageBlock, TextBlock
+from amplifier_core.message_models import ChatRequest, Message, ImageBlock, TextBlock
 from amplifier_foundation.session.media import (
     MEDIA_NAMESPACE, MediaPolicy, MediaRefusal, SessionMediaStore,
     bind_session_media, validate_blob_ref,
@@ -279,6 +280,152 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             target.acknowledge_checkpoint({"refs": adopted})
             with target.resolve_ref(adopted[0]) as stream:
                 self.assertEqual(stream.read(), self.data)
+        finally:
+            target.close()
+
+    async def test_real_checkpoint_receipt_is_private_and_resume_requires_fresh_ack(self):
+        from amplifier_foundation.session.checkpoint import (
+            acknowledge_legacy_checkpoint, verified_checkpoint_refs,
+        )
+        ref = await self.stage()
+        await self.store.publish([ref], origin=self.origin, disposition="retain")
+        messages = [{"role": "tool", "content": "image",
+                     "metadata": {MEDIA_NAMESPACE: {"refs": [ref]}}}]
+        session_dir = Path(self.directory.name) / "canonical"
+        session_dir.mkdir()
+        (session_dir / "transcript.jsonl").write_text(
+            "".join(json.dumps(message) + "\n" for message in messages))
+        receipt = acknowledge_legacy_checkpoint(session_dir, session_id="session1",
+                                                 expected_messages=messages)
+        self.store.checkpoint_verifier = verified_checkpoint_refs
+        self.store.acknowledge_checkpoint(receipt)
+        journal = json.dumps(list(self.store.journal()))
+        self.assertNotIn("_seal", journal)
+        self.assertNotIn("_attestation", journal)
+        self.assertNotIn(str(session_dir), journal)
+        with self.store.resolve_ref(ref) as stream:
+            self.assertEqual(stream.read(), self.data)
+        self.store.close()
+        self.store = SessionMediaStore(self.root, "session1", policy=self.policy,
+                                       checkpoint_verifier=verified_checkpoint_refs)
+        with self.assertRaises(MediaRefusal):
+            self.store.resolve_ref(ref)
+        fresh = acknowledge_legacy_checkpoint(session_dir, session_id="session1",
+                                               expected_messages=messages)
+        self.store.acknowledge_checkpoint(fresh)
+        with self.store.resolve_ref(ref):
+            pass
+        (session_dir / "transcript.jsonl").write_text('{"role":"tool","content":"changed"}\n')
+        with self.assertRaises(ValueError):
+            self.store.resolve_ref(ref)
+
+    async def test_checkpoint_verifier_exhausted_before_any_commit(self):
+        ref = await self.stage()
+        await self.store.publish([ref], origin=self.origin, disposition="retain")
+        def late_failure(_):
+            yield ref
+            raise MediaRefusal("source changed after yielded reference")
+        self.store.checkpoint_verifier = late_failure
+        with self.assertRaises(MediaRefusal):
+            self.store.acknowledge_checkpoint({"refs": [ref]})
+        records = [row for row in self.store.journal() if row.get("checkpoint")]
+        self.assertEqual(records, [])
+
+    async def test_host_source_policy_gate(self):
+        ref = await self.stage()
+        await self.commit(ref)
+        self.store.policy_verifier = lambda ref, purpose: False
+        with self.assertRaises(MediaRefusal) as cm:
+            self.store.resolve_ref(ref)
+        self.assertEqual(cm.exception.code, "source_policy")
+
+    async def test_import_requires_authorized_exact_ref_and_published_not_commit(self):
+        ref = await self.stage()
+        target = SessionMediaStore(Path(self.directory.name) / "import", "target",
+                                   policy=self.policy, checkpoint_verifier=lambda r: r["refs"])
+        try:
+            with self.assertRaises(MediaRefusal):
+                target.import_verified(ref, io.BytesIO(self.data), receipt={"package": 1},
+                                       verifier=lambda *args, **kwargs: False)
+            adopted = target.import_verified(ref, io.BytesIO(self.data), receipt={"package": 1},
+                                            verifier=lambda *args, **kwargs: True)
+            self.assertEqual(adopted["provenance"], ref["provenance"])
+            with self.assertRaises(MediaRefusal):
+                target.resolve_ref(adopted)
+            target.acknowledge_checkpoint({"refs": [adopted]})
+            with target.resolve_ref(adopted):
+                pass
+        finally:
+            target.close()
+
+    async def test_actual_private_projection_and_per_attempt_witness(self):
+        ref = await self.stage()
+        await self.commit(ref)
+        cap = bind_session_media(Coordinator(), store=self.store, enabled=True)
+        request = ChatRequest(model="vision-model", messages=[Message(
+            role="tool", tool_call_id="call1", content=[
+                TextBlock(text="before"), TextBlock(text=f"[Session image {ref['sha256']}]"),
+                TextBlock(text="after")],
+            metadata={MEDIA_NAMESPACE: {"refs": [ref]}, "opaque": {"signature": "keep"}},
+        )])
+        original = request.model_dump_json()
+        identity = {"provider": "fixture", "account": "test", "generation": "g1",
+                    "media_support": {"v": 1, "positions": ["tool"]}}
+        prepared = await cap.prepare_request(request, provider_identity=identity,
+            model="vision-model", request_options={}, purpose="model", execution_scope={})
+        try:
+            private = prepared.request
+            self.assertIsInstance(private.messages[0].content[1], ImageBlock)
+            self.assertEqual(base64.b64decode(private.messages[0].content[1].source["data"]), self.data)
+            self.assertEqual(request.model_dump_json(), original)
+            self.assertEqual(private.messages[0].metadata["opaque"], {"signature": "keep"})
+            self.assertTrue(cap.validate(private, purpose="count", request_options={})["valid"])
+            self.assertTrue(cap.validate(private, purpose="transport",
+                                          request_options={"model": "vision-model"})["valid"])
+            with self.assertRaises(MediaRefusal):
+                cap.validate(private, purpose="transport", request_options={"model": "other"})
+            identity["account"] = "changed"
+            with self.assertRaises(MediaRefusal):
+                cap.validate(private, purpose="transport", request_options={})
+        finally:
+            prepared.release()
+        self.assertEqual(private.messages, [])
+        self.assertEqual(request.model_dump_json(), original)
+
+    async def test_actual_unsupported_freezes_warning_before_count(self):
+        ref = await self.stage()
+        await self.commit(ref)
+        cap = bind_session_media(Coordinator(), store=self.store, enabled=True)
+        request = ChatRequest(messages=[Message(role="user", content="picture",
+            metadata={MEDIA_NAMESPACE: {"refs": [ref]}})])
+        prepared = await cap.prepare_request(request, provider_identity={
+            "provider": "text", "account": "test", "generation": "g1",
+            "media_support": {"v": 1, "positions": []}},
+            model="text", request_options={}, purpose="model", execution_scope={})
+        try:
+            self.assertTrue(all(not isinstance(b, ImageBlock)
+                                for b in prepared.request.messages[0].content))
+            self.assertIn("no pixels supplied", prepared.request.model_dump_json())
+            self.assertTrue(cap.validate(prepared.request, purpose="transport", request_options={})["valid"])
+        finally:
+            prepared.release()
+
+    async def test_expired_package_adopts_metadata_only(self):
+        origin = {**self.origin, "created_at": "2020-01-01T00:00:00+00:00",
+                  "expires_at": "2020-01-01T00:01:00+00:00"}
+        ref = await self.stage(origin=origin)
+        target = SessionMediaStore(Path(self.directory.name) / "expired", "target",
+                                   policy=self.policy, checkpoint_verifier=lambda r: r["refs"])
+        try:
+            accepted = target.import_verified(ref, None, receipt={"signed": True},
+                                              verifier=lambda *args, **kwargs: True)
+            self.assertEqual(accepted["provenance"], origin)
+            target.acknowledge_checkpoint({"refs": [accepted]})
+            self.assertEqual(list((target.root / "assets").iterdir()), [])
+            self.assertEqual(target.validate_ref(accepted, check_expiry=False), accepted)
+            with self.assertRaises(MediaRefusal) as cm:
+                target.resolve_ref(accepted)
+            self.assertEqual(cm.exception.code, "expired")
         finally:
             target.close()
 

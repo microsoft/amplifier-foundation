@@ -75,18 +75,61 @@ Canonical message carrier: `metadata["experimental.media.v1"] = {"refs": [...]}`
 Do not put references in ImageBlock.source or parse strings to discover them.
 
 `SessionMediaStore(root, session_id, *, policy, checkpoint_verifier=None,
-origin_resolver=None)` uses the explicit private media root, never cwd.
+origin_resolver=None, policy_verifier=None, nested_verifier=None)` uses the
+explicit private media root, never cwd. `MediaPolicy(max_bytes, max_pixels,
+max_images, retention="durable", ttl_seconds=None)` is frozen host policy.
+The store holds an exclusive POSIX lifetime writer lock; close abandoned session
+stores before rebinding. Text/ref readers import without Pillow or POSIX support;
+unqualified platforms refuse opening the durable store rather than claim parity.
 Host-only `acknowledge_checkpoint(receipt)` calls the injected synchronous
 verifier, which must verify a durable settled canonical prefix/source identity
 and return its exact references. The store checks those references were published.
 Preparation and transport reverify the receipt; `report` is never an ACK.
 This is legacy-checkpoint-backed, not a claim about transcript-v2 crash semantics.
-The checkpoint owner supplies its own immutable receipt class.
+The checkpoint owner supplies its own immutable receipt class. The actual
+`checkpoint.acknowledge_legacy_checkpoint(session_dir, *, session_id,
+expected_messages)` returns a local source-sealed receipt; inject
+`checkpoint.verified_checkpoint_refs` as verifier. Exhaust it before binding.
+Only `receipt.verify()` scalar proof is journaled; live receipt/seal/private path
+never persist. Resume must acknowledge the actual current saved source again,
+not reconstruct authority from the scalar proof. ACK returns a small
+`{state, durability, ref_count}` result; references are not materialized as a
+corpus-sized second list. Legacy checkpoint verification is O(history), with
+one row resident; this is not hot transcript-v2 bounded-append performance.
 
 Metadata-only staged/published journals remain enumerable for recovery. This
 component does not delete orphan assets or authorize retention cleanup.
 `adopt(refs, source_store)` is a host-only verified copy preserving original
 provenance and expiry; target publication precedes target canonical checkpoint.
+It is async and returns a list; synchronous `adopt_sync(refs, source_store)`
+implements the same mechanism without running an event loop. Expired accepted
+source refs adopt as metadata-only terminal observations, not refreshed pixels.
+`import_verified(ref, stream, *, receipt, verifier)` is host-only: its verifier
+must authorize the exact original ref/package/target, not just compare a supplied
+hash. It revalidates original bytes and preserves provenance. An already expired
+ref accepts `stream=None` only after that same host authorization; no bytes copied.
+Packages never supply media journals. Every target still requires canonical ACK.
+
+`validate_ref(ref, committed=True, check_expiry=False)` is the host identity-only
+path: it verifies schema, owner acceptance and checkpoint, never grants delivery.
+`resolve_ref(ref, committed=False)` is the narrow host staging/published readback;
+ordinary capability `resolve(..., purpose="model")` requires committed refs.
+The returned private file handle is a verified snapshot, not a mutable asset FD.
+
+The host's synchronous `policy_verifier(ref, *, purpose="model")` must return
+exactly True or refuse. It owns source-specific consent/Stop/binding checks;
+host adapters map known missing source-owner state to
+`MediaRefusal(code="source_policy")`. Initial source-unavailable becomes a fitted
+warning; available-to-denied after fit refuses. A screenshot producer additionally
+requires host `computer_use.media_policy` binding, not generic `cap.enabled` alone.
+Do not infer screenshot source class from a generic ref: hosts retain an original
+session/call source index and consult the actual owner's issuance validator.
+
+Nested refs keep their actual inner provenance. The host installs synchronous
+`nested_verifier(parent_origin, ref) -> True` only where the dispatch owner attests
+that exact surviving structured child output belongs to this outer operation.
+Absent attestation refuses; same-session possession is not a relationship.
+No report or extra method on the six-operation capability can create it.
 
 ## Private projection and provider witnesses
 
@@ -97,8 +140,10 @@ or explicit unavailable text **before** count. It returns a request-scoped
 `.validate(...)`; pixels and validation callbacks are never canonical metadata.
 
 Provider identity is JSON `{provider, account, generation, media_support}`.
-`media_support` is `{v:1, positions:[...]}` from the actual provider's
-`get_media_support(model)`; unknown support is an empty list. A provider must
+`media_support` is `{v:1, positions:[...], mime_types:[...]}` from the actual
+provider's synchronous
+`get_media_request_support(*, model, request_options=None)`;
+optional scalar reason/evidence is allowed. Unknown support is an empty list. A provider must
 actually qualify each claimed role/model. Nested/text-only scopes refuse hydration
 and freeze an unavailable warning. Malformed or forged refs fail, not fallback.
 
@@ -111,12 +156,30 @@ expiry, checkpoint and asset identity are rechecked. Hosts/providers must normal
 effective options consistently; transport-only flags cannot silently change a
 fitted candidate. The host may instead give the provider an equivalent bound
 `prepared.validate` callback through its explicit provider installation seam.
+`.validate(*, request_options=...)` distinguishes omission from explicit None.
+Equivalent redundant model/reasoning options matching the frozen request normalize;
+different options never do. Optional host-only `.set_binding_validator(callback)`
+rechecks live selected provider/account/model after awaits and retry backoff.
+All ref-bearing and text-only warning requests use a private association on a
+qualified path. Scope dictionaries with `nested: True` or `text_only: True` never
+read image bytes; they freeze unavailable text. Purpose is host-selected JSON,
+normally `model` or `context-compaction`. Provider purposes are `count`/`transport`
+(`provider-count`/`provider-send` aliases accepted).
 
 `MediaPreparedProvider` exposes optional operations only when its actual provider
 implements them; it does not spoof feature detection through `__getattr__`.
 Count and dispatch share one cached projection for the exact candidate/options.
 Replacement/refit/release closes the old projection; completion, error,
 cancellation, stream close and session close release request buffers.
+Import it from `amplifier_foundation.session.media_provider`.
+`MediaPreparedProvider(provider, capability, *, provider_identity, model=None,
+execution_scope=None)` accepts live zero-argument identity/model getters.
+Hosts mount each actual wrapped provider after initialization; existing host
+wrappers may use the same projector internally instead of stacking wrappers.
+Optional `media_budget_witness(canonical_request, *, request_options=None)` gives
+`{v:1, projection_digest, validated:True}` only for the exact cached candidate
+with a valid actual provider_count association, never text estimates or unavailable
+counts. No witness invents a numeric budget or inference success.
 Providers own per-attempt witness calls and final vendor encoding. Foundation
 never traverses vendor wire payloads. Known diagnostic image sources must be
 externalized by their owning adapter or omitted in a diagnostic copy **before**
