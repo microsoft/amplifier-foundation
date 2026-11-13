@@ -13,6 +13,42 @@ import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_MEDIA_NAMESPACE = "experimental.media.v1"
+
+
+def _media_json(value: Any, *, depth: int = 12) -> Any:
+    """Copy reserved media JSON exactly, including semantic nulls.
+
+    This is a serialization check, not ref ownership, format or policy admission.
+    Never coerce objects/paths/bytes into a resolvable-looking reference. A bad
+    reserved carrier refuses persistence rather than silently dropping fields.
+    """
+    import math
+
+    if depth <= 0:
+        raise ValueError("Canonical media metadata exceeds serialization depth")
+    if value is None or type(value) in (str, bool, int):
+        return value
+    if type(value) is float and math.isfinite(value):
+        return value
+    if type(value) is list:
+        return [_media_json(item, depth=depth - 1) for item in value]
+    if type(value) is dict and all(type(key) is str for key in value):
+        return {key: _media_json(item, depth=depth - 1)
+                for key, item in value.items()}
+    raise ValueError("Canonical media metadata must contain only finite JSON data")
+
+
+def _sanitize_carrier(value: dict[str, Any]) -> dict[str, Any]:
+    media = value[_MEDIA_NAMESPACE]
+    if (type(media) is not dict or set(media) != {"refs"}
+            or type(media["refs"]) is not list):
+        raise ValueError("Invalid canonical media metadata carrier")
+    # Preserve other namespaces' existing sanitization contract unchanged.
+    result = sanitize_for_json({key: item for key, item in value.items()
+                                if key != _MEDIA_NAMESPACE})
+    result[_MEDIA_NAMESPACE] = _media_json(media)
+    return result
 
 
 def sanitize_for_json(value: Any, *, max_depth: int = 50) -> Any:
@@ -118,6 +154,10 @@ def sanitize_message(message: dict[str, Any]) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
 
     for key, value in message.items():
+        if (key in ("metadata", "output") and isinstance(value, dict)
+                and _MEDIA_NAMESPACE in value):
+            sanitized[key] = _sanitize_carrier(value)
+            continue
         # Handle known problematic fields
         if key == "thinking_block":
             # Extract text from thinking block if available
