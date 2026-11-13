@@ -65,6 +65,14 @@ pause a live app, or delete originals, assets, staging, backups or recovery hold
   `source_store.validate_ref(ref, committed=True, check_expiry=False)`, never a
   pixel read or new retention grant. This already-materialized list API does
   not claim bounded huge-record memory.
+* `iter_verified_candidate_refs(operation_dir, installed=..., session_id=...,
+  asset_reader=...)` is the **bounded installed-body checkpoint enumeration**
+  seam for the owning checkpoint module. It verifies saved evidence, actual
+  installed primary exact hash/bytes, bounded record/ref/slot/binary closure,
+  yields one small ref at a time and rechecks installed identity/hash and saved
+  manifest after exhaustion. The checkpoint owner must fully exhaust before
+  binding a receipt. This helper is not an ACK/receipt constructor or authority,
+  does not use ordinary whole-record checkpoint readers and never enables T2.
 
 `selected_records` is a prefix selection, including zero. Selection precedes
 asset enumeration/adoption; suffix images are not included in **portable
