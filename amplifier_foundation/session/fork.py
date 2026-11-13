@@ -243,10 +243,14 @@ def fork_session(
             outcome = media_checkpoint(
                 sliced, session_id=session_id, session_dir=new_session_dir
             )
-            if inspect.isawaitable(outcome):
+            if outcome is not None:
                 if inspect.iscoroutine(outcome):
                     outcome.close()
-                raise ValueError("Media fork checkpoint callback must be synchronous")
+                if inspect.isgenerator(outcome):
+                    outcome.close()
+                raise ValueError(
+                    "Media fork checkpoint callback must be synchronous and return None"
+                )
 
         # Handle events.jsonl; Windows retains the reservation pins throughout.
         events_count = 0

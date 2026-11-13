@@ -144,3 +144,23 @@ def test_async_checkpoint_does_not_falsely_acknowledge(source):
     with pytest.raises(ValueError, match="must be synchronous"):
         fork_session(source, turn=1, include_events=False,
                      media_adopter=adopter, media_checkpoint=not_executed)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX media checkpoint qualification")
+@pytest.mark.parametrize("kind", ["generator", "async-generator", "mapping"])
+def test_lazy_or_non_none_checkpoint_does_not_falsely_acknowledge(source, kind):
+    def generator(*args, **kwargs):
+        raise AssertionError("No implicit generator execution")
+        yield
+
+    async def async_generator(*args, **kwargs):
+        raise AssertionError("No implicit async generator execution")
+        yield
+
+    callback = {
+        "generator": generator, "async-generator": async_generator,
+        "mapping": lambda *args, **kwargs: {"report": "not-an-ack"},
+    }[kind]
+    with pytest.raises(ValueError, match="return None"):
+        fork_session(source, turn=1, include_events=False,
+                     media_adopter=adopter, media_checkpoint=callback)
