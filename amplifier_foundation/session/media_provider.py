@@ -80,6 +80,7 @@ class MediaPreparedProvider:
         provider_identity: Any,
         model: Any = None,
         execution_scope: Any = None,
+        prepare_overlay: Any = None,
     ) -> None:
         if not callable(getattr(provider, "complete", None)):
             raise TypeError("Media provider requires a callable complete")
@@ -90,6 +91,7 @@ class MediaPreparedProvider:
         self._identity_source = provider_identity
         self._model_source = model
         self._scope = execution_scope
+        self._prepare_overlay = prepare_overlay
         self._candidate: _Candidate | None = None
         self._active: list[Any] = []
         self._streams: set[_MediaStream] = set()
@@ -190,9 +192,14 @@ class MediaPreparedProvider:
             support(model=model, request_options=copy.deepcopy(options))
             if callable(support) else {"v": 1, "positions": []}
         )
+        normalized_options = dict(options)
+        if normalized_options.get("model") == model:
+            normalized_options.pop("model", None)
+        if normalized_options.get("reasoning_effort") == getattr(request, "reasoning_effort", None):
+            normalized_options.pop("reasoning_effort", None)
         key = tuple(
             _fingerprint(value)
-            for value in (request, options, identity, model, self._scope)
+            for value in (request, normalized_options, identity, model, self._scope)
         )
         return key, identity, model
 
@@ -215,9 +222,25 @@ class MediaPreparedProvider:
             self._release(old)
             if dispatch and fitted:
                 raise ValueError("Fitted media candidate changed before dispatch")
+        projected_source = request
+        overlay_validator = None
+        if self._prepare_overlay is not None:
+            overlay = await _result(self._prepare_overlay(
+                copy.deepcopy(request), purpose=purpose,
+                request_options=copy.deepcopy(options),
+            ))
+            if not isinstance(overlay, Mapping) or set(overlay) != {"request", "validate"}:
+                raise ValueError("Host media overlay must return exact request/validate association")
+            if not callable(overlay["validate"]):
+                raise ValueError("Host media overlay requires synchronous admission validator")
+            projected_source, overlay_validator = overlay["request"], overlay["validate"]
+            if overlay_validator() is not True:
+                raise ValueError("Host media overlay admission refused")
+            if self._binding(request, options)[0] != key:
+                raise ValueError("Canonical request changed during host overlay")
         prepared = await _result(
             self._capability.prepare_request(
-                request,
+                projected_source,
                 provider_identity=identity,
                 model=model,
                 request_options=copy.deepcopy(options),
@@ -230,7 +253,10 @@ class MediaPreparedProvider:
         try:
             setter = getattr(prepared, "set_binding_validator", None)
             if callable(setter):
-                setter(lambda: not self._closed and self._binding(request, options)[0] == key)
+                setter(lambda: (
+                    not self._closed and self._binding(request, options)[0] == key
+                    and (overlay_validator is None or overlay_validator() is True)
+                ))
             if self._closed or self._binding(request, options)[0] != key:
                 raise ValueError("Media candidate changed during preparation")
             prepared.validate(request_options=options)
