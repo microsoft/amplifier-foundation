@@ -1705,7 +1705,10 @@ class TestChildUsesAppModuleResolver:
 
         import amplifier_foundation.subprocess_runner as runner_module
 
-        source = inspect.getsource(runner_module._run_child_session)
+        source = inspect.getsource(runner_module._execute_child_session)
+        assert "_execute_child_session(" in inspect.getsource(
+            runner_module._run_child_session
+        )
         assert "AppModuleResolver" in source, (
             "_run_child_session must use AppModuleResolver to wrap BundleModuleResolver "
             "so provider modules not in bundle paths can be resolved via settings fallback"
@@ -1721,7 +1724,7 @@ class TestChildUsesAppModuleResolver:
 
         import amplifier_foundation.subprocess_runner as runner_module
 
-        source = inspect.getsource(runner_module._run_child_session)
+        source = inspect.getsource(runner_module._execute_child_session)
         assert "create_foundation_resolver" in source, (
             "_run_child_session must call create_foundation_resolver() to get the settings-based "
             "fallback resolver so provider-anthropic etc. can be found"
@@ -1737,7 +1740,7 @@ class TestChildUsesAppModuleResolver:
 
         import amplifier_foundation.subprocess_runner as runner_module
 
-        source = inspect.getsource(runner_module._run_child_session)
+        source = inspect.getsource(runner_module._execute_child_session)
         assert "ImportError" in source, (
             "_run_child_session must catch ImportError when amplifier_app_cli is unavailable "
             "so non-CLI environments still work (bare BundleModuleResolver as fallback)"
@@ -1849,7 +1852,7 @@ class TestChildSessionAdditionalCapabilities:
 
         import amplifier_foundation.subprocess_runner as runner_module
 
-        source = inspect.getsource(runner_module._run_child_session)
+        source = inspect.getsource(runner_module._execute_child_session)
         assert "mention_resolver" in source, (
             "_run_child_session must register 'mention_resolver' capability "
             "when mention_mappings are present in the payload"

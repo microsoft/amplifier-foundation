@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -101,6 +102,115 @@ def _kill_subprocess_tree(pid: int) -> None:
 
 
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
+
+
+def _validate_media_config(media: Any, session_id: Any, parent_id: Any) -> None:
+    """Validate explicit host-owned media config; this route is text-only.
+
+    There is no canonical checkpoint in this runner. Producers cannot be enabled,
+    parent references cannot be adopted, and no callback or authority crosses IPC.
+    The host must create a private child directory before serialization. The store
+    also checks actual media paths through no-follow descriptors in the child.
+    """
+    if type(media) is not dict or set(media) != {
+        "v", "session_id", "session_directory", "policy"
+    }:
+        raise ValueError("Invalid subprocess media contract fields")
+    if type(media["v"]) is not int or media["v"] != 1:
+        raise ValueError("Unsupported subprocess media contract version")
+    if (
+        not isinstance(session_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,220}", session_id) is None
+        or session_id in {".", ".."}
+        or media["session_id"] != session_id
+        or session_id == parent_id
+    ):
+        raise ValueError("Subprocess media requires a distinct explicit child session")
+    location = media["session_directory"]
+    if not isinstance(location, str) or not location or "\x00" in location:
+        raise ValueError("Invalid subprocess media session directory")
+    directory = Path(location)
+    if (
+        not directory.is_absolute()
+        or ".." in directory.parts
+        or str(directory) != location
+        or directory.name != session_id
+    ):
+        raise ValueError("Subprocess media directory must match the child session")
+    try:
+        for part in (*reversed(directory.parents), directory):
+            info = part.lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise ValueError("Subprocess media directory must not follow links")
+        info = directory.lstat()
+        if os.name != "posix" or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError(
+                "Subprocess media requires an owner-private POSIX directory"
+            )
+    except OSError:
+        raise ValueError("Subprocess media session directory is unavailable") from None
+    policy = media["policy"]
+    required = {"max_bytes", "max_pixels", "max_images", "retention"}
+    if type(policy) is not dict or not required <= set(policy) or set(policy) - (
+        required | {"ttl_seconds"}
+    ):
+        raise ValueError("Invalid subprocess media policy fields")
+    for name in ("max_bytes", "max_pixels", "max_images"):
+        if type(policy[name]) is not int or policy[name] <= 0:
+            raise ValueError("Subprocess media limits must be positive integers")
+    if policy["retention"] != "drop":
+        raise ValueError("Subprocess media has no checkpoint; retention must be drop")
+    ttl = policy.get("ttl_seconds")
+    if ttl is not None and (
+        type(ttl) not in {int, float} or not math.isfinite(ttl) or ttl <= 0
+    ):
+        raise ValueError("Invalid subprocess media TTL")
+
+
+def _bind_child_media(session: Any, payload: dict[str, Any]) -> Any:
+    """Create fresh media state before initialize, never a parent's live object."""
+    media = payload.get("media")
+    if media is None:
+        return None
+    _validate_media_config(media, payload.get("session_id"), payload["parent_id"])
+    from amplifier_foundation.session.media import (
+        MediaPolicy,
+        SessionMediaStore,
+        bind_session_media,
+    )
+
+    store = SessionMediaStore(
+        Path(media["session_directory"]) / "media",
+        media["session_id"],
+        policy=MediaPolicy(**media["policy"]),
+    )
+    try:
+        capability = bind_session_media(session.coordinator, store=store, enabled=False)
+    except BaseException:
+        store.close()
+        raise
+    return store, capability
+
+
+async def _mount_child_media_providers(
+    session: Any, binding: Any, wrappers: list[Any]
+) -> None:
+    """Wrap actual mounts after initialize, without allowing image hydration."""
+    if binding is None:
+        return
+    from amplifier_foundation.session.media_provider import MediaPreparedProvider
+
+    _, capability = binding
+    providers = session.coordinator.get("providers") or {}
+    for name, provider in list(providers.items()):
+        wrapper = MediaPreparedProvider(
+            provider,
+            capability,
+            provider_identity={"session_id": capability.session_id, "provider": name},
+            execution_scope={"text_only": True},
+        )
+        wrappers.append(wrapper)
+        await session.coordinator.mount("providers", wrapper, name=name)
 
 # Environment variable allowlist — controls what the parent process passes to
 # child subprocesses.  Only variables matching an allowed prefix or exact name
@@ -323,6 +433,7 @@ def serialize_subprocess_config(
     bundle_package_paths: list[str] | None = None,
     sys_paths: list[str] | None = None,
     mention_mappings: dict[str, str] | None = None,
+    media: dict[str, Any] | None = None,
 ) -> str:
     """Serialize subprocess configuration to a JSON string.
 
@@ -349,6 +460,13 @@ def serialize_subprocess_config(
         mention_mappings: Optional mapping of bundle namespace to base path
             for @mention resolution in the child session. Defaults to empty
             dict when None.
+        media: Explicit opt-in ``{v: 1, session_id, session_directory, policy}``.
+            The directory must already be owner-private and named for this child.
+            Policy supplies positive max_bytes/max_pixels/max_images and
+            retention="drop" (optional ttl_seconds). Without a canonical
+            checkpoint, producers stay disabled and requests are text-only.
+            No parent references, pixels, callbacks or authority may be passed.
+            Omission preserves the legacy payload exactly.
 
     Returns:
         JSON string containing all fields.
@@ -366,6 +484,9 @@ def serialize_subprocess_config(
         "sys_paths": sys_paths if sys_paths is not None else [],
         "mention_mappings": mention_mappings if mention_mappings is not None else {},
     }
+    if media is not None:
+        _validate_media_config(media, session_id, parent_id)
+        payload["media"] = media
     return json.dumps(payload)
 
 
@@ -398,6 +519,10 @@ def deserialize_subprocess_config(data: str) -> dict[str, Any]:
     payload.setdefault("bundle_package_paths", [])
     payload.setdefault("sys_paths", [])
     payload.setdefault("mention_mappings", {})
+    if "media" in payload:
+        _validate_media_config(
+            payload["media"], payload.get("session_id"), payload["parent_id"]
+        )
 
     return payload
 
@@ -413,6 +538,7 @@ async def run_session_in_subprocess(
     bundle_package_paths: list[str] | None = None,
     sys_paths: list[str] | None = None,
     mention_mappings: dict[str, str] | None = None,
+    media: dict[str, Any] | None = None,
 ) -> str:
     """Run an Amplifier session in an isolated subprocess.
 
@@ -440,6 +566,8 @@ async def run_session_in_subprocess(
             the child process.
         mention_mappings: Optional mapping of bundle namespace to base path
             for @mention resolution in the child session.
+        media: Explicit text-only child media contract; see
+            ``serialize_subprocess_config``. Never inferred from cwd or parent.
 
     Returns:
         The output string from the child session (stdout, stripped).
@@ -460,6 +588,7 @@ async def run_session_in_subprocess(
         bundle_package_paths=bundle_package_paths,
         sys_paths=sys_paths,
         mention_mappings=mention_mappings,
+        media=media,
     )
 
     semaphore = _get_semaphore()
@@ -598,12 +727,10 @@ async def _run_child_session(config_path: str) -> str:
 
     payload = deserialize_subprocess_config(data)
     config: dict[str, Any] = payload["config"]
-    prompt: str = payload["prompt"]
     parent_id: str = payload["parent_id"]
     project_path: str = payload["project_path"]
     session_id: str | None = payload.get("session_id")
     # (1) Extract module_paths, bundle_package_paths, sys_paths from payload
-    module_paths: dict[str, str] = payload.get("module_paths", {})
     bundle_package_paths: list[str] = payload.get("bundle_package_paths", [])
     sys_paths: list[str] = payload.get("sys_paths", [])
 
@@ -621,6 +748,30 @@ async def _run_child_session(config_path: str) -> str:
     session = AmplifierSession(
         config=config, parent_id=parent_id, session_id=session_id
     )
+    binding = None
+    wrappers: list[Any] = []
+    try:
+        binding = _bind_child_media(session, payload)
+        return await _execute_child_session(session, payload, binding, wrappers)
+    finally:
+        # Run every finalizer even when another finalizer fails. The session owns
+        # underlying providers; our wrappers own only their private projections.
+        async with contextlib.AsyncExitStack() as cleanup:
+            if binding is not None:
+                cleanup.callback(binding[0].close)
+            cleanup.push_async_callback(session.cleanup)
+            for wrapper in wrappers:
+                cleanup.push_async_callback(wrapper.aclose)
+
+
+async def _execute_child_session(
+    session: Any, payload: dict[str, Any], binding: Any, wrappers: list[Any]
+) -> str:
+    """Initialize and execute under the outer session/media lifetime owner."""
+    config = payload["config"]
+    prompt = payload["prompt"]
+    project_path = payload["project_path"]
+    module_paths = payload.get("module_paths", {})
 
     # (5) If module_paths non-empty, construct BundleModuleResolver and mount
     #     on coordinator as 'module-source-resolver' BEFORE initialize().
@@ -665,6 +816,7 @@ async def _run_child_session(config_path: str) -> str:
         len(config.get("tools", [])),
     )
     await session.initialize()
+    await _mount_child_media_providers(session, binding, wrappers)
 
     # (6a) Register capabilities that the in-process spawn path provides but
     # subprocess children lack.  Ordered from most critical to least.
@@ -778,12 +930,8 @@ async def _run_child_session(config_path: str) -> str:
             relative_to=_relative_to,
         )
 
-    # (8) Wrap execute/cleanup in try/finally
-    try:
-        result: str = await session.execute(prompt)
-        return result
-    finally:
-        await session.cleanup()
+    result: str = await session.execute(prompt)
+    return result
 
 
 if __name__ == "__main__":
