@@ -9,7 +9,6 @@ includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/streaming-ui.yaml
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/status-context.yaml
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/redaction.yaml
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=behaviors/logging.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-logging.yaml
   - bundle: git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-navigation.yaml
   # Role routing remains a host choice, not part of the amp-dev capability.

@@ -186,6 +186,30 @@ class TestAmpDevIsAThinVariant:
             )
 
 
+class TestAnchorsLogging:
+    """CI records Anchors events; generic JSONL logging stays explicitly opt-in."""
+
+    def test_includes_ci_without_generic_logging(self) -> None:
+        includes = [
+            entry["bundle"]
+            for entry in _frontmatter(ANCHORS_DIR / "bundle.md")["includes"]
+        ]
+        assert (
+            "git+https://github.com/microsoft/amplifier-bundle-context-intelligence"
+            "@main#subdirectory=behaviors/context-intelligence-logging.yaml"
+        ) in includes
+        assert not any(
+            source.endswith(
+                ("#subdirectory=behaviors/logging.yaml", ":behaviors/logging")
+            )
+            for source in includes
+        )
+        assert not any(
+            hook["module"] == "hooks-logging"
+            for hook in _frontmatter(ANCHORS_DIR / "bundle.md").get("hooks", [])
+        )
+
+
 class TestNoParallelCopies:
     """The two bundle trees may not carry the same file twice."""
 
