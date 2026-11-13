@@ -90,9 +90,9 @@ def load_transcript(session_dir: Path) -> list[dict[str, Any]]:
         List of parsed message dicts.
     """
     if os.path.lexists(session_dir / "transcript.v2"):
-        from .history import SessionHistoryStore
+        from .transcript_v2 import CommittedTranscriptReader
 
-        return SessionHistoryStore(session_dir).load_messages()
+        return CommittedTranscriptReader(session_dir).load_messages()
     return list(read_jsonl(session_dir / TRANSCRIPT_FILENAME))
 
 

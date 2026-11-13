@@ -92,14 +92,20 @@ def test_symlink_leaf_refused(tmp_path, name):
         list(CommittedTranscriptReader(tmp_path).iter_messages())
 
 
-def test_descriptor_changed_during_iteration_refuses(tmp_path):
+def test_descriptor_changed_during_iteration_refuses(tmp_path, monkeypatch):
     _, descriptor, _ = fixture(tmp_path)
-    rows = CommittedTranscriptReader(tmp_path).iter_messages()
-    assert next(rows)["role"] == "user"
-    descriptor["sequence"] = 2
-    (tmp_path / "transcript.v2" / "current.json").write_text(json.dumps(descriptor))
+    reader = CommittedTranscriptReader(tmp_path)
+    original = reader._iterate
+
+    def changing(prefix):
+        for message in original(prefix):
+            descriptor["sequence"] += 1
+            (tmp_path / "transcript.v2" / "current.json").write_text(json.dumps(descriptor))
+            yield message
+
+    monkeypatch.setattr(reader, "_iterate", changing)
     with pytest.raises(UnsupportedTranscript):
-        list(rows)
+        reader.iter_messages()
 
 
 def test_body_changed_between_verification_and_iteration_refuses(tmp_path, monkeypatch):
@@ -114,7 +120,7 @@ def test_body_changed_between_verification_and_iteration_refuses(tmp_path, monke
 
     monkeypatch.setattr(reader, "verify", verify_then_change)
     with pytest.raises(UnsupportedTranscript):
-        list(reader.iter_messages())
+        reader.iter_messages()  # Refuses before even the first row is exposed.
 
 
 def test_committed_partial_row_is_not_a_commit(tmp_path):
@@ -186,3 +192,37 @@ def test_broken_versioned_pointer_is_not_empty_legacy_history(tmp_path):
     assert SessionHistoryStore(tmp_path).exists()
     with pytest.raises(UnsupportedTranscript):
         SessionHistoryStore(tmp_path).load_messages()
+
+
+def test_observed_v2_disappearance_never_reselects_stale_legacy(tmp_path, monkeypatch):
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    fixture(tmp_path)
+    (tmp_path / "transcript.jsonl").write_text('{"role":"user","content":"stale"}\n')
+    store = SessionHistoryStore(tmp_path)
+    original = store._versioned_reader
+
+    def selected_then_move():
+        selected = original()
+        (tmp_path / "transcript.v2").rename(tmp_path / "retained-v2")
+        return selected
+
+    monkeypatch.setattr(store, "_versioned_reader", selected_then_move)
+    with pytest.raises(UnsupportedTranscript):
+        store.load(include_events=False)
+
+
+def test_keyword_and_turn_timestamp_never_consult_stale_legacy(tmp_path):
+    from amplifier_foundation.session.finder import _transcript_contains_keyword
+    from amplifier_foundation.session.events import get_last_timestamp_for_turn
+
+    rows = [
+        {"role": "user", "content": "versioned-keyword", "timestamp": "2026-01-01"},
+        {"role": "assistant", "content": "reply", "timestamp": "2026-01-02"},
+    ]
+    fixture(tmp_path, rows=rows)
+    legacy = tmp_path / "transcript.jsonl"
+    legacy.write_text('{"role":"user","content":"stale-keyword","timestamp":"old"}\n')
+    assert _transcript_contains_keyword(tmp_path, "versioned-keyword")
+    assert not _transcript_contains_keyword(tmp_path, "stale-keyword")
+    assert get_last_timestamp_for_turn(legacy, 1) == "2026-01-02"
