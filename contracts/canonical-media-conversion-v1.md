@@ -239,3 +239,68 @@ It asserts Python tracked peak below 6 MiB and prints measured fixture/decoded/
 peak values. This is bounded converter evidence, not raster-decoder process RSS,
 live migration, real screenshots, native-platform parity or accepted cross-repo
 DTU qualification. Exact F1 integration evidence is recorded in the delivery PR.
+
+## CI Optimize sync owner binding
+
+`media_conversion_owner.CaptureMediaOwner` is the concrete offthread synchronous
+bridge to F1 ingest/publish/resolve/ACK. It implements the exact CI
+`ImageOwner`/`StagedImage` protocol at
+`4459d56cf6c870dd8d047eea62162e7fb4d78a4f` without importing CI or adding an
+application dependency:
+
+```python
+CaptureMediaOwner(
+    diagnostic_store,
+    staged_factory=StagedImage,
+    origin_for=authorize_original_provenance,
+    checkpoint_receipt_for=verify_installed_diagnostic_operation,
+    new_asset_bytes_for=measured_unique_asset_bytes,
+    reader_ready=qualified_diagnostic_reader_and_store_scope,
+)
+```
+
+All callbacks are mandatory, synchronous settled results. No running live event
+loop is borrowed; the sync bridge creates a private loop only for the actual F1
+async methods. CI's host must call sequentially under its stopped-writer/flush
+boundary. The temporary image stream is not retained after `stage_image`.
+
+* `stage_image(BinaryIO, mime=..., origin=...)` hashes decoded original bytes,
+  binds CI's exact source digest/record/offset facts to a real host-attested
+  original provenance callback, then stages through F1. A missing/unknown policy,
+  unestablished screenshot expiry or unsupported provenance refuses explicitly.
+  A generic event timestamp is **not** expiry/retention authority. Original TTL
+  is never derived from migration time, renewed or replaced with durable null.
+* Its factory returns `StagedImage(replacement=..., receipt=...,
+  new_asset_bytes=...)`. Added bytes must be an actual host measurement of unique
+  asset growth, not decoded size/theoretical savings. The binding refuses missing
+  accounting rather than inventing a claim.
+* `publish(manifest)` and `verify(manifest)` page bounded owner manifest rows
+  `{origin: <CI source snapshot>, owner: <binding receipt>}`. They reauthorize
+  original provenance, validate F1 owner records and original byte closure.
+  Publication reconciles F1's actual saved origin receipt; no new observation or
+  historical ingestion replay is manufactured. Owner receipts are at most16KiB.
+* `acknowledge(manifest, source=..., sha256=...)` verifies the installed diagnostic
+  file hash and requires a **host-issued exact diagnostic operation receipt**.
+  The store's independent checkpoint verifier must exhaust/verify installed event
+  file SHA, preserved event/mapping identity and all published refs. A manifest or
+  ordinary self-declared `{refs:[...]}` is not that production authority.
+
+The diagnostic store uses `SessionMediaStore(explicit_private_root, session_id,
+policy=MediaPolicy(host_limits...), checkpoint_verifier=host_verifier)`. It must
+be **distinct from canonical session stores and never mounted as a live media
+capability**. The reader-ready callback qualifies that scope as well as the exact
+diagnostic replacement shape. Diagnostic checkpointing is local capture-file
+reachability, not a canonical transcript checkpoint, ingestion replay, provider
+delivery or model-image grant.
+
+The entire diagnostic image position becomes a Core TextBlock with explicit
+no-pixels text and `metadata["experimental.media.v1"]["refs"]=[ref]`; CI preserves
+visibility. No reference is stored in `ImageBlock.source`. Its exact label is
+`[Session image <sha256>; diagnostic reference only; no pixels supplied]`.
+`diagnostic_image_ref(block)` is a strict metadata-only reader for an already
+selected CI-owned image position. It does not hunt arbitrary strings, hydrate
+pixels, promote diagnostic refs into canonical history, or claim vision.
+
+Exact F1 candidate used for initial integration:
+`8475bca3c17a374b8bcaf0a63974e7b82edc1041`. It is candidate-graph evidence, not
+accepted upstream, publication, installed live adoption or a DTU qualification.
