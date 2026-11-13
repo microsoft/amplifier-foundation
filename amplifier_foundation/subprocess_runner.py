@@ -212,6 +212,7 @@ async def _mount_child_media_providers(
         wrappers.append(wrapper)
         await session.coordinator.mount("providers", wrapper, name=name)
 
+
 # Environment variable allowlist — controls what the parent process passes to
 # child subprocesses.  Only variables matching an allowed prefix or exact name
 # are forwarded; everything else (database passwords, internal tokens, etc.)
