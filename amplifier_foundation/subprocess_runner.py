@@ -104,6 +104,40 @@ def _kill_subprocess_tree(pid: int) -> None:
 REQUIRED_KEYS = ("config", "prompt", "parent_id", "project_path")
 
 
+def _open_media_session_directory(directory: Path) -> int:
+    """Open a private child beneath non-replaceable, trusted POSIX ancestors.
+
+    No-follow alone does not stop a writable ancestor from being replaced with a
+    *real* directory between validation and store construction. Refuse ancestors
+    writable by another uid, except root-owned sticky directories such as /tmp.
+    This is a host-owned path, not isolation from another process with our uid.
+    """
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("Subprocess media requires qualified POSIX directories")
+    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in directory.parts[1:]:
+            parent = os.fstat(descriptor)
+            sticky_root = parent.st_uid == 0 and parent.st_mode & stat.S_ISVTX
+            if parent.st_uid not in {0, os.getuid()} or (
+                parent.st_mode & 0o022 and not sticky_root
+            ):
+                raise ValueError("Subprocess media has a replaceable ancestor")
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = child
+        info = os.fstat(descriptor)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("Subprocess media requires an owner-private directory")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def _validate_media_config(media: Any, session_id: Any, parent_id: Any) -> None:
     """Validate explicit host-owned media config; this route is text-only.
 
@@ -138,17 +172,12 @@ def _validate_media_config(media: Any, session_id: Any, parent_id: Any) -> None:
     ):
         raise ValueError("Subprocess media directory must match the child session")
     try:
-        for part in (*reversed(directory.parents), directory):
-            info = part.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise ValueError("Subprocess media directory must not follow links")
-        info = directory.lstat()
-        if os.name != "posix" or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise ValueError(
-                "Subprocess media requires an owner-private POSIX directory"
-            )
+        descriptor = _open_media_session_directory(directory)
+        os.close(descriptor)
     except OSError:
-        raise ValueError("Subprocess media session directory is unavailable") from None
+        raise ValueError(
+            "Subprocess media directory is unavailable or follows links"
+        ) from None
     policy = media["policy"]
     required = {"max_bytes", "max_pixels", "max_images", "retention"}
     if type(policy) is not dict or not required <= set(policy) or set(policy) - (
@@ -179,11 +208,22 @@ def _bind_child_media(session: Any, payload: dict[str, Any]) -> Any:
         bind_session_media,
     )
 
-    store = SessionMediaStore(
-        Path(media["session_directory"]) / "media",
-        media["session_id"],
-        policy=MediaPolicy(**media["policy"]),
-    )
+    directory = Path(media["session_directory"])
+    descriptor = _open_media_session_directory(directory)
+    try:
+        store = SessionMediaStore(
+            directory / "media", media["session_id"],
+            policy=MediaPolicy(**media["policy"]),
+        )
+        try:
+            expected, actual = os.fstat(descriptor), directory.stat(follow_symlinks=False)
+            if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
+                raise ValueError("Subprocess media directory changed during binding")
+        except BaseException:
+            store.close()
+            raise
+    finally:
+        os.close(descriptor)
     try:
         capability = bind_session_media(session.coordinator, store=store, enabled=False)
     except BaseException:

@@ -5,8 +5,10 @@ No provider network call, live session data or persistent checkpoint is exercise
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +22,8 @@ from amplifier_foundation import subprocess_runner as runner
 
 @pytest.fixture
 def media(tmp_path):
+    if os.name != "posix":
+        pytest.skip("media opt-in requires qualified POSIX descriptors")
     directory = tmp_path / "child-1"
     directory.mkdir(mode=0o700)
     return {
@@ -138,6 +142,55 @@ def test_child_rechecks_directory_after_serialization(media, tmp_path):
         runner.deserialize_subprocess_config(encoded)
 
 
+def test_replaceable_real_directory_ancestor_rejected(media, tmp_path):
+    shared = tmp_path / "replaceable"
+    shared.mkdir(mode=0o777)
+    shared.chmod(0o777)
+    directory = shared / "child-1"
+    directory.mkdir(mode=0o700)
+    media["session_directory"] = str(directory)
+    with pytest.raises(ValueError, match="replaceable ancestor"):
+        serialize(media)
+    assert not (directory / "media").exists()
+
+
+def test_nonposix_media_refused_without_affecting_legacy(tmp_path, monkeypatch):
+    directory = tmp_path / "child-1"
+    with monkeypatch.context() as patch:
+        patch.setattr(runner, "os", SimpleNamespace(name="nt"))
+        with pytest.raises(ValueError, match="qualified POSIX"):
+            runner._open_media_session_directory(directory)
+        assert "media" not in json.loads(serialize())
+
+
+def test_real_directory_replacement_during_binding_refused(media, tmp_path, monkeypatch):
+    from amplifier_foundation.session import media as implementation
+
+    original = implementation.SessionMediaStore
+    directory = Path(media["session_directory"])
+    coordinator = Coordinator("child-1")
+
+    def replacing_store(*args, **kwargs):
+        # A same-uid mutation is not an OS security boundary, but must never
+        # produce a successful binding to a different directory identity.
+        directory.rename(tmp_path / "old-child")
+        directory.mkdir(mode=0o700)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(implementation, "SessionMediaStore", replacing_store)
+    with pytest.raises(ValueError, match="changed during binding"):
+        runner._bind_child_media(
+            SimpleNamespace(coordinator=coordinator), json.loads(serialize(media))
+        )
+    assert "experimental.media.v1" not in coordinator.capabilities
+    # The refused store was closed, not left holding an active writer.
+    store = original(
+        directory / "media", "child-1",
+        policy=implementation.MediaPolicy(**media["policy"]),
+    )
+    store.close()
+
+
 class Coordinator:
     def __init__(self, session_id, provider=None):
         self.session_id = session_id
@@ -206,7 +259,7 @@ class Provider:
         self.counted = None
         self.sent = None
 
-    def get_media_support(self, model):
+    def get_media_request_support(self, *, model, request_options):
         # Even a provider advertising vision must remain text-only here.
         return {"v": 1, "positions": ["user", "tool"]}
 
@@ -238,7 +291,20 @@ async def test_child_binds_before_init_wraps_before_count_and_closes(
     async def initialize():
         cap = coordinator.get_capability("experimental.media.v1")
         assert cap is not None and cap.enabled is False
+        assert all(callable(getattr(cap, name)) for name in (
+            "ingest", "publish", "validate", "resolve", "prepare_request", "report",
+        ))
         observed["capability"] = cap
+        prepare = cap.prepare_request
+
+        async def observe_prepare(request, **kwargs):
+            assert kwargs["execution_scope"] == {"text_only": True}
+            assert kwargs["provider_identity"]["media_support"]["positions"] == [
+                "user", "tool",
+            ]
+            return await prepare(request, **kwargs)
+
+        cap.prepare_request = observe_prepare
         assert coordinator.providers["selected"] is provider
 
     request = ChatRequest(messages=[
@@ -283,7 +349,7 @@ async def test_child_binds_before_init_wraps_before_count_and_closes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["initialize", "execute"])
+@pytest.mark.parametrize("failure", ["initialize", "execute", "cleanup"])
 async def test_failure_cleans_session_and_store(media, tmp_path, monkeypatch, failure):
     coordinator = Coordinator("child-1", Provider())
     session = SimpleNamespace(
@@ -301,6 +367,64 @@ async def test_failure_cleans_session_and_store(media, tmp_path, monkeypatch, fa
     assert coordinator.capabilities["experimental.media.v1"]._store._closed
     if failure == "initialize":
         session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_initialize_closes_binding(media, tmp_path, monkeypatch):
+    coordinator = Coordinator("child-1", Provider())
+    session = SimpleNamespace(
+        coordinator=coordinator,
+        initialize=AsyncMock(side_effect=asyncio.CancelledError()),
+        execute=AsyncMock(), cleanup=AsyncMock(),
+    )
+    monkeypatch.setattr(runner, "AmplifierSession", lambda **kwargs: session)
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "config.json"
+    path.write_text(serialize(media, project_path=str(tmp_path)))
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_child_session(str(path))
+    session.cleanup.assert_awaited_once()
+    session.execute.assert_not_awaited()
+    assert coordinator.capabilities["experimental.media.v1"]._store._closed
+
+
+@pytest.mark.asyncio
+async def test_partial_provider_mount_and_failed_wrapper_close_settle_all(
+    media, tmp_path, monkeypatch
+):
+    coordinator = Coordinator("child-1", Provider())
+    coordinator.providers["second"] = Provider()
+    wrappers = []
+    mount = coordinator.mount
+
+    async def partial_mount(category, wrapper, *, name=None):
+        wrappers.append(wrapper)
+        if name == "second":
+            raise RuntimeError("mount failed")
+        await mount(category, wrapper, name=name)
+        close = wrapper.aclose
+
+        async def failing_close():
+            await close()
+            raise RuntimeError("close failed")
+
+        wrapper.aclose = failing_close
+
+    coordinator.mount = partial_mount
+    session = SimpleNamespace(
+        coordinator=coordinator, initialize=AsyncMock(),
+        execute=AsyncMock(), cleanup=AsyncMock(),
+    )
+    monkeypatch.setattr(runner, "AmplifierSession", lambda **kwargs: session)
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "config.json"
+    path.write_text(serialize(media, project_path=str(tmp_path)))
+    with pytest.raises(RuntimeError, match="close failed"):
+        await runner._run_child_session(str(path))
+    assert len(wrappers) == 2 and all(wrapper._closed for wrapper in wrappers)
+    session.cleanup.assert_awaited_once()
+    session.execute.assert_not_awaited()
+    assert coordinator.capabilities["experimental.media.v1"]._store._closed
 
 
 @pytest.mark.asyncio
@@ -431,3 +555,28 @@ print(asyncio.run(runner._run_child_session(sys.argv[1])))
     )
     store.close()
     assert not list((Path(media["session_directory"]) / "media" / "assets").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_real_core_public_capability_and_provider_mounts(media):
+    """Qualify public coordinator mounting, not a module graph or image slice."""
+    from amplifier_core import AmplifierSession
+
+    session = AmplifierSession(
+        config={"session": {"orchestrator": "fixture", "context": "fixture"}},
+        session_id="child-1", parent_id="parent-1",
+    )
+    provider = Provider()
+    wrappers = []
+    binding = runner._bind_child_media(session, json.loads(serialize(media)))
+    try:
+        capability = session.coordinator.get_capability("experimental.media.v1")
+        assert capability is binding[1] and capability.enabled is False
+        await session.coordinator.mount("providers", provider, name="selected")
+        await runner._mount_child_media_providers(session, binding, wrappers)
+        assert session.coordinator.get("providers")["selected"] is wrappers[0]
+    finally:
+        for wrapper in wrappers:
+            await wrapper.aclose()
+        await session.cleanup()
+        binding[0].close()
