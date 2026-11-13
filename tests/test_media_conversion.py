@@ -511,3 +511,60 @@ def test_sync_selected_helper_metadata_expiry_and_failure_no_mutation():
         adopt_selected_media([message], source_store=source, target_store=Failed(),
                              target_session_id="child", now=before_expiry)
     assert message == original
+
+
+@pytest.mark.parametrize("phase,raises", [
+    ("validate", False), ("validate", True), ("adopt", False), ("adopt", True),
+])
+def test_mutating_sync_callbacks_cannot_change_original_or_extend_ttl(phase, raises):
+    import copy
+    from datetime import datetime, timezone
+    ref = {"v": 1, "session_id": "fixture", "sha256": "a" * 64, "mime": "image/png",
+           "bytes": 1, "width": 1, "height": 1, "provenance": origin(0, 0)}
+    message = {"role": "tool", "content": [{"type": "text", "text": "[Session image " + "a" * 64 + "]"}],
+               "metadata": {NAMESPACE: {"refs": [ref]}}}
+    original = copy.deepcopy(message)
+    class Source:
+        def validate_ref(self, value, **kwargs):
+            if phase == "validate":
+                value["provenance"]["expires_at"] = "2099-01-01T00:00:00+00:00"
+                if raises:
+                    raise OSError("mutated then failed validation")
+    class Target:
+        def adopt_sync(self, refs, source_store):
+            refs[0]["session_id"] = "child"
+            if phase == "adopt":
+                refs[0]["provenance"]["expires_at"] = "2099-01-01T00:00:00+00:00"
+                if raises:
+                    raise OSError("mutated then failed adoption")
+            return refs
+    kwargs = dict(source_store=Source(), target_store=Target(), target_session_id="child",
+                  now=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    if raises:
+        with pytest.raises(OSError):
+            adopt_selected_media([message], **kwargs)
+    elif phase == "adopt":
+        with pytest.raises(Unsupported):
+            adopt_selected_media([message], **kwargs)
+    else:
+        result = adopt_selected_media([message], **kwargs)
+        assert result[0]["metadata"][NAMESPACE]["refs"][0]["provenance"] == ref["provenance"]
+    assert message == original
+
+
+def test_mutating_async_adoption_cannot_change_expiry(tmp_path):
+    path, plan = prepare(tmp_path, [{"role": "user", "content": [image()]}])
+    _, media = build(plan, tmp_path / "source")
+    selected = preview(tmp_path / "source/candidate.jsonl", owner="fixture-owner",
+                       session_id="fixture", fence=fence)
+    class Mutating:
+        async def adopt(self, refs, source_store):
+            refs[0]["session_id"] = "child"
+            refs[0]["provenance"]["expires_at"] = "2099-01-01T00:00:00+00:00"
+            return refs
+    with pytest.raises(Unsupported, match="original provenance/expiry"):
+        asyncio.run(transfer_prefix(
+            selected, tmp_path / "bad", fence=fence, source_store=media, target_store=Mutating(),
+            target_session_id="child", asset_reader=media.reader,
+        ))
+    assert not (tmp_path / "bad/verified.json").exists()
