@@ -208,11 +208,19 @@ class CommittedTranscriptReader:
                 raise UnsupportedTranscript("Committed transcript content changed")
 
     def iter_messages(self) -> Iterator[dict[str, Any]]:
+        # Public callers must never see a row before complete source/hash
+        # verification. Ordinary resume already returns an in-memory message
+        # list; expose the same honest boundary rather than an unsafe lazy read.
+        return iter(self.load_messages())
+
+    def load_messages(self) -> list[dict[str, Any]]:
+        """Materialize then verify a complete view before exposing any row."""
         prefix = self.verify()
         _, descriptor = self._descriptor()
         # Prefix/descriptor must be the same selection verified above.
         current, _ = self._descriptor()
         if current != prefix:
             raise UnsupportedTranscript("Transcript commit changed during read")
-        yield from self._iterate(prefix)
+        messages = list(self._iterate(prefix))
         self._unchanged(descriptor)
+        return messages

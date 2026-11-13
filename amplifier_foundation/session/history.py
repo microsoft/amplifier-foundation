@@ -309,7 +309,8 @@ class SessionHistoryStore:
         """
         self.diagnostics = []
         paths = self._canonical_paths()
-        if self._versioned_reader() is not None:
+        versioned = self._versioned_reader()
+        if versioned is not None:
             paths["transcript_v2_commit"] = self.session_dir / "transcript.v2" / "current.json"
         if include_events:
             paths["events"] = self.events_path
@@ -317,7 +318,6 @@ class SessionHistoryStore:
             key: file_stamp(path, windows_policy=self.windows_policy)
             for key, path in paths.items()
         }
-        versioned = self._versioned_reader()
         messages = (
             list(versioned.iter_messages()) if versioned is not None
             else self._recover(self.transcript_path, "transcript", _read_messages, [])
