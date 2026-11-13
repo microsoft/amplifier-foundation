@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -302,6 +304,40 @@ async def test_failure_cleans_session_and_store(media, tmp_path, monkeypatch, fa
 
 
 @pytest.mark.asyncio
+async def test_unowned_ref_refused_before_provider_count(media):
+    from amplifier_core.message_models import ChatRequest, Message
+
+    from amplifier_foundation.session.media import MediaRefusal
+
+    provider = Provider()
+    coordinator = Coordinator("child-1", provider)
+    session = SimpleNamespace(coordinator=coordinator)
+    binding = runner._bind_child_media(session, json.loads(serialize(media)))
+    wrappers = []
+    try:
+        await runner._mount_child_media_providers(session, binding, wrappers)
+        ref = {
+            "v": 1, "session_id": "child-1", "sha256": "a" * 64,
+            "mime": "image/png", "bytes": 16, "width": 1, "height": 1,
+            "provenance": {
+                "kind": "tool", "session_id": "child-1", "id": "not-an-owned-call",
+                "created_at": "2026-01-01T00:00:00+00:00", "expires_at": None,
+            },
+        }
+        request = ChatRequest(messages=[Message(
+            role="tool", tool_call_id="not-an-owned-call", content="original text",
+            metadata={"experimental.media.v1": {"refs": [ref]}},
+        )])
+        with pytest.raises(MediaRefusal):
+            await coordinator.providers["selected"].request_budget(request)
+        assert provider.counted is None and provider.sent is None
+    finally:
+        for wrapper in wrappers:
+            await wrapper.aclose()
+        binding[0].close()
+
+
+@pytest.mark.asyncio
 async def test_legacy_child_does_not_bind_or_wrap(tmp_path, monkeypatch):
     provider = object()
     coordinator = Coordinator("child-1", provider)
@@ -317,3 +353,81 @@ async def test_legacy_child_does_not_bind_or_wrap(tmp_path, monkeypatch):
     assert "experimental.media.v1" not in coordinator.capabilities
     assert coordinator.providers["selected"] is provider
     assert not (tmp_path / "child-1").exists()
+
+
+@pytest.mark.asyncio
+async def test_public_launcher_carries_only_explicit_media(media, tmp_path, monkeypatch):
+    """The ordinary public spawn path forwards the opt-in without a new API."""
+    captured = {}
+
+    async def spawn(*command, **kwargs):
+        captured["payload"] = json.loads(Path(command[-1]).read_text())
+        return SimpleNamespace(
+            communicate=AsyncMock(return_value=(
+                f"{runner.RESULT_START_MARKER}ok{runner.RESULT_END_MARKER}".encode(),
+                b"",
+            )),
+            returncode=0,
+        )
+
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", spawn)
+    result = await runner.run_session_in_subprocess(
+        config={}, prompt="text", parent_id="parent-1",
+        project_path=str(tmp_path), session_id="child-1", media=media,
+    )
+    assert result == "ok"
+    assert captured["payload"]["media"] == media
+    assert "checkpoint_verifier" not in json.dumps(captured["payload"])
+
+
+def test_real_process_reconstructs_fresh_disabled_binding(media, tmp_path):
+    """Actual JSON/file/process boundary, with a synthetic no-network session."""
+    config_file = tmp_path / "config.json"
+    config_file.write_text(serialize(media, project_path=str(tmp_path)))
+    script = """
+import asyncio
+import sys
+from amplifier_foundation import subprocess_runner as runner
+
+class Coordinator:
+    session_id = "child-1"
+    def __init__(self):
+        self.capabilities = {}
+    def register_capability(self, name, value):
+        self.capabilities[name] = value
+    def get_capability(self, name):
+        return self.capabilities.get(name)
+    def get(self, name):
+        return {} if name == "providers" else None
+
+class Session:
+    def __init__(self, **kwargs):
+        self.coordinator = Coordinator()
+    async def initialize(self):
+        cap = self.coordinator.get_capability("experimental.media.v1")
+        assert cap.version == 1 and cap.enabled is False
+        assert cap._store.checkpoint_verifier is None
+    async def execute(self, prompt):
+        return "fresh-child-text-only"
+    async def cleanup(self):
+        pass
+
+runner.AmplifierSession = Session
+print(asyncio.run(runner._run_child_session(sys.argv[1])))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(config_file)],
+        cwd=Path(runner.__file__).parents[1], capture_output=True, text=True,
+        timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "fresh-child-text-only"
+    # The child exited and released the store lock; no image was persisted.
+    from amplifier_foundation.session.media import MediaPolicy, SessionMediaStore
+
+    store = SessionMediaStore(
+        Path(media["session_directory"]) / "media", "child-1",
+        policy=MediaPolicy(**media["policy"]),
+    )
+    store.close()
+    assert not list((Path(media["session_directory"]) / "media" / "assets").iterdir())
