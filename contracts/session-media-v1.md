@@ -75,12 +75,20 @@ Canonical message carrier: `metadata["experimental.media.v1"] = {"refs": [...]}`
 Do not put references in ImageBlock.source or parse strings to discover them.
 
 `SessionMediaStore(root, session_id, *, policy, checkpoint_verifier=None,
-origin_resolver=None, policy_verifier=None, nested_verifier=None)` uses the
+origin_resolver=None, policy_verifier=None, nested_verifier=None, read_only=False,
+source_read_verifier=None, request_only_verifier=None)` uses the
 explicit private media root, never cwd. `MediaPolicy(max_bytes, max_pixels,
 max_images, retention="durable", ttl_seconds=None)` is frozen host policy.
 The store holds an exclusive POSIX lifetime writer lock; close abandoned session
 stores before rebinding. Text/ref readers import without Pillow or POSIX support;
 unqualified platforms refuse opening the durable store rather than claim parity.
+`read_only=True` opens an existing private store without creating files or
+rewriting journals. Accepted transfer requires a host-supplied
+`source_read_verifier(ref, *, purpose="transfer") -> True` callback, before and
+after asset snapshot read. It verifies the exact selected canonical/recovery
+source and host revision/fences; observer reads never acquire writer authority
+or mutate the running source. This permits guarded idle-source fork/export
+without stopping its retained runtime. No guard means transfer refusal.
 Host-only `acknowledge_checkpoint(receipt)` calls the injected synchronous
 verifier, which must verify a durable settled canonical prefix/source identity
 and return its exact references. The store checks those references were published.
@@ -99,6 +107,8 @@ one row resident; this is not hot transcript-v2 bounded-append performance.
 
 Metadata-only staged/published journals remain enumerable for recovery. This
 component does not delete orphan assets or authorize retention cleanup.
+Host-only `ingest_sync` and `publish_sync` have the same arguments/results as the
+async methods; they do not run an event loop and do not add capability operations.
 `adopt(refs, source_store)` is a host-only verified copy preserving original
 provenance and expiry; target publication precedes target canonical checkpoint.
 It is async and returns a list; synchronous `adopt_sync(refs, source_store)`
@@ -124,12 +134,29 @@ warning; available-to-denied after fit refuses. A screenshot producer additional
 requires host `computer_use.media_policy` binding, not generic `cap.enabled` alone.
 Do not infer screenshot source class from a generic ref: hosts retain an original
 session/call source index and consult the actual owner's issuance validator.
+Host-only `classify_origin(origin_or_ref, *, classification="computer-use")`
+records immutable scalar source routing in the indexed origin journal.
+`get_origin_classification(ref)` reads it; adoption copies classification with
+original provenance. Classification alone is never consent or delivery authority.
 
 Nested refs keep their actual inner provenance. The host installs synchronous
 `nested_verifier(parent_origin, ref) -> True` only where the dispatch owner attests
 that exact surviving structured child output belongs to this outer operation.
 Absent attestation refuses; same-session possession is not a relationship.
 No report or extra method on the six-operation capability can create it.
+The installer dynamically consults trusted
+`session.media.nested_verifier` when no explicit store callback was supplied.
+Its dispatch-owned ledger is execution-bound, not a model-supplied declaration.
+
+`validate_published_ref(ref, *, check_expiry=False)` is host-only acceptance
+inspection for selected current/recovery history. Staged entries refuse.
+`resolve_published_ref(ref)` verifies accepted original bytes without requiring
+current-model reachability; expired observations remain metadata-only. The host
+must independently authorize the exact selected canonical/recovery source and
+export/transfer. Neither method grants model delivery or imports a ref by hash.
+`report(component, event="readiness", outcome="inspect")` returns a copy of
+consumer observations plus enabled/authoritative:false; hosts need not inspect
+private state and still own readiness policy.
 
 ## Private projection and provider witnesses
 
@@ -138,6 +165,12 @@ preserves all owner metadata/call identity, and freezes original-position images
 or explicit unavailable text **before** count. It returns a request-scoped
 `PreparedMediaRequestV1` with `.request`, `.projection_digest`, `.release()` and
 `.validate(...)`; pixels and validation callbacks are never canonical metadata.
+An existing host-private Surface/Voice/Output image overlay is retained only if
+`request_only_verifier(original_request, *, message_index, block_index, purpose)`
+returns exactly True for that exact original owner-issued block. This callback
+rechecks original owner freshness/Stop/consent on every witness; default inline
+images become warnings. Nested/text-only/unsupported routes do not call it to
+acquire new pixels. This is private request admission, not durable publication.
 
 Provider identity is JSON `{provider, account, generation, media_support}`.
 `media_support` is `{v:1, positions:[...], mime_types:[...]}` from the actual
@@ -173,7 +206,13 @@ Replacement/refit/release closes the old projection; completion, error,
 cancellation, stream close and session close release request buffers.
 Import it from `amplifier_foundation.session.media_provider`.
 `MediaPreparedProvider(provider, capability, *, provider_identity, model=None,
-execution_scope=None)` accepts live zero-argument identity/model getters.
+execution_scope=None, prepare_overlay=None)` accepts live zero-argument
+identity/model getters. Optional host `prepare_overlay(private_canonical_copy, *,
+purpose, request_options)` returns exactly `{request, validate}`; its synchronous
+validate callable must return True and is repeated before every count/attempt.
+It runs before generic projection and never mutates the canonical request.
+An overlay containing inline pixels additionally needs `request_only_verifier`;
+neither an overlay dict nor its metadata grants admission by itself.
 Hosts mount each actual wrapped provider after initialization; existing host
 wrappers may use the same projector internally instead of stacking wrappers.
 Optional `media_budget_witness(canonical_request, *, request_options=None)` gives
