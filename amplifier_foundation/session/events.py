@@ -123,10 +123,15 @@ def get_last_timestamp_for_turn(
         FileNotFoundError: If transcript_path doesn't exist.
         ValueError: If turn is out of range.
     """
-    if not transcript_path.exists():
-        raise FileNotFoundError(f"Transcript not found: {transcript_path}")
+    from .history import SessionHistoryStore
 
-    messages = list(read_jsonl(transcript_path))
+    selected = SessionHistoryStore(transcript_path.parent)._versioned_reader()
+    if selected is not None:
+        messages = selected.load_messages()
+    else:
+        if not transcript_path.exists():
+            raise FileNotFoundError(f"Transcript not found: {transcript_path}")
+        messages = list(read_jsonl(transcript_path))
 
     # Find turn boundaries
     boundaries = [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
