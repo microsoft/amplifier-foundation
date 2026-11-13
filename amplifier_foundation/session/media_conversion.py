@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -320,9 +321,10 @@ def _decode(scanner: Scanner, span: Span, output: BinaryIO) -> tuple[str, int]:
 
 def _verify_asset(ref: dict, reader: AssetReader) -> None:
     _validate_ref(ref)
-    with reader(ref) as stream:
+    snapshot = deepcopy(ref)
+    with reader(deepcopy(snapshot)) as stream:
         digest, size = _digest(stream)
-    if digest != ref.get("sha256") or size != ref["bytes"]:
+    if digest != snapshot.get("sha256") or size != snapshot["bytes"]:
         raise Unsupported("Asset binary closure verification failed")
 
 
@@ -492,13 +494,14 @@ async def _build(
                     if cancelled():
                         raise InterruptedError("Conversion cancelled before reference adoption/validation")
                     if adopt_ref is not None:
+                        snapshot = deepcopy(ref)
+                        expected = {**snapshot, "session_id": target_session_id}
                         _event(journal, state="adoption-intent", row=row, ref=ref)
-                        adopted = await adopt_ref(ref)
-                        expected = {**ref, "session_id": target_session_id}
+                        adopted = await adopt_ref(deepcopy(snapshot))
                         if adopted != expected:
                             raise Unsupported("Adoption changed bytes or original provenance/expiry")
                         _patch(db, span.start, span.end, _json(adopted))
-                        ref = adopted
+                        ref = deepcopy(adopted)
                         _event(journal, state="adopted-assets-only", row=row, ref=ref)
                         if cancelled():
                             raise InterruptedError("Conversion cancelled after reference adoption")
@@ -509,19 +512,19 @@ async def _build(
                 for index, block, data, mime in _images(scanner, fields):
                     if cancelled():
                         raise InterruptedError("Conversion cancelled before image staging")
-                    origin = origin_for(row, index)
+                    origin = deepcopy(origin_for(row, index))
                     with tempfile.TemporaryFile(dir=directory) as pixels:
                         digest, size = _decode(scanner, data, pixels)
                         _event(journal, state="ingest-intent", row=row, block=index, origin=origin,
                                sha256=digest, bytes=size)
                         result = await capability.ingest(
                             {"stream": pixels, "mime": mime}, source_format="image-bytes",
-                            origin=origin, policy=None,
+                            origin=deepcopy(origin), policy=None,
                         )
                     refs = result["staged_refs"]
                     if len(refs) != 1:
                         raise Unsupported("Media ingest must stage exactly one image")
-                    ref = refs[0]
+                    ref = deepcopy(refs[0])
                     if ref.get("sha256") != digest or ref.get("bytes") != size or ref.get("mime") != mime:
                         raise Unsupported("Ingest changed original image identity")
                     if ref.get("session_id") != plan.session_id or ref.get("provenance") != origin:
@@ -532,7 +535,9 @@ async def _build(
                     if cancelled():
                         raise InterruptedError("Conversion cancelled after staging")
                     _event(journal, state="publication-intent", row=row, block=index, ref=ref, origin=origin)
-                    publication = await capability.publish([ref], origin=origin, disposition="retain")
+                    publication = await capability.publish(
+                        [deepcopy(ref)], origin=deepcopy(origin), disposition="retain",
+                    )
                     if publication["refs"] != [ref]:
                         raise Unsupported("Publication changed staged ref identity")
                     _verify_asset(ref, reader)
@@ -620,7 +625,7 @@ def _export_assets(directory, db, reader):
                 if _digest(existing) != (digest, ref["bytes"]):
                     raise Unsupported("Export asset changed")
             continue
-        with reader(ref) as source, path.open("xb") as output:
+        with reader(deepcopy(ref)) as source, path.open("xb") as output:
             os.chmod(path, 0o600)
             observed = _HashWriter()
             while chunk := source.read(CHUNK):
@@ -737,10 +742,12 @@ def adopt_selected_media(
         retained, replacements, warnings = [], {}, []
         for index, ref in enumerate(refs):
             _validate_ref(ref)
+            snapshot = deepcopy(ref)
+            expected = {**snapshot, "session_id": target_session_id}
             # Host validation establishes actual committed origin, even when
             # expiry forbids any pixel read/copy. It grants no new TTL.
-            source_store.validate_ref(ref, committed=True, check_expiry=False)
-            expiry = ref["provenance"]["expires_at"]
+            source_store.validate_ref(deepcopy(snapshot), committed=True, check_expiry=False)
+            expiry = snapshot["provenance"]["expires_at"]
             if expiry is not None and datetime.fromisoformat(expiry) <= current:
                 warning = "[Image unavailable: original observation expired; no pixels supplied]"
                 if isinstance(content, list):
@@ -748,11 +755,11 @@ def adopt_selected_media(
                 else:
                     warnings.append(warning)
                 continue
-            adopted = target_store.adopt_sync([ref], source_store)
-            if not isinstance(adopted, list) or adopted != [{**ref, "session_id": target_session_id}]:
+            adopted = target_store.adopt_sync([deepcopy(snapshot)], source_store)
+            if not isinstance(adopted, list) or adopted != [expected]:
                 raise Unsupported("Selected adoption changed original identity or expiry")
             _validate_ref(adopted[0])
-            retained.append(adopted[0])
+            retained.append(deepcopy(adopted[0]))
         copied = dict(message)
         copied_metadata = dict(metadata)
         copied_metadata[NAMESPACE] = {"refs": retained}
