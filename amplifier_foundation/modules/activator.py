@@ -809,7 +809,10 @@ class ModuleActivator:
                         self.install_python,
                         captured_allowed=self._dependency_installation_allowed,
                     )
-                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    subprocess.run(
+                        cmd, check=True, capture_output=True, text=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
                 # Mark as installed after successful install
                 self._install_state.mark_installed(module_path)
                 # Refresh Python's package discovery so subprocess-installed packages
@@ -855,6 +858,7 @@ class ModuleActivator:
                     check=True,
                     capture_output=True,
                     text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 # Mark as installed after successful install
                 self._install_state.mark_installed(module_path)
