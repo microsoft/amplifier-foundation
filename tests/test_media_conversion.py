@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX-only candidate
 
 from amplifier_foundation.session.media_conversion import (
     NAMESPACE, Unsupported, adopt_selected_media, build_candidate, preview, reconcile,
-    transfer_prefix, verify_export,
+    iter_verified_candidate_refs, transfer_prefix, verify_export,
 )
 from amplifier_foundation.session._media_conversion_parser import Scanner, _SPECIAL
 
@@ -568,3 +568,18 @@ def test_mutating_async_adoption_cannot_change_expiry(tmp_path):
             target_session_id="child", asset_reader=media.reader,
         ))
     assert not (tmp_path / "bad/verified.json").exists()
+
+
+def test_bounded_installed_candidate_enumerator_final_recheck(tmp_path):
+    path, plan = prepare(tmp_path, [{"role": "user", "content": [image()]}])
+    _, media = build(plan, tmp_path / "op")
+    installed = tmp_path / "installed"
+    installed.write_bytes((tmp_path / "op/candidate.jsonl").read_bytes())
+    refs = iter_verified_candidate_refs(
+        tmp_path / "op", installed=installed, session_id="fixture", asset_reader=media.reader,
+    )
+    assert next(refs)["session_id"] == "fixture"
+    with installed.open("ab") as output:
+        output.write(b" ")
+    with pytest.raises(Unsupported):
+        next(refs)  # Exhaustion is mandatory before a checkpoint is bound.

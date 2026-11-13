@@ -850,6 +850,45 @@ def _verify_candidate(path, db, reader, expected_records):
         raise Unsupported("Candidate record/reference count mismatch")
 
 
+def iter_verified_candidate_refs(
+    operation_dir: Path, *, installed: Path, session_id: str, asset_reader: AssetReader,
+) -> Iterator[dict]:
+    """Bounded owner verifier for an ACTUALLY installed historical candidate.
+
+    This is a reference enumerator, not a receipt/ACK constructor or authority.
+    The actual checkpoint owner binds it to a local receipt, real source/writer
+    fence and store. It MUST exhaust this iterator before accepting anything:
+    final file/manifest rechecks happen after the last yielded reference.
+    No record is passed to json.loads(), including a huge individual message.
+    """
+    if reconcile(operation_dir, installed=installed) != "installed-bytes-match-checkpoint-unconfirmed":
+        raise Unsupported("Installed canonical body differs from verified historical candidate")
+    expected = _identity(installed)
+    verified = operation_dir / "verified.json"
+    if verified.stat().st_size > 16384:
+        raise Unsupported("Invalid historical candidate verification receipt")
+    receipt = json.loads(verified.read_bytes())
+    if receipt.get("adapter") != ADAPTER or (expected.sha256, expected.size) != (
+        receipt["sha256"], receipt["bytes"],
+    ):
+        raise Unsupported("Unknown or changed historical candidate checkpoint")
+    db = sqlite3.connect(f"file:{operation_dir / 'manifest.sqlite'}?mode=ro", uri=True)
+    try:
+        db.execute("pragma cache_size=-512")
+        _verify_candidate(installed, db, asset_reader, receipt["records"])
+        for (raw,) in db.execute("select ref from closure order by rowid"):
+            ref = json.loads(raw)  # One bounded manifest ref, never a message.
+            _validate_ref(ref)
+            if ref["session_id"] != session_id:
+                raise Unsupported("Historical candidate ref belongs to another session")
+            yield ref
+        _check(expected)
+        if reconcile(operation_dir, installed=installed) != "installed-bytes-match-checkpoint-unconfirmed":
+            raise Unsupported("Historical candidate changed during checkpoint enumeration")
+    finally:
+        db.close()
+
+
 def reconcile(directory: Path, *, installed: Path | None = None) -> str:
     """Read saved exact candidate identity after a lost acknowledgement.
 

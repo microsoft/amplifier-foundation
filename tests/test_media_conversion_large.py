@@ -13,7 +13,7 @@ import pytest
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX-only candidate durability qualification")
 
 from amplifier_foundation.session.media_conversion import (
-    build_candidate, preview, verify_export,
+    build_candidate, iter_verified_candidate_refs, preview, verify_export,
 )
 from tests.test_media_conversion import fence, origin
 
@@ -70,6 +70,11 @@ def test_huge_individual_record_string_and_image_bounded_peak(tmp_path):
         asset_reader=media.reader, export_assets=True,
     ))
     verify_export(tmp_path / "op/portable")
+    refs = list(iter_verified_candidate_refs(
+        tmp_path / "op", installed=tmp_path / "op/candidate.jsonl",
+        session_id="fixture", asset_reader=media.reader,
+    ))  # Exactly one small ref; huge installed record stays on disk.
+    assert len(refs) == 1 and refs[0]["bytes"] == result.decoded_bytes
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     print(json.dumps({"fixture_bytes": source.stat().st_size,
