@@ -179,11 +179,61 @@ def _source_view(plan, *, include_header=False):
 
 
 def _check_source(plan):
+    _validate_plan(plan)
     if plan.committed_prefix is None:
         _check(plan.source)
     else:
         with _source_view(plan):
             pass
+
+
+def _validate_plan(plan):
+    if (type(plan) is not ConversionPlan or plan.adapter != ADAPTER
+            or type(plan.owner) is not str or not plan.owner
+            or type(plan.records) is not int or plan.records < 0
+            or type(plan.selected_records) is not int
+            or not 0 <= plan.selected_records <= plan.records):
+        raise Unsupported("Invalid exact conversion plan/selection")
+    if plan.committed_prefix is None:
+        if plan.committed_session_dir is not None:
+            raise Unsupported("Legacy source cannot carry a committed session directory")
+        return
+    from .transcript_v2 import CommittedPrefix
+    value = plan.committed_prefix
+    if type(value) is not dict or set(value) != set(CommittedPrefix.__dataclass_fields__):
+        raise Unsupported("Invalid committed conversion selector")
+    prefix = CommittedPrefix(**value)
+    for name in ("sequence", "committed_bytes", "message_count"):
+        if type(getattr(prefix, name)) is not int or getattr(prefix, name) < 0:
+            raise Unsupported("Committed selector bounds must be exact integers")
+    if (type(prefix.sha256) is not str or not re.fullmatch("[0-9a-f]{64}", prefix.sha256)
+            or prefix.body != f"g-{prefix.generation}.jsonl"
+            or type(plan.committed_session_dir) is not str):
+        raise Unsupported("Invalid committed conversion source facts")
+    session = Path(plan.committed_session_dir)
+    derived = SourceIdentity(
+        str(session / "transcript.v2" / prefix.body), 0, 0,
+        prefix.committed_bytes, 0, 0, prefix.sha256,
+    )
+    if (not session.is_absolute() or ".." in session.parts or session.name != prefix.session_id
+            or plan.session_id != prefix.session_id or plan.records != prefix.message_count
+            or plan.source != derived or plan.backups):
+        raise Unsupported("Committed plan recovery/source facts differ from selected prefix")
+
+
+def _saved_plan(directory):
+    path = directory / "plan.json"
+    with _open(path) as source:
+        raw = source.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise Unsupported("Oversized saved conversion plan")
+    value = json.loads(raw)
+    plan = ConversionPlan(**{
+        **value, "source": SourceIdentity(**value["source"]),
+        "backups": tuple(SourceIdentity(**item) for item in value["backups"]),
+    })
+    _validate_plan(plan)
+    return plan
 
 
 def _records(scanner, prefix=None):
@@ -1239,7 +1289,13 @@ def _iter_candidate_refs(path, db, reader, expected_records, prefix=None):
                 # Authority comes from this exact parsed canonical position,
                 # never a second query of a potentially dynamic manifest.
                 yield deepcopy(ref)
-            if fields["content"].kind == 91 and _media(scanner, fields)[1] is not None:
+            strict_slots = prefix is None
+            if prefix is not None:
+                schema = db.execute("select 1 from sqlite_master where name='assets' and type='table'").fetchone()
+                strict_slots = schema is not None and db.execute(
+                    "select 1 from assets where row=? limit 1", (count,)
+                ).fetchone() is not None
+            if strict_slots and fields["content"].kind == 91 and _media(scanner, fields)[1] is not None:
                 slots = iter(_slots(scanner, fields))
                 for _, ref in _refs(scanner, fields):
                     if next(slots, None) != ref["sha256"]:
@@ -1305,11 +1361,23 @@ def candidate_facts(operation_dir: Path) -> dict:
     value = json.loads(raw)
     if value.get("adapter") != ADAPTER:
         raise Unsupported("Unknown candidate adapter")
+    plan = _saved_plan(operation_dir)
+    if (type(value.get("records")) is not int or value["records"] != plan.selected_records
+            or type(value.get("bytes")) is not int or value["bytes"] < 0):
+        raise Unsupported("Candidate bounds differ from selected plan")
+    if plan.committed_prefix is not None:
+        expected = {**plan.committed_prefix, "committed_bytes": value["bytes"],
+                    "message_count": value["records"], "sha256": value["sha256"]}
+        if value.get("committed_prefix") != expected:
+            raise Unsupported("Candidate selector differs from preserved source plan")
+    elif value.get("committed_prefix") is not None:
+        raise Unsupported("Legacy candidate cannot carry a committed selector")
     return value
 
 
 @contextmanager
-def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reader: AssetReader):
+def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reader: AssetReader,
+                            expected_source=None):
     """Pin a header-bearing T2 candidate for the sole format/lifetime writer.
 
     Yields (regular_binary_stream, unsealed_CommittedPrefix, live_check).
@@ -1318,6 +1386,11 @@ def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reade
     """
     from .transcript_v2 import CommittedPrefix
     facts = candidate_facts(operation_dir)
+    plan = _saved_plan(operation_dir)
+    if expected_source is not None and (
+        type(expected_source) is not CommittedPrefix or asdict(expected_source) != plan.committed_prefix
+    ):
+        raise Unsupported("Independently selected source differs from candidate operation")
     encoded = facts.get("committed_prefix")
     if not isinstance(encoded, dict):
         raise Unsupported("Explicit committed-source candidate required")

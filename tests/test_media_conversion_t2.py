@@ -217,6 +217,56 @@ def test_empty_selected_prefix_is_header_only_and_pinned(tmp_path):
         verify_export(tmp_path / 'operation/portable')
 
 
+@pytest.mark.parametrize("change", ["recovery", "boolean"])
+def test_forged_plan_cannot_erase_committed_recovery_or_boolean_count(tmp_path, change):
+    with fixture(tmp_path) as (binding, store, fence):
+        binding.append([{'role': 'user', 'content': 'original'}], expected=binding.expected,
+                       operation_id='seed', admit=lambda: None)
+        plan = preview_committed(binding.directory, expected=binding.expected, owner='fixture', fence=fence)
+        if change == "recovery":
+            plan = replace(plan, source=replace(plan.source, size=0, sha256=hashlib.sha256(b'').hexdigest()))
+        else:
+            plan = replace(plan, selected_records=True)
+        with pytest.raises(Unsupported):
+            build(plan, tmp_path / 'operation', store, fence)
+        assert not (tmp_path / 'operation').exists()
+
+
+def test_saved_candidate_selector_is_joined_to_preserved_source_plan(tmp_path):
+    with fixture(tmp_path) as (binding, store, fence):
+        binding.append([{'role': 'user', 'content': 'original'}], expected=binding.expected,
+                       operation_id='seed', admit=lambda: None)
+        plan = preview_committed(binding.directory, expected=binding.expected, owner='fixture', fence=fence)
+        build(plan, tmp_path / 'operation', store, fence)
+        path = tmp_path / 'operation/verified.json'
+        receipt = json.loads(path.read_bytes())
+        receipt['committed_prefix'].update(session_id='different-owner', body='g-fiction.jsonl',
+                                            sequence=999, operation_id='not-source-operation')
+        path.write_text(json.dumps(receipt))
+        with pytest.raises(Unsupported, match='selector differs'):
+            with open_verified_candidate(tmp_path / 'operation', session_id='different-owner',
+                                         asset_reader=store.resolve_ref):
+                pytest.fail('Forged selector must not open')
+
+
+def test_existing_array_refs_preserve_original_role_position(tmp_path):
+    with fixture(tmp_path) as (binding, store, fence):
+        ref = published(store)
+        row = {'role': 'tool', 'content': [{'type': 'text', 'text': 'canonical output'}],
+               'metadata': {'experimental.media.v1': {'refs': [ref]}}}
+        binding.append([row], expected=binding.expected, operation_id='seed',
+                       admit=lambda: None, media_store=store)
+        plan = preview_committed(binding.directory, expected=binding.expected, owner='fixture', fence=fence)
+        build(plan, tmp_path / 'operation', store, fence, export_assets=True)
+        with open_verified_candidate(
+            tmp_path / 'operation', session_id='session', asset_reader=store.resolve_ref,
+            expected_source=binding.expected,
+        ) as (stream, prefix, check):
+            assert list(iter_serialized_candidate_refs(stream, candidate_prefix=prefix)) == [ref]
+            check()
+        verify_export(tmp_path / 'operation/portable')
+
+
 def test_prepared_ref_iterator_rejects_malformed_namespace_late(tmp_path):
     from amplifier_foundation.session.transcript_v2 import CommittedPrefix
     header = b'{"format":"amplifier.session.transcript","v":2,"generation":"g","min_reader":["committed-prefix-v2","session-media-v1"]}\n'
