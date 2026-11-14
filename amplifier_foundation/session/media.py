@@ -459,6 +459,33 @@ class SessionMediaStore:
                 })
             return {"value": normalized, "staged_refs": copy.deepcopy(refs)}
 
+    def ingest_group_sync(self, values: Any, *, origin: Any, policy: Any) -> dict:
+        """Host-only bounded whole-origin ingestion, preserving one true origin.
+
+        Historical format owners pass an iterable of binary sources for one
+        original event/call. It is not a sequence of new observations/IDs, and
+        does not publish until the owner supplies the final effective ref set.
+        """
+        self._writable()
+        with self._lock:
+            selected = self.policy.restrict(policy)
+            provenance, origin_key = self._origin(origin, selected)
+            if selected.retention == "drop":
+                raise MediaRefusal("host policy forbids retaining image bytes")
+            refs = []
+            for value in values:
+                if len(refs) >= selected.max_images:
+                    raise MediaRefusal("image group exceeds host image count limit")
+                refs.append(self._stage(value, provenance, selected))
+            previous = self._read(self._dirs["origins"], origin_key + ".json")
+            if previous is not None and _json(previous["refs"]) != _json(refs):
+                raise MediaRefusal("conflicting whole-origin media group")
+            if previous is None:
+                self._write(self._dirs["origins"], origin_key + ".json", {
+                    "v": 1, "origin": provenance, "refs": refs, "publication": None,
+                })
+            return {"value": copy.deepcopy(refs), "staged_refs": copy.deepcopy(refs)}
+
     def _adapt_tool_result(self, value: Any, origin: dict, policy: MediaPolicy) -> tuple[Any, list]:
         from amplifier_core import ToolResult
         from amplifier_core.message_models import ImageBlock, TextBlock
@@ -477,7 +504,7 @@ class SessionMediaStore:
                 self._validate_origin_relation(origin, ref)
                 refs.append(copy.deepcopy(ref))
         content = []
-        for block in result.content or []:
+        for block in getattr(result, "content", None) or []:
             if not isinstance(block, ImageBlock):
                 content.append(block)
                 continue
@@ -496,7 +523,8 @@ class SessionMediaStore:
             elif not isinstance(output, dict):
                 output = {"result": output}  # Never parse JSON-looking original text.
             result.output = {**output, MEDIA_NAMESPACE: {"refs": copy.deepcopy(refs)}}
-        result.content = content or None
+        if hasattr(result, "content"):
+            result.content = content or None
         return result, refs
 
     def _validate_origin_relation(self, origin: dict, ref: dict) -> None:
@@ -1067,7 +1095,9 @@ def bind_session_media(coordinator: Any, *, store: SessionMediaStore,
         store.origin_resolver = current_origin
     if store.nested_verifier is None:
         def verify_nested(parent_origin, ref):
-            verifier = coordinator.get_capability("session.media.nested_verifier")
+            verifier = coordinator.get_capability("tools.dispatch.media_refs")
+            if verifier is None:
+                verifier = coordinator.get_capability("session.media.nested_verifier")
             return callable(verifier) and verifier(parent_origin, ref) is True
         store.nested_verifier = verify_nested
     capability = SessionMediaCapability(store, enabled=enabled)
