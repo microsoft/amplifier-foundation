@@ -63,7 +63,12 @@ pause a live app, or delete originals, assets, staging, backups or recovery hold
   return no partially transformed snapshot. Original messages are not mutated.
   Expiry-neutral identity uses
   `source_store.validate_ref(ref, committed=True, check_expiry=False)`, never a
-  pixel read or new retention grant. This already-materialized list API does
+  pixel read or new retention grant. A read-only F1 source instead uses
+  `validate_published_ref(ref, check_expiry=False)`, whose required
+  `source_read_verifier(ref, purpose="transfer")` binds the actual selected
+  guarded source; target adoption rechecks it before and after snapshot copying.
+  This is not a generic read-only/model grant or a writable source-journal ACK.
+  This already-materialized list API does
   not claim bounded huge-record memory.
 * `iter_verified_candidate_refs(operation_dir, installed=..., session_id=...,
   asset_reader=...)` is the **bounded installed-body checkpoint enumeration**

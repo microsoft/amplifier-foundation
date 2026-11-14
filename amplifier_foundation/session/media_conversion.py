@@ -827,7 +827,10 @@ def adopt_selected_media(
             expected = {**snapshot, "session_id": target_session_id}
             # Host validation establishes actual committed origin, even when
             # expiry forbids any pixel read/copy. It grants no new TTL.
-            source_store.validate_ref(deepcopy(snapshot), committed=True, check_expiry=False)
+            if getattr(source_store, "read_only", False):
+                source_store.validate_published_ref(deepcopy(snapshot), check_expiry=False)
+            else:
+                source_store.validate_ref(deepcopy(snapshot), committed=True, check_expiry=False)
             expiry = snapshot["provenance"]["expires_at"]
             if expiry is not None and datetime.fromisoformat(expiry) <= current:
                 warning = "[Image unavailable: original observation expired; no pixels supplied]"
