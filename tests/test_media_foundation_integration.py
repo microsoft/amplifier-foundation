@@ -54,7 +54,12 @@ def ack(store, path, rows):
 
 
 @pytest.mark.asyncio
-async def test_actual_rich_result_sanitize_save_adopt_fork_resume_private_projection(tmp_path):
+@pytest.mark.parametrize("rich_result", [False, True], ids=["binary-owner", "core-rich"])
+async def test_actual_rich_result_sanitize_save_adopt_fork_resume_private_projection(
+    tmp_path, rich_result,
+):
+    if rich_result and not hasattr(ToolResult(success=True), "content"):
+        pytest.skip("Core rich ToolResult requires Core2; binary-owner pairing still runs")
     parent_dir = tmp_path / "parent"
     parent_dir.mkdir()
     parent = new_store(parent_dir / "media", "parent")
@@ -63,17 +68,23 @@ async def test_actual_rich_result_sanitize_save_adopt_fork_resume_private_projec
     encoded = base64.b64encode(data).decode()
     origin = {"kind": "tool", "session_id": "parent", "id": "call-1"}
     try:
-        rich = ToolResult(success=True, output={"preserve": 8}, content=[
-            ImageBlock(source={"type": "base64", "media_type": "image/png", "data": encoded}),
-        ])
-        staged = await parent.ingest(rich, source_format="core-tool-result",
-                                     origin=origin, policy=None)
+        if rich_result:
+            rich = ToolResult(success=True, output={"preserve": 8}, content=[
+                ImageBlock(source={"type": "base64", "media_type": "image/png", "data": encoded}),
+            ])
+            staged = await parent.ingest(rich, source_format="core-tool-result",
+                                         origin=origin, policy=None)
+            blocks = [block.model_dump() for block in staged["value"].content]
+        else:
+            staged = await parent.ingest(data, source_format="image-bytes",
+                                         origin=origin, policy=None)
+            blocks = [{"type": "text", "text": f"[Session image {staged['value']['sha256']}]"}]
         refs = staged["staged_refs"]
         await parent.publish(refs, origin=origin, disposition="retain")
         canonical = [
             {"role": "user", "content": "inspect"},
             {"role": "tool", "tool_call_id": "call-1",
-             "content": [block.model_dump() for block in staged["value"].content],
+             "content": blocks,
              "metadata": {MEDIA_NAMESPACE: {"refs": refs},
                           "provider": {"opaque": "do-not-change"}}},
         ]
