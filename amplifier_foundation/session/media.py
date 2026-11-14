@@ -586,7 +586,7 @@ class SessionMediaStore:
         selected-source guard through validate_published_ref.
         """
         self._check()
-        if not isinstance(refs, list) or len(refs) > self.policy.max_images:
+        if not isinstance(refs, list) or not refs or len(refs) > self.policy.max_images:
             raise MediaRefusal("invalid or over-limit published media group")
         if not isinstance(origin, Mapping) or set(origin) not in (
             {"kind", "session_id", "id"}, _ORIGIN_FIELDS

@@ -169,7 +169,8 @@ inspection for selected current/recovery history. Staged entries refuse.
 retained publication**, not merely ownership of each member. Supply a list
 bounded by the host's `max_images`, plus explicit `{kind, session_id, id}` or
 complete original provenance. It returns `{valid: True, ref_count: int}` or raises
-`MediaRefusal`. Truncation, duplication, reordering, substituted refs, altered
+`MediaRefusal`. Empty groups (including all-redacted retain results), truncation,
+duplication, reordering, substituted refs, altered
 original timestamps, absent/unfinished/dropped publication and malformed refs
 refuse. A legitimately redacted subset succeeds only when that exact subset is
 the saved final publication. This inspection never publishes, resolves pixels,
