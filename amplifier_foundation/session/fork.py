@@ -13,7 +13,11 @@ The forked session is independently resumable and addressable.
 
 from __future__ import annotations
 
+import os
+import inspect
 import uuid
+from collections.abc import Callable
+from copy import deepcopy
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -71,6 +75,8 @@ def fork_session(
     include_events: bool = True,
     handle_orphaned_tools: str = "complete",
     windows_policy: str = "legacy",
+    media_adopter: Callable[..., list[dict[str, Any]]] | None = None,
+    media_checkpoint: Callable[..., None] | None = None,
 ) -> ForkResult:
     """Fork a stored session from a specific turn.
 
@@ -88,6 +94,12 @@ def fork_session(
         include_events: Whether to copy and slice events.jsonl (default: True).
         windows_policy: "legacy" by default; "private" explicitly opts into
             private Windows reads and create-only destination reservation.
+        media_adopter: Explicit host callback for authorized selected-prefix
+            media closure. Receives messages, session_id and session_dir; assets
+            must be published before returning target-owned canonical messages.
+        media_checkpoint: Host callback after the actual target canonical write,
+            receiving the same arguments. Must verify/acknowledge the exact
+            saved rows, not save a second transcript or manufacture a report.
         handle_orphaned_tools: How to handle tool_use without tool_result:
             - "complete": Add synthetic error result (default)
             - "remove": Remove the orphaned tool_use content
@@ -154,9 +166,21 @@ def fork_session(
 
     # Slice messages to turn
     sliced = slice_to_turn(messages, turn, handle_orphaned_tools=handle_orphaned_tools)
+    has_media = _has_media(sliced)
+    if has_media and (media_adopter is None or media_checkpoint is None):
+        raise ValueError(
+            "Cannot fork media references without host adoption and checkpoint handling"
+        )
+    if has_media and os.name != "posix":
+        raise ValueError("Media fork durability is not qualified on this platform")
 
     # Generate new session ID
     session_id = new_session_id or str(uuid.uuid4())
+    if has_media:
+        import re
+
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,220}", session_id):
+            raise ValueError("Media fork ID must be a safe session identifier")
     if private_windows and (
         Path(session_id).name != session_id or session_id in {".", ".."}
     ):
@@ -173,9 +197,18 @@ def fork_session(
 
     new_session_dir = base_dir / session_id
 
-    if not private_windows:
+    if has_media:
+        # Reserve before any callback publishes assets. A failed adoption/save
+        # leaves an explicit partial destination, never an apparently successful
+        # fork or an excuse to overwrite/reclaim its assets on retry.
+        new_session_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+        sliced = _adopt_media(
+            sliced, media_adopter, session_id=session_id, session_dir=new_session_dir
+        )
+    elif not private_windows:
         # Default legacy path is unchanged on both Windows and POSIX.
         new_session_dir.mkdir(parents=True, exist_ok=True)
+    if not private_windows:
         write_jsonl(new_session_dir / TRANSCRIPT_FILENAME, sliced)
 
     # Write metadata with lineage
@@ -203,6 +236,21 @@ def fork_session(
             )
         else:
             write_metadata(new_session_dir, new_metadata)
+        if has_media:
+            # The target transcript exists only after independently owned assets.
+            # Failure is propagated; it never reexecutes the producer or deletes
+            # the completed partial canonical evidence.
+            outcome = media_checkpoint(
+                sliced, session_id=session_id, session_dir=new_session_dir
+            )
+            if outcome is not None:
+                if inspect.iscoroutine(outcome):
+                    outcome.close()
+                if inspect.isgenerator(outcome):
+                    outcome.close()
+                raise ValueError(
+                    "Media fork checkpoint callback must be synchronous and return None"
+                )
 
         # Handle events.jsonl; Windows retains the reservation pins throughout.
         events_count = 0
@@ -240,7 +288,9 @@ def fork_session_in_memory(
     *,
     turn: int | None = None,
     parent_id: str | None = None,
+    new_session_id: str | None = None,
     handle_orphaned_tools: str = "complete",
+    media_adopter: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> ForkResult:
     """Fork messages in memory without file I/O.
 
@@ -253,6 +303,8 @@ def fork_session_in_memory(
         messages: Source messages to fork from.
         turn: Turn to fork at (1-indexed). None = all turns (full copy).
         parent_id: Parent session ID for lineage tracking.
+        new_session_id: Optional target identity chosen before adoption. Hosts
+            reserve this exact target and must not rename it after refs are bound.
         handle_orphaned_tools: How to handle orphaned tool calls.
 
     Returns:
@@ -266,6 +318,14 @@ def fork_session_in_memory(
         >>> result = fork_session_in_memory(messages, turn=2)
         >>> await new_context.set_messages(result.messages)
     """
+    import re
+
+    if new_session_id is not None and (
+        not isinstance(new_session_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,220}", new_session_id)
+    ):
+        raise ValueError("Fork ID must be a safe session identifier")
+    session_id = new_session_id if new_session_id is not None else str(uuid.uuid4())
     max_turns = count_turns(messages)
 
     if turn is None:
@@ -274,7 +334,7 @@ def fork_session_in_memory(
     if max_turns == 0:
         # Empty conversation - return empty fork
         return ForkResult(
-            session_id=str(uuid.uuid4()),
+            session_id=session_id,
             session_dir=None,
             parent_id=parent_id or "unknown",
             forked_from_turn=0,
@@ -284,15 +344,58 @@ def fork_session_in_memory(
 
     # Slice messages
     sliced = slice_to_turn(messages, turn, handle_orphaned_tools=handle_orphaned_tools)
+    if _has_media(sliced):
+        sliced = _adopt_media(
+            sliced, media_adopter, session_id=session_id, session_dir=None
+        )
 
     return ForkResult(
-        session_id=str(uuid.uuid4()),
+        session_id=session_id,
         session_dir=None,
         parent_id=parent_id or "unknown",
         forked_from_turn=turn,
         message_count=len(sliced),
         messages=sliced,
     )
+
+
+def _has_media(messages: list[dict[str, Any]]) -> bool:
+    """Inspect only the canonical namespace, never strings or nested results."""
+    found = False
+    for message in messages:
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict) or "experimental.media.v1" not in metadata:
+            continue
+        carrier = metadata["experimental.media.v1"]
+        if (not isinstance(carrier, dict) or set(carrier) != {"refs"}
+                or not isinstance(carrier["refs"], list)):
+            raise ValueError("Invalid canonical media carrier in fork")
+        for ref in carrier["refs"]:
+            if not isinstance(ref, dict):
+                raise ValueError("Invalid canonical media reference in fork")
+            found = True
+    return found
+
+
+def _adopt_media(messages, adopter, *, session_id, session_dir):
+    if adopter is None:
+        raise ValueError("Cannot fork media references without host adoption handling")
+    # A callback cannot mutate the original selected parent rows on failure.
+    result = adopter(
+        deepcopy(messages), session_id=session_id, session_dir=session_dir
+    )
+    if (not isinstance(result, list) or len(result) != len(messages)
+            or any(not isinstance(row, dict) or row.get("role") != original.get("role")
+                   for row, original in zip(result, messages))):
+        raise ValueError("Media adoption must preserve canonical rows and roles")
+    _has_media(result)  # Validate the exact carrier, including an empty carrier.
+    for row in result:
+        metadata = row.get("metadata", {})
+        carrier = metadata.get("experimental.media.v1", {}) if isinstance(metadata, dict) else {}
+        for ref in carrier.get("refs", []):
+            if type(ref.get("v")) is not int or ref["v"] != 1 or ref.get("session_id") != session_id:
+                raise ValueError("Media adoption returned a foreign or unsupported reference")
+    return result
 
 
 def get_fork_preview(

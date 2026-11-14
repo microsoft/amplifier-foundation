@@ -188,6 +188,8 @@ class SessionHistoryStore:
 
     def exists(self) -> bool:
         """Whether any canonical transcript/metadata or their backup exists."""
+        if self._versioned_reader() is not None:
+            return True
         return any(
             _exists(path, windows_policy=self.windows_policy)
             for path in self._canonical_paths().values()
@@ -203,6 +205,25 @@ class SessionHistoryStore:
                 "transcript.jsonl.append-pending"
             ),
         }
+
+    def _versioned_reader(self):
+        from .transcript_v2 import CommittedTranscriptReader
+
+        # lexists semantics: a damaged/symlinked versioned entry is not absence
+        # and must never fall back to an older complete-looking legacy backup.
+        try:
+            (self.session_dir / "transcript.v2").lstat()
+        except FileNotFoundError:
+            return None
+        return CommittedTranscriptReader(self.session_dir)
+
+    def _refuse_versioned_write(self):
+        if self._versioned_reader() is not None:
+            from .transcript_v2 import UnsupportedTranscript
+
+            raise UnsupportedTranscript(
+                "Versioned transcript writing is not enabled; history was preserved"
+            )
 
     def _recover(
         self, path: Path, source: str, reader: Callable[..., Any], empty: Any
@@ -252,6 +273,9 @@ class SessionHistoryStore:
         ``diagnostics``. This method never reads the event log.
         """
         self.diagnostics = []
+        versioned = self._versioned_reader()
+        if versioned is not None:
+            return list(versioned.iter_messages())
         return self._recover(self.transcript_path, "transcript", _read_messages, [])
 
     def load_metadata(self) -> dict[str, Any]:
@@ -269,6 +293,10 @@ class SessionHistoryStore:
         from .jsonl import indexed
 
         self.diagnostics = []
+        versioned = self._versioned_reader()
+        if versioned is not None:
+            # Reader-first compatibility, not a new disk-index performance claim.
+            return list(versioned.iter_messages())
         return self._recover(self.transcript_path, "transcript", indexed, [])
 
     def load(self, *, include_events: bool = True) -> SessionHistory:
@@ -281,13 +309,19 @@ class SessionHistoryStore:
         """
         self.diagnostics = []
         paths = self._canonical_paths()
+        versioned = self._versioned_reader()
+        if versioned is not None:
+            paths["transcript_v2_commit"] = self.session_dir / "transcript.v2" / "current.json"
         if include_events:
             paths["events"] = self.events_path
         before = {
             key: file_stamp(path, windows_policy=self.windows_policy)
             for key, path in paths.items()
         }
-        messages = self._recover(self.transcript_path, "transcript", _read_messages, [])
+        messages = (
+            list(versioned.iter_messages()) if versioned is not None
+            else self._recover(self.transcript_path, "transcript", _read_messages, [])
+        )
         metadata = self._recover(self.metadata_path, "metadata", _read_metadata, {})
         events = list(self._iter_events()) if include_events else []
         after = {
@@ -552,6 +586,7 @@ class SessionHistoryStore:
         policy; JSON-serializable provider continuation fields survive untouched.
         No logger, event log, checkpoint, or additional session body is written.
         """
+        self._refuse_versioned_write()
         if incremental:
             return self._save_incremental(
                 messages, metadata, preserve_system, sanitizer, merge_metadata
@@ -637,6 +672,7 @@ class SessionHistoryStore:
         sanitizer: Callable[[Any], dict[str, Any]] | None = None,
     ) -> None:
         """Replace only transcript.jsonl, for incremental context persistence."""
+        self._refuse_versioned_write()
         content = self._messages_content(messages, preserve_system, sanitizer)
         preserve_backup = self._prepare_write(self.transcript_path, _read_messages)
         self._write_prepared(self.transcript_path, content, preserve_backup)

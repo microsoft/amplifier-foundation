@@ -28,9 +28,16 @@ class BundleStateManager:
     group operations, config_set, save, and apply_saved_settings.
     """
 
-    def __init__(self, session: Any, prepared_bundle: Any) -> None:
+    def __init__(
+        self, session: Any, prepared_bundle: Any, *, coordinator: Any = None
+    ) -> None:
         self._session = session
-        self._coordinator = session.coordinator
+        # Keep the real session while routing every operation through the
+        # host-supplied view.  Only None selects the backward-compatible default;
+        # a coordinator view need not be truthy.
+        self._coordinator = (
+            session.coordinator if coordinator is None else coordinator
+        )
         self._bundle = prepared_bundle.bundle
         self._prepared_bundle = prepared_bundle
 
