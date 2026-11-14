@@ -94,6 +94,7 @@ class MediaPreparedProvider:
         self._prepare_overlay = prepare_overlay
         self._candidate: _Candidate | None = None
         self._active: list[Any] = []
+        self._owned_overlays: dict[int, list[Any]] = {}
         self._streams: set[_MediaStream] = set()
         self._busy = False
         self._closed = False
@@ -147,7 +148,22 @@ class MediaPreparedProvider:
         if not any(item is prepared for item in self._active):
             return
         self._active = [item for item in self._active if item is not prepared]
-        prepared.release()
+        try:
+            prepared.release()
+        finally:
+            self._clear_overlays(self._owned_overlays.pop(id(prepared), []))
+
+    @staticmethod
+    def _clear_overlays(requests: list[Any]) -> None:
+        from amplifier_core.message_models import ChatRequest, ImageBlock
+        for request in requests:
+            if isinstance(request, ChatRequest):
+                for message in request.messages:
+                    if isinstance(message.content, list):
+                        for block in message.content:
+                            if isinstance(block, ImageBlock) and isinstance(block.source, dict):
+                                block.source.clear()
+                request.messages = []
 
     def close(self) -> None:
         """Revoke all prepared requests, including an active transport's witness."""
@@ -155,7 +171,10 @@ class MediaPreparedProvider:
         self._candidate = None
         active, self._active = self._active, []
         for prepared in active:
-            prepared.release()
+            try:
+                prepared.release()
+            finally:
+                self._clear_overlays(self._owned_overlays.pop(id(prepared), []))
 
     async def aclose(self) -> None:
         """Revoke buffers and close any live underlying stream iterators."""
@@ -224,30 +243,38 @@ class MediaPreparedProvider:
                 raise ValueError("Fitted media candidate changed before dispatch")
         projected_source = request
         overlay_validator = None
-        if self._prepare_overlay is not None:
-            overlay = await _result(self._prepare_overlay(
-                copy.deepcopy(request), purpose=purpose,
-                request_options=copy.deepcopy(options),
-            ))
-            if not isinstance(overlay, Mapping) or set(overlay) != {"request", "validate"}:
-                raise ValueError("Host media overlay must return exact request/validate association")
-            if not callable(overlay["validate"]):
-                raise ValueError("Host media overlay requires synchronous admission validator")
-            projected_source, overlay_validator = overlay["request"], overlay["validate"]
-            if overlay_validator() is not True:
-                raise ValueError("Host media overlay admission refused")
-            if self._binding(request, options)[0] != key:
-                raise ValueError("Canonical request changed during host overlay")
-        prepared = await _result(
-            self._capability.prepare_request(
-                projected_source,
-                provider_identity=identity,
-                model=model,
-                request_options=copy.deepcopy(options),
-                purpose=purpose,
-                execution_scope=copy.deepcopy(self._scope),
+        owned_overlays = []
+        try:
+            if self._prepare_overlay is not None:
+                overlay_copy = copy.deepcopy(request)
+                owned_overlays.append(overlay_copy)
+                overlay = await _result(self._prepare_overlay(
+                    overlay_copy, purpose=purpose, request_options=copy.deepcopy(options),
+                ))
+                if not isinstance(overlay, Mapping) or set(overlay) != {"request", "validate"}:
+                    raise ValueError("Host media overlay must return exact request/validate association")
+                if not callable(overlay["validate"]):
+                    raise ValueError("Host media overlay requires synchronous admission validator")
+                projected_source, overlay_validator = overlay["request"], overlay["validate"]
+                if projected_source is request:
+                    raise ValueError("Host overlay must not return caller canonical request")
+                if projected_source is not overlay_copy:
+                    owned_overlays.append(projected_source)
+                if overlay_validator() is not True:
+                    raise ValueError("Host media overlay admission refused")
+                if self._binding(request, options)[0] != key:
+                    raise ValueError("Canonical request changed during host overlay")
+            prepared = await _result(
+                self._capability.prepare_request(
+                    projected_source, provider_identity=identity, model=model,
+                    request_options=copy.deepcopy(options), purpose=purpose,
+                    execution_scope=copy.deepcopy(self._scope),
+                )
             )
-        )
+        except BaseException:
+            self._clear_overlays(owned_overlays)
+            raise
+        self._owned_overlays[id(prepared)] = owned_overlays
         candidate = _Candidate(request, key, prepared)
         self._active.append(prepared)
         try:

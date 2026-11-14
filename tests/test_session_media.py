@@ -40,6 +40,7 @@ class Coordinator:
         self.capabilities[name] = value
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX store durability; neutral/projector portable tests separate")
 class MediaTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -482,7 +483,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         wrapper = MediaPreparedProvider(provider, cap, provider_identity=lambda: account)
         await wrapper.request_budget(canonical, request_options={})
         self.assertTrue(wrapper.media_budget_witness(canonical)["validated"])
-        self.assertEqual(await wrapper.complete(canonical), "done")
+        self.assertEqual(await wrapper.complete(canonical, model="qualified"), "done")
         self.assertIs(provider.counted, provider.sent)
         self.assertEqual(provider.sent.messages, [])  # released, not canonical.
         self.assertEqual(canonical.messages[0].content, "picture")
@@ -522,6 +523,8 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             guarded = False
             with self.assertRaises(MediaRefusal):
                 observer.resolve_published_ref(ref)
+            with self.assertRaises(MediaRefusal):
+                observer.resolve_ref(ref, committed=False)
             with self.assertRaises(MediaRefusal):
                 observer.publish_sync([ref], origin=self.origin, disposition="retain")
         finally:
@@ -635,6 +638,60 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
                 metadata={MEDIA_NAMESPACE: {"refs": [ref]}})]), provider_identity={},
                 model="text", request_options={}, purpose="model", execution_scope={})
         store.close()
+
+    async def test_overlay_intermediate_copies_cleared_on_success_and_late_refusal(self):
+        from amplifier_foundation.session.media_provider import MediaPreparedProvider
+        cap = bind_session_media(Coordinator(), store=self.store, enabled=True)
+        canonical = ChatRequest(messages=[Message(role="user", content="plain")])
+        retained = []
+        calls = 0
+        refuse_late = False
+        def overlay(request, *, purpose, request_options):
+            nonlocal calls
+            request.messages[0].content = [ImageBlock(source={
+                "type": "base64", "media_type": "image/png",
+                "data": base64.b64encode(self.data).decode()})]
+            retained.append((request, request.messages[0].content[0]))
+            def validate():
+                nonlocal calls
+                calls += 1
+                return not (refuse_late and calls > 1)
+            return {"request": request, "validate": validate}
+        self.store.request_only_verifier = lambda *args, **kwargs: True
+        class Provider:
+            def get_media_request_support(self, **kwargs):
+                return {"v": 1, "positions": ["user"]}
+            async def complete(self, request, **kwargs):
+                cap.validate(request, purpose="transport", request_options=kwargs)
+                return "done"
+        wrapper = MediaPreparedProvider(Provider(), cap, provider_identity={
+            "provider": "p", "account": "a", "generation": "g"}, prepare_overlay=overlay)
+        self.assertEqual(await wrapper.complete(canonical), "done")
+        self.assertEqual(retained[-1][0].messages, [])
+        self.assertEqual(retained[-1][1].source, {})
+        refuse_late, calls = True, 0
+        with self.assertRaises(ValueError):
+            await wrapper.complete(canonical)
+        self.assertEqual(retained[-1][0].messages, [])
+        self.assertEqual(retained[-1][1].source, {})
+        self.assertEqual(canonical.messages[0].content, "plain")
+
+    async def test_concurrent_source_classification_has_one_winner(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        ref = await self.stage()
+        barrier = threading.Barrier(2)
+        def classify(name):
+            barrier.wait()
+            try:
+                self.store.classify_origin(ref, classification=name)
+                return "success"
+            except MediaRefusal:
+                return "refused"
+        with ThreadPoolExecutor(2) as pool:
+            a = pool.submit(classify, "computer-use")
+            b = pool.submit(classify, "ordinary-upload")
+            self.assertCountEqual([a.result(), b.result()], ["success", "refused"])
 
 
 if __name__ == "__main__":
