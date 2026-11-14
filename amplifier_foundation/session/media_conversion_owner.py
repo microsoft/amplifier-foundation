@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
 
@@ -20,6 +21,13 @@ from .media_conversion import NAMESPACE, Unsupported, _digest, _json, _open, _va
 
 BINDING = "foundation.capture-image-owner.v1"
 DIAGNOSTIC_LABEL = "[Session image {sha256}; diagnostic reference only; no pixels supplied]"
+
+
+@dataclass(frozen=True)
+class _DetachedStagedImage:
+    replacement: dict
+    receipt: dict
+    new_asset_bytes: int
 
 
 def _off_loop() -> None:
@@ -77,8 +85,9 @@ class CaptureMediaOwner:
     ``origin_for`` must authorize one exact source snapshot and return all five
     original provenance fields. ``checkpoint_receipt_for`` returns the actual
     local diagnostic-file receipt, verified by this store's checkpoint verifier.
-    ``new_asset_bytes_for`` supplies independently measured unique allocation,
-    excluding duplicates/recovery; it may not guess from the inline length.
+    ``new_asset_bytes_for`` supplies independently measured unique allocation
+    AFTER assets-only publication, excluding duplicates/recovery; it may not
+    guess from the inline length. Allocation can exceed logical payload length.
     ``reader_ready`` is the host's qualification gate for this exact replacement
     AND a distinct diagnostic-only store that is never mounted on a canonical
     session capability. Diagnostic-file reachability is not a transcript ACK.
@@ -90,6 +99,7 @@ class CaptureMediaOwner:
         checkpoint_receipt_for: Callable[..., Any],
         new_asset_bytes_for: Callable[[dict], int],
         reader_ready: Callable[[str], bool],
+        single_image_origin: Callable[[dict, dict], bool],
     ) -> None:
         self.store = store
         self.staged_factory = staged_factory
@@ -97,6 +107,7 @@ class CaptureMediaOwner:
         self.checkpoint_receipt_for = checkpoint_receipt_for
         self.new_asset_bytes_for = new_asset_bytes_for
         self.reader_ready = reader_ready
+        self.single_image_origin = single_image_origin
 
     def _ready(self):
         _off_loop()
@@ -117,6 +128,13 @@ class CaptureMediaOwner:
         self._ready()
         snapshot = deepcopy(origin)
         original = self._origin(snapshot)
+        # Current F1 byte ingest is one complete ref-set per real origin.
+        # Require the owner to preflight source cardinality before ANY staging;
+        # do not manufacture per-image original IDs to evade group conflicts.
+        if _sync_result(self.single_image_origin(
+            deepcopy(snapshot), deepcopy(original),
+        )) is not True:
+            raise Unsupported("Grouped/unknown image-origin cardinality requires an owner group adapter")
         if mime not in ("image/png", "image/jpeg"):
             raise Unsupported("Only qualified static PNG/JPEG historical images")
         image.seek(0)
@@ -137,18 +155,31 @@ class CaptureMediaOwner:
                 or ref["sha256"] != digest or ref["bytes"] != size or ref["mime"] != mime):
             raise Unsupported("Historical staging changed original image/observation identity")
         self.store.validate_ref(deepcopy(ref), committed=False)
+        publication = asyncio.run(self.store.publish(
+            [deepcopy(ref)], origin=deepcopy(original), disposition="retain",
+        ))
+        if publication["refs"] != [ref]:
+            raise Unsupported("Historical staging publication changed reference")
         receipt = {"binding": BINDING, "origin": original, "ref": ref,
                    "source_origin_sha256": hashlib.sha256(_json(snapshot)).hexdigest()}
         if len(_json(receipt)) > 16384:
             raise Unsupported("Historical media owner receipt exceeds 16KiB")
         added = _sync_result(self.new_asset_bytes_for(deepcopy(ref)))
-        if type(added) is not int or added < 0 or added > size:
+        if type(added) is not int or added < 0:
             raise Unsupported("Host must supply measured unique original asset bytes")
         replacement = {"type": "text", "text": DIAGNOSTIC_LABEL.format(**ref),
                        "metadata": {NAMESPACE: {"refs": [deepcopy(ref)]}}}
-        return _sync_result(self.staged_factory(
-            replacement=replacement, receipt=deepcopy(receipt), new_asset_bytes=added,
+        produced = _sync_result(self.staged_factory(
+            replacement=deepcopy(replacement), receipt=deepcopy(receipt), new_asset_bytes=added,
         ))
+        if (getattr(produced, "replacement", None) != replacement
+                or getattr(produced, "receipt", None) != receipt
+                or type(getattr(produced, "new_asset_bytes", None)) is not int
+                or produced.new_asset_bytes != added):
+            raise Unsupported("Historical staged factory changed verified output")
+        # Protocol is structural. Never return factory-owned mutable aliases,
+        # even when its nominal dataclass is frozen.
+        return _DetachedStagedImage(deepcopy(replacement), deepcopy(receipt), added)
 
     def _manifest(self, path: Path) -> Iterator[tuple[dict, dict]]:
         with _open(path) as stream:
@@ -172,6 +203,10 @@ class CaptureMediaOwner:
                 if hashlib.sha256(_json(snapshot)).hexdigest() != receipt["source_origin_sha256"]:
                     raise Unsupported("Historical manifest source-origin drift")
                 original, ref = self._origin(snapshot), receipt["ref"]
+                if _sync_result(self.single_image_origin(
+                    deepcopy(snapshot), deepcopy(original),
+                )) is not True:
+                    raise Unsupported("Historical image-origin cardinality no longer qualified")
                 _validate_ref(ref)
                 if ref["provenance"] != original or receipt["origin"] != original:
                     raise Unsupported("Historical media provenance changed")

@@ -97,14 +97,16 @@ class Staged:
     new_asset_bytes: int
 
 
-def owner(store, *, policy=None, reader_ready=lambda _: True, receipt=None, accounting=None):
+def owner(store, *, policy=None, reader_ready=lambda _: True, receipt=None, accounting=None,
+          single_image_origin=lambda *_: True, factory=Staged):
     return CaptureMediaOwner(
-        store, staged_factory=Staged, origin_for=policy or (lambda _: original()),
+        store, staged_factory=factory, origin_for=policy or (lambda _: original()),
         checkpoint_receipt_for=receipt or (lambda manifest, **kwargs: {
             "refs": [json.loads(line)["owner"]["ref"] for line in manifest.read_bytes().splitlines()]
         }),  # Small fixture verifier only; production must page/exhaust exact source.
         new_asset_bytes_for=accounting or (lambda ref: ref["bytes"]),
         reader_ready=reader_ready,
+        single_image_origin=single_image_origin,
     )
 
 
@@ -200,3 +202,52 @@ def test_sync_real_expired_committed_ref_no_pixel_copy(stores, tmp_path, monkeyp
     )
     assert result[0]["metadata"][NAMESPACE]["refs"] == []
     assert "expired" in result[0]["content"]
+
+
+def test_factory_mutation_and_retained_alias_are_not_returned(stores):
+    store, _ = stores
+    held = []
+    def mutate(**values):
+        values["replacement"]["metadata"][NAMESPACE]["refs"][0]["sha256"] = "0" * 64
+        return Staged(**values)
+    pixels = png()
+    with pytest.raises(Unsupported, match="factory changed"):
+        owner(store, factory=mutate).stage_image(io.BytesIO(pixels), mime="image/png", origin=snapshot(pixels))
+    def retain(**values):
+        held.append(values)
+        return Staged(**values)
+    result = owner(store, factory=retain).stage_image(io.BytesIO(pixels), mime="image/png", origin=snapshot(pixels))
+    held[0]["replacement"]["metadata"][NAMESPACE]["refs"][0]["sha256"] = "0" * 64
+    held[0]["receipt"]["ref"]["provenance"]["expires_at"] = "2099-01-01T00:00:00+00:00"
+    assert diagnostic_image_ref(result.replacement)["sha256"] == hashlib.sha256(pixels).hexdigest()
+    assert result.receipt["ref"]["provenance"]["expires_at"] is None
+
+
+def test_grouped_origin_preflight_refuses_before_staging(stores, monkeypatch):
+    store, _ = stores
+    async def forbidden(*_, **__):
+        raise AssertionError("grouped source must refuse before any ingest")
+    monkeypatch.setattr(store, "ingest", forbidden)
+    pixels = png()
+    with pytest.raises(Unsupported, match="cardinality"):
+        owner(store, single_image_origin=lambda *_: False).stage_image(
+            io.BytesIO(pixels), mime="image/png", origin=snapshot(pixels),
+        )
+
+
+def test_actual_allocated_bytes_after_publication_and_dedup(stores):
+    store, _ = stores
+    calls = 0
+    def allocated(ref):
+        nonlocal calls
+        # Measurement is after publication, not guessed from staged length.
+        with store.resolve_ref(ref, committed=False) as source:
+            assert source.read() == png()
+        calls += 1
+        return 4096 if calls == 1 else 0
+    pixels = png()
+    binding = owner(store, accounting=allocated)
+    first = binding.stage_image(io.BytesIO(pixels), mime="image/png", origin=snapshot(pixels))
+    second = binding.stage_image(io.BytesIO(pixels), mime="image/png", origin=snapshot(pixels))
+    assert first.new_asset_bytes == 4096 > len(pixels)
+    assert second.new_asset_bytes == 0
