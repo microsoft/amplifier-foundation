@@ -586,6 +586,8 @@ class SessionMediaStore:
             stream.close()
 
     def resolve_ref(self, ref: Any, *, committed: bool = True) -> BinaryIO:
+        if self.read_only:
+            raise MediaRefusal("observer reads require guarded resolve_published_ref")
         normalized = self.validate_ref(ref, committed=committed)
         record = self._read(self._dirs["records"], _key(normalized) + ".json")
         directory, name = (
@@ -871,6 +873,10 @@ class SessionMediaStore:
         not a model argument or marker string. Classification is immutable and
         follows original provenance through adoption. No pixel bytes live here.
         """
+        with self._lock:
+            self._classify_origin(origin_or_ref, classification=classification)
+
+    def _classify_origin(self, origin_or_ref: dict, *, classification: str) -> None:
         self._writable()
         if not isinstance(classification, str) or not re.fullmatch(
             r"[a-z][a-z0-9.-]{0,100}", classification

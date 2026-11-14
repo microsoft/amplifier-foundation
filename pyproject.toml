@@ -57,6 +57,7 @@ allow-direct-references = true
 
 [dependency-groups]
 dev = [
+    "Pillow>=12.2.0",
     "grpcio>=1.78.0",
     "notebook>=7.5.6",
     "protobuf>=4.0.0",
