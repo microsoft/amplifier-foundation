@@ -17,7 +17,7 @@ import sqlite3
 import stat
 import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, BinaryIO, Callable, ContextManager, Iterator, Protocol
@@ -73,6 +73,9 @@ class ConversionPlan:
     selected_records: int
     committed_prefix: dict | None = None
     committed_session_dir: str | None = None
+    target_prefix: dict | None = None
+    target_session_dir: str | None = None
+    portable_directory: str | None = None
 
 
 @dataclass(frozen=True)
@@ -166,7 +169,7 @@ class _CommittedView:
 
 @contextmanager
 def _source_view(plan, *, include_header=False):
-    if plan.committed_prefix is None:
+    if plan.committed_prefix is None or plan.portable_directory is not None:
         with _open(Path(plan.source.path)) as stream:
             yield stream
         return
@@ -180,10 +183,17 @@ def _source_view(plan, *, include_header=False):
 
 def _check_source(plan):
     _validate_plan(plan)
-    if plan.committed_prefix is None:
+    if plan.committed_prefix is None or plan.portable_directory is not None:
         _check(plan.source)
+        if plan.portable_directory is not None:
+            verify_export(Path(plan.portable_directory))
     else:
         with _source_view(plan):
+            pass
+    if plan.target_prefix is not None:
+        from .transcript_source import open_committed_source
+        from .transcript_v2 import CommittedPrefix
+        with open_committed_source(plan.target_session_dir, expected=CommittedPrefix(**plan.target_prefix)):
             pass
 
 
@@ -195,7 +205,7 @@ def _validate_plan(plan):
             or not 0 <= plan.selected_records <= plan.records):
         raise Unsupported("Invalid exact conversion plan/selection")
     if plan.committed_prefix is None:
-        if plan.committed_session_dir is not None:
+        if plan.committed_session_dir is not None or plan.target_prefix is not None or plan.portable_directory is not None:
             raise Unsupported("Legacy source cannot carry a committed session directory")
         return
     from .transcript_v2 import CommittedPrefix
@@ -209,17 +219,35 @@ def _validate_plan(plan):
             raise Unsupported("Committed selector bounds must be exact integers")
     if (type(prefix.sha256) is not str or not re.fullmatch("[0-9a-f]{64}", prefix.sha256)
             or prefix.body != f"g-{prefix.generation}.jsonl"
-            or type(plan.committed_session_dir) is not str):
+            or (plan.portable_directory is None and type(plan.committed_session_dir) is not str)):
         raise Unsupported("Invalid committed conversion source facts")
-    session = Path(plan.committed_session_dir)
-    derived = SourceIdentity(
-        str(session / "transcript.v2" / prefix.body), 0, 0,
-        prefix.committed_bytes, 0, 0, prefix.sha256,
-    )
-    if (not session.is_absolute() or ".." in session.parts or session.name != prefix.session_id
-            or plan.session_id != prefix.session_id or plan.records != prefix.message_count
-            or plan.source != derived or plan.backups):
-        raise Unsupported("Committed plan recovery/source facts differ from selected prefix")
+    if plan.portable_directory is None:
+        session = Path(plan.committed_session_dir)
+        derived = SourceIdentity(
+            str(session / "transcript.v2" / prefix.body), 0, 0,
+            prefix.committed_bytes, 0, 0, prefix.sha256,
+        )
+        if (not session.is_absolute() or ".." in session.parts or session.name != prefix.session_id
+                or plan.source != derived):
+            raise Unsupported("Committed plan recovery/source facts differ from selected prefix")
+    else:
+        package = Path(plan.portable_directory)
+        if (plan.committed_session_dir is not None or not package.is_absolute() or ".." in package.parts
+                or plan.source.path != str(package / "candidate.jsonl")
+                or (plan.source.sha256, plan.source.size) != (prefix.sha256, prefix.committed_bytes)):
+            raise Unsupported("Portable import source differs from verified package")
+    if plan.session_id != prefix.session_id or plan.records != prefix.message_count or plan.backups:
+        raise Unsupported("Conversion source identity/count differs")
+    if plan.target_prefix is None:
+        if plan.target_session_dir is not None:
+            raise Unsupported("Target directory needs an explicit target prefix")
+    else:
+        target = CommittedPrefix(**plan.target_prefix)
+        _prefix_types(target)
+        path = Path(plan.target_session_dir)
+        if (target.message_count != 0 or target.session_id == prefix.session_id
+                or not path.is_absolute() or ".." in path.parts or path.name != target.session_id):
+            raise Unsupported("Transfer requires an explicitly selected empty prospective target")
 
 
 def _prefix_types(prefix):
@@ -804,6 +832,17 @@ async def _build(
         with (directory / f"original-{index}").open("rb") as source:
             if _digest(source) != (identity.sha256, identity.size):
                 raise Unsupported("Original recovery copy mismatch")
+    if plan.target_prefix is not None:
+        from .transcript_source import open_committed_source
+        from .transcript_v2 import CommittedPrefix
+        with open_committed_source(
+            plan.target_session_dir, expected=CommittedPrefix(**plan.target_prefix),
+        ) as target, (directory / "original-target").open("xb") as output:
+            os.chmod(output.name, 0o600)
+            for raw in target.iter_bytes():
+                output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
     db = sqlite3.connect(directory / "manifest.sqlite")
     os.chmod(directory / "manifest.sqlite", 0o600)
     try:
@@ -817,6 +856,21 @@ async def _build(
         db.execute("create table transfer_refs(row integer,start integer,end integer,origin blob,ref blob,adopted blob)")
         if plan.committed_prefix is not None:
             db.execute("create table held(row integer)")
+        if plan.target_prefix is not None:
+            # Only the target's already issued actual header is copied as
+            # candidate data. The writer still generates its own rewrite header.
+            from .transcript_source import open_committed_source
+            from .transcript_v2 import CommittedPrefix
+            with _source_view(plan) as original:
+                scanner = Scanner(original)
+                header = next(scanner.records())
+            with open_committed_source(
+                plan.target_session_dir, expected=CommittedPrefix(**plan.target_prefix),
+            ) as target:
+                raw = target.read_range(0, target.commit.committed_bytes)
+                if len(raw) > CHUNK or not raw.endswith(b"\n"):
+                    raise Unsupported("Empty target must contain only its bounded generation header")
+                _patch(db, header.start, header.end, raw[:-1])
         if adopt_ref is not None:
             _image_limit(adopt_limit)
             with _source_view(plan) as source:
@@ -957,12 +1011,12 @@ async def _build(
                     raise Unsupported("Candidate differs from exact allowed-span transformation")
         # Verify parse, ref equality/order and binary closure from the candidate,
         # rather than treating a successful ingest receipt as a verified rewrite.
-        _verify_candidate(directory / "candidate.jsonl", db, reader, plan.selected_records,
-                          plan.committed_prefix)
+        output_prefix = plan.target_prefix or plan.committed_prefix
+        _verify_candidate(directory / "candidate.jsonl", db, reader, plan.selected_records, output_prefix)
         if export_assets:
             if held_records:
                 raise Unsupported("Held original policy cannot authorize portable inline pixels")
-            _portable_export(directory, db, reader, plan.selected_records, plan.committed_prefix)
+            _portable_export(directory, db, reader, plan.selected_records, output_prefix)
         if cancelled():
             raise InterruptedError("Conversion cancelled before verification receipt")
         _check_source(plan)
@@ -971,8 +1025,8 @@ async def _build(
         with (directory / "candidate.jsonl").open("rb") as stream:
             digest, size = _digest(stream)
         db.commit()
-        candidate_prefix = None if plan.committed_prefix is None else {
-            **plan.committed_prefix, "committed_bytes": size,
+        candidate_prefix = None if output_prefix is None else {
+            **output_prefix, "committed_bytes": size,
             "message_count": plan.selected_records, "sha256": digest,
         }
         result = Candidate(
@@ -1099,6 +1153,147 @@ async def transfer_prefix(
         origin_for=lambda *_: {}, asset_reader=asset_reader, cancelled=cancelled,
         export_assets=True, _adopt_ref=adopt, _target_session_id=target_session_id,
         _adopt_limit=limit,
+    )
+
+
+async def transfer_committed_prefix(
+    plan: ConversionPlan, directory: Path, *, fence: Fence, source_store,
+    target_binding, target_store, expected_target, asset_reader: AssetReader,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> Candidate:
+    """Selected-prefix fork/import into an EXPLICIT existing empty T2 target.
+
+    No target creation, transcript publication or implicit import authority.
+    The host independently admits both owners; accepted source refs transfer
+    via actual store.adopt, target write uses apply_committed_candidate afterward.
+    """
+    from .transcript_lifetime import VersionedSessionBinding
+    from .transcript_v2 import CommittedPrefix
+    from .media import SessionMediaStore
+    _validate_plan(plan)
+    if plan.committed_prefix is None or plan.target_prefix is not None or plan.inline_images:
+        raise Unsupported("Transfer needs a selected refs-first committed source plan")
+    if (type(target_binding) is not VersionedSessionBinding or type(expected_target) is not CommittedPrefix
+            or type(source_store) is not SessionMediaStore or type(target_store) is not SessionMediaStore):
+        raise Unsupported("Actual target binding and explicit committed predecessor required")
+    _prefix_types(expected_target)
+    if (target_binding.expected != expected_target or expected_target.message_count != 0
+            or target_binding.session_id != target_store.session_id
+            or target_store.root != target_binding.directory / "media"
+            or source_store.session_id != plan.session_id
+            or source_store.root != Path(plan.committed_session_dir) / "media"):
+        raise Unsupported("Transfer source/target owner selection differs")
+    target_binding.check()
+    selected = replace(
+        plan, target_prefix=asdict(expected_target),
+        target_session_dir=str(target_binding.directory),
+    )
+    _validate_plan(selected)
+    limit = _host_image_limit(target_store)
+
+    async def adopt(refs):
+        target_binding.check()
+        result = await target_store.adopt(deepcopy(refs), source_store)
+        target_binding.check()
+        return result
+
+    return await build_candidate(
+        selected, directory, fence=fence, capability=target_store, origin_for=lambda *_: {},
+        asset_reader=asset_reader, cancelled=cancelled, export_assets=True,
+        _adopt_ref=adopt, _target_session_id=target_store.session_id, _adopt_limit=limit,
+    )
+
+
+def preview_import(
+    portable: Path, *, owner: str, fence: Fence, authorize: Callable[[dict], bool],
+    selected_records: int | None = None,
+) -> ConversionPlan:
+    """Read-only qualified package selection; hashes alone are not permission."""
+    from .transcript_v2 import CommittedPrefix
+    with fence(owner):
+        verify_export(portable)
+        with _open(portable / "export.json") as stream:
+            raw = stream.read(16385)
+        if len(raw) > 16384:
+            raise Unsupported("Oversized portable export selection")
+        facts = json.loads(raw)
+        if not callable(authorize) or authorize(deepcopy(facts)) is not True:
+            raise Unsupported("Host did not authorize this exact portable package")
+        encoded = facts.get("committed_prefix")
+        if type(encoded) is not dict:
+            raise Unsupported("Explicit header-bearing T2 export required")
+        prefix = CommittedPrefix(**encoded)
+        _prefix_types(prefix)
+        if selected_records is None:
+            selected_records = prefix.message_count
+        if type(selected_records) is not int or not 0 <= selected_records <= prefix.message_count:
+            raise Unsupported("Selected import prefix exceeds authorized package")
+        identity = _identity(portable / "candidate.jsonl")
+        plan = ConversionPlan(
+            ADAPTER, owner, prefix.session_id, identity, (), prefix.message_count, 0, 0,
+            selected_records, asdict(prefix), None, portable_directory=str(portable),
+        )
+        refs = 0
+        with _open(portable / "candidate.jsonl") as stream:
+            scanner = Scanner(stream)
+            for row, record in enumerate(_records(scanner, encoded)):
+                fields = _message(scanner, record)
+                if next(_images(scanner, fields), None) is not None:
+                    raise Unsupported("Import requires externalized selected image references")
+                if row < selected_records:
+                    refs += sum(1 for _ in _refs(scanner, fields))
+        _validate_plan(plan)
+        _check_source(plan)
+        return replace(plan, existing_refs=refs)
+
+
+async def import_committed_prefix(
+    plan: ConversionPlan, directory: Path, *, fence: Fence, target_binding,
+    target_store, expected_target, asset_reader: AssetReader, receipt, verifier,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> Candidate:
+    """Owner-authorized portable import, then actual target ACK separately.
+
+    `verifier(ref, receipt=..., target_session_id=...)` is the existing F1 exact
+    host package authorization boundary. A portable hash receipt cannot grant it.
+    """
+    from .transcript_lifetime import VersionedSessionBinding
+    from .transcript_v2 import CommittedPrefix
+    from .media import SessionMediaStore
+    _validate_plan(plan)
+    if (plan.portable_directory is None or plan.target_prefix is not None
+            or type(target_binding) is not VersionedSessionBinding
+            or type(target_store) is not SessionMediaStore or type(expected_target) is not CommittedPrefix
+            or target_binding.expected != expected_target or expected_target.message_count != 0
+            or target_binding.session_id != target_store.session_id
+            or target_store.root != target_binding.directory / "media" or not callable(verifier)):
+        raise Unsupported("Explicit authorized portable source and empty target owner required")
+    selected = replace(plan, target_prefix=asdict(expected_target),
+                       target_session_dir=str(target_binding.directory))
+    _validate_plan(selected)
+    portable = Path(plan.portable_directory)
+
+    async def adopt(refs):
+        result = []
+        for ref in refs:
+            if cancelled():
+                raise InterruptedError("Import cancelled before owner asset admission")
+            target_binding.check()
+            if _expired(ref):
+                accepted = target_store.import_verified(deepcopy(ref), None, receipt=receipt, verifier=verifier)
+            else:
+                with _open(portable / "assets" / ref["sha256"]) as stream:
+                    accepted = target_store.import_verified(
+                        deepcopy(ref), stream, receipt=receipt, verifier=verifier,
+                    )
+            result.append(accepted)
+            target_binding.check()
+        return result
+
+    return await build_candidate(
+        selected, directory, fence=fence, capability=target_store, origin_for=lambda *_: {},
+        asset_reader=asset_reader, cancelled=cancelled, export_assets=True, _adopt_ref=adopt,
+        _target_session_id=target_store.session_id, _adopt_limit=_host_image_limit(target_store),
     )
 
 
@@ -1389,7 +1584,7 @@ def candidate_facts(operation_dir: Path) -> dict:
             or type(value.get("bytes")) is not int or value["bytes"] < 0):
         raise Unsupported("Candidate bounds differ from selected plan")
     if plan.committed_prefix is not None:
-        expected = {**plan.committed_prefix, "committed_bytes": value["bytes"],
+        expected = {**(plan.target_prefix or plan.committed_prefix), "committed_bytes": value["bytes"],
                     "message_count": value["records"], "sha256": value["sha256"]}
         if value.get("committed_prefix") != expected:
             raise Unsupported("Candidate selector differs from preserved source plan")
@@ -1441,6 +1636,8 @@ def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reade
     witnesses = [identity]
     for name in ("verified.json", "plan.json", "manifest.sqlite", "original-0"):
         witnesses.append(_identity(operation_dir / name))
+    if plan.target_prefix is not None:
+        witnesses.append(_identity(operation_dir / "original-target"))
 
     def check():
         # Prepared-owner checks can run for every output chunk. Rehashing the
@@ -1515,6 +1712,11 @@ def reconcile(directory: Path, *, installed: Path | None = None) -> str:
         with _open(directory / f"original-{index}") as stream:
             if _digest(stream) != (identity["sha256"], identity["size"]):
                 raise Unsupported("Saved original/backup changed after verification")
+    if plan.get("target_prefix") is not None:
+        with _open(directory / "original-target") as stream:
+            target = plan["target_prefix"]
+            if _digest(stream) != (target["sha256"], target["committed_bytes"]):
+                raise Unsupported("Saved target original changed after verification")
     if installed is None:
         return "verified-candidate-not-applied"
     with _open(installed) as stream:

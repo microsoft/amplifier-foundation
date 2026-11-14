@@ -455,10 +455,13 @@ def _committed_facts(operation, binding, expected, operation_id, owner):
     binding.check()
     facts = conversion.candidate_facts(operation)
     plan = conversion._saved_plan(operation)
-    if (plan.owner != owner or plan.committed_prefix != asdict(expected)
-            or plan.committed_session_dir != str(binding.directory)
-            or plan.session_id != binding.session_id
-            or plan.selected_records != plan.records):
+    target = plan.target_prefix is not None
+    selected_prefix = plan.target_prefix if target else plan.committed_prefix
+    selected_directory = plan.target_session_dir if target else plan.committed_session_dir
+    if (plan.owner != owner or selected_prefix != asdict(expected)
+            or selected_directory != str(binding.directory)
+            or expected.session_id != binding.session_id
+            or (not target and plan.selected_records != plan.records)):
         raise ActivationRefused("Only exact full same-owner prospective source may activate")
     return facts, plan
 
@@ -567,6 +570,7 @@ def reconcile_committed_candidate(operation_dir: Path, *, binding, expected, ope
 def _activate_committed(operation_dir, *, binding, expected, operation_id, owner, media_store,
                         admit, cancelled, resume):
     from .transcript_writer import prepare_serialized_candidate
+    from .transcript_v2 import CommittedPrefix
     for callback in (admit, cancelled):
         if (not callable(callback) or inspect.iscoroutinefunction(callback)
                 or inspect.isgeneratorfunction(callback)):
@@ -589,7 +593,7 @@ def _activate_committed(operation_dir, *, binding, expected, operation_id, owner
 
         identity = {
             "format": "foundation.committed-media-activation.v1",
-            "session_id": plan.session_id, "session_dir": str(binding.directory),
+            "session_id": binding.session_id, "session_dir": str(binding.directory),
             "owner": owner, "expected": asdict(expected), "operation_id": operation_id,
             "candidate_sha256": facts["sha256"], "candidate_bytes": facts["bytes"],
             "plan_sha256": facts["plan_sha256"], "manifest_sha256": facts["manifest_sha256"],
@@ -610,7 +614,8 @@ def _activate_committed(operation_dir, *, binding, expected, operation_id, owner
         # Recovery facts are checked against fresh format-owner preparation,
         # never trusted because a mutable JSON journal says "checkpoint".
         with conversion.open_verified_candidate(
-            operation, session_id=plan.session_id, expected_source=expected,
+            operation, session_id=binding.session_id,
+            expected_source=CommittedPrefix(**plan.committed_prefix),
             asset_reader=lambda ref: media_store.resolve_ref(ref, committed=False),
         ) as (witness_stream, witness_prefix, witness_check):
             with prepare_serialized_candidate(
@@ -654,7 +659,8 @@ def _activate_committed(operation_dir, *, binding, expected, operation_id, owner
             guard()
         else:
             with conversion.open_verified_candidate(
-                operation, session_id=plan.session_id, expected_source=expected,
+                operation, session_id=binding.session_id,
+                expected_source=CommittedPrefix(**plan.committed_prefix),
                 asset_reader=lambda ref: media_store.resolve_ref(ref, committed=False),
             ) as (stream, prefix, candidate_check):
                 # The format owner defines canonical intent bytes. Header SHA
