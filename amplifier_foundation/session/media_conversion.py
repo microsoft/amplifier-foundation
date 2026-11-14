@@ -1400,6 +1400,18 @@ def candidate_facts(operation_dir: Path) -> dict:
     return value
 
 
+def load_candidate_plan(operation_dir: Path) -> ConversionPlan:
+    """Load hash-verified selection DATA for recovery, never owner authority.
+
+    A host may reconstruct its original CommittedPrefix selector from this
+    plan only after independently authorizing the session, operation and purpose
+    under an actual current binding. It must not substitute binding.expected
+    after a possibly successful write for the original predecessor.
+    """
+    candidate_facts(operation_dir)
+    return _saved_plan(operation_dir)
+
+
 @contextmanager
 def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reader: AssetReader,
                             expected_source=None):

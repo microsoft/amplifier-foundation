@@ -209,3 +209,21 @@ permission to allocate a new operation. Old generation bodies, private committed
 originals, manifests and journal facts remain retained. This is source-level
 synthetic qualification until the actual CLI/Unified owner joins its native
 admission and installed-boundary proof; no live adoption or resources are implied.
+
+For cold recovery, `media_conversion.load_candidate_plan(operation_dir)` returns
+the hash-verified typed plan **as selection data only**. The host independently
+authorizes the session, operation and recovery purpose, reopens the actual
+prospective binding at the current public committed prefix, and supplies the
+original predecessor from its retained plan/intent to resume. Do not substitute
+the now-current `binding.expected` for that original predecessor. A reconstructed
+selector is not a receipt, lease, media grant or admission promise. If the
+original operation has a later successor, resume reports
+`superseded-original-operation` with the original acknowledged commit and **no
+current receipt**; it does not borrow the successor's `last_receipt`.
+
+`reconcile_committed_candidate(operation_dir, *, binding, expected, operation_id,
+owner)` is a read-only status lens. It checks current committed bytes and the
+saved candidate/intent without invoking writer reconciliation, checkpoint, ACK,
+rewrite or cleanup. `installed-awaiting-versioned-ack` is an observation, not
+proof of fresh checkpoint authority. Ambiguous source-present intents retain
+`intent-unconfirmed-no-replay`; conflicting successors remain explicit.

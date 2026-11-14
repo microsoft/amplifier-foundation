@@ -113,6 +113,39 @@ def test_lost_rewrite_reply_reconciles_without_second_rewrite(tmp_path, monkeypa
         assert (binding.directory / 'transcript.v2' / expected.body).read_bytes() == original
 
 
+def test_cold_resume_uses_saved_original_selector_under_new_actual_owner(tmp_path, monkeypatch):
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.media_conversion import load_candidate_plan
+    from amplifier_foundation.session.transcript_lifetime import VersionedSessionBinding
+    from amplifier_foundation.session.transcript_v2 import CommittedPrefix
+    with fixture(tmp_path) as (binding, store, fence):
+        expected, original, _ = prepared(tmp_path, binding, store, fence, inline=True)
+        actual = binding.rewrite_serialized
+        def lost(*args, **kwargs):
+            actual(*args, **kwargs)
+            raise OSError('lost after actual commit')
+        monkeypatch.setattr(binding, 'rewrite_serialized', lost)
+        with pytest.raises(OSError):
+            apply_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
+        current, directory = binding.expected, binding.directory
+    # Selector facts are reconstructed only after the host has independently
+    # selected this operation and reacquired actual enrolled source custody.
+    with closing(VersionedSessionBinding.resume(directory, session_id='session', expected=current)) as owner:
+        with closing(SessionMediaStore(directory / 'media', 'session',
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as media:
+            saved_plan = load_candidate_plan(tmp_path / 'operation')
+            predecessor = CommittedPrefix(**saved_plan.committed_prefix)
+            assert predecessor == expected and predecessor != owner.expected
+            result = resume_committed_candidate(tmp_path / 'operation', **arguments(owner, media, predecessor))
+            assert result.state == 'acknowledged' and result.commit == current
+            with open_committed_source(directory, expected=current) as source:
+                ref = source.window(0, 1).messages[0]['metadata']['experimental.media.v1']['refs'][0]
+            with media.resolve_ref(ref) as stream:
+                assert stream.read() == png()
+            assert (directory / 'transcript.v2' / expected.body).read_bytes() == original
+
+
 def test_cancellation_before_intent_does_not_change_source(tmp_path):
     with fixture(tmp_path) as (binding, store, fence):
         expected, original, _ = prepared(tmp_path, binding, store, fence)
@@ -126,6 +159,36 @@ def test_cancellation_before_intent_does_not_change_source(tmp_path):
             tmp_path / 'operation', binding=binding, expected=expected, operation_id='optimize', owner='fixture',
         )
         assert observed.state == 'not-started' and observed.checkpoint is None
+
+
+def test_mixed_inline_policy_commits_eligible_row_preserves_held_original(tmp_path):
+    with fixture(tmp_path) as (binding, store, fence):
+        image = {'type': 'image', 'source': {
+            'type': 'base64', 'media_type': 'image/png', 'data': base64.b64encode(png()).decode(),
+        }}
+        rows = [{'role': 'tool', 'tool_call_id': 'unknown', 'status': 'failed', 'content': [image]},
+                {'role': 'tool', 'tool_call_id': 'known', 'status': 'complete', 'content': [image]}]
+        binding.append(rows, expected=binding.expected, operation_id='seed', admit=lambda: None)
+        expected = binding.expected
+        plan = preview_committed(binding.directory, expected=expected, owner='fixture', fence=fence)
+        origin = {'kind': 'migration', 'session_id': 'session', 'id': 'known',
+                  'created_at': '2025-01-01T00:00:00+00:00', 'expires_at': '2035-01-01T00:00:00+00:00'}
+        asyncio.run(build_candidate(
+            plan, tmp_path / 'operation', fence=fence, capability=store,
+            eligible_record=lambda row: row == 1, origin_for=lambda row, block: origin,
+            asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+        ))
+        result = apply_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
+        assert result.state == 'acknowledged' and result.held_records == 1
+        assert result.inline_removed_bytes > 0
+        with open_committed_source(binding.directory, expected=binding.expected) as source:
+            actual = source.window(0, 2).messages
+        assert actual[0] == rows[0]
+        assert actual[1]['tool_call_id'] == 'known' and actual[1]['content'][0]['type'] == 'text'
+        ref = actual[1]['metadata']['experimental.media.v1']['refs'][0]
+        assert ref['provenance'] == origin
+        with store.resolve_ref(ref) as pixels:
+            assert pixels.read() == png()
 
 
 def test_resume_refuses_journal_kind_substitution(tmp_path, monkeypatch):
@@ -190,7 +253,7 @@ def test_historical_reconcile_never_borrows_successor_receipt(tmp_path, monkeypa
         assert binding.expected == latest != actual.commit
 
 
-@pytest.mark.parametrize('size', [2 * 1024 * 1024, 8 * 1024 * 1024])
+@pytest.mark.parametrize('size', [2 * 1024 * 1024, 8 * 1024 * 1024, 32 * 1024 * 1024])
 def test_huge_record_full_streamed_activation_and_export_bound(tmp_path, monkeypatch, size):
     import tracemalloc
     from amplifier_foundation.session.media_conversion import verify_export
