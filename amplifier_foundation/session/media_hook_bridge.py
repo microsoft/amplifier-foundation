@@ -736,7 +736,13 @@ class MediaMountLifecycle:
                 graph._slot_sources.get(slot, (None, None))[0] is source)
 
     @staticmethod
-    async def _settle(graph: Any, operation: Any) -> Any:
+    async def _await_tracked(graph: Any, operation: Any) -> Any:
+        """Promptly propagate waiter cancellation, retaining native ownership.
+
+        Shielding does NOT promise terminal native settlement before raising
+        CancelledError. The issuer keeps the task/fence until its done callback;
+        interrupted construction remains invalid even after that settlement.
+        """
         task = asyncio.ensure_future(operation)
         graph._bridge._processing.add(task)
         def settled(actual: Any) -> None:
@@ -767,7 +773,7 @@ class MediaMountLifecycle:
         # disappears but before the Python await resumes and returns a token.
         graph._suspended[slot] = record
         try:
-            await self._settle(graph, graph._bridge._coordinator.unmount(mount_point, name=name))
+            await self._await_tracked(graph, graph._bridge._coordinator.unmount(mount_point, name=name))
             if graph._bridge._coordinator.get(*slot) is not None:
                 raise ValueError("suspension did not remove actual slot")
         except BaseException:
@@ -797,7 +803,7 @@ class MediaMountLifecycle:
                 raise ValueError("suspended configured occurrence changed")
         record["state"] = "restoring"
         try:
-            await self._settle(graph, graph._bridge._coordinator.mount(slot[0], record["module"], name=slot[1]))
+            await self._await_tracked(graph, graph._bridge._coordinator.mount(slot[0], record["module"], name=slot[1]))
             if graph._bridge._coordinator.get(*slot) is not record["module"]:
                 raise ValueError("restore did not install actual suspended object")
         except BaseException:

@@ -1975,6 +1975,18 @@ async def test_cancelled_mount_lifecycle_retains_pending_evidence_and_no_receipt
                 else lifecycle.restore(token))
             asyncio.get_running_loop().call_soon(pending.cancel)
             await pending
+    # Immediate error handover: retain interrupted ownership, not a promise that
+    # the native operation is already terminal. Scheduling can allow it to finish
+    # before this assertion, so pending-vs-terminal timing is not a Core ABI fact.
+    evidence = interrupted.participants_evidence()["suspended"]
+    assert len(evidence) == 1 and evidence[0]["module"] is module
+    assert evidence[0]["state"] == "interrupted"
+    assert bridge.validate_receipt(receipt) is False
+    assert all(not task.cancelled() for task in bridge._processing)
+    with pytest.raises(ValueError, match="idle"):
+        await lifecycle.restore(token)
+    # Separate eventual native settlement check. This loop does not establish
+    # terminal-at-catch behavior and does not restore qualification.
     for _ in range(20):
         if not bridge._processing:
             break
@@ -1989,6 +2001,44 @@ async def test_cancelled_mount_lifecycle_retains_pending_evidence_and_no_receipt
     assert not (await bridge(event()))["complete"]
     with pytest.raises(ValueError, match="idle"):
         await lifecycle.restore(token)
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+async def test_tracked_waiter_cancel_returns_before_controlled_operation_settles():
+    """Partial helper timing proof, supplementing the actual-Core four-case test."""
+    session, bridge, graph, receipt = await configured_lifecycle_graph("tools")
+    lifecycle = media_mount_lifecycle(graph.participant("host.settings"))
+    started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def owned_operation():
+        calls.append("operation")
+        started.set()
+        try:
+            await release.wait()
+        finally:
+            finished.set()
+
+    waiter = asyncio.create_task(lifecycle._await_tracked(graph, owned_operation()))
+    await asyncio.wait_for(started.wait(), 2)
+    tasks = tuple(bridge._processing)
+    assert len(tasks) == 1 and not tasks[0].done()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert not finished.is_set() and not tasks[0].done()
+    assert tasks[0] in bridge._processing and not tasks[0].cancelled()
+    with pytest.raises(ValueError, match="idle"):
+        with graph.transition():
+            pass
+    release.set()
+    await asyncio.wait_for(tasks[0], 2)
+    # The done callback retires ownership only after native/owned completion.
+    await asyncio.sleep(0)
+    assert finished.is_set() and not bridge._processing and calls == ["operation"]
+    assert bridge.validate_receipt(receipt)
     await session.cleanup()
 
 

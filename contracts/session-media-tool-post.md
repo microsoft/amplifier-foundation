@@ -189,6 +189,17 @@ settlement remains strongly tracked; evidence reports `pending`, `suspended`,
 Current configured occurrence/source identity is checked before unmount, not
 only at successor sealing.
 
+Cancellation uses **prompt waiter cancellation with retained pending ownership**,
+not settled-on-error-return. `CancelledError` may reach the caller while the
+shielded native mount/unmount is still pending. The issuer retains its strong
+task reference and processing fence until the native operation actually becomes
+terminal; an `interrupted` record describes the cancelled host construction, not
+a claim that the native operation is terminal. This pending operation must not be
+replayed, treated as rolled back, or handed off as settled. Eventual native
+settlement does not repair the invalid graph, consume a suspension token, or
+revive a receipt. A normal successful return, unlike a cancellation error,
+requires completion of the awaited native operation and exact slot verification.
+
 Suspensions survive only through issuer-validated same-session successors.
 They do not transfer to a fresh session or qualify changed configured entries.
 `participants_evidence()["suspended"]` exposes detached slot/owner/occurrence
