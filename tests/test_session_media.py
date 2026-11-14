@@ -767,6 +767,21 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             self.store.validate_published_group([other], origin=other_origin)
         with self.assertRaises(MediaRefusal):
             self.store.validate_published_group([], origin=other_origin)
+        all_redacted = {**self.origin, "id": "all-redacted-retain"}
+        await self.stage(origin=all_redacted)
+        publication = await self.store.publish([], origin=all_redacted, disposition="retain")
+        self.assertEqual(publication["publication"], {"state": "dropped", "durability": "none"})
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group([], origin=all_redacted)
+        observer = SessionMediaStore(
+            self.root, "session1", policy=self.policy, read_only=True,
+            source_read_verifier=None,
+        )
+        try:
+            with self.assertRaises(MediaRefusal):
+                observer.validate_published_group([], origin=all_redacted)
+        finally:
+            observer.close()
 
     async def test_published_group_inspection_never_writes_or_reads_pixels(self):
         refs = self.store.ingest_group_sync(
