@@ -856,5 +856,101 @@ class TextFallbackTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(self.capability.prepared[-1].released)
 
 
+class StreamRequestSupportTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.capability = Capability()
+        self.identity = {"provider": "fixture", "account": "fixture", "generation": 1}
+
+    def wrap(self, provider):
+        return MediaPreparedProvider(
+            provider, self.capability, provider_identity=self.identity
+        )
+
+    async def test_no_default_canonical_tools_promise_or_get_info_rewrite(self):
+        provider = Provider(self.capability)
+        wrapper = self.wrap(provider)
+        self.assertFalse(hasattr(wrapper, "get_stream_request_support"))
+        self.assertEqual(wrapper.get_info(), provider.get_info())
+        await wrapper.aclose()
+
+    async def test_only_actual_stream_and_support_callables_expose_fact(self):
+        for stream in (None, False):
+            provider = PlainProvider(self.capability)
+            provider.stream = stream
+            provider.get_stream_request_support = lambda **_: {
+                "v": 1, "tools": "chat_request"
+            }
+            wrapper = self.wrap(provider)
+            self.assertFalse(hasattr(wrapper, "get_stream_request_support"))
+            await wrapper.aclose()
+        provider = Provider(self.capability)
+        provider.get_stream_request_support = False
+        wrapper = self.wrap(provider)
+        self.assertFalse(hasattr(wrapper, "get_stream_request_support"))
+        await wrapper.aclose()
+
+    async def test_selected_model_options_and_actual_provider_result_forward_unchanged(self):
+        provider = Provider(self.capability)
+        seen, fact = [], {"v": 1, "tools": "chat_request"}
+
+        def support(*, model, request_options=None):
+            seen.append((model, request_options))
+            return fact
+
+        provider.get_stream_request_support = support
+        wrapper = self.wrap(provider)
+        options = {"extended_thinking": True}
+        self.assertIs(
+            wrapper.get_stream_request_support(model="fixture", request_options=options),
+            fact,
+        )
+        self.assertEqual(seen, [("fixture", options)])
+        self.assertIs(seen[0][1], options)
+        self.assertFalse(self.capability.prepared)
+        self.assertFalse(provider.sent)
+        await wrapper.aclose()
+
+    async def test_forwarder_does_not_turn_decline_malformed_or_exception_into_claim(self):
+        provider = Provider(self.capability)
+        result = None
+
+        def support(*, model, request_options=None):
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        provider.get_stream_request_support = support
+        wrapper = self.wrap(provider)
+        for result in (None, False, {"v": True, "tools": "chat_request"},
+                       {"v": 2, "tools": "chat_request"}, {"v": 1, "tools": "runtime"}):
+            self.assertIs(wrapper.get_stream_request_support(model="fixture"), result)
+        result = ValueError("provider-owned support refusal")
+        with self.assertRaises(ValueError):
+            wrapper.get_stream_request_support(model="fixture")
+        await wrapper.aclose()
+
+    async def test_advertisement_never_strips_actual_dispatch_tools_or_weakens_fit(self):
+        provider = Provider(self.capability)
+        provider.get_stream_request_support = lambda **_: {
+            "v": 1, "tools": "chat_request"
+        }
+        wrapper = self.wrap(provider)
+        canonical = request()
+        await wrapper.request_budget(canonical, context_estimate=1, request_options={})
+        with self.assertRaises(ValueError):
+            async for _ in wrapper.stream(canonical, tools=[]):
+                self.fail("uncounted duplicate tools must not dispatch")
+        self.assertFalse(provider.sent)
+        self.assertTrue(self.capability.prepared[0].released)
+        await wrapper.request_budget(canonical, context_estimate=1, request_options={})
+        self.assertEqual(
+            [chunk async for chunk in wrapper.stream(canonical)],
+            ["first", "second"],
+        )
+        self.assertIs(provider.budgeted[-1], provider.sent[0])
+        self.assertTrue(self.capability.prepared[-1].released)
+        await wrapper.aclose()
+
+
 if __name__ == "__main__":
     unittest.main()
