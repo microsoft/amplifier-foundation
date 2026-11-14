@@ -1239,6 +1239,40 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
                 await self.stage(value=source)
             self.assertEqual(source.reads, [])
 
+    async def test_resource_bounds_cover_process_limit_capacity_loss_and_oversized_reads(self):
+        import resource
+        self.store.policy = MediaPolicy()
+        class Source:
+            def __init__(self, overread=False):
+                self.reads, self.overread = [], overread
+            def read(self, n):
+                self.reads.append(n)
+                return b"x" * (n + 1 if self.overread else n)
+        source = Source()
+        with patch("amplifier_foundation.session.media.os.fstatvfs",
+                   return_value=SimpleNamespace(f_bavail=1000, f_frsize=4096)), \
+             patch.object(resource, "getrlimit", return_value=(7, resource.RLIM_INFINITY)):
+            with self.assertRaises(MediaRefusal):
+                await self.stage(value=source)
+        self.assertEqual(source.reads, [8])
+        source = Source(overread=True)
+        with patch("amplifier_foundation.session.media.os.fstatvfs",
+                   return_value=SimpleNamespace(f_bavail=1, f_frsize=32)), \
+             self.assertRaisesRegex(MediaRefusal, "requested read bound"):
+            await self.stage(value=source)
+        self.assertEqual(source.reads, [33])
+        source = io.BytesIO(self.data)
+        with patch("amplifier_foundation.session.media.os.fstatvfs",
+                   side_effect=[SimpleNamespace(f_bavail=1000, f_frsize=4096),
+                                SimpleNamespace(f_bavail=0, f_frsize=4096)]):
+            with self.assertRaises(MediaRefusal):
+                await self.stage(value=source)
+        self.assertFalse(list((self.root / "origins").iterdir()))
+        with patch("amplifier_foundation.session.media.os.fstatvfs",
+                   side_effect=OSError("capacity query failed")):
+            with self.assertRaises(MediaRefusal):
+                media_policy_for_root(self.root)
+
     async def test_default_decoder_guard_is_real_finite_and_not_modified(self):
         self.store.policy = MediaPolicy()
         original = Image.MAX_IMAGE_PIXELS

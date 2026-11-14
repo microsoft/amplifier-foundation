@@ -300,7 +300,7 @@ def _decode_image(stream: BinaryIO, policy: MediaPolicy) -> tuple[str, int, int]
         pixel_limit = min(bounds)
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            image = Image.open(stream)
+            image = Image.open(stream, formats=("PNG", "JPEG"))
             width, height = image.size
             if width * height > pixel_limit:
                 raise MediaRefusal("image exceeds decoder or host pixel limit")
@@ -309,7 +309,7 @@ def _decode_image(stream: BinaryIO, policy: MediaPolicy) -> tuple[str, int, int]
             mime = "image/png" if image.format == "PNG" else "image/jpeg"
             image.verify()
             stream.seek(0)
-            with Image.open(stream) as decoded:
+            with Image.open(stream, formats=("PNG", "JPEG")) as decoded:
                 decoded.load()
             return mime, width, height
     except MediaRefusal:
