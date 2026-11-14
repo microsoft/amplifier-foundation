@@ -486,10 +486,16 @@ async def _stage_image_groups(scanner, fields, row, db, directory, capability, o
 
 
 async def _adopt_existing_groups(scanner, selected_records, db, adopt, target_id, limit, journal, cancelled):
+    if cancelled():
+        raise InterruptedError("Conversion cancelled before selected reference collection")
     for row, record in enumerate(scanner.records()):
         if row >= selected_records:
             break
+        if cancelled():
+            raise InterruptedError("Conversion cancelled during selected record collection")
         for span, ref in _refs(scanner, _message(scanner, record)):
+            if cancelled():
+                raise InterruptedError("Conversion cancelled during selected reference collection")
             db.execute("insert into transfer_refs values(?,?,?,?,?,?)", (
                 row, span.start, span.end, _json(ref["provenance"]), _json(ref), None,
             ))
