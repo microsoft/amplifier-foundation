@@ -4,6 +4,7 @@ import base64
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 import json
+import sys
 
 import pytest
 
@@ -15,6 +16,8 @@ from amplifier_foundation.session.media_conversion import build_candidate, previ
 from amplifier_foundation.session.transcript_source import open_committed_source
 from amplifier_foundation.session.versioned_checkpoint import VersionedCheckpointReceipt
 from tests.test_media_conversion_t2 import fixture, png, published
+
+pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='Actual prospective custody is Linux qualified')
 
 
 def prepared(tmp_path, binding, store, fence, *, inline=False, jpeg=False):

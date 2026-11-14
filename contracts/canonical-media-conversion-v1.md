@@ -326,10 +326,70 @@ It accepts neither a caller-supplied ref list nor an independent manifest query
 as admission authority. Consumers must exhaust it, including final count/read
 checks. T2 candidates explicitly refuse the legacy installed-body ref/ACK seam.
 T2 portable export is an integrity surface, not a target writer/import grant.
-The legacy `transfer_prefix` entry point explicitly refuses a T2 plan before any
-asset effect rather than returning source-session selectors mixed with foreign
-target refs. Import/fork target enrollment requires its own explicit target
-binding selection; this prospective Optimize extension does not manufacture one.
+The legacy `transfer_prefix` entry point still refuses T2; use the explicitly
+typed prospective paths below instead of mixing source header/session selectors
+with foreign target refs.
+
+### Selected T2 fork and offline portable import
+
+```python
+await transfer_committed_prefix(
+    selected_source_plan, new_operation_dir, fence=actual_both_owner_fence,
+    source_store=actual_accepted_source_store, target_binding=actual_empty_target,
+    target_store=actual_target_store, expected_target=independent_target_prefix,
+    asset_reader=target_published_reader, cancelled=...,
+)
+import_plan = preview_import(
+    portable_dir, owner=host_owner, fence=actual_target_purpose_fence,
+    authorize=authorize_exact_export_package, selected_records=None,
+)
+await import_committed_prefix(
+    import_plan, new_operation_dir, fence=actual_target_purpose_fence,
+    target_binding=actual_empty_target, target_store=actual_target_store,
+    expected_target=independent_target_prefix, asset_reader=target_published_reader,
+    receipt=host_authorized_package_receipt, verifier=actual_F1_import_verifier,
+    cancelled=...,
+)
+```
+
+Both paths require an **already explicitly created/enrolled empty prospective
+target** and its exact real binding, current target prefix and physical media
+store. Neither creates a new target, enrolls arbitrary history, grants import
+permission or writes a transcript. Target initialization remains the owning
+host/lifetime API's separate authorized action. Nonempty or changed targets
+refuse before adoption.
+
+Source selection occurs before reachability: only selected canonical refs are
+grouped on disk by exact original provenance, adopted/imported, rewritten and
+exported. Original expiry and ordered same-origin identity are retained; duplicate
+positions are not collapsed by hash. Fork requires the source store's actual
+committed acceptance or guarded read-only transfer authority and uses existing
+`SessionMediaStore.adopt`. Offline import requires no live source store: it
+verifies the portable closure, independently authorizes the exact package, and
+uses existing `import_verified(ref, stream_or_None, receipt=..., verifier=...)`.
+The host verifier authorizes each exact original ref/package/target, not merely
+its digest. Original receipt/retention authority is never recovered from the
+portable hashes themselves. Expired adopted/imported observations are original
+metadata only; no pixel copy/read or TTL renewal.
+
+The same converter engine copies the actual selected target's issued header
+into its **candidate**, patches source-owner refs to exact target-owned refs,
+and keeps all other selected message bytes/metadata unchanged. The same sole
+writer later creates its own new generation/header. The plan retains independent
+source and target selectors: `committed_prefix`/source recovery describe the
+source; `target_prefix`/`target_session_dir` identify the original empty target.
+Private `original-0` preserves full source committed bytes and
+`original-target` preserves the exact original target header. Neither full
+recovery surface enters the selected-only portable child.
+
+After assets-first preparation, call `apply_committed_candidate` using the
+actual **target** binding and original target prefix. That path verifies the
+source/target plan join and uses the same target writer, precommit admission,
+sealed V2 checkpoint, and no-replay reconciliation. A staged/published target
+asset is not canonically committed before this actual target ACK. Failure,
+cancellation or lost replies retain original source, target old generations and
+operation evidence. A partial preparation directory never authorizes automatic
+re-adoption or rebuilding under the same/new operation identity.
 
 ## Qualification
 
