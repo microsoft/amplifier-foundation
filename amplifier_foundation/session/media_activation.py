@@ -517,6 +517,51 @@ def resume_committed_candidate(operation_dir: Path, *, binding, expected, operat
                                admit=admit, cancelled=cancelled, resume=True)
 
 
+def reconcile_committed_candidate(operation_dir: Path, *, binding, expected, operation_id: str,
+                                  owner: str) -> CommittedActivationResult:
+    """Read-only current-source facts; no writer reconcile, ACK or authority."""
+    from .transcript_source import open_committed_source
+    with _directory(operation_dir) as (operation, opfd, checkop):
+        facts, _ = _committed_facts(operation, binding, expected, operation_id, owner)
+        try:
+            saved = _small(opfd, _COMMITTED_JOURNAL)
+        except FileNotFoundError:
+            saved = None
+        with open_committed_source(binding.directory) as source:
+            current = source.commit
+            if saved is None:
+                state = "not-started" if current == expected else "conflict"
+            else:
+                identity = saved.get("identity", {})
+                if (identity.get("expected") != asdict(expected)
+                        or identity.get("operation_id") != operation_id
+                        or identity.get("owner") != owner
+                        or identity.get("candidate_sha256") != facts["sha256"]):
+                    raise ActivationRefused("Saved committed activation conflicts with selected operation")
+                if saved.get("kind") == "checkpoint":
+                    matched = current == expected
+                else:
+                    start = source.message_range(0).start if current.message_count else current.committed_bytes
+                    digest = hashlib.sha256()
+                    size = 0
+                    for raw in source.iter_bytes(start):
+                        digest.update(raw)
+                        size += len(raw)
+                    matched = (
+                        current.operation_id == operation_id and current.message_count == saved["records"]
+                        and (digest.hexdigest(), size) == (saved["canonical_sha256"], saved["canonical_bytes"])
+                    )
+                if matched:
+                    state = "installed-awaiting-versioned-ack"
+                else:
+                    state = "intent-unconfirmed-no-replay" if current == expected else "conflict"
+            source.read_range(0, 0)
+        binding.check()
+        checkop()
+        return CommittedActivationResult(state, current, None, facts["inline_removed_bytes"],
+                                         facts.get("held_records", 0))
+
+
 def _activate_committed(operation_dir, *, binding, expected, operation_id, owner, media_store,
                         admit, cancelled, resume):
     from .transcript_writer import prepare_serialized_candidate
@@ -526,7 +571,7 @@ def _activate_committed(operation_dir, *, binding, expected, operation_id, owner
             raise ActivationRefused("Settled synchronous admission and cancellation required")
     with _directory(operation_dir) as (operation, opfd, checkop):
         facts, plan = _committed_facts(operation, binding, expected, operation_id, owner)
-        if facts.get("held_records", 0):
+        if facts.get("held_records", 0) and not facts["images"]:
             return _committed_result(facts, "held-original-policy", binding)
 
         def guard():

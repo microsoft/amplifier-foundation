@@ -144,3 +144,68 @@ power-loss/installed/DTU qualification, live conversion, T2 or release/adoption
 is inferred. Converter8d60678's reviewed SQL-enumeration flaw requires the
 1021e1d same-canonical-pass repair and aa04874 schema restriction (or an accepted
 descendant); the old verifier is not a qualified activation dependency.
+
+## Explicit prospective T2 API (separate typed path)
+
+The original v1 methods above remain unchanged. They never accept a T2 body or
+receipt by duck typing. An already enrolled, private, Linux prospective session
+may instead use:
+
+```python
+apply_committed_candidate(
+    operation_dir, *, binding, expected, operation_id, owner, media_store,
+    admit, cancelled=lambda: False,
+) -> CommittedActivationResult
+resume_committed_candidate(
+    operation_dir, *, binding, expected, operation_id, owner, media_store,
+    admit, cancelled=lambda: False,
+) -> CommittedActivationResult
+```
+
+`binding` must be the actual local `VersionedSessionBinding`, with its real
+process-owned source lease. `expected` is an exact typed independently retained
+`CommittedPrefix`, not a selector recovered as authority from JSON. The complete
+saved conversion plan must match that predecessor, owner and canonical binding
+directory; selected export/fork prefixes cannot activate. An actual source-bound
+`SessionMediaStore` is required by the binding even for a zero-ref candidate.
+No converter `TranscriptWriter` is constructed, no header stripped by the host,
+no legacy fence relaxed, and no raw active body/pointer is written here.
+
+The candidate context verifies its original committed-source recovery, exact
+header-bearing candidate, manifest and binary closure. The sole format owner's
+`prepare_serialized_candidate` supplies the canonical-message row fingerprint,
+byte count and record count **before** the helper fsyncs a small original intent
+in `committed-activation.json`. This preparation uses the same strict streaming
+format implementation, not another encoder. The actual lifetime binding then
+owns preparation of that same pinned candidate through strict published-retained
+ref admission, existing rewrite engine, sealed versioned checkpoint/store ACK
+and preparation-context exit. Candidate hash includes the header; canonical row
+fingerprint excludes it. They are not interchangeable in reconciliation.
+
+An unchanged refs-first body calls `binding.checkpoint`, never a pointless
+rewrite; it reports zero inline bytes removed and leaves the selected generation
+unchanged. Unknown inline original-policy rows stay held byte-for-byte. A
+candidate whose inline rows are all held returns `held-original-policy`, not
+successful conversion or broad historical migration eligibility. If independent
+explicitly attested rows were converted, the full candidate may commit those
+changes while retaining held rows and reporting their count; it grants no new
+asset/TTL authority to the unchanged rows. Held inline pixels never enter a
+portable export merely because another row was eligible.
+
+Successful return occurs only after all nested contexts, actual receipt
+verification and ref-iterator exhaustion:
+`CommittedActivationResult(state="acknowledged", commit=<actual installed prefix>,
+checkpoint=<VersionedCheckpointReceipt>, inline_removed_bytes, held_records)`.
+Installed prefix may have a new writer-owned generation/header/hash and is
+distinct from candidate identity. A JSON/dict/legacy receipt is never accepted.
+
+Apply refuses an existing intent. Resume uses the **same** saved predecessor,
+operation ID, canonical-row digest and `kind="rewrite"` through
+`binding.reconcile`; it never invokes rewrite again. A `None` reconciliation
+returns `unconfirmed-no-replay`, leaving owner diagnosis required. An unchanged
+checkpoint intent obtains a fresh actual source-bound checkpoint. Cancellation,
+lost replies, post-write validation or journal failures never imply rollback or
+permission to allocate a new operation. Old generation bodies, private committed
+originals, manifests and journal facts remain retained. This is source-level
+synthetic qualification until the actual CLI/Unified owner joins its native
+admission and installed-boundary proof; no live adoption or resources are implied.
