@@ -25,6 +25,7 @@ from .transcript_source import _namespace, open_committed_source
 from .transcript_v2 import CommittedPrefix, UnsupportedTranscript, _decode, _file, _stamp
 from .transcript_writer import (
     LEGACY, CommitAck, TranscriptWriter, _PrefixView, _descriptor, _header, _identity, _receipt,
+    _validate_prefix,
 )
 
 _SEAL = object()
@@ -131,6 +132,13 @@ def _verify_intended_bytes(body, intent, prefix):
         return
     if intent["kind"] == "append":
         previous = _prefix_data(intent["expected"])
+        # Hash arithmetic alone permits a boundary inside a row/header or a
+        # forged split of the otherwise correct current total message count.
+        # The format owner's bounded validator establishes the predecessor's
+        # header, complete-row boundary and count; the already verified current
+        # prefix then fixes the suffix count by subtraction.
+        body.seek(0)
+        _validate_prefix(body, previous)
         body.seek(0)
         remaining, digest = previous.committed_bytes, hashlib.sha256()
         while remaining:

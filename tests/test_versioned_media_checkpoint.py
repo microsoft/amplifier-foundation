@@ -566,3 +566,27 @@ def test_rewrite_intent_bytes_must_match_selected_actual_region(tmp_path, change
     with pytest.raises(Refused):
         acknowledge(writer, rewritten)
     assert not (operation / "published.json").exists()
+
+
+@pytest.mark.parametrize("change", ["count-split", "inside-header"])
+def test_append_predecessor_requires_real_row_boundary_and_message_count(tmp_path, change):
+    path, writer, ack = session(tmp_path)
+    root = path / "transcript.v2"
+    operation = root / "operations/append"
+    publication = operation / "published.json"
+    publication.unlink()
+    target = operation / "intent.json"
+    intent = json.loads(target.read_bytes())
+    if change == "count-split":
+        intent["expected"]["message_count"] = 1
+        intent["suffix_messages"] = 0
+    else:
+        raw = (root / ack.commit.body).read_bytes()
+        intent["expected"]["committed_bytes"] = 1
+        intent["expected"]["sha256"] = hashlib.sha256(raw[:1]).hexdigest()
+        intent["suffix_bytes"] = len(raw) - 1
+        intent["suffix_sha256"] = hashlib.sha256(raw[1:]).hexdigest()
+    target.write_text(json.dumps(intent))
+    with pytest.raises(Refused):
+        acknowledge(writer, ack)
+    assert not publication.exists()
