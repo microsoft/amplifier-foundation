@@ -265,8 +265,9 @@ CaptureMediaOwner(
 ```
 
 All callbacks are mandatory, synchronous settled results. No running live event
-loop is borrowed; the sync bridge creates a private loop only for the actual F1
-async methods. CI's host must call sequentially under its stopped-writer/flush
+loop is borrowed: the binding uses F1's actual host-only `ingest_sync` and
+`publish_sync` aliases (candidate `0cf79691a54879d884b44acb954199d4fb3d5b05`),
+with no private coroutine loop needed. CI's host must call sequentially under its stopped-writer/flush
 boundary. The temporary image stream is not retained after `stage_image`.
 
 * `stage_image(BinaryIO, mime=..., origin=...)` hashes decoded original bytes,
