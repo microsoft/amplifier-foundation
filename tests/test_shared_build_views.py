@@ -599,10 +599,13 @@ def test_nested_store_lookalikes_cannot_mask_outer_object_or_build_lock(source, 
     except OSError as error:
         # Windows reports a directory path of 248 to 259 characters as
         # ERROR_FILENAME_EXCED_RANGE (206) and a longer one as
-        # ERROR_PATH_NOT_FOUND (3). Two nested 64-digit layouts need more than
-        # 300 characters. A build must open the package by its ordinary path,
-        # so this case cannot exist where long paths are off. The 16-digit case
-        # fits there and asserts the same ownership rule.
+        # ERROR_PATH_NOT_FOUND (3). The 64-digit look-alike needs 201
+        # characters below the object root, so it fits the 247-character limit
+        # only under an object root of 46 or fewer. A build must open the
+        # package by its ordinary path, so where long paths are off this case
+        # is skipped when it does not fit. The 16-digit case fits there and
+        # asserts the same ownership rule; the 64-digit case runs in every job
+        # without the limit.
         too_long = (
             os.name == "nt" and width == 64 and len(str(package)) > 247
             and getattr(error, "winerror", None) in {3, 206}

@@ -150,10 +150,12 @@ platform recognizes both name widths as store entries. Only Windows selects the
 short name; elsewhere `checkout()` returns the same path as before.
 
 Limits that remain: a child program still cannot use a working directory or an
-ordinary path beyond the limit, so a repository file deeper than about
-`259 - len(store root) - 80` characters in an object, or `- 38` in a build view,
-is reachable by Git and by the store but not by a program that opens it by its
-ordinary path. The `windows-long-paths-off` CI job turns the setting off on the
+ordinary path beyond the limit. A new object adds 67 characters to the store
+root before the repository path (`\objects\<16>\<40-digit commit>\`; 91 for a
+64-digit SHA-256 commit) and a new build view adds 25 (`\builds\<16>\`). So a
+repository file deeper than `259 - len(store root) - 67` characters in an
+object, or `- 25` in a build view, is reachable by Git and by the store but not
+by a program that opens it by its ordinary path. The `windows-long-paths-off` CI job turns the setting off on the
 runner, requires a canary to show that the limit is in force, and then stages,
 seals, cleans up and builds a repository whose files exceed it.
 

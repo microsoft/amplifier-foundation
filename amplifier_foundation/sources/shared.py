@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from filelock import AsyncFileLock, FileLock
 
 from amplifier_foundation.paths.resolution import ResolvedSource, parse_uri
-from amplifier_foundation.sources._winpath import extended
+from amplifier_foundation.sources._winpath import extended, ordinary_text
 from amplifier_foundation.sources.git import _with_longpaths
 
 # New Windows entries use this many leading digits of a 64-digit store name.
@@ -508,7 +508,9 @@ def _build_key(data):
 
 def _build_directory(path):
     if not stat.S_ISDIR(path.lstat().st_mode):
-        raise ValueError(f"Build control path must be an ordinary directory: {path}")
+        raise ValueError(
+            f"Build control path must be an ordinary directory: {ordinary_text(path)}"
+        )
 
 
 def _build_links(root):
@@ -536,12 +538,17 @@ def _build_links(root):
                 ):
                     control = path / redirect
                     if control.exists() or control.is_symlink():
-                        raise ValueError(f"Build input redirects Git metadata: {control}")
+                        raise ValueError(
+                            "Build input redirects Git metadata: "
+                            + ordinary_text(control)
+                        )
             if path.is_symlink() and (
                 Path(os.readlink(path)).anchor
                 or not path.resolve().is_relative_to(root)
             ):
-                raise ValueError(f"Build input contains an escaping symlink: {path}")
+                raise ValueError(
+                    "Build input contains an escaping symlink: " + ordinary_text(path)
+                )
 
 
 def _walk_build_subpath(root, relative):
@@ -664,7 +671,9 @@ def _build_ignore(directory, names):
         elif not (
             stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)
         ):
-            raise ValueError(f"Unsupported special file in build input: {path}")
+            raise ValueError(
+                f"Unsupported special file in build input: {ordinary_text(path)}"
+            )
     return ignored
 
 

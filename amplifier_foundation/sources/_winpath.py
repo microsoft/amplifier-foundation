@@ -20,7 +20,7 @@ import ntpath
 import os
 from pathlib import Path
 
-__all__ = ["extended", "extended_text"]
+__all__ = ["extended", "extended_text", "ordinary_text"]
 
 _PREFIX = "\\\\?\\"
 
@@ -41,6 +41,15 @@ def extended_text(text: str) -> str:
     if drive.startswith("\\\\"):
         return _PREFIX + "UNC\\" + normal[2:]
     return _PREFIX + normal
+
+
+def ordinary_text(path) -> str:
+    """The ordinary spelling of a path, for messages. Other text is unchanged."""
+    text = os.fspath(path)
+    if not text.startswith(_PREFIX):
+        return text
+    rest = text[len(_PREFIX):]
+    return "\\\\" + rest[4:] if rest.startswith("UNC\\") else rest
 
 
 def extended(path):

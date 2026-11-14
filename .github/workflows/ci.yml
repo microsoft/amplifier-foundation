@@ -84,13 +84,15 @@ jobs:
           "LongPathsEnabled was $before and is now $now"
           if ($now -ne 0) { throw 'Long paths are still on; this job cannot prove anything.' }
 
-      # A short temporary root keeps the ordinary fixtures inside the limit, as
-      # a real store root is. The deep-tree tests size their own paths from the
-      # store root, so they exceed the limit by the same amount anywhere.
+      # This temporary root puts each test's store root at about 63 characters;
+      # a store root measured on a real install has 64. pytest's default root
+      # on the runner is about 40 characters deeper than that. The deep-tree
+      # tests size their own paths from the store root, so they exceed the
+      # limit by the same amount under any root.
       - name: Require the path limit, then run the source store tests under it
         env:
           AMPLIFIER_REQUIRE_WINDOWS_PATH_LIMIT: '1'
-        run: uv run --no-sync pytest tests/test_source_store_long_paths.py tests/test_shared_sources.py tests/test_shared_build_views.py tests/test_gap_rmtree_readonly.py tests/test_git_longpaths.py -q --tb=short -rA --basetemp "${{ runner.temp }}/lp"
+        run: uv run --no-sync pytest tests/test_source_store_long_paths.py tests/test_shared_sources.py tests/test_shared_build_views.py tests/test_gap_rmtree_readonly.py tests/test_git_longpaths.py -q --tb=short -rA --basetemp "${{ runner.temp }}/long-paths-off"
 
       - name: Restore the runner's long-path setting
         if: ${{ always() }}

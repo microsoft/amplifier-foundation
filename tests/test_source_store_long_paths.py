@@ -25,13 +25,18 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import subprocess
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 from amplifier_foundation.sources import shared
-from amplifier_foundation.sources._winpath import extended, extended_text
+from amplifier_foundation.sources._winpath import (
+    extended,
+    extended_text,
+    ordinary_text,
+)
 from amplifier_foundation.sources.git import GitSourceHandler, _with_longpaths
 from amplifier_foundation.sources.shared import (
     SharedSourceStore,
@@ -144,6 +149,12 @@ def test_extended_text_contract():
     for refused in ("relative\\x", "C:relative", "\\rooted", "\\\\.\\COM1", ""):
         with pytest.raises(ValueError, match="absolute"):
             extended_text(refused)
+    # Messages name the ordinary spelling, never the traversal form.
+    for text in ("C:\\Users\\x\\store", "\\\\server\\share\\x"):
+        assert ordinary_text(extended_text(text)) == text
+        assert ordinary_text(text) == text
+    assert ordinary_text("/posix/path") == "/posix/path"
+    assert ordinary_text(Path("relative")) == "relative"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="identity off Windows")
@@ -182,6 +193,29 @@ def test_removal_that_keeps_failing_is_reported_for_an_unreachable_root(
     _rmtree.rmtree_robust(root)
     assert not extended(root).exists()
     assert extended(root.parent).is_dir()  # Only the named tree was removed.
+
+
+@pytest.mark.asyncio
+async def test_refused_link_is_named_by_its_ordinary_path(tmp_path):
+    """The traversal form stays inside the store; a person reads the message."""
+    repo = new_repository(tmp_path / "r")
+    store = SharedSourceStore(tmp_path / "s")
+    target = await store.ensure(URL, commit(repo, "fixture"), existing=repo)
+    module = target / MODULE
+    mode = module.stat().st_mode
+    module.chmod(0o700)
+    try:
+        (module / "escape").symlink_to(tmp_path / "outside")
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+    finally:
+        module.chmod(stat.S_IMODE(mode))
+    with pytest.raises(ValueError, match="escaping symlink") as caught:
+        build_view(module)
+    assert str(module / "escape") in str(caught.value)
+    assert "\\\\?\\" not in str(caught.value)
+    # Nothing was published and no stage remains; only the lock file stays.
+    assert not [path for path in (store.root / "builds").iterdir() if path.is_dir()]
 
 
 @pytest.mark.asyncio
