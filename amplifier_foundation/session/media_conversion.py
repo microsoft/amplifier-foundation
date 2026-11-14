@@ -67,6 +67,7 @@ class Candidate:
     images: int
     original_bytes: int
     decoded_bytes: int
+    inline_removed_bytes: int = 0
     state: str = "verified-candidate-not-applied"
 
 
@@ -478,7 +479,7 @@ async def _build(
         db.execute("create table assets(row integer,block integer,ref blob,origin blob)")
         db.execute("create table closure(ref blob)")
         db.execute("create index assets_row_block on assets(row,block)")
-        decoded_bytes = image_count = 0
+        decoded_bytes = image_count = inline_removed_bytes = 0
         selected_end = 0
         with _open(Path(plan.source.path)) as source:
             scanner = Scanner(source)
@@ -557,6 +558,7 @@ async def _build(
                     _patch(db, block.start, block.end, replacement)
                     image_count += 1
                     decoded_bytes += size
+                    inline_removed_bytes += block.end - block.start
                     _event(journal, state="published-assets-only", row=row, block=index, ref=ref)
                     if cancelled():
                         raise InterruptedError("Conversion cancelled after publication")
@@ -592,7 +594,7 @@ async def _build(
         db.commit()
         result = Candidate(
             str(directory), digest, size, plan.selected_records, image_count,
-            plan.source.size, decoded_bytes,
+            plan.source.size, decoded_bytes, inline_removed_bytes,
         )
         with _open(directory / "manifest.sqlite") as stream:
             manifest_hash, manifest_size = _digest(stream)
