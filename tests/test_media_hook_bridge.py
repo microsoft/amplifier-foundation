@@ -2303,3 +2303,20 @@ async def test_mode_unrelated_failure_remains_native_and_does_not_invalidate_rec
         await view.hooks.emit("session:ordinary-badge", {})
     assert bridge.validate_receipt(bridge.graph_receipt)
     await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+async def test_participant_processing_preserves_native_default_and_keyword_signature():
+    session, bridge, graph, old = await positive_graph()
+    view = graph.participant("host.late")
+    assert (await view.process_hook_result(HookResult(), "ordinary:event")).action == "continue"
+    assert (await view.process_hook_result(
+        HookResult(), event="ordinary:event", hook_name="explicit-native-name")).action == "continue"
+    assert bridge.validate_receipt(old)
+    with graph.transition():
+        assert (await view.process_hook_result(HookResult(), "mode:activated")).action == "continue"
+        assert (await view.process_hook_result(
+            HookResult(), event="mode:changed", hook_name="explicit-native-name")).action == "continue"
+    assert bridge.validate_receipt(bridge.graph_receipt)
+    await session.cleanup()

@@ -775,15 +775,15 @@ class _CoordinatorView:
             return self.hooks
         return self._bridge._coordinator.get(mount_point, name)
 
-    async def process_hook_result(self, result: Any, event: str, name: str) -> Any:
+    async def process_hook_result(self, result: Any, event: str, hook_name: str = "unknown") -> Any:
         graph = self._bridge._transition
         if graph is None or event not in _MODE_EVENTS:
-            return await self._bridge._native_process(result, event, name)
+            return await self._bridge._native_process(result, event, hook_name)
         with graph._contribution(event, "process", participant=self._participant,
                                  original=self._bridge._native_process) as record:
             # Construction/task setup remains inside the failure witness.
             processed = await MediaMountLifecycle._await_tracked(
-                graph, self._bridge._native_process(result, event, name))
+                graph, self._bridge._native_process(result, event, hook_name))
             graph._contribution_result(record, processed)
             return processed
 
