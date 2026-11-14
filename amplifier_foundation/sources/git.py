@@ -262,6 +262,7 @@ def _kill_process_tree(pid: int) -> None:
             ["taskkill", "/F", "/T", "/PID", str(pid)],
             capture_output=True,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     else:
         import signal
@@ -304,7 +305,10 @@ def _run_git_subprocess(
     start_new_session = False
     if platform.system() == "Windows":
         # Only defined on Windows builds of the subprocess module.
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creationflags = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
     else:
         start_new_session = True
 
@@ -468,6 +472,7 @@ class GitSourceHandler:
                 capture_output=True,
                 text=True,
                 check=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             return result.stdout.strip()
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -489,6 +494,7 @@ class GitSourceHandler:
                     text=True,
                     check=True,
                     timeout=30,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 ),
             )
             # Parse output: "SHA\trefs/heads/main" or "SHA\tHEAD"
@@ -610,6 +616,7 @@ class GitSourceHandler:
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except subprocess.TimeoutExpired as exc:
                 raise GitCloneTimeoutError(args, 30) from exc

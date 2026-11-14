@@ -107,9 +107,11 @@ def clean_checkout(root):
         ),
         cwd=root,
         text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     extras = subprocess.check_output(
-        _with_longpaths(["git", "ls-files", "--others", "-z"]), cwd=root
+        _with_longpaths(["git", "ls-files", "--others", "-z"]), cwd=root,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     ).split(b"\0")
     extras = [name for name in extras if name and name != b".amplifier_cache_meta.json"]
     return not dirty and not extras
@@ -129,6 +131,7 @@ def _index_refresh_owned(root):
             "git", "rev-parse", "--show-toplevel", "--absolute-git-dir",
             "--git-common-dir", "--git-path", "index", "--git-path", "objects",
         ]), cwd=root, text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     ).splitlines()
     expected = (root, git_dir, git_dir, git_dir / "index", git_dir / "objects")
     return len(paths) == len(expected) and all(
@@ -163,7 +166,8 @@ class SharedSourceStore:
         ):
             raise ValueError("Shared source identity changed")
         actual = subprocess.check_output(
-            _with_longpaths(["git", "rev-parse", "HEAD"]), cwd=target, text=True
+            _with_longpaths(["git", "rev-parse", "HEAD"]), cwd=target, text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ).strip()
         if actual != revision or not clean_checkout(target):
             raise ValueError("Shared source contents changed")
@@ -221,6 +225,7 @@ class SharedSourceStore:
                         _with_longpaths(["git", "rev-parse", "HEAD"]),
                         cwd=stage,
                         text=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     ).strip()
                     if actual != revision or not clean_checkout(stage):
                         raise ValueError(
@@ -257,6 +262,7 @@ class SharedSourceStore:
                         cwd=stage,
                         text=True,
                         env={**os.environ, "GIT_OPTIONAL_LOCKS": "1"},
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
                     if dirty:
                         raise ValueError(
