@@ -162,6 +162,28 @@ def test_extended_names_the_same_directory_on_windows(tmp_path):
     assert extended(str(tmp_path) + "\\.\\x\\..") == extended(tmp_path)
 
 
+def test_removal_that_keeps_failing_is_reported_for_an_unreachable_root(
+    tmp_path, monkeypatch
+):
+    """An ordinary path beyond the limit reads as absent. Do not trust it."""
+    from amplifier_foundation.sources import _rmtree
+
+    root = tmp_path
+    while len(str(root)) < 280:
+        root = root / ("d" * 30)
+    extended(root).mkdir(parents=True)
+    (extended(root) / "kept.txt").write_text("still here")
+    with monkeypatch.context() as patch:
+        patch.setattr(_rmtree.shutil, "rmtree", lambda *args, **kwargs: None)
+        with pytest.raises(OSError, match="Failed to remove directory"):
+            _rmtree.rmtree_robust(root)
+        _rmtree.rmtree_robust(root, ignore_errors=True)  # Still best-effort.
+    assert (extended(root) / "kept.txt").read_text() == "still here"
+    _rmtree.rmtree_robust(root)
+    assert not extended(root).exists()
+    assert extended(root.parent).is_dir()  # Only the named tree was removed.
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("short", [False, True])
 async def test_new_entries_use_the_selected_name_width(tmp_path, monkeypatch, short):

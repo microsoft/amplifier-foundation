@@ -587,12 +587,29 @@ def test_unsupported_special_type_is_not_silently_omitted(tmp_path, monkeypatch)
         shared._build_ignore(tmp_path, ["device"])
 
 
-def test_nested_store_lookalikes_cannot_mask_outer_object_or_build_lock(source):
+@pytest.mark.parametrize("width", [64, 16])
+def test_nested_store_lookalikes_cannot_mask_outer_object_or_build_lock(source, width):
+    """Both store-name widths are recognized, so both can imitate a store."""
     root, _ = source
     root.chmod(0o700)
-    nested = root / "vendor/objects" / ("a" * 64) / ("b" * 40)
-    package = nested / "builds" / ("c" * 64) / "package"
-    package.mkdir(parents=True)
+    nested = root / "vendor/objects" / ("a" * width) / ("b" * 40)
+    package = nested / "builds" / ("c" * width) / "package"
+    try:
+        package.mkdir(parents=True)
+    except OSError as error:
+        # Windows reports a directory path of 248 to 259 characters as
+        # ERROR_FILENAME_EXCED_RANGE (206) and a longer one as
+        # ERROR_PATH_NOT_FOUND (3). Two nested 64-digit layouts need more than
+        # 300 characters. A build must open the package by its ordinary path,
+        # so this case cannot exist where long paths are off. The 16-digit case
+        # fits there and asserts the same ownership rule.
+        too_long = (
+            os.name == "nt" and width == 64 and len(str(package)) > 247
+            and getattr(error, "winerror", None) in {3, 206}
+        )
+        if not too_long:
+            raise
+        pytest.skip("two nested 64-digit layouts exceed the Windows path limit")
     (nested / ".amplifier_cache_meta.json").write_text('{"immutable": false}')
     (package.parent / ".amplifier_cache_meta.json").write_text('{"buildInput": true}')
     root.chmod(0o555)

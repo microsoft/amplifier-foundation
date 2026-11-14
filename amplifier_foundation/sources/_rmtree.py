@@ -106,7 +106,9 @@ def rmtree_robust(path: Path | str, *, ignore_errors: bool = False) -> None:
     else:
         shutil.rmtree(tree, onerror=_onerror)
 
-    if not ignore_errors and target.exists():
+    # An ordinary path beyond the Windows limit reads as absent even when the
+    # tree is still there. Ask in the form that was used to remove it.
+    if not ignore_errors and tree.exists():
         raise OSError(
             f"Failed to remove directory even after clearing read-only "
             f"attributes and retrying: {target}. This is not a transient "

@@ -80,23 +80,34 @@ jobs:
           if ($null -eq $before) { $before = 'absent' }
           "LONG_PATHS_BEFORE=$before" >> $env:GITHUB_ENV
           Set-ItemProperty -Path $key -Name LongPathsEnabled -Value 0 -Type DWord
-          "LongPathsEnabled was $before and is now $((Get-ItemProperty -Path $key -Name LongPathsEnabled).LongPathsEnabled)"
+          $now = (Get-ItemProperty -Path $key -Name LongPathsEnabled).LongPathsEnabled
+          "LongPathsEnabled was $before and is now $now"
+          if ($now -ne 0) { throw 'Long paths are still on; this job cannot prove anything.' }
 
+      # A short temporary root keeps the ordinary fixtures inside the limit, as
+      # a real store root is. The deep-tree tests size their own paths from the
+      # store root, so they exceed the limit by the same amount anywhere.
       - name: Require the path limit, then run the source store tests under it
         env:
           AMPLIFIER_REQUIRE_WINDOWS_PATH_LIMIT: '1'
-        run: uv run --no-sync pytest tests/test_source_store_long_paths.py tests/test_shared_sources.py tests/test_shared_build_views.py tests/test_gap_rmtree_readonly.py tests/test_git_longpaths.py -q --tb=short -rA
+        run: uv run --no-sync pytest tests/test_source_store_long_paths.py tests/test_shared_sources.py tests/test_shared_build_views.py tests/test_gap_rmtree_readonly.py tests/test_git_longpaths.py -q --tb=short -rA --basetemp "${{ runner.temp }}/lp"
 
       - name: Restore the runner's long-path setting
         if: ${{ always() }}
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+          if (-not $env:LONG_PATHS_BEFORE) { 'The setting was never changed.'; exit 0 }
           if ($env:LONG_PATHS_BEFORE -eq 'absent') {
             Remove-ItemProperty -Path $key -Name LongPathsEnabled -ErrorAction SilentlyContinue
-          } elseif ($env:LONG_PATHS_BEFORE) {
+          } else {
             Set-ItemProperty -Path $key -Name LongPathsEnabled -Value ([int]$env:LONG_PATHS_BEFORE) -Type DWord
           }
+          $after = (Get-ItemProperty -Path $key -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled
+          if ($null -eq $after) { $after = 'absent' }
+          "LongPathsEnabled is $after; it was $env:LONG_PATHS_BEFORE before this job"
+          if ("$after" -ne "$env:LONG_PATHS_BEFORE") { throw 'The runner long-path setting was not restored.' }
 
   macos-shared-sources:
     name: Shared source publication (macOS, Python 3.13)
