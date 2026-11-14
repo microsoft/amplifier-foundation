@@ -108,7 +108,38 @@ def _expired(ref: dict[str, Any]) -> bool:
         _refuse("media expiry is invalid")
 
 
-def _can_hydrate(identity: Any, scope: Any, role: str, mime: str | None = None) -> bool:
+def _indexed_support(value: Any, request: ChatRequest) -> Any:
+    """Strict v2 facts refer only to this exact prehydration request."""
+    value = _json_value(value)
+    if (
+        type(value) is not dict or set(value) != {"v", "positions", "mime_types"}
+        or type(value["v"]) is not int or value["v"] != 2
+        or type(value["positions"]) is not list
+        or type(value["mime_types"]) is not list
+        or any(type(mime) is not str or not mime for mime in value["mime_types"])
+        or len(set(value["mime_types"])) != len(value["mime_types"])
+    ):
+        _refuse("invalid indexed media request support")
+    seen = set()
+    for position in value["positions"]:
+        if (
+            type(position) is not dict or set(position) != {"message_index", "role"}
+            or type(position["message_index"]) is not int
+            or not 0 <= position["message_index"] < len(request.messages)
+            or type(position["role"]) is not str
+            or position["role"] not in ("user", "tool")
+            or request.messages[position["message_index"]].role != position["role"]
+            or position["message_index"] in seen
+        ):
+            _refuse("invalid indexed media request position")
+        seen.add(position["message_index"])
+    return value
+
+
+def _can_hydrate(
+    identity: Any, scope: Any, role: str, mime: str | None = None, *,
+    message_index: int,
+) -> bool:
     if scope in ("nested", "text_only"):
         return False
     if isinstance(scope, dict) and (scope.get("nested") is True or scope.get("text_only") is True):
@@ -118,6 +149,12 @@ def _can_hydrate(identity: Any, scope: Any, role: str, mime: str | None = None) 
     if not {"provider", "account", "generation", "media_support"} <= identity.keys():
         return False
     support = identity.get("media_support")
+    if type(support) is dict and type(support.get("v")) is int and support["v"] == 2:
+        # Shape and role/index consistency were checked before any pixel access.
+        return (
+            {"message_index": message_index, "role": role} in support["positions"]
+            and mime in support["mime_types"]
+        )
     return (
         isinstance(support, dict)
         and type(support.get("v")) is int and support["v"] == 1
@@ -351,6 +388,9 @@ async def prepare_media_request(
     # Check before deepcopy: arbitrary metadata objects must not get to execute
     # copy hooks, JSON serializers, or repr while constructing a witness.
     canonical_digest = _digest(request)
+    support = provider_identity.get("media_support") if type(provider_identity) is dict else None
+    if type(support) is dict and support.get("v") == 2:
+        _indexed_support(support, request)
     initial_binding = _digest({
         "session_id": store.session_id, "epoch": store.epoch,
         "policy": _policy_value(store), "provider_identity": provider_identity,
@@ -375,7 +415,7 @@ async def prepare_media_request(
                     verifier = getattr(store, "request_only_verifier", None)
                     admitted = (
                         _can_hydrate(provider_identity, execution_scope, message.role,
-                                     block.source.get("media_type"))
+                                     block.source.get("media_type"), message_index=message_index)
                         and callable(verifier) and verifier(
                             request, message_index=message_index,
                             block_index=block_index, purpose=purpose
@@ -409,7 +449,10 @@ async def prepare_media_request(
                 store.verify_checkpoint(ref)
                 expired = _expired(ref)
                 allowed = False if expired else _source_allowed(store, ref)
-                supported = _can_hydrate(provider_identity, execution_scope, message.role, ref["mime"])
+                supported = _can_hydrate(
+                    provider_identity, execution_scope, message.role, ref["mime"],
+                    message_index=message_index,
+                )
                 # Unsupported positions/nested/text-only never read pixels.
                 data = _read_asset(store, ref) if allowed and supported else None
                 state = (

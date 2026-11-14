@@ -126,6 +126,94 @@ class ProjectionTests(unittest.IsolatedAsyncioTestCase):
         args.update(kwargs)
         return await prepare_media_request(store, request, **args)
 
+    async def test_indexed_support_hydrates_only_exact_message_not_same_digest_history(self):
+        ref = make_ref()
+        store = FakeStore([ref])
+        canonical = request_for([ref], role="user")
+        canonical.messages.append(copy.deepcopy(canonical.messages[0]))
+        self.identity["media_support"] = {
+            "v": 2, "positions": [{"message_index": 1, "role": "user"}],
+            "mime_types": ["image/png"],
+        }
+        prepared = await self.prepare(store, canonical)
+        self.assertIn("no pixels", prepared.request.messages[0].content[1].text)
+        self.assertIsInstance(prepared.request.messages[1].content[1], ImageBlock)
+        self.assertEqual(len(store.resolved), 1)
+        prepared.validate()
+        self.assertEqual(len(store.resolved), 2)  # Only selected image on validation too.
+        self.assertEqual(canonical.messages[0], canonical.messages[1])
+        prepared.release()
+
+    async def test_empty_or_non_image_selected_position_never_searches_backwards(self):
+        ref = make_ref()
+        for positions in ([], [{"message_index": 1, "role": "user"}]):
+            store = FakeStore([ref])
+            canonical = request_for([ref], role="user")
+            canonical.messages.append(Message(role="user", content="latest without image"))
+            self.identity["media_support"] = {
+                "v": 2, "positions": positions, "mime_types": ["image/png"],
+            }
+            prepared = await self.prepare(store, canonical)
+            self.assertIn("no pixels", prepared.request.messages[0].content[1].text)
+            self.assertEqual(prepared.request.messages[1].content, "latest without image")
+            prepared.validate()
+            self.assertEqual(store.resolved, [])
+            prepared.release()
+
+    async def test_indexed_inline_gate_precedes_request_only_verifier(self):
+        store = FakeStore([])
+        verified = []
+        store.request_only_verifier = lambda *args, **kwargs: verified.append(kwargs) or True
+        inline = ImageBlock(source={"type": "base64", "media_type": "image/png", "data": "cGl4ZWxz"})
+        canonical = ChatRequest(messages=[
+            Message(role="user", content=[copy.deepcopy(inline)]),
+            Message(role="tool", content=[copy.deepcopy(inline)]),
+        ])
+        self.identity["media_support"] = {
+            "v": 2, "positions": [{"message_index": 1, "role": "tool"}],
+            "mime_types": ["image/png"],
+        }
+        prepared = await self.prepare(store, canonical)
+        self.assertEqual([call["message_index"] for call in verified], [1])
+        self.assertIn("no pixels", prepared.request.messages[0].content[0].text)
+        self.assertIsInstance(prepared.request.messages[1].content[0], ImageBlock)
+        prepared.validate()
+        self.assertEqual([call["message_index"] for call in verified], [1, 1])
+        prepared.release()
+
+    async def test_invalid_indexed_role_or_index_refuses_before_verifier_or_asset_reads(self):
+        ref = make_ref()
+        store = FakeStore([ref])
+        store.request_only_verifier = lambda *args, **kwargs: self.fail("verifier called")
+        canonical = request_for([ref])
+        for position in (
+            {"message_index": True, "role": "tool"},
+            {"message_index": -1, "role": "tool"},
+            {"message_index": 1, "role": "tool"},
+            {"message_index": 0, "role": "user"},
+            {"message_index": 0, "role": "tool", "unknown": True},
+        ):
+            self.identity["media_support"] = {
+                "v": 2, "positions": [position], "mime_types": ["image/png"],
+            }
+            with self.assertRaises(Refusal):
+                await self.prepare(store, canonical)
+            self.assertEqual(store.resolved, [])
+            self.assertEqual(store.prepared, [])
+
+    async def test_indexed_mime_gate_applies_before_any_pixels(self):
+        ref = make_ref()
+        store = FakeStore([ref])
+        self.identity["media_support"] = {
+            "v": 2, "positions": [{"message_index": 0, "role": "tool"}],
+            "mime_types": ["image/jpeg"],
+        }
+        prepared = await self.prepare(store, request_for([ref]))
+        prepared.validate()
+        self.assertIn("no pixels", prepared.request.messages[0].content[1].text)
+        self.assertEqual(store.resolved, [])
+        prepared.release()
+
     async def test_deepcopy_preserves_role_call_metadata_and_exact_position(self):
         ref = make_ref()
         store = FakeStore([ref])

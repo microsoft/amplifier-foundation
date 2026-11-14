@@ -53,9 +53,56 @@ def _accepts_options(method: Any) -> bool:
 class _Candidate:
     canonical: Any
     key: tuple[str, ...]
+    base_key: tuple[str, ...]
     prepared: Any
+    source: Any
+    source_digest: str
+    lifetime: Any
+    overlay_validator: Any
     fitted: bool = False
     measured: bool = False
+
+
+class _RequestLifetime:
+    """One synchronous host graph scope, never one scope per wrapper method."""
+
+    def __init__(self, factory: Any) -> None:
+        self._context = None
+        self._validator = None
+        self._closed = False
+        if factory is not None:
+            context = factory()
+            if not callable(getattr(context, "__exit__", None)):
+                raise ValueError("Media request scope requires a synchronous context manager")
+            entered = context.__enter__()
+            self._context = context
+            self._validator = entered if callable(entered) else getattr(entered, "validate", None)
+            try:
+                if not callable(self._validator):
+                    raise ValueError("Media request scope must yield a synchronous validator")
+                self.validate()
+            except BaseException:
+                self.close()
+                raise
+
+    def validate(self) -> bool:
+        if self._closed:
+            raise ValueError("Media request graph scope changed")
+        if self._validator is not None:
+            valid = self._validator()
+            if inspect.iscoroutine(valid):
+                valid.close()
+            if valid is not True:
+                raise ValueError("Media request graph scope changed")
+        return True
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            context, self._context = self._context, None
+            self._validator = None
+            if context is not None:
+                context.__exit__(None, None, None)
 
 
 class MediaPreparedProvider:
@@ -65,6 +112,11 @@ class MediaPreparedProvider:
     account/generation identity). Media support always comes from the actual
     provider's ``get_media_request_support(model=..., request_options=...)``.
     ``model`` may likewise be a zero-argument getter.
+    Optional actual-provider ``get_media_request_support_for_request`` supplies
+    strict v2 index/role/MIME facts for the frozen post-overlay/prehydration
+    source; its presence is authoritative, including empty or invalid results.
+    Optional ``request_scope`` is a source-bound synchronous context factory
+    yielding a literal-True validator, held for the private candidate's lifetime.
 
     The host must call ``close``/``aclose`` on session teardown. They release this
     wrapper's buffers, not the underlying provider's resources. Concurrent use
@@ -90,17 +142,23 @@ class MediaPreparedProvider:
         model: Any = None,
         execution_scope: Any = None,
         prepare_overlay: Any = None,
+        request_scope: Any = None,
     ) -> None:
         if not callable(getattr(provider, "complete", None)):
             raise TypeError("Media provider requires a callable complete")
         if not callable(getattr(capability, "prepare_request", None)):
             raise TypeError("Media capability requires a callable prepare_request")
+        if request_scope is not None and not callable(request_scope):
+            raise TypeError("request_scope must be a source-bound context factory")
         self._provider = provider
         self._capability = capability
         self._identity_source = provider_identity
         self._model_source = model
         self._scope = execution_scope
         self._prepare_overlay = prepare_overlay
+        self._request_scope = request_scope
+        self._lifetimes: list[_RequestLifetime] = []
+        self._candidates: list[_Candidate] = []
         self._candidate: _Candidate | None = None
         self._active: list[Any] = []
         self._owned_overlays: dict[int, list[Any]] = {}
@@ -119,6 +177,9 @@ class MediaPreparedProvider:
         support = getattr(provider, "get_media_request_support", None)
         if callable(support):
             self.get_media_request_support = support
+        indexed_support = getattr(provider, "get_media_request_support_for_request", None)
+        if callable(indexed_support):
+            self.get_media_request_support_for_request = indexed_support
         stream_support = getattr(provider, "get_stream_request_support", None)
         if callable(getattr(provider, "stream", None)) and callable(stream_support):
             self.get_stream_request_support = stream_support
@@ -156,14 +217,21 @@ class MediaPreparedProvider:
             return
         if self._candidate is candidate:
             self._candidate = None
+        self._candidates = [item for item in self._candidates if item is not candidate]
         prepared = candidate.prepared
-        if not any(item is prepared for item in self._active):
-            return
-        self._active = [item for item in self._active if item is not prepared]
         try:
-            prepared.release()
+            if any(item is prepared for item in self._active):
+                self._active = [item for item in self._active if item is not prepared]
+                prepared.release()
         finally:
-            self._clear_overlays(self._owned_overlays.pop(id(prepared), []))
+            try:
+                self._clear_overlays(self._owned_overlays.pop(id(prepared), []))
+            finally:
+                self._end_lifetime(candidate.lifetime)
+
+    def _end_lifetime(self, lifetime: _RequestLifetime) -> None:
+        self._lifetimes = [item for item in self._lifetimes if item is not lifetime]
+        lifetime.close()
 
     @staticmethod
     def _clear_overlays(requests: list[Any]) -> None:
@@ -180,13 +248,21 @@ class MediaPreparedProvider:
     def close(self) -> None:
         """Revoke all prepared requests, including an active transport's witness."""
         self._closed = True
-        self._candidate = None
-        active, self._active = self._active, []
-        for prepared in active:
+        error = None
+        for candidate in tuple(self._candidates):
             try:
-                prepared.release()
-            finally:
-                self._clear_overlays(self._owned_overlays.pop(id(prepared), []))
+                self._release(candidate)
+            except BaseException as exc:
+                error = error or exc
+        # Also cover a close during an awaited overlay/preparation. One broken
+        # release callback must not strand a second private candidate/scope.
+        for lifetime in tuple(self._lifetimes):
+            try:
+                self._end_lifetime(lifetime)
+            except BaseException as exc:
+                error = error or exc
+        if error is not None:
+            raise error
 
     async def aclose(self) -> None:
         """Revoke buffers and close any live underlying stream iterators."""
@@ -201,7 +277,7 @@ class MediaPreparedProvider:
         return {**(request_options or {}), **kwargs}
 
     def _binding(
-        self, request: Any, options: dict[str, Any]
+        self, request: Any, options: dict[str, Any], *, source: Any = None,
     ) -> tuple[tuple[str, ...], Any, Any]:
         model = self._model_source
         if callable(model):
@@ -218,11 +294,10 @@ class MediaPreparedProvider:
         if not isinstance(identity, Mapping):
             raise ValueError("provider_identity must be a mapping")
         identity = copy.deepcopy(dict(identity))
-        support = getattr(self._provider, "get_media_request_support", None)
-        identity["media_support"] = (
-            support(model=model, request_options=copy.deepcopy(options))
-            if callable(support) else {"v": 1, "positions": []}
-        )
+        # Caller identity cannot forge either old or indexed support facts.
+        identity.pop("media_support", None)
+        if source is not None:
+            identity["media_support"] = self._support(source, model, options)
         normalized_options = dict(options)
         if normalized_options.get("model") == model:
             normalized_options.pop("model", None)
@@ -230,9 +305,70 @@ class MediaPreparedProvider:
             normalized_options.pop("reasoning_effort", None)
         key = tuple(
             _fingerprint(value)
-            for value in (request, normalized_options, identity, model, self._scope)
+            for value in (
+                request, normalized_options, identity, model, self._scope,
+                id(self._provider),
+            )
         )
         return key, identity, model
+
+    def _support(self, source: Any, model: Any, options: dict[str, Any]) -> Any:
+        from .media_projection import _digest, _indexed_support, _json_value
+
+        absent = object()
+        getter = getattr(self._provider, "get_media_request_support_for_request", absent)
+        if getter is absent:
+            support = getattr(self._provider, "get_media_request_support", None)
+            return (
+                support(model=model, request_options=copy.deepcopy(options))
+                if callable(support) else {"v": 1, "positions": []}
+            )
+        if not callable(getter):
+            raise ValueError("Indexed media request support must be synchronous")
+        # Read-only by contract, detached so a broken getter cannot edit either
+        # canonical data or the frozen source used by subsequent retry checks.
+        source_digest, options_digest = _digest(source), _digest(options)
+        model_digest = _digest(model)
+        snapshot, option_snapshot = copy.deepcopy(source), copy.deepcopy(options)
+        model_snapshot = copy.deepcopy(model)
+        try:
+            value = getter(request=snapshot, model=model_snapshot, request_options=option_snapshot)
+            if inspect.isawaitable(value):
+                if inspect.iscoroutine(value):
+                    value.close()
+                raise ValueError("Indexed media request support must be synchronous")
+            if (
+                _digest(snapshot) != source_digest
+                or _digest(option_snapshot) != options_digest
+                or _digest(model_snapshot) != model_digest
+            ):
+                raise ValueError("Indexed media support mutated its read-only input")
+            return _indexed_support(_json_value(value), source)
+        finally:
+            self._clear_overlays([snapshot])
+
+    def _candidate_valid(self, candidate: _Candidate, options: dict[str, Any]) -> bool:
+        from .media_projection import _digest
+
+        candidate.lifetime.validate()
+        if (
+            self._closed
+            or _digest(candidate.source) != candidate.source_digest
+            or self._binding(candidate.canonical, options, source=candidate.source)[0] != candidate.key
+            or (
+                candidate.overlay_validator is not None
+                and candidate.overlay_validator() is not True
+            )
+        ):
+            raise ValueError("Prepared media candidate changed")
+        candidate.lifetime.validate()
+        if (
+            self._closed
+            or self._binding(candidate.canonical, options)[0] != candidate.base_key
+            or _digest(candidate.source) != candidate.source_digest
+        ):
+            raise ValueError("Media binding changed during validation")
+        return True
 
     async def _prepare(
         self,
@@ -243,23 +379,39 @@ class MediaPreparedProvider:
         dispatch: bool = False,
         private: bool = False,
     ) -> _Candidate:
-        key, identity, model = self._binding(request, options)
+        from .media_projection import _digest
+
         old = None if private else self._candidate
         if old is not None:
-            if old.canonical is request and old.key == key:
-                old.prepared.validate(request_options=options)
-                return old
+            try:
+                old.lifetime.validate()
+                if (
+                    old.canonical is request
+                    and self._binding(request, options)[0] == old.base_key
+                ):
+                    self._validate(old, options)
+                    return old
+            except BaseException:
+                self._release(old)
+                raise
             fitted = old.fitted
             self._release(old)
             if dispatch and fitted:
                 raise ValueError("Fitted media candidate changed before dispatch")
-        projected_source = request
+        lifetime = _RequestLifetime(self._request_scope)
+        self._lifetimes.append(lifetime)
+        projected_source = None
         overlay_validator = None
         owned_overlays = []
         try:
+            lifetime.validate()
+            base_key = self._binding(request, options)[0]
+            # Even without an overlay, retain a detached prehydration source.
+            _digest(request)
+            projected_source = copy.deepcopy(request)
+            owned_overlays.append(projected_source)
             if self._prepare_overlay is not None:
-                overlay_copy = copy.deepcopy(request)
-                owned_overlays.append(overlay_copy)
+                overlay_copy = projected_source
                 overlay = await _result(self._prepare_overlay(
                     overlay_copy, purpose=purpose, request_options=copy.deepcopy(options),
                 ))
@@ -274,8 +426,13 @@ class MediaPreparedProvider:
                     owned_overlays.append(projected_source)
                 if overlay_validator() is not True:
                     raise ValueError("Host media overlay admission refused")
-                if self._binding(request, options)[0] != key:
+                if self._binding(request, options)[0] != base_key:
                     raise ValueError("Canonical request changed during host overlay")
+            lifetime.validate()
+            source_digest = _digest(projected_source)
+            key, identity, model = self._binding(request, options, source=projected_source)
+            if self._binding(request, options)[0] != base_key:
+                raise ValueError("Media binding changed during support qualification")
             prepared = await _result(
                 self._capability.prepare_request(
                     projected_source, provider_identity=identity, model=model,
@@ -284,21 +441,23 @@ class MediaPreparedProvider:
                 )
             )
         except BaseException:
-            self._clear_overlays(owned_overlays)
+            try:
+                self._clear_overlays(owned_overlays)
+            finally:
+                self._end_lifetime(lifetime)
             raise
         self._owned_overlays[id(prepared)] = owned_overlays
-        candidate = _Candidate(request, key, prepared)
+        candidate = _Candidate(
+            request, key, base_key, prepared, projected_source, source_digest,
+            lifetime, overlay_validator,
+        )
+        self._candidates.append(candidate)
         self._active.append(prepared)
         try:
             setter = getattr(prepared, "set_binding_validator", None)
             if callable(setter):
-                setter(lambda: (
-                    not self._closed and self._binding(request, options)[0] == key
-                    and (overlay_validator is None or overlay_validator() is True)
-                ))
-            if self._closed or self._binding(request, options)[0] != key:
-                raise ValueError("Media candidate changed during preparation")
-            prepared.validate(request_options=options)
+                setter(lambda: self._candidate_valid(candidate, options))
+            self._validate(candidate, options)
         except BaseException:
             self._release(candidate)
             raise
@@ -307,8 +466,7 @@ class MediaPreparedProvider:
         return candidate
 
     def _validate(self, candidate: _Candidate, options: dict[str, Any]) -> None:
-        if self._closed or self._binding(candidate.canonical, options)[0] != candidate.key:
-            raise ValueError("Prepared media candidate changed")
+        self._candidate_valid(candidate, options)
         candidate.prepared.validate(request_options=options)
 
     @staticmethod

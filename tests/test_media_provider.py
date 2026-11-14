@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import unittest
+from contextlib import contextmanager
 from types import MappingProxyType
 
 from amplifier_core import ChatRequest
@@ -32,9 +33,15 @@ class Prepared:
         self.release_calls = 0
         self.projection_digest = "synthetic-private-projection"
         self.validations = 0
+        self.binding_validator = None
+
+    def set_binding_validator(self, validator):
+        self.binding_validator = validator
 
     def validate(self, *, request_options=None):
         self.validations += 1
+        if self.binding_validator is not None:
+            self.binding_validator()
         if (
             self.released
             or not self.capability.assets_valid
@@ -181,6 +188,316 @@ class Provider(PlainProvider):
         if self.on_compact:
             return await self.on_compact(projected)
         return {"compaction": "text-only"}
+
+
+class RequestBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.capability = Capability()
+        self.provider = Provider(self.capability)
+        self.identity = {"provider": "synthetic", "account": "fixture", "generation": 1}
+        self.active = 0
+        self.entered = 0
+        self.exited = 0
+        self.generation = 0
+        self.canonical = request()
+
+    @contextmanager
+    def scope(self):
+        generation = self.generation
+        self.active += 1
+        self.entered += 1
+        try:
+            yield lambda: self.active > 0 and self.generation == generation
+        finally:
+            self.active -= 1
+            self.exited += 1
+
+    def wrap(self, **kwargs):
+        return MediaPreparedProvider(
+            self.provider, self.capability, provider_identity=self.identity,
+            request_scope=self.scope, **kwargs,
+        )
+
+    def indexed(self, positions=None):
+        facts = {
+            "v": 2,
+            "positions": [{"message_index": 0, "role": "user"}] if positions is None else positions,
+            "mime_types": ["image/png"],
+        }
+        self.provider.get_media_request_support_for_request = lambda **kwargs: copy.deepcopy(facts)
+        return facts
+
+    async def budget(self, wrapper, **options):
+        return await wrapper.request_budget(
+            self.canonical, context_estimate=3, request_options=options,
+        )
+
+    async def test_scope_covers_prepare_count_repeated_count_send_and_cleanup(self):
+        async def during_prepare():
+            self.assertEqual(self.active, 1)
+        self.capability.during_prepare = during_prepare
+        self.provider.on_budget = lambda _: self.assertEqual(self.active, 1)
+        wrapper = self.wrap()
+        await self.budget(wrapper)
+        self.assertEqual((self.active, self.entered, self.exited), (1, 1, 0))
+        await self.budget(wrapper)
+        counted = self.provider.budgeted[0]
+        self.assertIs(counted, self.provider.budgeted[1])
+        await wrapper.complete(self.canonical)
+        self.assertIs(counted, self.provider.sent[0])
+        self.assertEqual((self.active, self.entered, self.exited), (0, 1, 1))
+        wrapper.close()
+        self.assertEqual(self.exited, 1)
+
+    async def test_transition_between_count_send_refuses_without_new_scope(self):
+        wrapper = self.wrap()
+        await self.budget(wrapper)
+        self.generation += 1
+        with self.assertRaises(ValueError):
+            await wrapper.complete(self.canonical)
+        self.assertEqual((self.active, self.entered, self.exited), (0, 1, 1))
+        self.assertFalse(self.provider.sent)
+        self.assertEqual(len(self.capability.prepared), 1)
+
+    async def test_scope_precedes_overlay_and_indexed_callback(self):
+        def overlay(source, **kwargs):
+            self.assertEqual(self.active, 1)
+            return {"request": source, "validate": lambda: True}
+        def support(**kwargs):
+            self.assertEqual(self.active, 1)
+            return {"v": 2, "positions": [], "mime_types": []}
+        self.provider.get_media_request_support_for_request = support
+        await self.wrap(prepare_overlay=overlay).complete(self.canonical)
+        self.assertEqual(self.active, 0)
+
+    async def test_scope_releases_prepare_failure_and_cancellation(self):
+        for error in (RuntimeError("synthetic"), asyncio.CancelledError()):
+            async def fail():
+                raise error
+            self.capability.during_prepare = fail
+            wrapper = self.wrap()
+            with self.assertRaises(type(error)):
+                await self.budget(wrapper)
+            self.assertEqual(self.active, 0)
+            wrapper.close()
+        self.assertEqual(self.entered, self.exited)
+
+    async def test_scope_releases_on_close_during_preparation(self):
+        wrapper = self.wrap()
+        async def close():
+            wrapper.close()
+            self.assertEqual(self.active, 0)
+        self.capability.during_prepare = close
+        with self.assertRaises(ValueError):
+            await self.budget(wrapper)
+        self.assertEqual((self.entered, self.exited), (1, 1))
+
+    async def test_scope_releases_on_abandoned_candidate_and_unstarted_stream(self):
+        wrapper = self.wrap()
+        await self.budget(wrapper)
+        await wrapper.stream(self.canonical).aclose()
+        self.assertEqual(self.active, 0)
+        await self.budget(wrapper)
+        wrapper.close()
+        self.assertEqual((self.entered, self.exited), (2, 2))
+
+    async def test_scope_holds_stream_and_private_compaction(self):
+        wrapper = self.wrap()
+        await self.budget(wrapper)
+        stream = wrapper.stream(self.canonical)
+        self.assertEqual(await anext(stream), "first")
+        self.assertEqual(self.active, 1)
+        await stream.aclose()
+        self.assertEqual(self.active, 0)
+        await self.budget(wrapper)
+        async def compact(_):
+            self.assertEqual(self.active, 2)
+        self.provider.on_compact = compact
+        await wrapper.compact_context(self.canonical)
+        self.assertEqual(self.active, 1)
+        wrapper.close()
+        self.assertEqual(self.entered, self.exited)
+
+    async def test_refit_releases_old_scope_and_holds_new_candidate(self):
+        wrapper = self.wrap()
+        await self.budget(wrapper)
+        await wrapper.refit_request(self.canonical, error=ValueError(), context_estimate=3)
+        self.assertEqual((self.active, self.entered, self.exited), (1, 2, 1))
+        await wrapper.complete(self.canonical)
+        self.assertEqual((self.active, self.entered, self.exited), (0, 2, 2))
+
+    async def test_retry_witness_rechecks_scope_without_repreparing(self):
+        wrapper = self.wrap()
+        async def retry(projected):
+            self.generation += 1
+            self.capability.validate(projected, purpose="transport", request_options={})
+        self.provider.on_complete = retry
+        with self.assertRaises(ValueError):
+            await wrapper.complete(self.canonical)
+        self.assertEqual(len(self.capability.prepared), 1)
+        self.assertEqual(self.active, 0)
+
+    async def test_scope_requires_real_factory_and_literal_true_validator(self):
+        with self.assertRaises(TypeError):
+            MediaPreparedProvider(
+                self.provider, self.capability, provider_identity=self.identity,
+                request_scope=True,
+            )
+        @contextmanager
+        def invalid():
+            self.active += 1
+            try:
+                yield lambda: 1
+            finally:
+                self.active -= 1
+        wrapper = MediaPreparedProvider(
+            self.provider, self.capability, provider_identity=self.identity,
+            request_scope=invalid,
+        )
+        with self.assertRaises(ValueError):
+            await wrapper.complete(self.canonical)
+        self.assertFalse(self.capability.prepared)
+        self.assertEqual(self.active, 0)
+
+    async def test_indexed_support_qualifies_post_overlay_not_original_indices(self):
+        overlays = []
+        sources = []
+        def overlay(source, **kwargs):
+            overlays.append(source)
+            source.messages.insert(0, Message(role="system", content="overlay"))
+            return {"request": source, "validate": lambda: True}
+        facts = {"v": 2, "positions": [{"message_index": 1, "role": "user"}], "mime_types": ["image/png"]}
+        def support(*, request, model, request_options):
+            sources.append(request.model_dump(mode="json"))
+            self.assertEqual([m.role for m in request.messages], ["system", "user"])
+            return copy.deepcopy(facts)
+        self.provider.get_media_request_support_for_request = support
+        self.identity["media_support"] = {"v": 1, "positions": ["forged"]}
+        wrapper = self.wrap(prepare_overlay=overlay)
+        await self.budget(wrapper)
+        counted = self.provider.budgeted[-1]
+        self.assertEqual(
+            self.capability.prepared[-1].binding["provider_identity"]["media_support"], facts,
+        )
+        await wrapper.complete(self.canonical)
+        self.assertIs(counted, self.provider.sent[-1])
+        self.assertEqual(len(overlays), 1)
+        self.assertTrue(all(source == sources[0] for source in sources))
+        self.assertEqual(len(self.canonical.messages), 1)
+
+    async def test_present_empty_support_is_authoritative_never_v1(self):
+        facts = self.indexed([])
+        self.provider.get_media_request_support = lambda **_: self.fail("v1 fallback")
+        wrapper = self.wrap()
+        await self.budget(wrapper)
+        self.assertEqual(
+            self.capability.prepared[-1].binding["provider_identity"]["media_support"], facts,
+        )
+        wrapper.close()
+
+    async def test_strict_malformed_support_refuses_before_preparation(self):
+        base = self.indexed()
+        malformed = [
+            None, [], {"v": 1, "positions": ["user"]},
+            {**base, "v": True}, {**base, "extra": 1},
+            {**base, "mime_types": ("image/png",)},
+            {**base, "mime_types": [object()]},
+            {**base, "mime_types": ["image/png", "image/png"]},
+        ]
+        malformed += [
+            {**base, "positions": [{"message_index": value, "role": "user"}]}
+            for value in (True, -1, 1, 0.0, "0")
+        ] + [
+            {**base, "positions": [base["positions"][0], base["positions"][0]]},
+            {**base, "positions": [{"message_index": 0, "role": "tool"}]},
+            {**base, "positions": [{"message_index": 0, "role": "user", "extra": 1}]},
+        ]
+        for value in malformed:
+            with self.subTest(value=type(value)):
+                self.provider.get_media_request_support_for_request = lambda **_: value
+                wrapper = self.wrap()
+                with self.assertRaises(ValueError):
+                    await self.budget(wrapper)
+                self.assertFalse(self.capability.prepared)
+                self.assertEqual(self.active, 0)
+
+    async def test_present_raising_async_or_noncallable_getter_never_falls_back(self):
+        def raises(**kwargs):
+            raise RuntimeError("synthetic")
+        async def asynchronous(**kwargs):
+            return {"v": 2, "positions": [], "mime_types": []}
+        self.provider.get_media_request_support = lambda **_: self.fail("v1 fallback")
+        for getter in (raises, asynchronous, None):
+            self.provider.get_media_request_support_for_request = getter
+            wrapper = self.wrap()
+            with self.assertRaises((ValueError, RuntimeError)):
+                await self.budget(wrapper)
+            self.assertFalse(self.capability.prepared)
+            self.assertEqual(self.active, 0)
+
+    async def test_callback_mutation_of_request_or_options_refuses(self):
+        for target in ("request", "options"):
+            def support(*, request, request_options, **kwargs):
+                if target == "request":
+                    request.messages[0].content = "mutated"
+                else:
+                    request_options["nested"].append("mutated")
+                return {"v": 2, "positions": [], "mime_types": []}
+            self.provider.get_media_request_support_for_request = support
+            wrapper = self.wrap()
+            options = {"nested": ["original"]}
+            with self.assertRaises(ValueError):
+                await self.budget(wrapper, **options)
+            self.assertEqual(self.canonical.messages[0].content, "hello")
+            self.assertEqual(options, {"nested": ["original"]})
+            self.assertEqual(self.active, 0)
+            self.assertFalse(self.capability.prepared)
+
+    async def test_changed_facts_refuse_dispatch_and_retry_without_rehydration(self):
+        for retry in (False, True):
+            facts = self.indexed()
+            wrapper = self.wrap()
+            await self.budget(wrapper)
+            if retry:
+                async def mutate(projected):
+                    facts["positions"].clear()
+                    self.capability.validate(projected, purpose="transport", request_options={})
+                self.provider.on_complete = mutate
+            else:
+                facts["positions"].clear()
+            before = len(self.capability.prepared)
+            with self.assertRaises(ValueError):
+                await wrapper.complete(self.canonical)
+            self.assertEqual(len(self.capability.prepared), before)
+            self.assertEqual(self.active, 0)
+
+    async def test_changed_facts_refuse_repeated_count_without_overlay_rerun(self):
+        overlays = []
+        def overlay(source, **kwargs):
+            overlays.append(source)
+            return {"request": source, "validate": lambda: True}
+        facts = self.indexed()
+        wrapper = self.wrap(prepare_overlay=overlay)
+        await self.budget(wrapper)
+        facts["positions"].clear()
+        with self.assertRaises(ValueError):
+            await self.budget(wrapper)
+        self.assertEqual(len(overlays), 1)
+        self.assertEqual(len(self.capability.prepared), 1)
+        self.assertEqual(self.active, 0)
+
+    async def test_live_identity_mutation_during_support_validation_refuses(self):
+        facts = self.indexed()
+        wrapper = self.wrap()
+        await self.budget(wrapper)
+        def support(**kwargs):
+            self.identity["generation"] += 1
+            return copy.deepcopy(facts)
+        self.provider.get_media_request_support_for_request = support
+        with self.assertRaises(ValueError):
+            await wrapper.complete(self.canonical)
+        self.assertFalse(self.provider.sent)
+        self.assertEqual(self.active, 0)
 
 
 class MediaProviderTests(unittest.IsolatedAsyncioTestCase):
