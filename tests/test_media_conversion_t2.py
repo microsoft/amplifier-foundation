@@ -143,6 +143,42 @@ def test_source_advance_after_preview_refuses_before_operation(tmp_path):
         assert not (tmp_path / 'operation').exists()
 
 
+def test_attested_inline_positive_does_not_convert_unknown_record(tmp_path):
+    import base64
+    with fixture(tmp_path) as (binding, store, fence):
+        image = {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png',
+                                           'data': base64.b64encode(png()).decode()}}
+        rows = [{'role': 'tool', 'tool_call_id': 'unknown', 'status': 'failed', 'content': [image]},
+                {'role': 'tool', 'tool_call_id': 'real-observation', 'status': 'complete',
+                 'usage': {'output_tokens': 8}, 'content': [image]}]
+        binding.append(rows, expected=binding.expected, operation_id='seed', admit=lambda: None)
+        plan = preview_committed(binding.directory, expected=binding.expected,
+                                 owner='fixture', fence=fence)
+        actual_original = {
+            'kind': 'migration', 'session_id': 'session', 'id': 'attested-observation',
+            'created_at': '2025-01-01T00:00:00+00:00', 'expires_at': '2035-01-01T00:00:00+00:00',
+        }
+        def origin_for(row, block):
+            assert (row, block) == (1, 0)
+            return actual_original
+        result = asyncio.run(build_candidate(
+            plan, tmp_path / 'operation', fence=fence, capability=store, origin_for=origin_for,
+            eligible_record=lambda row: row == 1,
+            asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+        ))
+        assert result.held_records == result.images == 1 and result.records == 2
+        candidate = [json.loads(row) for row in (tmp_path / 'operation/candidate.jsonl').read_bytes().splitlines()]
+        assert candidate[1] == rows[0]
+        converted = candidate[2]
+        assert converted['tool_call_id'] == 'real-observation' and converted['usage'] == rows[1]['usage']
+        ref = converted['metadata']['experimental.media.v1']['refs'][0]
+        assert ref['provenance'] == actual_original
+        with store.resolve_ref(ref, committed=False) as stream:
+            assert stream.read() == png()
+        with pytest.raises(ValueError, match='acknowledged canonical'):
+            store.resolve_ref(ref)
+
+
 def test_committed_huge_scalar_is_bounded_not_a_decoded_window(tmp_path):
     import tracemalloc
     with fixture(tmp_path) as (binding, store, fence):
