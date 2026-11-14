@@ -919,6 +919,10 @@ def _closure_schema(db):
         r"CREATE TABLE closure\s*\(\s*ref blob\s*\)", schema[1], re.IGNORECASE,
     ):
         raise Unsupported("Historical manifest closure is not the generated plain table")
+    if db.execute(
+        "select 1 from closure where typeof(ref)!='blob' or length(ref)>16384 limit 1"
+    ).fetchone():
+        raise Unsupported("Historical manifest contains an oversized/noncanonical reference row")
 
 
 def _iter_candidate_refs(path, db, reader, expected_records):
