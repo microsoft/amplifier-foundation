@@ -8,6 +8,8 @@ import os
 import shutil
 import tracemalloc
 from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from amplifier_core import AmplifierSession, HookResult, ToolResult
 from amplifier_core.message_models import ChatRequest, ImageBlock, Message, ToolSpec
@@ -52,6 +54,34 @@ def ack(store, path, rows):
         path, session_id=store.session_id, expected_messages=rows
     )
     store.acknowledge_checkpoint(receipt)
+
+
+def test_unqualified_platform_refuses_store_before_any_root_effect(tmp_path, monkeypatch):
+    from amplifier_foundation.session import media
+    unopened, uncreated = Mock(), Mock()
+    monkeypatch.setattr(media, "os", SimpleNamespace(name="nt", open=unopened, mkdir=uncreated))
+    root = tmp_path / "absent-store"
+    with pytest.raises(media.MediaRefusal, match="qualified POSIX descriptors"):
+        media.SessionMediaStore(root, "unqualified")
+    unopened.assert_not_called()
+    uncreated.assert_not_called()
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("image_format", ["PNG", "JPEG"])
+def test_over_limit_image_header_refuses_before_verify_or_pixel_load(monkeypatch, image_format):
+    from amplifier_foundation.session import media
+    stream = io.BytesIO()
+    Image.new("RGB", (2, 2), "purple").save(stream, format=image_format)
+    stream.seek(0)
+    opener = Mock(wraps=Image.open)
+    loader = Mock(side_effect=AssertionError("Over-limit header must not decode pixels"))
+    monkeypatch.setattr(Image, "open", opener)
+    monkeypatch.setattr(Image.Image, "load", loader)
+    with pytest.raises(media.MediaRefusal, match="pixel limit"):
+        media._decode_image(stream, media.MediaPolicy(1000, 3, 1))
+    assert opener.call_count == 1
+    loader.assert_not_called()
 
 
 class _JointGraphLoader:
