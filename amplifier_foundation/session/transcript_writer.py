@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 from collections.abc import Callable, Iterable
@@ -88,6 +89,34 @@ def _header(generation: str) -> bytes:
     return _small({"format": _FORMAT, "v": 2, "generation": generation, "min_reader": FEATURES})
 
 
+def _receipt(operation, operation_id, session_id):
+    """A historical ack is authority only with matching, validated witnesses."""
+    raw = operation.read("published.json")
+    if raw != operation.read("result.json"):
+        raise TranscriptConflict("Published/result operation witnesses differ")
+    data = _decode(raw)
+    if not isinstance(data, dict):
+        raise TranscriptConflict("Invalid operation receipt")
+    try:
+        prefix = CommittedPrefix(**{
+            key: data[key] for key in CommittedPrefix.__dataclass_fields__
+        })
+    except (KeyError, TypeError):
+        raise TranscriptConflict("Incomplete operation receipt") from None
+    if (prefix.operation_id != operation_id or prefix.session_id != session_id
+            or any(type(getattr(prefix, key)) is not str
+                   or not _IDENTITY.fullmatch(getattr(prefix, key))
+                   for key in ("session_id", "generation", "operation_id"))
+            or prefix.body != f"g-{prefix.generation}.jsonl"
+            or any(type(getattr(prefix, key)) is not int or getattr(prefix, key) < 0
+                   for key in ("sequence", "committed_bytes", "message_count"))
+            or type(prefix.sha256) is not str
+            or not re.fullmatch("[0-9a-f]{64}", prefix.sha256)
+            or _descriptor(prefix) != raw):
+        raise TranscriptConflict("Invalid operation receipt identity/content")
+    return prefix
+
+
 class _Dir:
     """Pinned no-follow directory-relative I/O. Never opens a supplied link."""
 
@@ -136,6 +165,10 @@ class _Dir:
     def directory(self, name, *, create=False):
         if create and not self.exists(name):
             os.mkdir(name, mode=0o700, dir_fd=self.fd)
+        if create:
+            # Retry may observe mkdir's effect after its parent fsync failed.
+            # Re-establish the namespace durability obligation even when the
+            # directory already exists; child fsync cannot stand in for this.
             self.sync()
         child = self.child(name)
         try:
@@ -392,6 +425,7 @@ class TranscriptWriter:
                 os.fsync(body.fileno())
             with root.file("current.json") as current:
                 os.fsync(current.fileno())
+            operations.sync()
             root.sync()
             operation.once("published.json", intended)
 
@@ -485,11 +519,9 @@ class TranscriptWriter:
                         with operations.directory(operation_id) as operation:
                             operation.once("intent.json", intent)
                             if operation.exists("published.json"):
-                                saved = _decode(operation.read("published.json"))
-                                result = CommittedPrefix(**{
-                                    key: saved[key] for key in CommittedPrefix.__dataclass_fields__
-                                })
                                 self._current(root)
+                                result = _receipt(operation, operation_id, expected.session_id)
+                                operations.sync()
                                 return CommitAck(result, True)
                     prefix, raw_descriptor, state = self._current(root)
                     self._settle(root, operations, prefix, check)
@@ -596,13 +628,7 @@ class TranscriptWriter:
                                 or intent.get("suffix_sha256") != suffix_sha256):
                             raise TranscriptConflict("Reconciliation request witness differs")
                         if operation.exists("published.json"):
-                            saved = operation.read("published.json")
-                            if saved != operation.read("result.json"):
-                                raise TranscriptConflict("Published operation witness differs")
-                            data = _decode(saved)
-                            return CommitAck(CommittedPrefix(**{
-                                key: data[key] for key in CommittedPrefix.__dataclass_fields__
-                            }), True)
+                            return CommitAck(_receipt(operation, operation_id, prefix.session_id), True)
                         if prefix != expected:
                             raise TranscriptConflict("Unpublished operation after changed commit")
                         return None
@@ -667,13 +693,7 @@ class TranscriptWriter:
                             _fences(session, operation_id)
                             prefix, _, _ = self._current(root)
                             if operation.exists("published.json"):
-                                saved = operation.read("published.json")
-                                if saved != operation.read("result.json"):
-                                    raise TranscriptConflict("Migration result witness differs")
-                                data = _decode(saved)
-                                return CommitAck(CommittedPrefix(**{
-                                    key: data[key] for key in CommittedPrefix.__dataclass_fields__
-                                }), True)
+                                return CommitAck(_receipt(operation, operation_id, session_id), True)
                             if prefix.operation_id != operation_id:
                                 raise TranscriptConflict("Migration already followed by another operation")
                             self._settle(root, operations, prefix, check)
