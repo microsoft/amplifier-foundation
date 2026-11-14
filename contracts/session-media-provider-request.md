@@ -78,6 +78,21 @@ Caller-supplied support in `provider_identity` is always overwritten. Restricted
 providers should continue returning v1 `positions: []` for older hosts rather
 than broadly advertising unqualified roles.
 
+Hosts that own a separate private preparation boundary can share the same strict
+parser through the public
+`amplifier_foundation.session.media_projection.validate_media_request_support(value, request)`.
+It requires a Core `ChatRequest`, validates **v2 indexed facts only**, and returns
+a detached plain-JSON dictionary; invalid input raises `MediaRefusal`. Empty
+valid facts remain empty. It does not call a provider, verifier or store, read
+pixels, mutate the request, or supply a v1 fallback.
+
+This is validation, not qualification: the host must obtain facts from the actual
+provider against its exact post-overlay/prehydration source, enforce callback
+input/options/model immutability, bind source/identity/options/graph lifetime to
+the counted candidate, and revalidate before retries/send. The parser alone does
+not prove those associations or grant pixel access. `MediaPreparedProvider` uses
+this same public parser inside its existing callback-mutation and lifetime gates.
+
 The index/role/MIME gate applies equally to durable refs and request-only inline
 images, before asset reads or the inline owner verifier. There is no backward
 image-bearing search, relocation, synthetic role, or history hydration when the

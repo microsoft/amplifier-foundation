@@ -15,7 +15,10 @@ from unittest.mock import patch
 
 from amplifier_core.message_models import ChatRequest, ImageBlock, Message, TextBlock, ToolCallBlock
 
-from amplifier_foundation.session.media_projection import prepare_media_request
+from amplifier_foundation.session.media_projection import (
+    prepare_media_request,
+    validate_media_request_support,
+)
 
 NAMESPACE = "experimental.media.v1"
 PIXELS = b"synthetic immutable asset; the store owns image decoding"
@@ -125,6 +128,59 @@ class ProjectionTests(unittest.IsolatedAsyncioTestCase):
         )
         args.update(kwargs)
         return await prepare_media_request(store, request, **args)
+
+    def test_public_indexed_validator_returns_detached_facts_without_mutating_request(self):
+        canonical = request_for([], role="tool")
+        before = canonical.model_dump(mode="json")
+        facts = {
+            "v": 2, "positions": [{"message_index": 0, "role": "tool"}],
+            "mime_types": ["image/png"],
+        }
+        result = validate_media_request_support(facts, canonical)
+        self.assertEqual(result, facts)
+        self.assertIsNot(result, facts)
+        result["positions"][0]["role"] = "user"
+        result["mime_types"].clear()
+        self.assertEqual(facts["positions"][0]["role"], "tool")
+        self.assertEqual(facts["mime_types"], ["image/png"])
+        self.assertEqual(canonical.model_dump(mode="json"), before)
+        self.assertEqual(
+            validate_media_request_support({"v": 2, "positions": [], "mime_types": []}, canonical),
+            {"v": 2, "positions": [], "mime_types": []},
+        )
+
+    def test_public_indexed_validator_refuses_wrong_request_and_malformed_facts(self):
+        canonical = request_for([], role="tool")
+        base = {
+            "v": 2, "positions": [{"message_index": 0, "role": "tool"}],
+            "mime_types": ["image/png"],
+        }
+        for invalid_request in (None, {}, canonical.model_dump(mode="json")):
+            with self.subTest(request=type(invalid_request)):
+                with self.assertRaises(Refusal):
+                    validate_media_request_support(base, invalid_request)
+        invalid_values = [
+            None, {"v": 1, "positions": ["tool"]}, {**base, "v": True},
+            {**base, "extra": True}, {**base, "positions": tuple(base["positions"])},
+            {**base, "positions": base["positions"] * 2},
+            {**base, "mime_types": ["image/png", "image/png"]},
+            {**base, "mime_types": [object()]},
+        ] + [
+            {**base, "positions": [{"message_index": index, "role": "tool"}]}
+            for index in (True, -1, 1, 0.0, "0")
+        ] + [
+            {**base, "positions": [{"message_index": 0, "role": role}]}
+            for role in ("user", "assistant", None)
+        ]
+        for value in invalid_values:
+            with self.subTest(value=type(value)):
+                with self.assertRaises(Refusal):
+                    validate_media_request_support(value, canonical)
+
+    def test_public_and_legacy_indexed_names_share_one_parser(self):
+        from amplifier_foundation.session.media_projection import _indexed_support
+
+        self.assertIs(_indexed_support, validate_media_request_support)
 
     async def test_indexed_support_hydrates_only_exact_message_not_same_digest_history(self):
         ref = make_ref()

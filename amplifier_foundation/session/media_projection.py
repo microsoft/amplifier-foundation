@@ -108,8 +108,18 @@ def _expired(ref: dict[str, Any]) -> bool:
         _refuse("media expiry is invalid")
 
 
-def _indexed_support(value: Any, request: ChatRequest) -> Any:
-    """Strict v2 facts refer only to this exact prehydration request."""
+def validate_media_request_support(value: Any, request: ChatRequest) -> dict[str, Any]:
+    """Validate v2 indexed facts and return a detached plain-JSON snapshot.
+
+    ``request`` must be the exact post-overlay, prehydration Core request whose
+    message indices the actual provider qualified. This validation-only entry
+    invokes no provider, verifier, store or asset access. It does not attest to
+    provider provenance, callback immutability, graph lifetime or fitted-request
+    identity; the host must preserve and revalidate those associations.
+    Invalid input raises ``MediaRefusal`` without broader v1 fallback.
+    """
+    if not isinstance(request, ChatRequest):
+        _refuse("indexed media support requires a Core ChatRequest")
     if (
         type(value) is not dict or set(value) != {"v", "positions", "mime_types"}
         or type(value["v"]) is not int or value["v"] != 2
@@ -133,6 +143,11 @@ def _indexed_support(value: Any, request: ChatRequest) -> Any:
             _refuse("invalid indexed media request position")
         seen.add(position["message_index"])
     return _json_value(value)
+
+
+# Transitional compatibility for callers paired with the pre-public candidate.
+# Keep a single parser implementation; hosts should use the public name above.
+_indexed_support = validate_media_request_support
 
 
 def _can_hydrate(
@@ -392,7 +407,7 @@ async def prepare_media_request(
     canonical_digest = _digest(request)
     support = provider_identity.get("media_support") if type(provider_identity) is dict else None
     if type(support) is dict and support.get("v") == 2:
-        _indexed_support(support, request)
+        validate_media_request_support(support, request)
     initial_binding = _digest({
         "session_id": store.session_id, "epoch": store.epoch,
         "policy": _policy_value(store), "provider_identity": provider_identity,

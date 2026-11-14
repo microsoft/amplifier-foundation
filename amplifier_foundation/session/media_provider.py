@@ -366,7 +366,7 @@ class MediaPreparedProvider:
         return key, identity, model
 
     def _support(self, source: Any, model: Any, options: dict[str, Any]) -> Any:
-        from .media_projection import _digest, _indexed_support
+        from .media_projection import _digest, validate_media_request_support
 
         getter = _indexed_getter(self._provider)
         if getter is _ABSENT:
@@ -405,7 +405,7 @@ class MediaPreparedProvider:
                 or _digest(model_snapshot) != model_digest
             ):
                 raise ValueError("Indexed media support mutated its read-only input")
-            return _indexed_support(value, source)
+            return validate_media_request_support(value, source)
         finally:
             for image_source in image_sources:
                 image_source.clear()
