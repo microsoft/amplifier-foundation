@@ -161,7 +161,14 @@ app-layer spawn wrappers. Import via `from amplifier_foundation import ...`.
 | Export | Source | Purpose |
 |--------|--------|---------|
 | `bridge_child_cost` | `bundle/_prepared.py` | Collect child session's `session.cost` contributions and register them as a single contributor on the parent coordinator. Never raises — errors are logged as warnings. |
-| `sum_cost_usd` | `bundle/_prepared.py` | Sum a list of `collect_contributions()` results into a single `Decimal \| None`. Returns `None` when no cost data is present. Tolerates both `Decimal` and `str` values. |
+| `sum_cost_usd` | `bundle/_prepared.py` | Sum a list of `collect_contributions()` results into a single `Decimal \| None`. Returns `None` when data is absent or any present contribution is unknown, malformed or explicitly incomplete. Accepts finite nonnegative `Decimal`, `str` and integer values; zero remains known-free. |
+
+The child bridge omits only absent activity (no contributions, or callbacks
+returning `None`). Unknown child spend is registered as `{"cost_usd": None,
+"known_subtotal_usd": "<decimal>" | None, "complete": False}`. The subtotal is
+not an exact total. Complete contributions retain the `{"cost_usd": Decimal(...)}`
+shape. No prices are recomputed and no historical data is rewritten.
+
 ## Reading the Source
 
 Each source file has comprehensive docstrings. To read them:

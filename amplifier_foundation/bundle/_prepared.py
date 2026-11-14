@@ -7,7 +7,7 @@ import logging
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -113,28 +113,55 @@ def _build_resolutions(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# Collects cost_usd contributions from a session.cost channel and returns the
-# total as Decimal, or None when no cost data is present (e.g. self-hosted models).
-def sum_cost_usd(contributions: list) -> Decimal | None:
-    """Sum cost_usd from collect_contributions() results. Returns None if no cost data.
+def _cost_decimal(value: Any) -> Decimal | None:
+    """Accept exact, finite, nonnegative money; never coerce a float."""
+    if isinstance(value, bool) or not isinstance(value, (Decimal, str, int)):
+        return None
+    try:
+        cost = Decimal(value)
+        return cost if cost.is_finite() and cost >= 0 else None
+    except (InvalidOperation, ValueError):
+        return None
 
-    None != Decimal("0"): None means cost unknown (no rate data); 0 means known-free.
-    Tolerates both Decimal and str values (providers may emit either).
-    Silently skips malformed values rather than raising.
-    """
-    total: Decimal | None = None
+
+def _summarize_cost_usd(contributions: list) -> dict | None:
+    """Preserve unknown spend and any separately labelled known subtotal."""
+    subtotal: Decimal | None = None
+    complete = True
+    present = False
     for c in contributions:
-        if c and isinstance(c, dict):
-            cost = c.get("cost_usd")
-            if cost is not None:
-                if isinstance(cost, Decimal):
-                    total = (total or Decimal("0")) + cost
-                else:
-                    try:
-                        total = (total or Decimal("0")) + Decimal(str(cost))
-                    except Exception:
-                        pass  # malformed cost_usd value; skip and degrade gracefully
-    return total
+        if c is None:  # Contributor has not observed any activity yet.
+            continue
+        present = True
+        cost = _cost_decimal(c.get("cost_usd")) if isinstance(c, dict) else None
+        if cost is None or c.get("complete") is False:
+            complete = False
+            # An incomplete contribution's subtotal is not an exact cost.
+            if cost is None and isinstance(c, dict):
+                cost = _cost_decimal(c.get("known_subtotal_usd"))
+        if cost is not None:
+            subtotal = (subtotal if subtotal is not None else Decimal("0")) + cost
+    if not present:
+        return None
+    if complete:
+        return {"cost_usd": subtotal}
+    return {
+        "cost_usd": None,
+        "known_subtotal_usd": str(subtotal) if subtotal is not None else None,
+        "complete": False,
+    }
+
+
+def sum_cost_usd(contributions: list) -> Decimal | None:
+    """Return an exact total only when every present contribution is known.
+
+    None means absent or incomplete cost data; Decimal("0") means known-free.
+    Decimal, str and integer values are accepted. Null, malformed, nonfinite,
+    negative or explicitly incomplete contributions make the total unknown.
+    A contributor returning None means no activity, not unknown spend.
+    """
+    summary = _summarize_cost_usd(contributions)
+    return summary["cost_usd"] if summary is not None else None
 
 
 async def bridge_child_cost(
@@ -151,18 +178,25 @@ async def bridge_child_cost(
         child_contributions = await child_coordinator.collect_contributions(
             "session.cost"
         )
-        child_total = sum_cost_usd(child_contributions)
-
-        if child_total is not None:
+        summary = _summarize_cost_usd(child_contributions)
+    except Exception:
+        logger.warning(
+            "Failed to collect child session cost for %s; cost unknown",
+            child_session_id,
+            exc_info=True,
+        )
+        summary = {"cost_usd": None, "known_subtotal_usd": None, "complete": False}
+    try:
+        if summary is not None:
             # Freeze value in default arg — child coordinator will be torn down after this
             parent_coordinator.register_contributor(
                 "session.cost",
                 f"delegate:{child_session_id}",
-                lambda total=child_total: {"cost_usd": total},
+                lambda cost=summary: dict(cost),
             )
     except Exception:
         logger.warning(
-            "Failed to bridge child session cost for %s; skipping",
+            "Failed to register child session cost for %s",
             child_session_id,
             exc_info=True,
         )
@@ -1110,17 +1144,19 @@ class PreparedBundle:
         # Execute instruction and cleanup
         try:
             response = await child_session.execute(instruction)
-            # Bridge child session cost to parent coordinator (bridge_child_cost never raises)
-            if parent_session:
-                await bridge_child_cost(
-                    child_coordinator=child_session.coordinator,
-                    parent_coordinator=parent_session.coordinator,
-                    child_session_id=child_session.session_id,
-                )
         finally:
-            # Unregister the temporary hook before cleanup
-            unregister()
-            await child_session.cleanup()
+            try:
+                # Failed/cancelled execution can still have incurred spend.
+                if parent_session:
+                    await bridge_child_cost(
+                        child_coordinator=child_session.coordinator,
+                        parent_coordinator=parent_session.coordinator,
+                        child_session_id=child_session.session_id,
+                    )
+            finally:
+                # Unregister the temporary hook before cleanup
+                unregister()
+                await child_session.cleanup()
 
         return {
             "output": response,
