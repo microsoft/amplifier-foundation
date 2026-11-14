@@ -649,6 +649,80 @@ def test_serialized_ref_original_provenance_may_differ_and_data_is_not_authority
         list(verified_refs(refs))
 
 
+def writer_with_generation_at_operation_limit(tmp_path, kind, operation_length, refs):
+    path = tmp_path / "session"
+    path.mkdir(mode=0o700)
+    writer = TranscriptWriter(path, fence=fixture_fence)
+    operation_id = "x" * operation_length
+    ack = writer.initialize(session_id="session",
+                            operation_id=operation_id if kind == "m" else "init",
+                            admit=lambda: None)
+    if kind == "m":
+        ack = writer.append([row(refs)], expected=ack.commit,
+                            operation_id="seed", admit=lambda: None)
+    else:
+        ack = writer.rewrite([row(refs)], expected=ack.commit,
+                             operation_id=operation_id, admit=lambda: None)
+    assert ack.commit.generation == kind + "-" + operation_id
+    assert CommittedTranscriptReader(path).verify() == ack.commit
+    return writer, ack
+
+
+@pytest.mark.parametrize("kind", ["m", "r"])
+@pytest.mark.parametrize("operation_length", [178, 179, 180])
+@pytest.mark.parametrize("with_ref", [False, True])
+def test_prepared_refs_accept_writer_generation_at_operation_limit(
+    tmp_path, kind, operation_length, with_ref,
+):
+    from amplifier_foundation.session.transcript_writer import prepare_serialized_candidate
+    refs = [fake_ref()] if with_ref else []
+    writer, ack = writer_with_generation_at_operation_limit(
+        tmp_path, kind, operation_length, refs)
+    with (writer.session_dir / "transcript.v2" / ack.commit.body).open("rb") as stream:
+        with prepare_serialized_candidate(
+            stream, candidate_prefix=ack.commit, candidate_check=lambda: None,
+        ) as prepared:
+            assert list(prepared.iter_refs()) == refs
+            prepared.check()
+
+
+@pytest.mark.parametrize("kind", ["m", "r"])
+@pytest.mark.parametrize("operation_length", [178, 179, 180])
+@pytest.mark.parametrize("next_kind", ["append", "rewrite"])
+def test_typed_ack_accepts_predecessor_generation_at_operation_limit(
+    tmp_path, kind, operation_length, next_kind,
+):
+    from contextlib import closing
+    writer, previous = writer_with_generation_at_operation_limit(
+        tmp_path, kind, operation_length, [])
+    ack = getattr(writer, next_kind)(
+        [row([])], expected=previous.commit, operation_id="next", admit=lambda: None)
+    with closing(SessionMediaStore(writer.session_dir / "media", "session",
+                                   checkpoint_verifier=verified_refs)) as store:
+        with acknowledging(writer, session_id="session", expected=ack) as receipt:
+            accepted = store.acknowledge_checkpoint(receipt)
+        assert accepted["state"] == "committed" and accepted["ref_count"] == 0
+        assert receipt.verify()["sha256"] == ack.commit.sha256
+
+
+@pytest.mark.parametrize("field,value", [
+    *(("generation", value) for value in
+      (None, True, 1, "", "../escape", "bad/generation", ".leading", "x\n", "x" * 222)),
+    *((field, value) for field in ("session_id", "operation_id")
+      for value in ("x" * 181, "../escape", None, True)),
+])
+def test_prefix_generation_grammar_and_operation_session_limits_remain_strict(field, value):
+    from amplifier_foundation.session.versioned_checkpoint import _prefix_data
+    raw, prefix = serialized_rows([row([])])
+    changed = dataclasses.replace(prefix, **{field: value})
+    if field == "generation":
+        changed = dataclasses.replace(changed, body=f"g-{value}.jsonl")
+    with pytest.raises(ValueError):
+        _prefix_data(dataclasses.asdict(changed))
+    with pytest.raises(ValueError):
+        list(scan_refs(raw, changed))
+
+
 @pytest.mark.parametrize("corruption", [
     "digest", "short", "tail", "count", "header", "float-header", "header-duplicate",
     "no-final-LF", "duplicate-ref-key", "duplicate-opaque-key", "invalid-role",

@@ -22,7 +22,7 @@ from ._media_conversion_parser import CHUNK, Scanner
 from .checkpoint import CheckpointRefused
 from .media import MEDIA_NAMESPACE, validate_blob_ref
 from .transcript_source import _namespace, open_committed_source
-from .transcript_v2 import CommittedPrefix, _decode, _file, _stamp
+from .transcript_v2 import CommittedPrefix, _IDENTITY, _decode, _file, _stamp
 from .transcript_writer import (
     LEGACY, CommitAck, TranscriptWriter, _PrefixView, _descriptor, _header, _identity, _receipt,
     _validate_prefix,
@@ -58,9 +58,12 @@ def _digest_text(value):
 def _prefix_data(value):
     if type(value) is not dict or set(value) != set(CommittedPrefix.__dataclass_fields__):
         raise VersionedCheckpointRefused("Incomplete operation predecessor")
-    for name in ("session_id", "generation", "operation_id"):
+    for name in ("session_id", "operation_id"):
         _identity(value[name])
-    if (value["body"] != f"g-{value['generation']}.jsonl"
+    # Generation uses format grammar: m-/r- extends a legal operation identity.
+    if (type(value["generation"]) is not str
+            or not _IDENTITY.fullmatch(value["generation"])
+            or value["body"] != f"g-{value['generation']}.jsonl"
             or not _digest_text(value["sha256"])
             or any(type(value[name]) is not int or value[name] < 0
                    for name in ("sequence", "committed_bytes", "message_count"))):
