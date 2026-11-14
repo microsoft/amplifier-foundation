@@ -329,8 +329,12 @@ def _candidate_prefix(prefix):
     """An explicit selector is checked input, never candidate/ownership authority."""
     if type(prefix) is not CommittedPrefix:
         raise TypeError("Exact serialized candidate CommittedPrefix required")
-    for key in ("session_id", "generation", "operation_id"):
+    for key in ("session_id", "operation_id"):
         _identity(getattr(prefix, key))
+    # Generation is a format identity, not an operation ID. Existing writers
+    # prepend "m-"/"r-" to a legal 180-character operation ID.
+    if type(prefix.generation) is not str or not _IDENTITY.fullmatch(prefix.generation):
+        raise TranscriptConflict("Invalid serialized candidate generation")
     if (prefix.body != f"g-{prefix.generation}.jsonl"
             or any(type(getattr(prefix, key)) is not int or getattr(prefix, key) < 0
                    for key in ("sequence", "committed_bytes", "message_count"))

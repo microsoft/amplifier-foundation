@@ -326,6 +326,19 @@ def test_anonymous_candidate_cursor_read_ahead_and_zero_rows(tmp_path):
     assert CommittedTranscriptReader(writer.session_dir).load_messages() == []
 
 
+def test_maximum_operation_generation_round_trips_through_preparation(tmp_path):
+    writer, previous = owner(tmp_path / "session")
+    ack = writer.rewrite(ROWS, expected=previous, operation_id="x"*180, admit=lambda: None)
+    assert len(ack.commit.generation) == 182
+    assert CommittedTranscriptReader(writer.session_dir).verify() == ack.commit
+    with (writer.session_dir / "transcript.v2" / ack.commit.body).open("rb") as stream:
+        with w.prepare_serialized_candidate(
+            stream, candidate_prefix=ack.commit, candidate_check=lambda: None,
+        ) as prepared:
+            assert prepared.message_count == len(ROWS)
+            assert prepared.canonical_sha256 == row_digest(ROWS)
+
+
 def test_multiple_link_candidate_and_rebound_fd_refuse(tmp_path):
     path = tmp_path / "candidate"
     prefix = candidate(path)
