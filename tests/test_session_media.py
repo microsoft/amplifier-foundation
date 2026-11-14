@@ -1035,6 +1035,49 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             wrapper.close()
 
+    async def test_import_never_resurrects_dropped_target_at_expiry_publication_boundary(self):
+        from datetime import datetime as RealDatetime, timedelta, timezone
+        cutoff = RealDatetime(2030, 1, 1, tzinfo=timezone.utc)
+        now = cutoff - timedelta(seconds=1)
+        class Clock(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now
+        origin = {"kind": "migration", "session_id": "session1", "id": "original",
+                  "created_at": (cutoff - timedelta(hours=1)).isoformat(),
+                  "expires_at": cutoff.isoformat()}
+        original = await self.stage(origin=origin)
+        target = SessionMediaStore(Path(self.directory.name) / "dropped-expiry-race", "target",
+                                   policy=self.policy, checkpoint_verifier=lambda r: r["refs"])
+        try:
+            dropped = target.ingest_sync(self.data, source_format="image-bytes",
+                                          origin=origin, policy=None)["value"]
+            target.publish_sync([dropped], origin=origin, disposition="drop")
+            before = {str(p.relative_to(target.root)): p.read_bytes()
+                      for p in target.root.rglob("*") if p.is_file()}
+            publish = target._publish_adopted
+            def cross_final_boundary(refs):
+                nonlocal now
+                publish(refs)
+                now = cutoff
+            with (
+                patch("amplifier_foundation.session.media.datetime", Clock),
+                patch.object(target, "_stage", side_effect=AssertionError("dropped target must not stage")),
+                patch.object(target, "_publish_adopted", side_effect=cross_final_boundary) as attempted,
+            ):
+                with self.assertRaises(MediaRefusal):
+                    target.import_verified(original, io.BytesIO(self.data), receipt={"signed": True},
+                                           verifier=lambda *args, **kwargs: True)
+                attempted.assert_not_called()
+            self.assertEqual(before, {str(p.relative_to(target.root)): p.read_bytes()
+                                      for p in target.root.rglob("*") if p.is_file()})
+            with self.assertRaises(MediaRefusal):
+                target.acknowledge_checkpoint({"refs": [dropped]})
+            with self.assertRaises(MediaRefusal):
+                target._publish_adopted([dropped])
+        finally:
+            target.close()
+
 
 if __name__ == "__main__":
     unittest.main()
