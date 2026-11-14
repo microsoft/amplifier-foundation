@@ -161,12 +161,13 @@ def _private_file(fd: int) -> os.stat_result:
     return value
 
 
-def _directory(parent: int, name: str) -> int:
-    try:
-        os.mkdir(name, 0o700, dir_fd=parent)
-        os.fsync(parent)
-    except FileExistsError:
-        pass
+def _directory(parent: int, name: str, *, create: bool = True) -> int:
+    if create:
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+            os.fsync(parent)
+        except FileExistsError:
+            pass
     fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
     value = os.fstat(fd)
     if value.st_mode & 0o077 or value.st_uid != os.getuid():
@@ -175,7 +176,7 @@ def _directory(parent: int, name: str) -> int:
     return fd
 
 
-def _root_descriptor(root: Path) -> int:
+def _root_descriptor(root: Path, *, create: bool = True) -> int:
     if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
         raise MediaRefusal("media durability requires qualified POSIX descriptors")
     if not root.is_absolute() or ".." in root.parts or root == Path("/"):
@@ -186,6 +187,8 @@ def _root_descriptor(root: Path) -> int:
             try:
                 fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
             except FileNotFoundError:
+                if not create:
+                    raise
                 os.mkdir(part, 0o700, dir_fd=parent)
                 os.fsync(parent)
                 fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
@@ -254,28 +257,35 @@ class SessionMediaStore:
                  checkpoint_verifier: Callable[[Any], Any] | None = None,
                  origin_resolver: Callable[[], Any] | None = None,
                  policy_verifier: Callable[..., Any] | None = None,
-                 nested_verifier: Callable[..., Any] | None = None) -> None:
+                 nested_verifier: Callable[..., Any] | None = None,
+                 read_only: bool = False,
+                 source_read_verifier: Callable[..., Any] | None = None,
+                 request_only_verifier: Callable[..., Any] | None = None) -> None:
         self.session_id = _session(session_id)
         self.policy, self.root = policy, Path(root)
         self.checkpoint_verifier, self.origin_resolver = checkpoint_verifier, origin_resolver
         self.policy_verifier, self.nested_verifier = policy_verifier, nested_verifier
+        self.read_only = read_only
+        self.source_read_verifier = source_read_verifier
+        self.request_only_verifier = request_only_verifier
         self.epoch, self._closed = 0, False
         self._lock = threading.RLock()
         self._prepared: dict[int, Any] = {}
         self._checkpoints: dict[str, Any] = {}
-        self._root = _root_descriptor(self.root)
+        self._root = _root_descriptor(self.root, create=not read_only)
         self._dirs: dict[str, int] = {}
         self._ownership: int | None = None
         try:
-            self._ownership = os.open("writer.lock", os.O_RDWR | os.O_CREAT |
-                                      os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=self._root)
-            _private_file(self._ownership)
-            try:
-                fcntl.flock(self._ownership, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise MediaRefusal("media store already has an active writer") from exc
+            if not read_only:
+                self._ownership = os.open("writer.lock", os.O_RDWR | os.O_CREAT |
+                                          os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=self._root)
+                _private_file(self._ownership)
+                try:
+                    fcntl.flock(self._ownership, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise MediaRefusal("media store already has an active writer") from exc
             for name in ("assets", "staging", "records", "origins"):
-                self._dirs[name] = _directory(self._root, name)
+                self._dirs[name] = _directory(self._root, name, create=not read_only)
             owner = self._read(self._root, "owner.json")
             if owner is None:
                 self._write(self._root, "owner.json", {"v": 1, "session_id": self.session_id})
@@ -289,6 +299,11 @@ class SessionMediaStore:
         if self._closed:
             raise MediaRefusal("media store closed")
 
+    def _writable(self) -> None:
+        self._check()
+        if self.read_only:
+            raise MediaRefusal("read-only media store cannot mutate")
+
     def _read(self, directory: int, name: str) -> Any:
         try:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -299,6 +314,8 @@ class SessionMediaStore:
             return json.load(stream)
 
     def _write(self, directory: int, name: str, value: Any) -> None:
+        if self.read_only:
+            raise MediaRefusal("read-only media store cannot mutate")
         temporary = f".{name}.{uuid.uuid4().hex}"
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
@@ -411,7 +428,11 @@ class SessionMediaStore:
         return ref
 
     async def ingest(self, value: Any, *, source_format: str, origin: Any, policy: Any) -> dict:
-        self._check()
+        return self.ingest_sync(value, source_format=source_format, origin=origin, policy=policy)
+
+    def ingest_sync(self, value: Any, *, source_format: str, origin: Any, policy: Any) -> dict:
+        """Host-only synchronous adapter; structural capability remains async."""
+        self._writable()
         with self._lock:
             selected = self.policy.restrict(policy)
             provenance, origin_key = self._origin(origin, selected)
@@ -509,6 +530,37 @@ class SessionMediaStore:
                 raise MediaRefusal("source owner refused media delivery", code="source_policy")
         return normalized
 
+    def validate_published_ref(self, ref: Any, *, check_expiry: bool = False) -> dict:
+        """Host-only accepted history/recovery identity, not model reachability.
+
+        The host separately owns the selected current/recovery source and its
+        export/transfer permission. Staged observations never qualify.
+        """
+        normalized = self.validate_ref(ref, committed=False, check_expiry=check_expiry)
+        record = self._read(self._dirs["records"], _key(normalized) + ".json")
+        if record["state"] not in {"published", "committed"}:
+            raise MediaRefusal("media lacks accepted publication")
+        if self.read_only and (
+            self.source_read_verifier is None or self.source_read_verifier(
+                copy.deepcopy(normalized), purpose="transfer"
+            ) is not True
+        ):
+            raise MediaRefusal("read-only transfer lacks verified selected source")
+        return normalized
+
+    def resolve_published_ref(self, ref: Any) -> BinaryIO:
+        normalized = self.validate_published_ref(ref)
+        expires = normalized["provenance"]["expires_at"]
+        if expires is not None and _date(expires) <= datetime.now(timezone.utc):
+            raise MediaRefusal("expired source has metadata only", code="expired")
+        snapshot = self._open_verified(normalized, self._dirs["assets"], normalized["sha256"])
+        try:
+            self.validate_published_ref(ref)
+            return snapshot
+        except BaseException:
+            snapshot.close()
+            raise
+
     def _open_verified(self, ref: dict, directory: int, name: str) -> BinaryIO:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         stream = os.fdopen(fd, "rb")
@@ -534,6 +586,8 @@ class SessionMediaStore:
             stream.close()
 
     def resolve_ref(self, ref: Any, *, committed: bool = True) -> BinaryIO:
+        if self.read_only:
+            raise MediaRefusal("observer reads require guarded resolve_published_ref")
         normalized = self.validate_ref(ref, committed=committed)
         record = self._read(self._dirs["records"], _key(normalized) + ".json")
         directory, name = (
@@ -544,9 +598,14 @@ class SessionMediaStore:
         return self._open_verified(normalized, directory, name)
 
     async def publish(self, refs: Any, *, origin: Any, disposition: str) -> dict:
-        self._check()
+        return self.publish_sync(refs, origin=origin, disposition=disposition)
+
+    def publish_sync(self, refs: Any, *, origin: Any, disposition: str) -> dict:
+        """Host-only synchronous publication; no event loop or tool replay."""
+        self._writable()
         if disposition not in {"retain", "drop"} or not isinstance(refs, list):
             raise MediaRefusal("invalid media publication request")
+        refs = [validate_blob_ref(ref) for ref in refs]
         with self._lock:
             provenance, origin_key = self._origin(origin, self.policy)
             saved = self._read(self._dirs["origins"], origin_key + ".json")
@@ -562,11 +621,14 @@ class SessionMediaStore:
                         "publication": {"state": "published" if refs and disposition == "retain" else "dropped",
                                         "durability": "assets-only" if refs and disposition == "retain" else "none"}}
             for ref in saved["refs"]:
-                checked = self.validate_ref(ref, committed=False, check_expiry=False)
-                self._validate_origin_relation(provenance, checked)
                 record_name = _key(ref) + ".json"
                 record = self._read(self._dirs["records"], record_name)
                 retained = disposition == "retain" and ref in refs
+                if record is not None and record["state"] == "dropped" and not retained:
+                    # Reconcile an identical partially persisted drop operation.
+                    continue
+                checked = self.validate_ref(ref, committed=False, check_expiry=False)
+                self._validate_origin_relation(provenance, checked)
                 if retained:
                     with self.resolve_ref(ref, committed=False) as source:
                         digest = ref["sha256"]
@@ -576,6 +638,7 @@ class SessionMediaStore:
                         except FileExistsError:
                             with self._open_verified(ref, self._dirs["assets"], digest):
                                 pass
+                            self._fsync_asset(digest)
                         else:
                             with os.fdopen(fd, "wb") as target:
                                 while chunk := source.read(_CHUNK):
@@ -604,6 +667,8 @@ class SessionMediaStore:
     def acknowledge_checkpoint(self, receipt: Any) -> dict:
         """Host-only canonical ACK, not a seventh capability operation."""
         self._check()
+        if self.read_only:
+            raise MediaRefusal("read-only media store cannot bind canonical acceptance")
         if self.checkpoint_verifier is None:
             raise MediaRefusal("host has no durable checkpoint verifier")
         # Local checkpoint authority stays in memory. Its seal/HMAC/private path
@@ -644,6 +709,17 @@ class SessionMediaStore:
         return {"state": "committed", "durability": "legacy-checkpoint-backed",
                 "ref_count": count}
 
+    def _fsync_asset(self, digest: str) -> None:
+        """Reconciliation must finish durability barriers, not only hash bytes."""
+        fd = os.open(digest, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=self._dirs["assets"])
+        try:
+            _private_file(fd)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(self._dirs["assets"])
+
     def verify_checkpoint(self, ref: dict) -> None:
         record = self._read(self._dirs["records"], _key(ref) + ".json")
         if not record or record["state"] != "committed" or self.checkpoint_verifier is None:
@@ -664,13 +740,16 @@ class SessionMediaStore:
 
     def adopt_sync(self, refs: list, source_store: SessionMediaStore) -> list:
         """Synchronous owner copy for synchronous fork paths; never runs a loop."""
-        self._check()
+        self._writable()
         if self.policy.retention != "durable":
             raise MediaRefusal("target policy does not allow durable adoption")
         adopted = []
         grouped: dict[str, list] = {}
         for ref in refs:
-            source_store.validate_ref(ref, check_expiry=False)
+            if source_store.read_only:
+                source_store.validate_published_ref(ref)
+            else:
+                source_store.validate_ref(ref, check_expiry=False)
             grouped.setdefault(_key(ref["provenance"]), []).append(ref)
         for group in grouped.values():
             origin = group[0]["provenance"]
@@ -692,9 +771,13 @@ class SessionMediaStore:
                                                       "ref_key": _key(ref)},
                             })
                     else:
-                        with source_store.resolve_ref(ref) as stream:
+                        reader = source_store.resolve_published_ref if source_store.read_only else source_store.resolve_ref
+                        with reader(ref) as stream:
                             replacement = self._stage(stream, origin, self.policy)
                     target_refs.append(replacement)
+                    classification = source_store.get_origin_classification(ref)
+                    if classification is not None:
+                        self.classify_origin(replacement, classification=classification)
                 key = _key({k: origin[k] for k in ("kind", "session_id", "id")})
                 prior = self._read(self._dirs["origins"], key + ".json")
                 if prior and prior["refs"] != target_refs:
@@ -716,7 +799,7 @@ class SessionMediaStore:
         not merely compare a supplied hash. No journal supplied by a package is
         ever installed. Target canonical reachability still requires its own ACK.
         """
-        self._check()
+        self._writable()
         original = validate_blob_ref(ref)
         if self.policy.retention != "durable" or verifier(
             copy.deepcopy(original), receipt=receipt, target_session_id=self.session_id
@@ -759,6 +842,7 @@ class SessionMediaStore:
                 except FileExistsError:
                     with self._open_verified(ref, self._dirs["assets"], ref["sha256"]):
                         pass
+                    self._fsync_asset(ref["sha256"])
                 else:
                     with os.fdopen(fd, "wb") as target:
                         while chunk := source.read(_CHUNK):
@@ -781,6 +865,51 @@ class SessionMediaStore:
                         record = self._read(self._dirs[directory], entry.name)
                         if record:
                             yield record
+
+    def classify_origin(self, origin_or_ref: dict, *, classification: str) -> None:
+        """Host-only indexed source routing, never consent or model authority.
+
+        Hosts call after actual producer admission using the original real call,
+        not a model argument or marker string. Classification is immutable and
+        follows original provenance through adoption. No pixel bytes live here.
+        """
+        with self._lock:
+            self._classify_origin(origin_or_ref, classification=classification)
+
+    def _classify_origin(self, origin_or_ref: dict, *, classification: str) -> None:
+        self._writable()
+        if not isinstance(classification, str) or not re.fullmatch(
+            r"[a-z][a-z0-9.-]{0,100}", classification
+        ):
+            raise MediaRefusal("invalid source classification")
+        if set(origin_or_ref) == _REF_FIELDS:
+            normalized = self.validate_ref(origin_or_ref, committed=False, check_expiry=False)
+            provenance = normalized["provenance"]
+        else:
+            provenance, key = self._origin(origin_or_ref, self.policy)
+            if self._read(self._dirs["origins"], key + ".json") is None:
+                raise MediaRefusal("source classification requires admitted origin")
+        key = _key({k: provenance[k] for k in ("kind", "session_id", "id")})
+        name = key + ".classification.json"
+        value = {"v": 1, "origin": {k: provenance[k] for k in ("kind", "session_id", "id")},
+                 "classification": classification}
+        previous = self._read(self._dirs["origins"], name)
+        if previous is not None and previous != value:
+            raise MediaRefusal("source classification cannot be rebound")
+        if previous is None:
+            self._write(self._dirs["origins"], name, value)
+
+    def get_origin_classification(self, ref: dict) -> str | None:
+        """Host-only source routing lookup; absence is not permission."""
+        normalized = self.validate_ref(ref, committed=False, check_expiry=False)
+        provenance = normalized["provenance"]
+        identity = {k: provenance[k] for k in ("kind", "session_id", "id")}
+        record = self._read(self._dirs["origins"], _key(identity) + ".classification.json")
+        if record is None:
+            return None
+        if record.get("origin") != identity or record.get("v") != 1:
+            raise MediaRefusal("invalid source classification record")
+        return record["classification"]
 
     def register_prepared(self, prepared: Any) -> None:
         self._check()
@@ -861,8 +990,61 @@ class SessionMediaCapability:
             if not isinstance(origin_or_prepared, str):
                 raise MediaRefusal("consumer readiness requires component identity")
             self._consumers[origin_or_prepared] = copy.deepcopy(facts)
-        return {"recorded": True, "authoritative": False, "event": event,
-                "outcome": outcome, "enabled": self.enabled}
+        receipt = {"recorded": True, "authoritative": False, "event": event,
+                   "outcome": outcome, "enabled": self.enabled}
+        if event == "readiness":
+            receipt["consumers"] = copy.deepcopy(self._consumers)
+        return receipt
+
+
+class NeutralSessionMediaStore:
+    """No-storage neutral projector for unqualified/text-only hosts/platforms.
+
+    It cannot accept a ref, create files, ingest bytes or make durable claims.
+    Raw unadmitted inline images become warnings through the same projector.
+    """
+    policy = {"retention": "drop"}
+    origin_resolver = None
+    nested_verifier = None
+    request_only_verifier = None
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = _session(session_id)
+        self.epoch = 0
+        self._prepared: dict[int, Any] = {}
+        self._closed = False
+
+    def validate_ref(self, ref, *, committed=True, check_expiry=True):
+        validate_blob_ref(ref)
+        raise MediaRefusal("neutral host has no admitted media owner")
+
+    def resolve_ref(self, ref, *, committed=True):
+        return self.validate_ref(ref, committed=committed)
+
+    def verify_checkpoint(self, ref):
+        raise MediaRefusal("neutral host has no canonical media checkpoint")
+
+    async def ingest(self, *args, **kwargs):
+        raise MediaRefusal("neutral host does not ingest image bytes")
+
+    async def publish(self, *args, **kwargs):
+        raise MediaRefusal("neutral host does not publish media")
+
+    def register_prepared(self, prepared):
+        if self._closed:
+            raise MediaRefusal("neutral media store closed")
+        self._prepared[id(prepared.request)] = prepared
+
+    def unregister_prepared(self, prepared):
+        self._prepared.pop(id(prepared.request), None)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self.epoch += 1
+        for prepared in list(self._prepared.values()):
+            prepared.release()
 
 
 def bind_session_media(coordinator: Any, *, store: SessionMediaStore,

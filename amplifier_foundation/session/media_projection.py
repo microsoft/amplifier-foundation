@@ -108,7 +108,7 @@ def _expired(ref: dict[str, Any]) -> bool:
         _refuse("media expiry is invalid")
 
 
-def _can_hydrate(identity: Any, scope: Any, role: str) -> bool:
+def _can_hydrate(identity: Any, scope: Any, role: str, mime: str | None = None) -> bool:
     if scope in ("nested", "text_only"):
         return False
     if isinstance(scope, dict) and (scope.get("nested") is True or scope.get("text_only") is True):
@@ -124,6 +124,9 @@ def _can_hydrate(identity: Any, scope: Any, role: str) -> bool:
         and type(support.get("positions")) is list
         and all(type(position) is str for position in support["positions"])
         and role in support["positions"]
+        and (mime is None or "mime_types" not in support or (
+            type(support["mime_types"]) is list and mime in support["mime_types"]
+        ))
     )
 
 
@@ -229,6 +232,7 @@ class PreparedMediaRequestV1:
         self._released = False
         self._unregistered = False
         self._binding_validator = None
+        self._request_only_slots: list[tuple[int, int]] = []
 
     def set_binding_validator(self, validator: Any) -> None:
         """Host-only live selected-provider gate, never canonical metadata."""
@@ -266,6 +270,13 @@ class PreparedMediaRequestV1:
         if self._binding_validator is not None:
             if self._binding_validator() is not True:
                 _refuse("live selected-provider binding changed")
+        for message_index, block_index in self._request_only_slots:
+            verifier = getattr(self._store, "request_only_verifier", None)
+            if not callable(verifier) or verifier(
+                self._canonical, message_index=message_index,
+                block_index=block_index, purpose=self._purpose
+            ) is not True:
+                _refuse("host request-only media admission changed")
         if self._current_binding_digest() != self._binding_digest:
             _refuse("media preparation binding changed")
         if request_options is not _UNSET and _digest(
@@ -321,6 +332,7 @@ class PreparedMediaRequestV1:
             self._request.messages = []
             self._assets.clear()
             self._binding_validator = None
+            self._request_only_slots.clear()
             self._canonical = None  # type: ignore[assignment]
             self._store.unregister_prepared(self)
             self._unregistered = True
@@ -348,18 +360,38 @@ async def prepare_media_request(
     projected = copy.deepcopy(request)
     assets: list[tuple[dict[str, Any], str]] = []
     image_blocks: list[ImageBlock] = []
+    request_only_slots = []
     data = None
     try:
-        for message in projected.messages:
+        for message_index, message in enumerate(projected.messages):
             if isinstance(message.content, list):
                 # Legacy images were never admitted into this session's
                 # ownership/checkpoint graph. Do not silently ingest them.
-                message.content = [
-                    _warning("inline image is not admitted as session media").model_copy(
-                        update={"visibility": block.visibility}
-                    ) if isinstance(block, ImageBlock) else block
-                    for block in message.content
-                ]
+                content = []
+                for block_index, block in enumerate(message.content):
+                    if not isinstance(block, ImageBlock):
+                        content.append(block)
+                        continue
+                    verifier = getattr(store, "request_only_verifier", None)
+                    admitted = (
+                        _can_hydrate(provider_identity, execution_scope, message.role,
+                                     block.source.get("media_type"))
+                        and callable(verifier) and verifier(
+                            request, message_index=message_index,
+                            block_index=block_index, purpose=purpose
+                        ) is True
+                    )
+                    if admitted:
+                        content.append(block)
+                        image_blocks.append(block)
+                        request_only_slots.append((message_index, block_index))
+                    else:
+                        # Clear the detached deep copy as well as replacing it.
+                        block.source.clear()
+                        content.append(_warning("inline image is not admitted as session media").model_copy(
+                            update={"visibility": block.visibility}
+                        ))
+                message.content = content
             metadata = message.metadata or {}
             if _NAMESPACE not in metadata:
                 continue
@@ -377,7 +409,7 @@ async def prepare_media_request(
                 store.verify_checkpoint(ref)
                 expired = _expired(ref)
                 allowed = False if expired else _source_allowed(store, ref)
-                supported = _can_hydrate(provider_identity, execution_scope, message.role)
+                supported = _can_hydrate(provider_identity, execution_scope, message.role, ref["mime"])
                 # Unsupported positions/nested/text-only never read pixels.
                 data = _read_asset(store, ref) if allowed and supported else None
                 state = (
@@ -414,6 +446,7 @@ async def prepare_media_request(
         )
         if prepared._binding_digest != initial_binding:
             _refuse("media preparation binding changed during preparation")
+        prepared._request_only_slots = request_only_slots
         store.register_prepared(prepared)
         return prepared
     except BaseException:
