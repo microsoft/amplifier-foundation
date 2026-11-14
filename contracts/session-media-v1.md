@@ -232,6 +232,18 @@ Count and dispatch share one cached projection for the exact candidate/options.
 Replacement/refit/release closes the old projection; completion, error,
 cancellation, stream close and session close release request buffers.
 Import it from `amplifier_foundation.session.media_provider`.
+Optional synchronous `get_stream_request_support(*, model, request_options=None)`
+is forwarded unchanged only if the actual provider implements both a callable
+public `stream` and that callable support method. It is not inferred from SDK
+streaming, `get_info`, signatures, media support or host wrappers.
+Only an exact JSON `{v:1, tools:"chat_request"}` result, with integer `v` (not a
+boolean) and no other fields, claims that this model/options route consumes
+canonical `ChatRequest.tools` as the sole tool-schema input. The caller must
+validate the current actual-provider claim before fitting and dispatch, and omit
+the duplicate runtime `tools=` argument only on that qualified route. Missing,
+malformed, declined or changed claims do not authorize that route. This forwarding
+does not qualify any production provider, create a stream implementation, strip
+options, serialize mounted runtime tools or relax count/dispatch identity.
 `MediaPreparedProvider(provider, capability, *, provider_identity, model=None,
 execution_scope=None, prepare_overlay=None)` accepts live zero-argument
 identity/model getters. Optional host `prepare_overlay(private_canonical_copy, *,
