@@ -22,7 +22,36 @@ from urllib.parse import urlsplit
 from filelock import AsyncFileLock, FileLock
 
 from amplifier_foundation.paths.resolution import ResolvedSource, parse_uri
+from amplifier_foundation.sources._winpath import extended
 from amplifier_foundation.sources.git import _with_longpaths
+
+# New Windows entries use this many leading digits of a 64-digit store name.
+# Windows limits a file path to 259 characters unless the machine opted in to
+# long paths, and the full names cost 48 characters that module sources need.
+# A name only locates an entry. verify() and the build validators still compare
+# the complete recorded repository and commit, so a clash fails; it is never
+# adopted or removed.
+_SHORT_NAME = 16
+_STORE_NAME = r"(?:[a-f0-9]{16}|[a-f0-9]{64})"
+
+
+def _short_names():
+    return os.name == "nt"
+
+
+def _store_names(name):
+    return {name, name[:_SHORT_NAME]}
+
+
+def _store_entry(parent, name, *rest):
+    """Locate one named store entry. An existing entry keeps the name it has."""
+    full = parent.joinpath(name, *rest)
+    if not _short_names():
+        return full
+    short = parent.joinpath(name[:_SHORT_NAME], *rest)
+    if short.is_symlink() or short.exists():
+        return short
+    return full if full.is_symlink() or full.exists() else short
 
 
 async def complete_io(function, *args, **kwargs):
@@ -63,7 +92,8 @@ def _remove_owned_stage(path, identity):
         raise OSError(f"Source cleanup ownership changed; retained {path}")
     # POSIX unlink needs a writable parent, not a writable file. Walk top-down
     # without following symlinks, and leave external symlink destinations alone.
-    for root, _, _ in os.walk(path, followlinks=False):
+    # Git may have written files deeper than the ordinary Windows path limit.
+    for root, _, _ in os.walk(extended(path), followlinks=False):
         directory = Path(root)
         directory.chmod(stat.S_IMODE(directory.stat().st_mode) | 0o700)
     rmtree_robust(path)
@@ -147,7 +177,7 @@ class SharedSourceStore:
     def checkout(self, url, revision):
         if not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", revision):
             raise ValueError("An exact source revision is required")
-        target = self.root / "objects" / source_id(url, "") / revision
+        target = _store_entry(self.root / "objects", source_id(url, ""), revision)
         if target.is_symlink() or not target.resolve().is_relative_to(self.root):
             raise ValueError("Shared source object is outside its owned store")
         return target
@@ -198,8 +228,8 @@ class SharedSourceStore:
                         )
                     await complete_io(
                         shutil.copytree,
-                        existing,
-                        stage,
+                        extended(existing),
+                        extended(stage),
                         dirs_exist_ok=True,
                         symlinks=True,
                     )
@@ -233,10 +263,13 @@ class SharedSourceStore:
                         )
                     # Finish worktree mode changes before Git records their
                     # stat data. Re-sealing these files after status would make
-                    # that newly refreshed index stale again.
-                    for path in stage.rglob("*"):
+                    # that newly refreshed index stale again. Git writes files
+                    # deeper than the ordinary Windows path limit; visit each
+                    # one in the form that reaches it.
+                    tree = extended(stage)
+                    for path in tree.rglob("*"):
                         if (
-                            path.relative_to(stage).parts[0] != ".git"
+                            path.relative_to(tree).parts[0] != ".git"
                             and not path.is_symlink()
                         ):
                             path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
@@ -485,6 +518,9 @@ def _build_links(root):
     def unreadable(error):
         raise error
 
+    # One form for the walk and the containment check: an immutable checkout
+    # can hold files deeper than the ordinary Windows path limit.
+    root = extended(root)
     for parent, directories, files in os.walk(
         root, followlinks=False, onerror=unreadable
     ):
@@ -638,9 +674,11 @@ def _publish_build(root, target, data, relative, partial_identity):
     failure = None
     try:
         _build_links(root)
-        shutil.copytree(root, stage, symlinks=True, ignore=_build_ignore)
+        shutil.copytree(
+            extended(root), extended(stage), symlinks=True, ignore=_build_ignore
+        )
         # Top-down traversal restores directory access before visiting children.
-        for parent, directories, files in os.walk(stage, followlinks=False):
+        for parent, directories, files in os.walk(extended(stage), followlinks=False):
             directory = Path(parent)
             directory.chmod(stat.S_IMODE(directory.stat().st_mode) | 0o700)
             for name in files:
@@ -705,12 +743,12 @@ def build_view(source):
     roots = [
         root for root in ancestors
         if root.parent.parent.name == "objects"
-        and re.fullmatch(r"[a-f0-9]{64}", root.parent.name)
+        and re.fullmatch(_STORE_NAME, root.parent.name)
         and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", root.name)
     ]
     if not roots and any(
         root.parent.parent.name == "objects"
-        and re.fullmatch(r"[a-f0-9]{64}", root.parent.name)
+        and re.fullmatch(_STORE_NAME, root.parent.name)
         and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", root.name)
         for root in (source.resolve(), *source.resolve().parents)
     ):
@@ -731,12 +769,12 @@ def build_view(source):
         if (
             root != root.resolve()
             or root.parent.parent.name != "objects"
-            or root.parent.name != source_id(data["git_url"], "")
+            or root.parent.name not in _store_names(source_id(data["git_url"], ""))
             or root.name != data["commit"]
         ):
             raise ValueError("Immutable build input is outside its owned source store")
         relative = _build_subpath(root, source.relative_to(root)).relative_to(root)
-        target = store / "builds" / key
+        target = _store_entry(store / "builds", key)
         from filelock import FileLock
 
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -770,7 +808,7 @@ class _BuildLock(FileLock):
             data = _build_metadata(self.root)
             if (
                 self.root != self.root.resolve()
-                or self.root.name != _build_key(data)
+                or self.root.name not in _store_names(_build_key(data))
                 or _build_target_state(self.root, data) != "complete"
             ):
                 raise ValueError(f"Invalid build input; retained {self.root}")
@@ -795,10 +833,10 @@ def build_lock(source):
     # A nested package marker must not mask the canonical build root's lock.
     roots = [
         root for root in ancestors
-        if root.parent.name == "builds" and re.fullmatch(r"[a-f0-9]{64}", root.name)
+        if root.parent.name == "builds" and re.fullmatch(_STORE_NAME, root.name)
     ]
     if not roots and any(
-        root.parent.name == "builds" and re.fullmatch(r"[a-f0-9]{64}", root.name)
+        root.parent.name == "builds" and re.fullmatch(_STORE_NAME, root.name)
         for root in (source.resolve(), *source.resolve().parents)
     ):
         raise ValueError("Build input aliases managed build storage")

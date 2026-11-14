@@ -62,7 +62,15 @@ def source(tmp_path, monkeypatch):
 
 def target_for(root):
     data = json.loads((root / ".amplifier_cache_meta.json").read_text())
-    return root.parents[2] / "builds" / shared.source_id(data["git_url"], data["commit"])
+    name = shared.source_id(data["git_url"], data["commit"])
+    # A new Windows entry uses the short store name.
+    return root.parents[2] / "builds" / (name[:16] if os.name == "nt" else name)
+
+
+def plain(path):
+    """The store walks and copies its trees in Windows extended-length form."""
+    text = os.fspath(path)
+    return Path(text[4:] if text.startswith("\\\\?\\") else text)
 
 
 def snapshot(root):
@@ -227,7 +235,7 @@ def test_failed_preparation_never_publishes_and_retry_succeeds(source, monkeypat
 
             def copy(src, dst, *args, **kwargs):
                 result = original(src, dst, *args, **kwargs)
-                if src == root:
+                if plain(src) == root:
                     raise primary
                 return result
 
@@ -272,7 +280,7 @@ def test_cleanup_failure_preserves_original_error_and_owned_residue(source, monk
 
     def copy(src, dst, *args, **kwargs):
         result = original_copy(src, dst, *args, **kwargs)
-        if src == root:
+        if plain(src) == root:
             raise primary
         return result
 
@@ -308,7 +316,7 @@ def test_competing_creators_serialize_completed_publication_and_backend_lock(sou
     original = shared.shutil.copytree
 
     def copy(src, dst, *args, **kwargs):
-        if src == root:
+        if plain(src) == root:
             copies.append(dst)
             entered.set()
             assert release.wait(10)
@@ -788,7 +796,7 @@ def test_sibling_reuse_work_is_not_full_tree_per_module(
     counts = {"walks": 0, "entries": 0}
 
     def walk(path, *args, **kwargs):
-        observed = path == target
+        observed = plain(path) == target
         if observed:
             counts["walks"] += 1
         for item in original_walk(path, *args, **kwargs):
