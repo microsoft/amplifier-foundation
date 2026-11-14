@@ -253,6 +253,10 @@ Source inline bytes, decoded bytes and candidate logical sizes are distinct
 values. Recovery copies can outweigh logical savings. No figure here means
 allocated blocks were reclaimed; actual storage accounting/cleanup is a separate
 application-owned operation.
+`Candidate.inline_removed_bytes` (also in `verified.json`) is the sum of exact
+original replaced **image-block spans**, including their JSON wrapper/base64
+spelling. It excludes metadata:null or other edits, is not net transcript delta,
+and is not decoded asset bytes or allocated savings.
 
 ## Qualification
 

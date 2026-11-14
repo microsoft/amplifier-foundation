@@ -119,6 +119,10 @@ def test_semantic_binary_closure_and_original_backup(tmp_path):
     assert converted[1]["status"] == "failed"
     assert converted[1]["content"][2]["visibility"] == "internal"
     assert result.images == 2
+    assert result.inline_removed_bytes == sum(
+        len(json.dumps(block, ensure_ascii=False).encode()) for block in rows[1]["content"]
+        if block["type"] == "image"
+    )
     assert reconcile(tmp_path / "operation") == "verified-candidate-not-applied"
     assert "unconfirmed" in reconcile(tmp_path / "operation", installed=tmp_path / "operation/candidate.jsonl")
 
