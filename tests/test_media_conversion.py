@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+from types import SimpleNamespace
 from contextlib import contextmanager
 
 import pytest
@@ -256,6 +257,7 @@ def test_export_independent_and_adopted_prefix(tmp_path):
     selected = preview(converted, owner="fixture-owner", session_id="fixture", fence=fence,
                        selected_records=1)
     class Target:
+        policy = SimpleNamespace(max_images=10)
         def __init__(self):
             self.values = []
             self.assets = {}
@@ -444,6 +446,7 @@ def test_multiple_same_record_adoptions_stop_immediately_on_cancel(tmp_path):
     selected = preview(tmp_path / "source/candidate.jsonl", owner="fixture-owner",
                        session_id="fixture", fence=fence)
     class CancelTarget:
+        policy = SimpleNamespace(max_images=10)
         calls = 0
         async def adopt(self, refs, source_store):
             self.calls += 1
@@ -562,6 +565,7 @@ def test_mutating_async_adoption_cannot_change_expiry(tmp_path):
     selected = preview(tmp_path / "source/candidate.jsonl", owner="fixture-owner",
                        session_id="fixture", fence=fence)
     class Mutating:
+        policy = SimpleNamespace(max_images=10)
         async def adopt(self, refs, source_store):
             refs[0]["session_id"] = "child"
             refs[0]["provenance"]["expires_at"] = "2099-01-01T00:00:00+00:00"

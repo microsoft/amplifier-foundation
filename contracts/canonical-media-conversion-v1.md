@@ -56,6 +56,10 @@ pause a live app, or delete originals, assets, staging, backups or recovery hold
   through the actual media owner's accepted-commit `adopt` seam. Inline images
   must first be externalized. It changes only the owning `session_id`, refusing
   changes to every other ref field including original provenance/expiry.
+  Selected refs are disk-grouped by unchanged original provenance across the
+  complete selected prefix before adoption, with metadata bounded by the target
+  host `max_images`. A true original multi-image observation is copied as one
+  selected set, not replayed as per-image origin publications.
 * `adopt_selected_media(messages, source_store=..., target_store=...,
   target_session_id=..., now=None)` is the synchronous closure callback for
   existing public fork callers. The caller filters the prefix first and writes
@@ -70,6 +74,8 @@ pause a live app, or delete originals, assets, staging, backups or recovery hold
   This is not a generic read-only/model grant or a writable source-journal ACK.
   This already-materialized list API does
   not claim bounded huge-record memory.
+  It groups the already-selected in-memory refs by original provenance before
+  target adoption, retaining original order and refusing changed result sets.
 * `iter_verified_candidate_refs(operation_dir, installed=..., session_id=...,
   asset_reader=...)` is the **bounded installed-body checkpoint enumeration**
   seam for the owning checkpoint module. It verifies saved evidence, actual
