@@ -17,11 +17,18 @@ from amplifier_foundation.session.versioned_checkpoint import VersionedCheckpoin
 from tests.test_media_conversion_t2 import fixture, png, published
 
 
-def prepared(tmp_path, binding, store, fence, *, inline=False):
+def prepared(tmp_path, binding, store, fence, *, inline=False, jpeg=False):
     if inline:
+        payload, mime = png(), 'image/png'
+        if jpeg:
+            import io
+            from PIL import Image
+            encoded = io.BytesIO()
+            Image.new('RGB', (3, 4), (54, 98, 102)).save(encoded, 'JPEG')
+            payload, mime = encoded.getvalue(), 'image/jpeg'
         row = {'role': 'tool', 'tool_call_id': 'actual-original', 'status': 'complete',
                'usage': {'output_tokens': 8}, 'content': [{'type': 'image', 'source': {
-                   'type': 'base64', 'media_type': 'image/png', 'data': base64.b64encode(png()).decode(),
+                   'type': 'base64', 'media_type': mime, 'data': base64.b64encode(payload).decode(),
                }}]}
         binding.append([row], expected=binding.expected, operation_id='seed', admit=lambda: None)
     else:
@@ -64,9 +71,12 @@ def test_refs_first_noop_acks_without_rewrite_or_compression(tmp_path, monkeypat
         assert observed.state == 'installed-awaiting-versioned-ack' and observed.checkpoint is None
 
 
-def test_inline_rewrite_real_binding_typed_ack_readback_and_original_retained(tmp_path):
+@pytest.mark.parametrize('jpeg', [False, True])
+def test_inline_rewrite_real_binding_typed_ack_readback_and_original_retained(tmp_path, jpeg):
     with fixture(tmp_path) as (binding, store, fence):
-        expected, original, candidate = prepared(tmp_path, binding, store, fence, inline=True)
+        expected, original, candidate = prepared(tmp_path, binding, store, fence, inline=True, jpeg=jpeg)
+        original_row = json.loads(original.splitlines()[1])
+        original_pixels = base64.b64decode(original_row['content'][0]['source']['data'])
         result = apply_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
         assert result.state == 'acknowledged' and result.commit == binding.expected != expected
         assert type(result.checkpoint) is VersionedCheckpointReceipt
@@ -77,7 +87,8 @@ def test_inline_rewrite_real_binding_typed_ack_readback_and_original_retained(tm
         assert row['tool_call_id'] == 'actual-original' and row['usage'] == {'output_tokens': 8}
         ref = row['metadata']['experimental.media.v1']['refs'][0]
         with store.resolve_ref(ref) as stream:
-            assert stream.read() == png()
+            assert stream.read() == original_pixels
+        assert ref['mime'] == ('image/jpeg' if jpeg else 'image/png')
         assert ref['provenance']['expires_at'] == '2035-01-01T00:00:00+00:00'
         with pytest.raises(ActivationRefused, match='reconcile/resume'):
             apply_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
