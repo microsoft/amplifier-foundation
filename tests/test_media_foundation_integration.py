@@ -84,6 +84,100 @@ def test_over_limit_image_header_refuses_before_verify_or_pixel_load(monkeypatch
     loader.assert_not_called()
 
 
+def test_diagnostic_kind_cannot_claim_versioned_checkpoint_durability(tmp_path):
+    store = SessionMediaStore(
+        tmp_path / "kind-only", "session", checkpoint_verifier=lambda receipt: iter(()),
+    )
+    try:
+        result = store.acknowledge_checkpoint({
+            "session_id": "session", "kind": "versioned-checkpoint-backed-v1",
+        })
+        assert result == {"state": "committed", "durability": "legacy-checkpoint-backed",
+                          "ref_count": 0}
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image_format", ["PNG", "JPEG"])
+async def test_versioned_checkpoint_actual_prefix_to_private_request_joint(tmp_path, image_format):
+    from amplifier_foundation.session.transcript_writer import TranscriptWriter
+    from amplifier_foundation.session.versioned_checkpoint import (
+        acknowledge_versioned_checkpoint, verified_versioned_checkpoint_refs,
+    )
+    path = tmp_path / "v2-joint"
+    path.mkdir(mode=0o700)
+    store = SessionMediaStore(path / "media", "v2-joint",
+                              checkpoint_verifier=verified_versioned_checkpoint_refs)
+    origin = {"kind": "tool", "session_id": "v2-joint", "id": "call-v2"}
+    image = io.BytesIO()
+    Image.new("RGB", (2, 2), "purple").save(image, format=image_format)
+    data = image.getvalue()
+
+    @contextmanager
+    def fixture_owner(session_dir):
+        # Synthetic single writer, not a production host quiescence mechanism.
+        assert session_dir == path
+        yield lambda: None
+
+    try:
+        ref = (await store.ingest(data, source_format="image-bytes",
+                                  origin=origin, policy=None))["value"]
+        await store.publish([ref], origin=origin, disposition="retain")
+        writer = TranscriptWriter(path, fence=fixture_owner)
+        initial = writer.initialize(session_id="v2-joint", operation_id="initialize",
+                                    admit=lambda: None)
+        rows = [{"role": "tool", "tool_call_id": "call-v2", "content": "retained original",
+                 "metadata": {MEDIA_NAMESPACE: {"refs": [ref]}}}]
+        accepted = writer.append(
+            rows, expected=initial.commit, operation_id="settled-tool",
+            admit=lambda: store.validate_published_ref(ref),
+        )
+        with acknowledge_versioned_checkpoint(
+            writer, session_id="v2-joint", expected=accepted,
+        ) as receipt:
+            result = store.acknowledge_checkpoint(receipt)
+        assert result == {"state": "committed", "durability": "versioned-checkpoint-backed",
+                          "ref_count": 1}
+        assert list(verified_versioned_checkpoint_refs(receipt)) == [ref]
+        assert SessionHistoryStore(path).load_messages() == rows
+        # The format reader ignores a torn/ref-looking tail, but the pinned
+        # receipt must refuse ANY later source change, not advance itself.
+        canonical = ChatRequest(messages=[Message(**row) for row in rows])
+        before = canonical.model_dump_json()
+        session = AmplifierSession(
+            {"session": {"orchestrator": "unused", "context": "unused"}},
+            session_id="v2-joint",
+        )
+        cap = bind_session_media(session.coordinator, store=store, enabled=True)
+        prepared = await cap.prepare_request(
+            canonical, provider_identity={
+                "provider": "synthetic", "account": "fixture", "generation": "v2",
+                "media_support": {"v": 1, "positions": ["tool"],
+                                  "mime_types": ["image/png", "image/jpeg"]},
+            }, model="fixture", purpose="model", execution_scope={}, request_options=None,
+        )
+        try:
+            projected = prepared.request
+            assert projected is not canonical and canonical.model_dump_json() == before
+            image_block = next(b for b in projected.messages[0].content if isinstance(b, ImageBlock))
+            assert base64.b64decode(image_block.source["data"]) == data
+            cap.validate(projected, purpose="transport", request_options=None)
+            body = path / "transcript.v2" / accepted.commit.body
+            with body.open("ab") as stream:
+                stream.write(b'{"metadata":{"experimental.media.v1":')
+            with pytest.raises(ValueError):
+                cap.validate(projected, purpose="transport", request_options=None)
+            with pytest.raises(ValueError):
+                receipt.verify()
+            assert SessionHistoryStore(path).load_messages() == rows
+        finally:
+            prepared.release()
+            assert projected.messages == []
+    finally:
+        store.close()
+
+
 class _JointGraphLoader:
     """Fixed Core fixture, not a claim about an arbitrary host/plugin graph."""
 

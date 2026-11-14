@@ -869,7 +869,15 @@ class SessionMediaStore:
                 record.update(state="committed", checkpoint=serialized)
                 self._write(self._dirs["records"], _key(ref) + ".json", record)
             self._checkpoints = {checkpoint_key: receipt}
-        return {"state": "committed", "durability": "legacy-checkpoint-backed",
+        # A serialized kind string is diagnostic data, not format authority.
+        # Only the exact local, already verified receipt selects the V2 label;
+        # existing legacy/custom host verifier output keeps its original label.
+        from .versioned_checkpoint import VersionedCheckpointReceipt
+        durability = (
+            "versioned-checkpoint-backed"
+            if type(receipt) is VersionedCheckpointReceipt else "legacy-checkpoint-backed"
+        )
+        return {"state": "committed", "durability": durability,
                 "ref_count": count}
 
     def _fsync_asset(self, digest: str) -> None:
