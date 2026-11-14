@@ -280,6 +280,56 @@ def test_current_admission_and_source_rechecked_before_replace(fixture):
     assert f.resume().state == "replace-unconfirmed-source-present"
 
 
+@pytest.mark.parametrize("revocation", ["cancel", "admission"])
+def test_revoke_during_final_source_hash_never_replaces(fixture, monkeypatch, revocation):
+    f = fixture
+    f.build()
+    check = activation.conversion._check
+
+    def revoke(expected):
+        check(expected)
+        if expected.path == str(f.path) and (f.operation / "activation.json").exists():
+            saved = json.loads((f.operation / "activation.json").read_bytes())
+            if saved["phase"] == "replace-intent":
+                if revocation == "cancel":
+                    f.cancel = True
+                else:
+                    f.allowed = False
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(activation.conversion, "_check", revoke)
+        if revocation == "cancel":
+            assert f.apply().state == "replace-unconfirmed-source-present"
+        else:
+            with pytest.raises(activation.ActivationRefused, match="admission"):
+                f.apply()
+    assert f.path.read_bytes() == f.original and f.acks == 0
+    f.cancel, f.allowed = False, True
+    assert f.resume().state == "replace-unconfirmed-source-present"
+    f.preserved()
+
+
+def test_oversized_owner_binding_refused_before_activation_writes(fixture):
+    f = fixture
+    owner = "x" * 16384
+
+    @contextmanager
+    def fence(actual):
+        assert actual == owner
+        yield
+
+    plan = preview(f.path, owner=owner, session_id="fixture", fence=fence, backups=(f.backup,))
+    asyncio.run(build_candidate(plan, f.operation, fence=fence, capability=f.store,
+                                origin_for=lambda *_: f.origin, asset_reader=f.reader))
+    before = sorted(item.name for item in f.operation.iterdir())
+    with pytest.raises(activation.ActivationRefused, match="recovery read bound"):
+        f.apply(owner=owner, fence=fence)
+    assert sorted(item.name for item in f.operation.iterdir()) == before
+    assert not list(f.session.glob(".media-activation-*"))
+    assert f.path.read_bytes() == f.original and f.acks == 0
+    f.preserved()
+
+
 @pytest.mark.parametrize("when", ["before", "copy", "after-replace"])
 def test_cancellation_safe_checkpoint_states(fixture, monkeypatch, when):
     f = fixture

@@ -117,6 +117,10 @@ installed-awaiting-ack. Denied admission, source/closure conflicts, invalid
 metadata and filesystem/fsync/readback/ACK failures raise without success.
 Exceptions may leave installed candidate: inspect durable journal and actual
 bytes before recovery. Resume reacquires current host admission/Stop/holds.
+Admission/cancellation is rechecked immediately after the final streaming hash
+scans, before replacement, and again after final ACK verification. Oversized
+serialized bindings refuse before any activation write; every created journal
+fits the same 16 KiB bound used by recovery reads.
 
 Originals, old backup names, converter journals, assets, candidates, failed
 stage files, per-stage provenance notes and journal temporaries are retained.
@@ -137,5 +141,6 @@ helper peak below 3 MiB.
 POSIX/Linux synthetic **candidate-graph only** until dependency and changed-risk
 reviews are accepted. No Windows/native parity, actual CLI/Unified ownership,
 power-loss/installed/DTU qualification, live conversion, T2 or release/adoption
-is inferred. In particular converter8d60678's reviewed SQL-enumeration flaw
-must be repaired by its owner before final dependent qualification.
+is inferred. Converter8d60678's reviewed SQL-enumeration flaw requires the
+1021e1d same-canonical-pass repair and aa04874 schema restriction (or an accepted
+descendant); the old verifier is not a qualified activation dependency.
