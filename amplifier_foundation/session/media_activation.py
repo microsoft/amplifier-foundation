@@ -94,14 +94,22 @@ def _small(directory: int, name: str, limit: int = 16384) -> dict:
     return value
 
 
+def _journal_bytes(value: dict) -> bytes:
+    raw = json.dumps(value, sort_keys=True, allow_nan=False).encode()
+    if len(raw) > 16384:
+        raise ActivationRefused("Activation journal exceeds its recovery read bound")
+    return raw
+
+
 def _journal(directory: int, value: dict) -> None:
     # Atomic small fact update. A failed/unknown write must be read back, not
     # inferred absent. Temporary journal bytes are retained on failure.
+    raw = _journal_bytes(value)  # Refuse before even creating a temporary.
     name = ".activation-journal-" + uuid.uuid4().hex
     descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=directory)
     with os.fdopen(descriptor, "wb") as output:
-        output.write(json.dumps(value, sort_keys=True, allow_nan=False).encode())
+        output.write(raw)
         output.flush()
         os.fsync(output.fileno())
     os.replace(name, _JOURNAL, src_dir_fd=directory, dst_dir_fd=directory)
@@ -158,6 +166,10 @@ def _facts(operation: Path, opfd: int, session: Path, session_id: str, owner: st
         "plan_sha256": verified["plan_sha256"],
         "manifest_sha256": verified["manifest_sha256"],
     }
+    # Check the largest phase plus fixed-width stage before any activation
+    # write, so every journal we can create can also be recovered.
+    _journal_bytes({"binding": binding, "phase": "replace-intent",
+                    "stage": ".media-activation-" + "0" * 32 + ".tmp"})
     return binding, plan, source
 
 
@@ -364,6 +376,11 @@ def _activate(operation_dir, session_dir, *, session_id, owner, fence, admit,
             _backups(plan)
             conversion._check(source)
             _pending(sessionfd)
+            # Hash scans may be lengthy. Revoke/cancel during them must prevent
+            # the mutation, not merely be noticed after it has happened.
+            if _guard(admit, cancelled, checks):
+                return _result(binding, "replace-unconfirmed-source-present")
+            _pending(sessionfd)
             os.replace(stage, "transcript.jsonl", src_dir_fd=sessionfd, dst_dir_fd=sessionfd)
             os.fsync(sessionfd)
         else:
@@ -404,8 +421,8 @@ def _activate(operation_dir, session_dir, *, session_id, owner, fence, admit,
         receipt.verify()
         _verify(operation, installed, session_id, reader)
         _backups(plan)
-        for check in checks:
-            check()
+        if _guard(admit, cancelled, checks):
+            return _result(binding, "installed-awaiting-ack")
         saved["phase"] = "acknowledged"
         _journal(opfd, saved)
         return _result(binding, "acknowledged", receipt)
