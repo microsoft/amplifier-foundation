@@ -892,29 +892,54 @@ class SessionMediaStore:
         ) is not True:
             raise MediaRefusal("package owner did not authorize exact media import")
         expires = original["provenance"]["expires_at"]
-        if expires is not None and _date(expires) <= datetime.now(timezone.utc):
-            if stream is not None:
-                raise MediaRefusal("expired import must be metadata-only", code="expired")
-            target = {**original, "session_id": self.session_id}
-            with self._lock:
-                name = _key(target) + ".json"
-                if self._read(self._dirs["records"], name) is None:
-                    self._write(self._dirs["records"], name, {
-                        "v": 1, "ref": target, "state": "published", "staging": None,
-                        "retention": "durable", "checkpoint": None, "metadata_only": True,
-                        "intended_owner": self.session_id,
-                        "source_acceptance": {"session_id": original["session_id"],
-                                              "ref_key": _key(original), "kind": "host-verified-package"},
-                    })
-            return target
+        def expired() -> bool:
+            return expires is not None and _date(expires) <= datetime.now(timezone.utc)
+        if expired():
+            # A host's earlier precheck/decode can cross the original TTL before
+            # this final owner boundary. Authorized metadata remains importable;
+            # never read/retry the now-expired stream or renew its provenance.
+            return self._import_expired_metadata(original)
         if stream is None:
             raise MediaRefusal("unexpired import requires verified original bytes")
         with self._lock:
+            if expired():
+                return self._import_expired_metadata(original)
             target = self._stage(stream, original["provenance"], self.policy)
             if target != {**original, "session_id": self.session_id}:
                 raise MediaRefusal("imported bytes differ from authorized original reference")
+            if expired():
+                return self._import_expired_metadata(original)
             self._publish_adopted([target])
+            if expired():
+                return self._import_expired_metadata(original)
             return target
+
+    def _import_expired_metadata(self, original: dict) -> dict:
+        """Finish an already-authorized import as terminal original metadata."""
+        target = {**copy.deepcopy(original), "session_id": self.session_id}
+        with self._lock:
+            name = _key(target) + ".json"
+            previous = self._read(self._dirs["records"], name)
+            if previous is not None and (
+                _json(previous.get("ref")) != _json(target)
+                or previous.get("state") not in {"staged", "published", "committed"}
+                or previous.get("retention") != "durable"
+            ):
+                raise MediaRefusal("expired import conflicts with existing acceptance")
+            record = previous or {
+                "v": 1, "ref": target, "staging": None, "retention": "durable",
+                "checkpoint": None, "intended_owner": self.session_id,
+            }
+            record = {
+                **record, "metadata_only": True,
+                "state": "committed" if record.get("state") == "committed" else "published",
+                "source_acceptance": {"session_id": original["session_id"],
+                                      "ref_key": _key(original), "kind": "host-verified-package"},
+            }
+            # Staged/already-published original bytes are recovery evidence, not
+            # live delivery. Never unlink them in an import/expiry transition.
+            self._write(self._dirs["records"], name, record)
+        return target
 
     def _publish_adopted(self, refs: list) -> None:
         for ref in refs:
