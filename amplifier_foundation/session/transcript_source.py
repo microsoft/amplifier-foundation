@@ -29,6 +29,7 @@ from .transcript_v2 import (
     _decode,
     _file,
     _stamp,
+    _validate_body_header,
 )
 
 _OFFSET = struct.Struct(">QQ")
@@ -253,7 +254,7 @@ def open_committed_source(session_dir: str | Path, *,
             if digest.hexdigest() != prefix.sha256:
                 raise UnsupportedTranscript("Committed source digest differs")
             # Scanner's seek/read view is explicitly capped at committed prefix.
-            from .transcript_writer import _header, _PrefixView
+            from .transcript_writer import _PrefixView
             stream.seek(0)
             view = _PrefixView(stream, prefix.committed_bytes)
             scanner = Scanner(view)
@@ -261,8 +262,8 @@ def open_committed_source(session_dir: str | Path, *,
             for index, row in enumerate(scanner.records()):
                 fields = scanner.fields(row)
                 if index == 0:
-                    if _decode(view_read(view, row.start, row.end, CHUNK)) != _decode(_header(prefix.generation)):
-                        raise UnsupportedTranscript("Invalid committed source header")
+                    _validate_body_header(
+                        _decode(view_read(view, row.start, row.end, CHUNK)), prefix.generation)
                     saw_header = True
                 else:
                     role = fields.get("role")

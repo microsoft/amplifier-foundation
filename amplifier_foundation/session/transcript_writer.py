@@ -35,6 +35,7 @@ from .transcript_v2 import (
     UnsupportedTranscript,
     _decode,
     _stamp,
+    _validate_body_header,
 )
 
 try:
@@ -304,8 +305,7 @@ def _validate_prefix(stream, prefix):
     for index, row in enumerate(scanner.records()):
         if index == 0:
             scanner.fields(row)  # Also reject duplicate header keys.
-            if scanner.small(row) != json.loads(_header(prefix.generation)):
-                raise TranscriptConflict("Invalid generation header")
+            _validate_body_header(scanner.small(row), prefix.generation)
         else:
             fields = scanner.fields(row)
             role = fields.get("role")
