@@ -109,6 +109,12 @@ Metadata-only staged/published journals remain enumerable for recovery. This
 component does not delete orphan assets or authorize retention cleanup.
 Host-only `ingest_sync` and `publish_sync` have the same arguments/results as the
 async methods; they do not run an event loop and do not add capability operations.
+Host-only `ingest_group_sync(binary_sources, *, origin, policy)` accepts the
+complete ordered source iterable for one real original event/call, bounds it by
+the host's max_images, and freezes one exact staged ref set. It returns
+`{value: [refs], staged_refs: [refs]}`. Do not synthesize per-image operation IDs
+or sequentially replace one origin's acceptance. Whole-group identical retries
+reconcile; order/content changes refuse. Publication still uses the final set.
 `adopt(refs, source_store)` is a host-only verified copy preserving original
 provenance and expiry; target publication precedes target canonical checkpoint.
 It is async and returns a list; synchronous `adopt_sync(refs, source_store)`
@@ -144,8 +150,9 @@ Nested refs keep their actual inner provenance. The host installs synchronous
 that exact surviving structured child output belongs to this outer operation.
 Absent attestation refuses; same-session possession is not a relationship.
 No report or extra method on the six-operation capability can create it.
-The installer dynamically consults trusted
-`session.media.nested_verifier` when no explicit store callback was supplied.
+The installer dynamically consults the trusted dispatch-owner callable
+`tools.dispatch.media_refs` (legacy host alias `session.media.nested_verifier`)
+when no explicit store callback was supplied.
 Its dispatch-owned ledger is execution-bound, not a model-supplied declaration.
 
 `validate_published_ref(ref, *, check_expiry=False)` is host-only acceptance

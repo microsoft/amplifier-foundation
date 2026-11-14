@@ -125,6 +125,8 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         result = await cap.ingest(self.data, source_format="image-bytes", origin=None, policy=None)
         self.assertEqual(result["value"]["provenance"]["id"], "actual-call")
 
+    @unittest.skipUnless("content" in ToolResult.model_fields,
+                         "Core rich ToolResult requires Core2; legacy text/ref cases run")
     async def test_canonical_tool_adaptation_preserves_status_output_and_text(self):
         rich = ToolResult(success=False, output={"helpful": 7}, error={"kind": "partial"},
                           content=[TextBlock(text="before"), ImageBlock(source={
@@ -692,6 +694,22 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             a = pool.submit(classify, "computer-use")
             b = pool.submit(classify, "ordinary-upload")
             self.assertCountEqual([a.result(), b.result()], ["success", "refused"])
+
+    async def test_whole_original_group_retains_true_origin_and_conflicts_refuse(self):
+        values = [self.data, image_bytes(color="blue")]
+        group = self.store.ingest_group_sync(values, origin=self.origin, policy=None)
+        refs = group["staged_refs"]
+        self.assertEqual(len(refs), 2)
+        self.assertEqual(refs[0]["provenance"], refs[1]["provenance"])
+        again = self.store.ingest_group_sync(values, origin=self.origin, policy=None)
+        self.assertEqual(again["staged_refs"], refs)
+        with self.assertRaises(MediaRefusal):
+            self.store.ingest_group_sync(values[::-1], origin=self.origin, policy=None)
+        await self.store.publish(refs, origin=self.origin, disposition="retain")
+        self.store.acknowledge_checkpoint({"refs": refs})
+        for ref in refs:
+            with self.store.resolve_ref(ref):
+                pass
 
 
 if __name__ == "__main__":
