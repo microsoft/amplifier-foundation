@@ -576,6 +576,64 @@ class SessionMediaStore:
             raise MediaRefusal("read-only transfer lacks verified selected source")
         return normalized
 
+    def validate_published_group(self, refs: Any, *, origin: Any) -> dict:
+        """Host-only read-only check of one exact ordered retained publication.
+
+        Individual ownership does not prove group completeness. Compare with
+        the origin's actual final publication, including post-hook selection,
+        without publishing, resolving pixels, renewing expiry or granting
+        canonical/model reachability. Observer stores retain their independent
+        selected-source guard through validate_published_ref.
+        """
+        self._check()
+        if not isinstance(refs, list) or len(refs) > self.policy.max_images:
+            raise MediaRefusal("invalid or over-limit published media group")
+        if not isinstance(origin, Mapping) or set(origin) not in (
+            {"kind", "session_id", "id"}, _ORIGIN_FIELDS
+        ):
+            raise MediaRefusal("published group requires an explicit real origin")
+        supplied_origin = dict(origin)
+        if (
+            not isinstance(supplied_origin["kind"], str)
+            or supplied_origin["kind"] not in {"tool", "upload", "host", "migration"}
+            or not isinstance(supplied_origin["id"], str)
+            or not supplied_origin["id"]
+        ):
+            raise MediaRefusal("invalid published media group origin")
+        _session(supplied_origin["session_id"])
+        if set(supplied_origin) == _ORIGIN_FIELDS:
+            created = _date(supplied_origin["created_at"])
+            expires = supplied_origin["expires_at"]
+            if expires is not None and _date(expires) < created:
+                raise MediaRefusal("published group expiry precedes original creation")
+        identity = {key: supplied_origin[key] for key in ("kind", "session_id", "id")}
+        name = _key(identity) + ".json"
+        with self._lock:
+            normalized = [validate_blob_ref(ref) for ref in refs]
+            saved = self._read(self._dirs["origins"], name)
+            if not isinstance(saved, dict) or not isinstance(saved.get("origin"), dict):
+                raise MediaRefusal("published media group has no admitted origin")
+            saved_origin = saved["origin"]
+            if (
+                set(saved_origin) != _ORIGIN_FIELDS
+                or _json({key: saved_origin[key] for key in identity}) != _json(identity)
+                or (set(supplied_origin) == _ORIGIN_FIELDS
+                    and _json(saved_origin) != _json(supplied_origin))
+            ):
+                raise MediaRefusal("published media group origin differs")
+            expected = {"refs": normalized, "disposition": "retain"}
+            if _json(saved.get("publication")) != _json(expected):
+                raise MediaRefusal("published media group differs from final retained publication")
+            snapshot = _json(saved)
+            # Repeat individual and source checks to catch late callback refusal
+            # or publication changes while an observer has no writer lock.
+            for _ in range(2):
+                for ref in normalized:
+                    self.validate_published_ref(ref, check_expiry=False)
+            if _json(self._read(self._dirs["origins"], name)) != snapshot:
+                raise MediaRefusal("published media group changed during verification")
+        return {"valid": True, "ref_count": len(normalized)}
+
     def resolve_published_ref(self, ref: Any) -> BinaryIO:
         normalized = self.validate_published_ref(ref)
         expires = normalized["provenance"]["expires_at"]
