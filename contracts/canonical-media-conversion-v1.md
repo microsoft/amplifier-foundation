@@ -216,9 +216,15 @@ large opaque strings/arrays and arbitrary record counts remain streamable.
 Canonical JSONL permits CRLF and a missing last LF, but not blank lines, leading
 record whitespace, interior LF/pretty-printed records or adjacent JSON objects.
 
-Patches, per-observation refs/origins and ordered closure are held in disk SQLite
-with a 512 KiB cache and file-backed temporary sort. No corpus-sized Python
-list/set or per-message ref list is accumulated. Candidate output is compared
+Patches, selected transfer refs, per-observation refs/origins and ordered closure
+are held in disk SQLite with a 512 KiB cache and file-backed temporary sort.
+No corpus-sized Python list/set is accumulated by the streaming converter.
+F1's current ingest/adopt/publish list APIs materialize **one complete true-origin
+group's reference metadata**, including expected/detached copies, not its pixels.
+With no optional count quota this is O(group size), not a constant memory claim;
+a group may itself span the whole selected corpus. `adopt_selected_media` instead
+accepts an already-materialized caller snapshot and retains its O(selection)
+metadata cost; it is not the streaming conversion API. Candidate output is compared
 against a second streaming exact allowed-span hash, then independently reparsed
 for record/ref/slot order and binary closure.
 
@@ -331,7 +337,18 @@ boundary. The temporary image stream is not retained after `stage_image`.
   ordinary self-declared `{refs:[...]}` is not that production authority.
 
 The diagnostic store uses `SessionMediaStore(explicit_private_root, session_id,
-policy=MediaPolicy(host_limits...), checkpoint_verifier=host_verifier)`. It must
+policy=host_policy, checkpoint_verifier=host_verifier)`. A host may supply
+`media_policy_for_root(existing_private_root, host_limits=..., provider_limits=...)`
+or an actual `MediaPolicy` object. F1's omitted store-policy argument selects its
+resource-bound default and exposes that real policy object. The converter and
+group owner refuse a missing policy object, missing count field, booleans, or
+nonpositive/noninteger counts. **Only** `max_images=None` on a supplied policy
+means no optional image-count quota; finite positive host/provider counts remain
+enforced, without substituting an arbitrary large count. The default actual-held
+filesystem/process byte and decoder pixel safety limits remain F1-owned. They
+grant no original-source authority, observation consent, identity or TTL, and
+are not renewed historical quotas. Original provenance and expiry must still be
+supplied and independently validated. The diagnostic store must
 be **distinct from canonical session stores and never mounted as a live media
 capability**. The reader-ready callback qualifies that scope as well as the exact
 diagnostic replacement shape. Diagnostic checkpointing is local capture-file
@@ -381,8 +398,9 @@ digest/length/MIME. No group completion is inferred from callback timing.
 The binding uses actual F1 `ingest_group_sync` at `bbfd427...`, verifies the
 complete ordered result, then publishes that complete set. Repeat image-position
 callbacks reconcile the same original set; no new original IDs or renewed
-timestamps are generated. Only host-max-images-bounded ref/source metadata is
-accumulated; pixel streams remain bounded/disk-backed. The group owner receipt is
+timestamps are generated. One complete group's ref/source metadata is accumulated
+(O(group size), optionally limited by a finite host quota); pixel streams remain
+bounded/disk-backed. This is not whole-capture precollection. The group owner receipt is
 still bounded by CI's16KiB manifest schema; unsupported metadata is refused.
 
 The distinct group reader gate is `foundation.capture-image-owner-group.v1`.

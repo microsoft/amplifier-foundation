@@ -17,7 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
 
-from .media_conversion import NAMESPACE, Unsupported, _digest, _json, _open, _validate_ref
+from .media_conversion import (
+    NAMESPACE, Unsupported, _digest, _host_image_limit, _json, _open, _validate_ref,
+)
 
 BINDING = "foundation.capture-image-owner.v1"
 GROUP_BINDING = "foundation.capture-image-owner-group.v1"
@@ -259,6 +261,8 @@ class CaptureGroupMediaOwner(CaptureMediaOwner):
     The source owner must enumerate exactly one complete attested true-origin
     group from its fenced indexed capture. Each stream stays valid until the
     iterable advances; no full-record or pixel list is required.
+    One complete group's ref/source metadata is materialized for F1's list API
+    and the existing bounded receipt schema, not the entire capture corpus.
     """
 
     def __init__(self, store, *, group_sources_for, staged_factory, origin_for,
@@ -275,6 +279,7 @@ class CaptureGroupMediaOwner(CaptureMediaOwner):
         _off_loop()
         if _sync_result(self.reader_ready(GROUP_BINDING)) is not True:
             raise Unsupported("Diagnostic reader/group source owner is not qualified")
+        _host_image_limit(self.store)
 
     def stage_image(self, image, *, mime, origin):
         self._ready()
@@ -286,12 +291,12 @@ class CaptureGroupMediaOwner(CaptureMediaOwner):
         if observed != (snapshot.get("sha256"), snapshot.get("bytes")):
             raise Unsupported("Selected group image differs from exact CI source")
         snapshots, facts = [], []
-        limit = self.store.policy.max_images  # Existing explicit host bound.
+        limit = _host_image_limit(self.store)
         manager = _sync_result(self.group_sources_for(deepcopy(snapshot), deepcopy(original)))
         with manager as sources:
             def binary_sources():
                 for value in sources:
-                    if len(snapshots) >= limit:
+                    if limit is not None and len(snapshots) >= limit:
                         raise Unsupported("Historical group exceeds host image count")
                     if not isinstance(value, dict) or set(value) != {"stream", "mime", "origin"}:
                         raise Unsupported("Unknown historical group binary source")
@@ -368,7 +373,9 @@ class CaptureGroupMediaOwner(CaptureMediaOwner):
                 } or receipt["binding"] != GROUP_BINDING or len(_json(receipt)) > 16384:
                     raise Unsupported("Unknown historical group receipt")
                 refs, snapshots, selected = receipt["refs"], receipt["source_origins"], receipt["selected"]
-                if (not isinstance(refs, list) or not refs or len(refs) > self.store.policy.max_images
+                limit = _host_image_limit(self.store)
+                if (not isinstance(refs, list) or not refs
+                        or (limit is not None and len(refs) > limit)
                         or not isinstance(snapshots, list) or len(refs) != len(snapshots)
                         or type(selected) is not int or not 0 <= selected < len(refs)
                         or _json(snapshots[selected]) != _json(selected_source)):

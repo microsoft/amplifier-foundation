@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+from types import SimpleNamespace
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,9 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX F1 store integ
 pytest.importorskip("PIL")
 from PIL import Image
 
-from amplifier_foundation.session.media import MediaPolicy, MediaRefusal, SessionMediaStore
+from amplifier_foundation.session.media import (
+    MediaPolicy, MediaRefusal, SessionMediaStore, media_policy_for_root,
+)
 from amplifier_foundation.session.media_conversion import (
     NAMESPACE, Unsupported, adopt_selected_media, build_candidate, preview, transfer_prefix, verify_export,
 )
@@ -45,9 +48,9 @@ def fence(owner):
     yield
 
 
-@pytest.fixture
-def stores(tmp_path):
-    policy = MediaPolicy(1024 * 1024, 10000, 10)
+@pytest.fixture(params=["finite", "default"])
+def stores(tmp_path, request):
+    policy = MediaPolicy(1024 * 1024, 10000, 10) if request.param == "finite" else None
     source = SessionMediaStore(tmp_path / "source-store", "source", policy=policy,
                                checkpoint_verifier=lambda receipt: receipt["refs"])
     target = SessionMediaStore(tmp_path / "target-store", "target", policy=policy,
@@ -521,3 +524,147 @@ def test_selected_helper_real_readonly_transfer_guard_and_expiry(stores, tmp_pat
         assert message["metadata"][NAMESPACE]["refs"] == [ref]
     finally:
         observer.close()
+
+
+@pytest.mark.parametrize("quota", [None, 12, 11])
+def test_root_policy_large_original_group_actual_candidate_ack_and_transfer(tmp_path, quota):
+    """Twelve is a fixture size, not a package cap or fabricated observation ID."""
+    import shutil
+    root = tmp_path / "private-media"
+    root.mkdir(mode=0o700)
+    policy = media_policy_for_root(root)
+    assert policy == MediaPolicy()
+    target_root = tmp_path / "private-target"
+    target_root.mkdir(mode=0o700)
+    target_policy = media_policy_for_root(
+        target_root, host_limits={"max_images": None}, provider_limits={"max_images": quota},
+    )
+    store = SessionMediaStore(root, "source", policy=policy,
+                              checkpoint_verifier=verified_checkpoint_refs)
+    target = SessionMediaStore(target_root, "target", policy=target_policy,
+                               checkpoint_verifier=verified_checkpoint_refs)
+    images = []
+    for index in range(12):
+        output = io.BytesIO()
+        Image.new("RGB", (3, 2), (index, 0, 0)).save(output, format="PNG")
+        images.append(output.getvalue())
+    session = tmp_path / "canonical"
+    session.mkdir()
+    path = session / "transcript.jsonl"
+    message = {"role": "tool", "tool_call_id": "one-true-call", "status": "failed",
+               "metadata": {"opaque": {"signature": "unchanged"}},
+               "content": [{"type": "image", "source": {
+                   "type": "base64", "media_type": "image/png",
+                   "data": base64.b64encode(data).decode(),
+               }} for data in images]}
+    path.write_text(json.dumps(message) + "\n")
+    before = path.read_bytes()
+    provenance = {**original("one-true-call"),
+                  "expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
+    try:
+        plan = preview(path, owner="fixture", session_id="source", fence=fence)
+        operation = tmp_path / "candidate"
+        candidate = asyncio.run(build_candidate(
+            plan, operation, fence=fence, capability=store,
+            origin_for=lambda *_: provenance,
+            asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+        ))
+        assert path.read_bytes() == (operation / "original-0").read_bytes() == before
+        installed = json.loads((operation / "candidate.jsonl").read_bytes())
+        assert installed["metadata"]["opaque"] == message["metadata"]["opaque"]
+        assert installed["tool_call_id"] == "one-true-call" and installed["status"] == "failed"
+        refs = installed["metadata"][NAMESPACE]["refs"]
+        assert len(refs) == candidate.images == 12
+        assert all(ref["provenance"] == provenance for ref in refs)
+        assert [ref["sha256"] for ref in refs] == [hashlib.sha256(data).hexdigest() for data in images]
+        store.validate_published_group(refs, origin=provenance)
+        with pytest.raises(MediaRefusal):
+            store.resolve_ref(refs[0])
+        # Explicit synthetic host apply; only the actual installed checkpoint
+        # verifier, not resource policy or a publication list, grants ACK.
+        shutil.copyfile(operation / "candidate.jsonl", path)
+        receipt = acknowledge_candidate_checkpoint(
+            operation, session, session_id="source",
+            asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+        )
+        store.acknowledge_checkpoint(receipt)
+        for ref, data in zip(refs, images):
+            with store.resolve_ref(ref) as source:
+                assert source.read() == data
+        selection = preview(path, owner="fixture", session_id="source", fence=fence)
+        transfer = tmp_path / "transfer"
+        arguments = dict(fence=fence, source_store=store, target_store=target,
+                         target_session_id="target",
+                         asset_reader=lambda ref: target.resolve_ref(ref, committed=False))
+        if quota == 11:
+            with pytest.raises(Unsupported, match="exceeds host image count"):
+                asyncio.run(transfer_prefix(selection, transfer, **arguments))
+            assert list(target.journal()) == []
+            with pytest.raises(Unsupported, match="exceeds host image count"):
+                adopt_selected_media([installed], source_store=store, target_store=target,
+                                     target_session_id="target")
+            assert list(target.journal()) == []
+            return
+        asyncio.run(transfer_prefix(selection, transfer, **arguments))
+        transferred = json.loads((transfer / "candidate.jsonl").read_bytes())
+        copied_refs = transferred["metadata"][NAMESPACE]["refs"]
+        assert copied_refs == [{**ref, "session_id": "target"} for ref in refs]
+        with pytest.raises(MediaRefusal):
+            target.resolve_ref(copied_refs[0])
+        target_session = tmp_path / "target-canonical"
+        target_session.mkdir()
+        shutil.copyfile(transfer / "candidate.jsonl", target_session / "transcript.jsonl")
+        target.acknowledge_checkpoint(acknowledge_candidate_checkpoint(
+            transfer, target_session, session_id="target",
+            asset_reader=lambda ref: target.resolve_ref(ref, committed=False),
+        ))
+        for ref, data in zip(copied_refs, images):
+            with target.resolve_ref(ref) as source:
+                assert source.read() == data
+        verify_export(transfer / "portable")
+    finally:
+        target.close()
+        store.close()
+
+
+@pytest.mark.parametrize("policy", [
+    None, {}, object(), SimpleNamespace(),
+    *[SimpleNamespace(max_images=value) for value in
+      (True, False, 0, -1, 1.0, "2", float("inf"), float("nan"))],
+])
+def test_group_binding_refuses_missing_or_malformed_resource_policy(tmp_path, policy):
+    binding = CaptureGroupMediaOwner(
+        SimpleNamespace(policy=policy),
+        group_sources_for=lambda *_: pytest.fail("invalid policy must not enumerate source"),
+        staged_factory=Staged, origin_for=lambda _: original(),
+        checkpoint_receipt_for=lambda *_: pytest.fail("no checkpoint authority"),
+        new_asset_bytes_for=lambda _: 0, reader_ready=lambda _: True,
+    )
+    with pytest.raises(Unsupported, match="host policy|Host image count"):
+        binding.stage_image(io.BytesIO(png()), mime="image/png", origin=snapshot(png()))
+    manifest = tmp_path / "empty"
+    manifest.write_bytes(b"")
+    with pytest.raises(Unsupported, match="host policy|Host image count"):
+        binding.verify(manifest)
+
+
+def test_group_binding_finite_quota_refuses_overflow_without_publication(stores):
+    store, _ = stores
+    store.policy = MediaPolicy(max_images=1)
+    data = png()
+    selected = snapshot(data)
+    @contextmanager
+    def sources_for(*_):
+        def sources():
+            for index in range(2):
+                yield {"stream": io.BytesIO(data), "mime": "image/png",
+                       "origin": {**selected, "image_offset": index}}
+        yield sources()
+    binding = CaptureGroupMediaOwner(
+        store, group_sources_for=sources_for, staged_factory=Staged,
+        origin_for=lambda _: original(), checkpoint_receipt_for=lambda *_: None,
+        new_asset_bytes_for=lambda _: 0, reader_ready=lambda _: True,
+    )
+    with pytest.raises(Unsupported, match="exceeds host image count"):
+        binding.stage_image(io.BytesIO(data), mime="image/png", origin=selected)
+    assert not any(row.get("state") == "published" for row in store.journal())

@@ -27,6 +27,21 @@ from ._media_conversion_parser import CHUNK, Scanner, Span, Unsupported, copy_sp
 NAMESPACE = "experimental.media.v1"
 ADAPTER = "foundation.canonical-media-conversion.v1"
 _MARKER = re.compile(r"\[Session image ([0-9a-f]{64})\]\Z")
+_MISSING_LIMIT = object()
+
+
+def _image_limit(value):
+    """None is an absent optional quota, never an absent host policy."""
+    if value is not None and (type(value) is not int or value <= 0):
+        raise Unsupported("Host image count must be None or a positive integer")
+    return value
+
+
+def _host_image_limit(store):
+    policy = getattr(store, "policy", None)
+    if policy is None:
+        raise Unsupported("Media operation needs an explicit host policy object")
+    return _image_limit(getattr(policy, "max_images", _MISSING_LIMIT))
 
 
 class MediaCapability(Protocol):
@@ -417,7 +432,7 @@ def _namespace_patch(
 
 
 async def _stage_image_groups(scanner, fields, row, db, directory, capability, origin_for, journal, cancelled):
-    """Complete true-origin groups on disk; memory remains host-max-images bound."""
+    """Spool source facts on disk; F1 returns one origin group's refs in memory."""
     ingest_group = getattr(capability, "ingest_group_sync", None)
     if not callable(ingest_group):
         return False
@@ -505,10 +520,11 @@ async def _adopt_existing_groups(scanner, selected_records, db, adopt, target_id
     ):
         if cancelled():
             raise InterruptedError("Conversion cancelled before reference group adoption")
-        # This is reference metadata only; the actual host adopt method enforces
-        # its selected max_images and owner policy, not a pixel-sized allocation.
+        # Collection is disk-backed across the selection. F1's list API still
+        # materializes one origin group's metadata (not pixels), even when the
+        # host has no optional image-count quota.
         count = db.execute("select count(*) from transfer_refs where origin=?", (origin,)).fetchone()[0]
-        if count > limit:
+        if limit is not None and count > limit:
             raise Unsupported("Selected transfer group exceeds host image count")
         refs = [json.loads(raw) for (raw,) in db.execute(
             "select ref from transfer_refs where origin=? order by start", (origin,),
@@ -533,7 +549,7 @@ async def build_candidate(
     export_assets: bool = False,
     _adopt_ref: Callable[[list[dict]], Awaitable[list[dict]]] | None = None,
     _target_session_id: str | None = None,
-    _adopt_limit: int | None = None,
+    _adopt_limit: int | None | object = _MISSING_LIMIT,
 ) -> Candidate:
     """Build assets-first candidate + enumerable journal; NEVER replace source.
 
@@ -596,8 +612,7 @@ async def _build(
         db.execute("create index image_groups_row_origin on image_groups(row,origin,block)")
         db.execute("create table transfer_refs(row integer,start integer,end integer,origin blob,ref blob,adopted blob)")
         if adopt_ref is not None:
-            if type(adopt_limit) is not int or adopt_limit <= 0:
-                raise Unsupported("Selected transfer needs the target host image bound")
+            _image_limit(adopt_limit)
             with _open(Path(plan.source.path)) as source:
                 await _adopt_existing_groups(
                     Scanner(source), plan.selected_records, db, adopt_ref, target_session_id,
@@ -815,6 +830,7 @@ async def transfer_prefix(
     """
     if plan.inline_images:
         raise Unsupported("Externalize inline images before transferring reference ownership")
+    limit = _host_image_limit(target_store)
 
     async def adopt(refs):
         value = await target_store.adopt(refs, source_store)
@@ -827,7 +843,7 @@ async def transfer_prefix(
         plan, directory, fence=fence, capability=target_store,
         origin_for=lambda *_: {}, asset_reader=asset_reader, cancelled=cancelled,
         export_assets=True, _adopt_ref=adopt, _target_session_id=target_session_id,
-        _adopt_limit=getattr(getattr(target_store, "policy", None), "max_images", None),
+        _adopt_limit=limit,
     )
 
 
@@ -870,7 +886,10 @@ def adopt_selected_media(
             expiry = ref["provenance"]["expires_at"]
             if expiry is None or datetime.fromisoformat(expiry) > current:
                 groups.setdefault(_json(ref["provenance"]), []).append(ref)
+    limit = _host_image_limit(target_store) if groups else None
     for refs in groups.values():
+        if limit is not None and len(refs) > limit:
+            raise Unsupported("Selected transfer group exceeds host image count")
         expected = [{**deepcopy(ref), "session_id": target_session_id} for ref in refs]
         adopted = target_store.adopt_sync(deepcopy(refs), source_store)
         if not isinstance(adopted, list) or adopted != expected:

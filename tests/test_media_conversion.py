@@ -277,7 +277,8 @@ def test_json_string_chunk_boundaries():
     assert _SPECIAL.search(b"abcd\\ef").start() == 4
 
 
-def test_export_independent_and_adopted_prefix(tmp_path):
+@pytest.mark.parametrize("count_limit", [10, None])
+def test_export_independent_and_adopted_prefix(tmp_path, count_limit):
     path, plan = prepare(tmp_path, [
         {"role": "user", "content": [image(b"first")]},
         {"role": "user", "content": [image(b"last")]},
@@ -290,7 +291,7 @@ def test_export_independent_and_adopted_prefix(tmp_path):
     selected = preview(converted, owner="fixture-owner", session_id="fixture", fence=fence,
                        selected_records=1)
     class Target:
-        policy = SimpleNamespace(max_images=10)
+        policy = SimpleNamespace(max_images=count_limit)
         def __init__(self):
             self.values = []
             self.assets = {}
@@ -523,6 +524,7 @@ def test_sync_selected_helper_metadata_expiry_and_failure_no_mutation():
             assert check_expiry is False
             assert value == ref
     class Target:
+        policy = SimpleNamespace(max_images=None)
         calls = 0
         def adopt_sync(self, refs, source_store):
             self.calls += 1
@@ -571,6 +573,7 @@ def test_mutating_sync_callbacks_cannot_change_original_or_extend_ttl(phase, rai
                 if raises:
                     raise OSError("mutated then failed validation")
     class Target:
+        policy = SimpleNamespace(max_images=None)
         def adopt_sync(self, refs, source_store):
             refs[0]["session_id"] = "child"
             if phase == "adopt":
@@ -590,6 +593,23 @@ def test_mutating_sync_callbacks_cannot_change_original_or_extend_ttl(phase, rai
         result = adopt_selected_media([message], **kwargs)
         assert result[0]["metadata"][NAMESPACE]["refs"][0]["provenance"] == ref["provenance"]
     assert message == original
+
+
+@pytest.mark.parametrize("policy", [
+    None, {}, object(), SimpleNamespace(),
+    *[SimpleNamespace(max_images=value) for value in
+      (True, False, 0, -1, 1.0, "2", float("inf"), float("nan"))],
+])
+def test_transfer_refuses_missing_or_malformed_policy_before_operation(tmp_path, policy):
+    _, plan = prepare(tmp_path, [{"role": "user", "content": "no inferred authority"}])
+    target = SimpleNamespace(policy=policy)
+    with pytest.raises(Unsupported, match="host policy|Host image count"):
+        asyncio.run(transfer_prefix(
+            plan, tmp_path / "never-started", fence=fence, source_store=object(),
+            target_store=target, target_session_id="child",
+            asset_reader=lambda _: pytest.fail("no asset access"),
+        ))
+    assert not (tmp_path / "never-started").exists()
 
 
 def test_mutating_async_adoption_cannot_change_expiry(tmp_path):
