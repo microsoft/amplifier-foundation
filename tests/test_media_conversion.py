@@ -587,3 +587,32 @@ def test_bounded_installed_candidate_enumerator_final_recheck(tmp_path):
         output.write(b" ")
     with pytest.raises(Unsupported):
         next(refs)  # Exhaustion is mandatory before a checkpoint is bound.
+
+
+def test_group_transfer_collection_cancellation_does_not_scan_remaining_prefix(monkeypatch):
+    import sqlite3
+    from amplifier_foundation.session import media_conversion as conversion
+    db = sqlite3.connect(":memory:")
+    db.execute("create table transfer_refs(row,start,end,origin,ref,adopted)")
+    seen = 0
+    class Source:
+        def records(self):
+            yield object()
+    monkeypatch.setattr(conversion, "_message", lambda *_: {})
+    def refs(*_):
+        nonlocal seen
+        for index in range(200):
+            seen += 1
+            yield SimpleNamespace(start=index, end=index + 1), {"provenance": origin(0, index)}
+    monkeypatch.setattr(conversion, "_refs", refs)
+    async def forbidden(*_):
+        raise AssertionError("Cancelled collection must never adopt")
+    try:
+        with pytest.raises(InterruptedError, match="reference collection"):
+            asyncio.run(conversion._adopt_existing_groups(
+                Source(), 1, db, forbidden, "child", 1000, io.BytesIO(), lambda: seen > 0,
+            ))
+        assert seen == 1
+        assert db.execute("select count(*) from transfer_refs").fetchone()[0] == 0
+    finally:
+        db.close()
