@@ -51,6 +51,16 @@ def _decode(raw):
         raise UnsupportedTranscript("Invalid versioned transcript JSON") from None
 
 
+def _validate_body_header(value, generation):
+    """Validate JSON schema types, not Python's numeric-coercing dict equality."""
+    if (type(value) is not dict or type(value.get("v")) is not int
+            or value != {
+                "format": _FORMAT, "v": 2, "generation": generation,
+                "min_reader": ["committed-prefix-v2", "session-media-v1"],
+            }):
+        raise UnsupportedTranscript("Unsupported transcript body header")
+
+
 def _stamp(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
@@ -230,11 +240,7 @@ class CommittedTranscriptReader:
                 value = _decode(raw)
                 if header is None:
                     header = value
-                    if value != {
-                        "format": _FORMAT, "v": 2, "generation": prefix.generation,
-                        "min_reader": ["committed-prefix-v2", "session-media-v1"],
-                    }:
-                        raise UnsupportedTranscript("Unsupported transcript body header")
+                    _validate_body_header(value, prefix.generation)
                 else:
                     if (not isinstance(value, dict) or not isinstance(value.get("role"), str)
                             or not value["role"]):

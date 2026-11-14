@@ -7,13 +7,17 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from amplifier_foundation.session import transcript_source as s
 from amplifier_foundation.session import transcript_writer as w
-from amplifier_foundation.session.transcript_v2 import UnsupportedTranscript
+from amplifier_foundation.session.transcript_v2 import (
+    CommittedTranscriptReader,
+    UnsupportedTranscript,
+)
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX source qualification")
 
@@ -207,6 +211,42 @@ def test_cold_open_hash_semantic_and_bound_closure(tmp_path, damage):
             pytest.fail("exposed an invalid source")
 
 
+@pytest.mark.parametrize("version", [b"2.0", b"2e0", b"true", b"false", b"null", b'"2"'])
+@pytest.mark.parametrize("entrypoint", ["reader", "source", "writer"])
+def test_noninteger_body_header_version_refuses_even_with_matching_witnesses(
+        tmp_path, version, entrypoint):
+    _, commit, _ = fixture(tmp_path, [{"role": "user", "content": "preserved"}])
+    root = tmp_path / "transcript.v2"
+    body = root / commit.body
+    header, rows = body.read_bytes().split(b"\n", 1)
+    assert b'"v":2' in header
+    raw = header.replace(b'"v":2', b'"v":' + version) + b"\n" + rows
+    body.write_bytes(raw)
+    selected = replace(commit, committed_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    descriptor = w._descriptor(selected)
+    # Digest/size/current/publication all agree: refusal must be the header
+    # schema, not a stale caller witness or mismatch in the operation journal.
+    (root / "current.json").write_bytes(descriptor)
+    operation = root / "operations" / commit.operation_id
+    (operation / "result.json").write_bytes(descriptor)
+    (operation / "published.json").write_bytes(descriptor)
+    before = {str(path.relative_to(tmp_path)): path.read_bytes()
+              for path in tmp_path.rglob("*") if path.is_file()}
+    with pytest.raises(UnsupportedTranscript, match="header"):
+        if entrypoint == "reader":
+            CommittedTranscriptReader(tmp_path).verify()
+        elif entrypoint == "source":
+            with s.open_committed_source(tmp_path, expected=selected):
+                pytest.fail("exposed a source with noninteger header version")
+        else:
+            # Cold owner, not a previously verified warm prefix state.
+            w.TranscriptWriter(tmp_path, fence=fence).append(
+                [{"role": "assistant", "content": "must-not-append"}],
+                expected=selected, operation_id="refused", admit=lambda: None)
+    assert {str(path.relative_to(tmp_path)): path.read_bytes()
+            for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_empty_initialized_source_and_expected_witness(tmp_path):
     _, commit, _ = fixture(tmp_path, [])
     with s.open_committed_source(tmp_path, expected=commit) as source:
@@ -214,7 +254,6 @@ def test_empty_initialized_source_and_expected_witness(tmp_path):
         assert source.recent(10).messages == []
         with pytest.raises(IndexError):
             source.message_range(0)
-    from dataclasses import replace
     with pytest.raises(UnsupportedTranscript):
         with s.open_committed_source(tmp_path, expected=replace(commit, sequence=999)):
             pytest.fail("accepted wrong witness")
