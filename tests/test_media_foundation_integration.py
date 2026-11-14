@@ -9,8 +9,8 @@ import shutil
 import tracemalloc
 from contextlib import contextmanager
 
-from amplifier_core import AmplifierSession, ToolResult
-from amplifier_core.message_models import ChatRequest, ImageBlock, Message
+from amplifier_core import AmplifierSession, HookResult, ToolResult
+from amplifier_core.message_models import ChatRequest, ImageBlock, Message, ToolSpec
 from PIL import Image
 import pytest
 
@@ -29,6 +29,7 @@ from amplifier_foundation.session.media_conversion import (
     adopt_selected_media, build_candidate, preview,
 )
 from amplifier_foundation.session.media_provider import MediaPreparedProvider
+from amplifier_foundation.session.media_hook_bridge import install_media_hook_bridge
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX candidate graph")
 
@@ -51,6 +52,168 @@ def ack(store, path, rows):
         path, session_id=store.session_id, expected_messages=rows
     )
     store.acknowledge_checkpoint(receipt)
+
+
+class _JointGraphLoader:
+    """Fixed Core fixture, not a claim about an arbitrary host/plugin graph."""
+
+    def __init__(self, observer):
+        self.queue, self.observer = [], observer
+
+    async def load(self, module_id, config, *, source_hint=None, coordinator=None):
+        async def mount(current):
+            if module_id == "joint-loop":
+                await current.mount("orchestrator", object())
+            elif module_id == "joint-context":
+                await current.mount("context", object())
+            elif module_id == "joint-hooks":
+                current.hooks.register("tool:post", self.observer, name="retained-observer")
+        return mount
+
+    def enqueue_on_session_ready(self, name, callback):
+        self.queue.append((name, callback))
+
+    def get_on_session_ready_queue(self):
+        return self.queue
+
+    def clear_on_session_ready_queue(self):
+        self.queue.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image_format", ["PNG", "JPEG"])
+@pytest.mark.parametrize("effective", ["retain", "outer-null", "callback-error"])
+async def test_public_graph_final_refs_checkpoint_private_request_joint(
+    tmp_path, image_format, effective,
+):
+    """Actual Core/public bridge and F1 join; host lifecycle is qualified separately."""
+    if not hasattr(ToolResult(success=True), "content"):
+        pytest.skip("Actual rich result/public bridge requires Core2")
+    from importlib.metadata import version
+    if version("amplifier-core") != "2.0.2":
+        pytest.skip("Participating fixture is qualified against exact Core2.0.2 ABI")
+    path = tmp_path / "joint"
+    path.mkdir()
+    store = new_store(path / "media", "joint")
+    session = AmplifierSession(
+        {"session": {"orchestrator": "joint-loop", "context": "joint-context"},
+         "hooks": [{"module": "joint-hooks"}]}, session_id="joint",
+    )
+    seen, late_seen = [], []
+
+    def observe(event_name, data):
+        seen.append(deepcopy(data["result"]["output"][MEDIA_NAMESPACE]["refs"]))
+        return HookResult()
+
+    def terminal(event_name, data):
+        late_seen.append(deepcopy(data["result"]))
+        if effective == "callback-error":
+            raise RuntimeError("Participating image policy failed")
+        if effective == "outer-null":
+            return HookResult(action="modify", data={"result": None})
+        return HookResult()
+
+    session.coordinator.loader = _JointGraphLoader(observe)
+    cap = bind_session_media(session.coordinator, store=store, enabled=True)
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="foundation.public-core2-checkpoint-private-joint",
+        participants=("joint-loop", "joint-context", "joint-hooks", "host.terminal"),
+    )
+    buffer = io.BytesIO()
+    Image.new("RGB", (2, 2), "purple").save(buffer, format=image_format)
+    data = buffer.getvalue()
+    encoded = base64.b64encode(data).decode()
+    origin = {"kind": "tool", "session_id": "joint", "id": "image-call"}
+    wrapper = None
+    try:
+        await session.initialize()
+        graph.participant("host.terminal").hooks.register(
+            "tool:post", terminal, name="outer-policy", priority=900,
+        )
+        receipt = graph.seal()
+        rich = ToolResult(success=True, output={"useful": "original image"}, content=[
+            ImageBlock(source={"type": "base64", "media_type": f"image/{image_format.lower()}",
+                               "data": encoded}),
+        ])
+        staged = await store.ingest(rich, source_format="core-tool-result", origin=origin, policy=None)
+        refs = staged["staged_refs"]
+        settled = await bridge({"tool_name": "image", "tool_call_id": "image-call",
+                                "result": staged["value"].model_dump(mode="json")})
+        assert bridge.validate_receipt(receipt)
+        assert seen == [refs] and len(late_seen) == 1
+        assert encoded not in json.dumps(late_seen)
+        if effective != "retain":
+            assert settled["result"] is None
+            assert settled["complete"] is (effective == "outer-null")
+            await store.publish(refs, origin=origin, disposition="drop")
+            assert not (path / "transcript.jsonl").exists()
+            return
+
+        assert settled["complete"] is True
+        final_refs = settled["result"]["output"][MEDIA_NAMESPACE]["refs"]
+        assert final_refs == refs
+        await store.publish(final_refs, origin=origin, disposition="retain")
+        rows = [{"role": "tool", "tool_call_id": "image-call",
+                 "content": settled["result"]["content"],
+                 "metadata": {MEDIA_NAMESPACE: {"refs": final_refs}}}]
+        history = SessionHistoryStore(path)
+        history.save(rows, {"session_id": "joint"}, sanitizer=sanitize_message)
+        saved = history.load_messages()
+        changed = deepcopy(saved)
+        changed[0]["metadata"][MEDIA_NAMESPACE]["refs"][0]["sha256"] = "0" * 64
+        with pytest.raises(ValueError):
+            acknowledge_legacy_checkpoint(path, session_id="joint", expected_messages=changed)
+        checkpoint = acknowledge_legacy_checkpoint(path, session_id="joint", expected_messages=saved)
+        assert list(verified_checkpoint_refs(checkpoint)) == final_refs
+        store.acknowledge_checkpoint(checkpoint)
+        canonical = ChatRequest(model="fixture", messages=[Message(**row) for row in saved],
+                                tools=[ToolSpec(name="inspect", parameters={"type": "object"})])
+        original = canonical.model_dump_json()
+        options = {"extended_thinking": True}
+
+        class PrivateProvider:
+            counted = None
+            sent = None
+
+            def get_media_request_support(self, *, model, request_options=None):
+                return {"v": 1, "positions": ["tool"], "mime_types": ["image/png", "image/jpeg"]}
+
+            def request_budget(self, request, *, request_options=None):
+                cap.validate(request, purpose="count", request_options=request_options)
+                self.counted = request
+                assert request.messages[0].metadata[MEDIA_NAMESPACE]["refs"] == final_refs
+                image = next(b for b in request.messages[0].content if isinstance(b, ImageBlock))
+                assert base64.b64decode(image.source["data"]) == data
+                return {"estimated_input_tokens": 10, "input_limit_tokens": 100,
+                        "context_token_budget": 100}
+
+            async def complete(self, request, **kwargs):
+                cap.validate(request, purpose="transport", request_options=kwargs)
+                assert request is self.counted and kwargs == options
+                self.sent = request
+                return "qualified-fixture"
+
+        provider = PrivateProvider()
+        wrapper = MediaPreparedProvider(provider, cap, provider_identity={
+            "provider": "synthetic", "account": "fixture", "generation": "joint",
+        })
+        await wrapper.request_budget(canonical, request_options=options)
+        canonical.messages[0].metadata[MEDIA_NAMESPACE]["refs"][0]["sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="changed before dispatch"):
+            await wrapper.complete(canonical, **options)
+        assert provider.sent is None and len(seen) == len(late_seen) == 1
+        canonical.messages[0].metadata[MEDIA_NAMESPACE]["refs"] = deepcopy(final_refs)
+        await wrapper.request_budget(canonical, request_options=options)
+        assert await wrapper.complete(canonical, **options) == "qualified-fixture"
+        assert provider.sent.messages == []  # private buffers released after dispatch
+        assert canonical.model_dump_json() == original and encoded not in original
+        assert encoded.encode() not in (path / "transcript.jsonl").read_bytes()
+    finally:
+        if wrapper is not None:
+            await wrapper.aclose()
+        await session.cleanup()
+        store.close()
 
 
 @pytest.mark.asyncio
