@@ -74,11 +74,50 @@ Tool output carrier: `output["experimental.media.v1"] = {"refs": [...]}`.
 Canonical message carrier: `metadata["experimental.media.v1"] = {"refs": [...]}`.
 Do not put references in ImageBlock.source or parse strings to discover them.
 
-`SessionMediaStore(root, session_id, *, policy, checkpoint_verifier=None,
+`SessionMediaStore(root, session_id, *, policy=None, checkpoint_verifier=None,
 origin_resolver=None, policy_verifier=None, nested_verifier=None, read_only=False,
 source_read_verifier=None, request_only_verifier=None)` uses the
-explicit private media root, never cwd. `MediaPolicy(max_bytes, max_pixels,
-max_images, retention="durable", ttl_seconds=None)` is frozen host policy.
+explicit private media root, never cwd. `MediaPolicy(max_bytes=None, max_pixels=None,
+max_images=None, retention="durable", ttl_seconds=None)` is frozen host policy.
+Existing positional numeric construction remains supported. `None` means no
+optional quota at this layer, **not** unlimited resource use or delivery authority.
+There is no package-default image count, capture quota, expiry or storage reserve.
+An omitted store policy selects this shared default; it does not disable images.
+Producer limits must be positive integers and may only narrow: an unbounded host
+quota can be narrowed to a finite integer, never the reverse. Explicit producer
+`None`, booleans, nonpositive values and TTL overrides refuse.
+
+Host-only `media_policy_for_root(existing_private_root, *, host_limits=None,
+provider_limits=None, retention="durable", ttl_seconds=None)` performs the same
+no-follow/private-owner directory validation without creating a path or taking
+writer ownership. It returns a `MediaPolicy` whose optional positive integer
+`max_bytes`, `max_pixels`, `max_images` facts are the minimum of applicable
+explicit limits; absent/None facts remain absent. Root validation is not root
+authorization. Limits must be actual trusted owner facts in compatible units:
+original-image bytes/pixels and the selected origin's complete group count.
+A provider's base64/wire-body or whole-request limit is not automatically an
+original-image/per-origin quota. Provider owners must enforce final whole-request
+limits on the exact selected projection; missing facts are never guessed.
+
+For each staged image, the store freezes a finite operation byte ceiling from
+the actual held destination's `fstatvfs().f_bavail * f_frsize`, any finite process
+`RLIMIT_FSIZE`, and any tighter byte quota. Reads remain chunk-bounded, cannot
+exceed requested size, and stop before writing an overflow probe. Capacity growth
+does not replenish the operation ceiling; capacity shrinkage is checked before
+chunk writes. Unavailable, malformed or exhausted resource bounds refuse rather
+than substituting an arbitrary byte cap. These are advisory resource checks,
+not space reservations: ordinary allocation/write/fsync errors still refuse,
+and successful staging does not promise space for publication/snapshot copies.
+
+Decoder dimensions are locally bounded by the actual installed Pillow
+`Image.MAX_IMAGE_PIXELS` threshold and any tighter explicit pixel limit.
+Foundation does not modify Pillow's process-global threshold or set it to None.
+If that threshold is disabled and no finite explicit pixel limit exists, decoding
+refuses, not unlimited fallback. Metadata/ref readers remain decoder-independent.
+These I/O and decoder boundaries are not a hard process-memory reservation;
+private provider encoding can expand bytes and the provider/host retains its
+real request/resource admission checks. Exact original bytes, provenance,
+request-only policy, original expiry and canonical-checkpoint rules are unchanged.
 The store holds an exclusive POSIX lifetime writer lock; close abandoned session
 stores before rebinding. Text/ref readers import without Pillow or POSIX support;
 unqualified platforms refuse opening the durable store rather than claim parity.
@@ -110,8 +149,8 @@ component does not delete orphan assets or authorize retention cleanup.
 Host-only `ingest_sync` and `publish_sync` have the same arguments/results as the
 async methods; they do not run an event loop and do not add capability operations.
 Host-only `ingest_group_sync(binary_sources, *, origin, policy)` accepts the
-complete ordered source iterable for one real original event/call, bounds it by
-the host's max_images, and freezes one exact staged ref set. It returns
+complete finite ordered source iterable for one real original event/call, applies
+any explicit max_images quota, and freezes one exact staged ref set. It returns
 `{value: [refs], staged_refs: [refs]}`. Do not synthesize per-image operation IDs
 or sequentially replace one origin's acceptance. Whole-group identical retries
 reconcile; order/content changes refuse. Publication still uses the final set.
@@ -167,7 +206,7 @@ Its dispatch-owned ledger is execution-bound, not a model-supplied declaration.
 inspection for selected current/recovery history. Staged entries refuse.
 `validate_published_group(refs, *, origin)` verifies an exact ordered **final
 retained publication**, not merely ownership of each member. Supply a list
-bounded by the host's `max_images`, plus explicit `{kind, session_id, id}` or
+subject to any explicit host `max_images`, plus `{kind, session_id, id}` or
 complete original provenance. It returns `{valid: True, ref_count: int}` or raises
 `MediaRefusal`. Empty groups (including all-redacted retain results), truncation,
 duplication, reordering, substituted refs, altered

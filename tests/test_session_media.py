@@ -9,6 +9,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -16,7 +17,7 @@ from amplifier_core import ToolResult
 from amplifier_core.message_models import ChatRequest, Message, ImageBlock, TextBlock
 from amplifier_foundation.session.media import (
     MEDIA_NAMESPACE, MediaPolicy, MediaRefusal, SessionMediaStore,
-    bind_session_media, validate_blob_ref,
+    bind_session_media, media_policy_for_root, validate_blob_ref,
 )
 
 
@@ -1138,6 +1139,152 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
                 target._publish_adopted([dropped])
         finally:
             target.close()
+
+    async def test_default_resource_policy_group_save_and_resume_without_count_or_ttl_quota(self):
+        from amplifier_foundation.session.checkpoint import (
+            acknowledge_legacy_checkpoint, verified_checkpoint_refs,
+        )
+        self.store.close()
+        self.store = SessionMediaStore(self.root, "session1",
+                                       checkpoint_verifier=verified_checkpoint_refs)
+        self.assertEqual(self.store.policy, MediaPolicy())
+        self.assertIsNone(self.store.policy.max_images)
+        self.assertIsNone(self.store.policy.ttl_seconds)
+        sources = [image_bytes(color=(index, 0, 0)) for index in range(12)]
+        result = self.store.ingest_group_sync(sources, origin=self.origin, policy=None)
+        refs = result["value"]
+        self.assertEqual(len(refs), 12)
+        self.assertEqual([ref["sha256"] for ref in refs],
+                         [hashlib.sha256(data).hexdigest() for data in sources])
+        self.assertTrue(all(ref["provenance"]["expires_at"] is None for ref in refs))
+        self.store.publish_sync(refs, origin=self.origin, disposition="retain")
+        self.assertEqual(self.store.validate_published_group(refs, origin=self.origin),
+                         {"valid": True, "ref_count": 12})
+        messages = [{"role": "tool", "content": "group",
+                     "metadata": {MEDIA_NAMESPACE: {"refs": refs}}}]
+        canonical = Path(self.directory.name) / "default-canonical"
+        canonical.mkdir()
+        (canonical / "transcript.jsonl").write_text(json.dumps(messages[0]) + "\n")
+        self.store.acknowledge_checkpoint(acknowledge_legacy_checkpoint(
+            canonical, session_id="session1", expected_messages=messages))
+        with self.store.resolve_ref(refs[-1]) as pixels:
+            self.assertEqual(pixels.read(), sources[-1])
+        self.store.close()
+        self.store = SessionMediaStore(self.root, "session1",
+                                       checkpoint_verifier=verified_checkpoint_refs)
+        with self.assertRaises(MediaRefusal):
+            self.store.resolve_ref(refs[-1])
+        self.store.acknowledge_checkpoint(acknowledge_legacy_checkpoint(
+            canonical, session_id="session1", expected_messages=messages))
+        with self.store.resolve_ref(refs[-1]) as pixels:
+            self.assertEqual(pixels.read(), sources[-1])
+        self.assertIsNone(refs[-1]["provenance"]["expires_at"])
+
+    async def test_policy_adapter_uses_existing_private_root_and_exact_trusted_limits(self):
+        policy = media_policy_for_root(self.root)
+        self.assertEqual(policy, MediaPolicy())
+        policy = media_policy_for_root(
+            self.root, host_limits={"max_bytes": 1000, "max_images": None},
+            provider_limits={"max_bytes": 500, "max_pixels": 100},
+        )
+        self.assertEqual(policy, MediaPolicy(max_bytes=500, max_pixels=100))
+        self.assertEqual(policy.restrict({"max_images": 2}).max_images, 2)
+        self.assertIsNone(policy.max_images)
+        for source in ({"max_bytes": True}, {"max_images": 0}, {"max_pixels": -1},
+                       {"capture_count": 8}):
+            with self.subTest(source=source), self.assertRaises(MediaRefusal):
+                media_policy_for_root(self.root, provider_limits=source)
+        missing = self.root / "not-created"
+        with self.assertRaises(FileNotFoundError):
+            media_policy_for_root(missing)
+        self.assertFalse(missing.exists())
+        alias = Path(self.directory.name) / "symlink"
+        alias.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(OSError):
+            media_policy_for_root(alias)
+        for quotas in (MediaPolicy(100, 100, 2), MediaPolicy()):
+            for expansion in ({"max_bytes": None}, {"max_pixels": False},
+                              {"max_images": 0}, {"ttl_seconds": 60}):
+                with self.subTest(expansion=expansion), self.assertRaises(MediaRefusal):
+                    quotas.restrict(expansion)
+        with self.assertRaises(MediaRefusal):
+            MediaPolicy(100, 100, 2).restrict({"max_images": 3})
+        self.assertEqual(MediaPolicy().restrict({"max_bytes": 80}).max_bytes, 80)
+
+    async def test_resource_capacity_bounds_default_stream_and_never_replenishes(self):
+        self.store.policy = MediaPolicy()
+        class Endless:
+            def __init__(self):
+                self.reads = []
+            def read(self, n):
+                self.reads.append(n)
+                return b"x" * min(n, 16)
+        source = Endless()
+        # The real filesystem capacity is frozen for the operation, not a quota
+        # invented by the package. Later additional space must not extend it.
+        with patch("amplifier_foundation.session.media.os.fstatvfs",
+                   side_effect=[SimpleNamespace(f_bavail=1, f_frsize=32),
+                                SimpleNamespace(f_bavail=1000, f_frsize=32),
+                                SimpleNamespace(f_bavail=1000, f_frsize=32)]):
+            with self.assertRaises(MediaRefusal):
+                await self.stage(value=source)
+        self.assertEqual(source.reads, [33, 17, 1])
+        self.assertFalse(any(row.get("checkpoint") for row in self.store.journal()))
+        for capacity in (SimpleNamespace(f_bavail=0, f_frsize=4096),
+                         SimpleNamespace(f_bavail=-1, f_frsize=4096),
+                         SimpleNamespace(f_bavail=1, f_frsize=0)):
+            source = Endless()
+            with patch("amplifier_foundation.session.media.os.fstatvfs",
+                       return_value=capacity), self.assertRaises(MediaRefusal):
+                await self.stage(value=source)
+            self.assertEqual(source.reads, [])
+
+    async def test_default_decoder_guard_is_real_finite_and_not_modified(self):
+        self.store.policy = MediaPolicy()
+        original = Image.MAX_IMAGE_PIXELS
+        with patch.object(Image, "MAX_IMAGE_PIXELS", None):
+            with self.assertRaises(MediaRefusal):
+                await self.stage()
+            # An explicit real finite host bound is sufficient when Pillow's
+            # process setting has been disabled; local dimension checks remain.
+            ref = self.store.ingest_sync(self.data, source_format="image-bytes",
+                origin={"kind": "host", "session_id": "session1", "id": "explicit-pixels"},
+                policy={"max_pixels": 6})["value"]
+            self.assertEqual((ref["width"], ref["height"]), (3, 2))
+            with self.assertRaises(MediaRefusal):
+                self.store.ingest_sync(self.data, source_format="image-bytes",
+                    origin={"kind": "host", "session_id": "session1", "id": "too-many-pixels"},
+                    policy={"max_pixels": 5})
+            self.assertIsNone(Image.MAX_IMAGE_PIXELS)
+        self.assertEqual(Image.MAX_IMAGE_PIXELS, original)
+        with patch.object(Image, "MAX_IMAGE_PIXELS", 5):
+            with self.assertRaises(MediaRefusal):
+                await self.stage()
+            self.assertEqual(Image.MAX_IMAGE_PIXELS, 5)
+
+    async def test_default_policy_request_only_and_original_expiry_remain_enforced(self):
+        from datetime import datetime as RealDatetime, timedelta, timezone
+        self.store.policy = MediaPolicy(retention="request-only")
+        ref = await self.stage()
+        self.store.publish_sync([ref], origin=self.origin, disposition="retain")
+        with self.assertRaises(MediaRefusal):
+            self.store.acknowledge_checkpoint({"refs": [ref]})
+        cutoff = RealDatetime.now(timezone.utc) + timedelta(seconds=10)
+        self.store.policy = MediaPolicy()
+        origin = {"kind": "host", "session_id": "session1", "id": "original-ttl",
+                  "created_at": (cutoff - timedelta(minutes=1)).isoformat(),
+                  "expires_at": cutoff.isoformat()}
+        ref = await self.stage(origin=origin)
+        await self.commit(ref, origin=origin)
+        class Clock(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cutoff
+        with patch("amplifier_foundation.session.media.datetime", Clock):
+            with self.assertRaises(MediaRefusal) as expired:
+                self.store.resolve_ref(ref)
+            self.assertEqual(expired.exception.code, "expired")
+        self.assertEqual(ref["provenance"], origin)
 
 
 if __name__ == "__main__":

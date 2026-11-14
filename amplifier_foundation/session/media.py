@@ -110,16 +110,17 @@ def validate_blob_ref(ref: Any) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class MediaPolicy:
-    """Host-selected limits; no package-level observation quotas."""
-    max_bytes: int
-    max_pixels: int
-    max_images: int
+    """Optional host quotas; decoder/filesystem safety is enforced separately."""
+    max_bytes: int | None = None
+    max_pixels: int | None = None
+    max_images: int | None = None
     retention: str = "durable"
     ttl_seconds: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("max_bytes", "max_pixels", "max_images"):
-            _positive(getattr(self, name), name)
+            if getattr(self, name) is not None:
+                _positive(getattr(self, name), name)
         if self.retention not in {"durable", "request-only", "drop"}:
             raise MediaRefusal("unsupported host retention policy")
         if self.ttl_seconds is not None and (
@@ -140,7 +141,7 @@ class MediaPolicy:
         for name in ("max_bytes", "max_pixels", "max_images"):
             if name in policy:
                 value = _positive(policy[name], name)
-                if value > getattr(self, name):
+                if getattr(self, name) is not None and value > getattr(self, name):
                     raise MediaRefusal("producer cannot expand host limits")
                 changes[name] = value
         rank = {"drop": 0, "request-only": 1, "durable": 2}
@@ -150,6 +151,63 @@ class MediaPolicy:
                 raise MediaRefusal("producer cannot expand retention")
             changes["retention"] = value
         return replace(self, **changes)
+
+
+def _resource_byte_limit(fd: int, policy: MediaPolicy) -> int:
+    """Real capacity of the held destination, not a package observation quota."""
+    try:
+        space = os.fstatvfs(fd)
+        block_size = _positive(space.f_frsize, "filesystem fragment size")
+        if type(space.f_bavail) is not int or space.f_bavail < 0:
+            raise MediaRefusal("filesystem available capacity is invalid")
+        bounds = [space.f_bavail * block_size]
+        try:
+            import resource
+        except ImportError:
+            pass  # The filesystem still supplies a finite resource boundary.
+        else:
+            soft, _ = resource.getrlimit(resource.RLIMIT_FSIZE)
+            if soft != resource.RLIM_INFINITY:
+                if type(soft) is not int or soft < 0:
+                    raise MediaRefusal("process file-size resource limit is invalid")
+                bounds.append(soft)
+        if policy.max_bytes is not None:
+            bounds.append(policy.max_bytes)
+        return _positive(min(bounds), "available image storage bytes")
+    except OSError as exc:
+        raise MediaRefusal("cannot establish filesystem media resource bound") from exc
+
+
+def media_policy_for_root(
+    root: Path | str, *, host_limits: Mapping | None = None,
+    provider_limits: Mapping | None = None, retention: str = "durable",
+    ttl_seconds: float | None = None,
+) -> MediaPolicy:
+    """Adapt explicit trusted limits; never invent a count or expiry default.
+
+    ``root`` must already be an owner-private directory. This read-only check
+    confers no filesystem authority; every store independently opens its own
+    explicit root and rechecks destination capacity for every image. Provider
+    limits are optional facts supplied by their actual host/provider owner.
+    """
+    limits: dict[str, int | None] = dict.fromkeys(("max_bytes", "max_pixels", "max_images"))
+    for source in (host_limits, provider_limits):
+        if source is None:
+            continue
+        if not isinstance(source, Mapping) or set(source) - set(limits):
+            raise MediaRefusal("unknown host/provider media limits")
+        for name, value in source.items():
+            if value is None:
+                continue
+            value = _positive(value, name)
+            limits[name] = value if limits[name] is None else min(limits[name], value)
+    policy = MediaPolicy(**limits, retention=retention, ttl_seconds=ttl_seconds)
+    fd = _root_descriptor(Path(root), create=False)
+    try:
+        _resource_byte_limit(fd, policy)
+    finally:
+        os.close(fd)
+    return policy
 
 
 def _private_file(fd: int) -> os.stat_result:
@@ -230,12 +288,22 @@ def _decode_image(stream: BinaryIO, policy: MediaPolicy) -> tuple[str, int, int]
     except ImportError as exc:
         raise MediaRefusal("image decoder unavailable; install the media extra") from exc
     try:
+        # Pillow's installed bomb threshold is a decoder constraint, not a host
+        # observation quota. Never turn a disabled global threshold into an
+        # unlimited default, and never modify Pillow's process-global setting.
+        decoder_pixels = Image.MAX_IMAGE_PIXELS
+        if decoder_pixels is not None:
+            decoder_pixels = _positive(decoder_pixels, "Pillow pixel safety threshold")
+        bounds = [n for n in (decoder_pixels, policy.max_pixels) if n is not None]
+        if not bounds:
+            raise MediaRefusal("no finite image decoder pixel safety bound")
+        pixel_limit = min(bounds)
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             image = Image.open(stream)
             width, height = image.size
-            if width * height > policy.max_pixels:
-                raise MediaRefusal("image exceeds host pixel limit")
+            if width * height > pixel_limit:
+                raise MediaRefusal("image exceeds decoder or host pixel limit")
             if image.format not in {"PNG", "JPEG"} or getattr(image, "n_frames", 1) != 1:
                 raise MediaRefusal("only static PNG/JPEG images are supported")
             mime = "image/png" if image.format == "PNG" else "image/jpeg"
@@ -253,7 +321,7 @@ def _decode_image(stream: BinaryIO, policy: MediaPolicy) -> tuple[str, int, int]
 class SessionMediaStore:
     """Explicit host-owned store. Never inherit a parent's live instance."""
 
-    def __init__(self, root: Path | str, session_id: str, *, policy: MediaPolicy,
+    def __init__(self, root: Path | str, session_id: str, *, policy: MediaPolicy | None = None,
                  checkpoint_verifier: Callable[[Any], Any] | None = None,
                  origin_resolver: Callable[[], Any] | None = None,
                  policy_verifier: Callable[..., Any] | None = None,
@@ -262,7 +330,9 @@ class SessionMediaStore:
                  source_read_verifier: Callable[..., Any] | None = None,
                  request_only_verifier: Callable[..., Any] | None = None) -> None:
         self.session_id = _session(session_id)
-        self.policy, self.root = policy, Path(root)
+        if policy is not None and not isinstance(policy, MediaPolicy):
+            raise MediaRefusal("store policy must be a MediaPolicy or None")
+        self.policy, self.root = policy if policy is not None else MediaPolicy(), Path(root)
         self.checkpoint_verifier, self.origin_resolver = checkpoint_verifier, origin_resolver
         self.policy_verifier, self.nested_verifier = policy_verifier, nested_verifier
         self.read_only = read_only
@@ -388,15 +458,21 @@ class SessionMediaStore:
                      0o600, dir_fd=self._dirs["staging"])
         sha, length = hashlib.sha256(), 0
         with os.fdopen(fd, "w+b") as target:
+            byte_limit = _resource_byte_limit(target.fileno(), policy)
             while True:
-                chunk = stream.read(min(_CHUNK, policy.max_bytes - length + 1))
+                read_size = min(_CHUNK, byte_limit - length + 1)
+                chunk = stream.read(read_size)
                 if not isinstance(chunk, bytes):
                     raise MediaRefusal("image stream returned non-binary data")
+                if len(chunk) > read_size:
+                    raise MediaRefusal("image stream exceeded requested read bound")
                 if not chunk:
                     break
                 length += len(chunk)
-                if length > policy.max_bytes:
-                    raise MediaRefusal("image exceeds host byte limit")
+                if length > byte_limit:
+                    raise MediaRefusal("image exceeds filesystem, process or host byte limit")
+                if len(chunk) > _resource_byte_limit(target.fileno(), policy):
+                    raise MediaRefusal("filesystem image capacity changed during staging")
                 target.write(chunk)
                 sha.update(chunk)
             if not length:
@@ -445,7 +521,7 @@ class SessionMediaStore:
                 normalized, refs = self._adapt_tool_result(value, provenance, selected)
             else:
                 raise MediaRefusal("unknown canonical media source format")
-            if len(refs) > selected.max_images:
+            if selected.max_images is not None and len(refs) > selected.max_images:
                 raise MediaRefusal("image count exceeds host limit")
             old = self._read(self._dirs["origins"], origin_key + ".json")
             if old and old["refs"] != refs and not (
@@ -474,7 +550,7 @@ class SessionMediaStore:
                 raise MediaRefusal("host policy forbids retaining image bytes")
             refs = []
             for value in values:
-                if len(refs) >= selected.max_images:
+                if selected.max_images is not None and len(refs) >= selected.max_images:
                     raise MediaRefusal("image group exceeds host image count limit")
                 refs.append(self._stage(value, provenance, selected))
             previous = self._read(self._dirs["origins"], origin_key + ".json")
@@ -508,7 +584,7 @@ class SessionMediaStore:
             if not isinstance(block, ImageBlock):
                 content.append(block)
                 continue
-            if len(refs) >= policy.max_images:
+            if policy.max_images is not None and len(refs) >= policy.max_images:
                 raise MediaRefusal("image count exceeds host limit")
             source = block.source
             if set(source) - {"type", "media_type", "data"} or source.get("type") != "base64":
@@ -586,7 +662,8 @@ class SessionMediaStore:
         selected-source guard through validate_published_ref.
         """
         self._check()
-        if not isinstance(refs, list) or not refs or len(refs) > self.policy.max_images:
+        if (not isinstance(refs, list) or not refs
+                or (self.policy.max_images is not None and len(refs) > self.policy.max_images)):
             raise MediaRefusal("invalid or over-limit published media group")
         if not isinstance(origin, Mapping) or set(origin) not in (
             {"kind", "session_id", "id"}, _ORIGIN_FIELDS
