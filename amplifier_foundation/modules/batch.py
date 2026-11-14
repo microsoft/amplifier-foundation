@@ -230,7 +230,8 @@ class DependencyBatch:
                 and getattr(activator, "_dependency_installation_allowed", True),
             )
             subprocess.run(
-                cmd, check=True, capture_output=True, text=True, env=environment
+                cmd, check=True, capture_output=True, text=True, env=environment,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         # Only successful whole-batch resolution establishes install evidence.
         for source, owner in self.sources.items():

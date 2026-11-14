@@ -442,7 +442,7 @@ def test_windows_git_actual_native_launch_body_is_inert_and_assigns_before_paylo
             calls.append("delete_attributes")
 
         def CreateProcessW(self, executable, command, pa, ta, inherit, flags, env, cwd, startup, output):
-            assert executable is env is cwd is None and inherit and flags == 0x80004
+            assert executable is env is cwd is None and inherit and flags == 0x08080004
             assert command.value == subprocess.list2cmdline(["git", "space argument"])
             assert startup._obj.startup.cb == C.sizeof(git._StartupEx)
             assert startup._obj.startup.flags == 0x100

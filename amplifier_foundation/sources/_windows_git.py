@@ -234,9 +234,9 @@ class _API:
             process = _Process()
             command = C.create_unicode_buffer(subprocess.list2cmdline(owner.args))
             self.check(k.CreateProcessW(
-                None, command, None, None, True, 0x80004, None, None,
+                None, command, None, None, True, 0x08080004, None, None,
                 C.byref(startup), C.byref(process),
-            ))  # EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED
+            ))  # EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
             owner.process = owner.own(process.process)
             owner.thread = owner.own(process.thread)
         finally:
