@@ -288,6 +288,7 @@ def fork_session_in_memory(
     *,
     turn: int | None = None,
     parent_id: str | None = None,
+    new_session_id: str | None = None,
     handle_orphaned_tools: str = "complete",
     media_adopter: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> ForkResult:
@@ -302,6 +303,8 @@ def fork_session_in_memory(
         messages: Source messages to fork from.
         turn: Turn to fork at (1-indexed). None = all turns (full copy).
         parent_id: Parent session ID for lineage tracking.
+        new_session_id: Optional target identity chosen before adoption. Hosts
+            reserve this exact target and must not rename it after refs are bound.
         handle_orphaned_tools: How to handle orphaned tool calls.
 
     Returns:
@@ -315,6 +318,14 @@ def fork_session_in_memory(
         >>> result = fork_session_in_memory(messages, turn=2)
         >>> await new_context.set_messages(result.messages)
     """
+    import re
+
+    if new_session_id is not None and (
+        not isinstance(new_session_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,220}", new_session_id)
+    ):
+        raise ValueError("Fork ID must be a safe session identifier")
+    session_id = new_session_id if new_session_id is not None else str(uuid.uuid4())
     max_turns = count_turns(messages)
 
     if turn is None:
@@ -323,7 +334,7 @@ def fork_session_in_memory(
     if max_turns == 0:
         # Empty conversation - return empty fork
         return ForkResult(
-            session_id=str(uuid.uuid4()),
+            session_id=session_id,
             session_dir=None,
             parent_id=parent_id or "unknown",
             forked_from_turn=0,
@@ -333,7 +344,6 @@ def fork_session_in_memory(
 
     # Slice messages
     sliced = slice_to_turn(messages, turn, handle_orphaned_tools=handle_orphaned_tools)
-    session_id = str(uuid.uuid4())
     if _has_media(sliced):
         sliced = _adopt_media(
             sliced, media_adopter, session_id=session_id, session_dir=None

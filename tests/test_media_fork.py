@@ -88,6 +88,32 @@ def test_memory_fork_requires_adoption_without_mutating_parent(rows):
     assert rows == before
 
 
+def test_memory_fork_custom_identity_is_bound_before_adoption(rows):
+    observed = []
+
+    def adopt(messages, *, session_id, session_dir):
+        observed.append(session_id)
+        return adopter(messages, session_id=session_id, session_dir=session_dir)
+
+    result = fork_session_in_memory(rows, turn=1, new_session_id="chosen.child-1",
+                                   media_adopter=adopt)
+    assert result.session_id == "chosen.child-1"
+    assert observed == ["chosen.child-1"]
+    assert result.messages[1]["metadata"][NS]["refs"][0]["session_id"] == result.session_id
+    assert fork_session_in_memory([], new_session_id="empty-child").session_id == "empty-child"
+
+
+@pytest.mark.parametrize("invalid", ["../escape", "", ".", "..", "/absolute", True])
+def test_custom_identity_refuses_before_slicing_or_callback(rows, invalid, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Invalid identity must refuse before slicing/adoption")
+
+    monkeypatch.setattr("amplifier_foundation.session.fork.slice_to_turn", forbidden)
+    with pytest.raises(ValueError, match="safe session identifier"):
+        fork_session_in_memory(rows, turn=1, new_session_id=invalid,
+                               media_adopter=forbidden)
+
+
 def test_only_selected_prefix_requires_closure(source, rows):
     rows[1]["metadata"].pop(NS)
     rows[3]["metadata"] = {NS: {"refs": [REF]}}
