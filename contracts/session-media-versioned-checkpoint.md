@@ -176,3 +176,41 @@ same-UID filesystem mutation, proof about every historical writer, or
 permission to migrate an old root. Real root/child/resume caller wiring,
 canonical context intent, media transport and installed composition require
 their own affected qualification.
+
+## Prepared serialized-candidate data lens
+
+`scan_serialized_refs(stream, *, prefix: CommittedPrefix, check)` is the shared
+bounded media scanner for the format owner's `PreparedTranscriptCandidate`.
+It consumes an exact header-bearing V2 snapshot: `prefix.sha256` and
+`committed_bytes` describe the raw header plus rows, not the prepared canonical
+rows-only rewrite digest. It requires exact physical EOF, unlike a committed
+receipt which ignores its preexisting uncommitted tail.
+
+This helper yields **data only**, not receipt, publication, admission, or source
+adoption authority. It is not a store `checkpoint_verifier`. The format owner
+must wrap it inside the actual issued prepared object's `open_verified()`,
+using that object's state-bound `candidate_prefix` and `check` guard. Exact
+issued-object membership, PID, lifetime, source ownership and revocation remain
+with that owner. Its preparation context must span write and typed ACK; report
+only after the preparation context also exits successfully. No duck refs query,
+raw prefix/digest tuple, or converter database can substitute for that binding.
+Use a method-local import from the writer to avoid a reverse top-level cycle.
+
+The helper checks complete selected hash/header/role/schema/count/final-LF
+semantics before exposing refs, repeats integrity verification after exhaustion,
+and checks the supplied guard around bounded I/O and before/after each yielded
+ref. Exhaustion after the last yield is mandatory. The caller owns the stream;
+the scanner does not close it and leaves its cursor unspecified.
+
+Prepared precommit envelope checks preserve F1's refs-only form: metadata absent
+or null and namespace absent mean no media. Other metadata must be an object;
+a present namespace must be a non-null object with required array `refs` and
+only optional `v`. If present, `v` must be exact integer 1. Unknown envelope keys
+refuse in this prepared path. Existing receipt envelope compatibility is not
+tightened: its prior unknown-key behavior remains unchanged. Both paths reuse
+the same bounded top-level ref extraction and unchanged PNG/JPEG ref validation;
+the outer owning session must match, while original provenance may differ.
+
+All reads are explicit and at most 64KiB; no message, metadata, refs array or huge
+scalar is decoded wholesale, and at most one <=64KiB ref is materialized. This
+scan is O(serialized history), not a warm O(1) append or final integration claim.
