@@ -203,6 +203,7 @@ def _validate_plan(plan):
     if type(value) is not dict or set(value) != set(CommittedPrefix.__dataclass_fields__):
         raise Unsupported("Invalid committed conversion selector")
     prefix = CommittedPrefix(**value)
+    _prefix_types(prefix)
     for name in ("sequence", "committed_bytes", "message_count"):
         if type(getattr(prefix, name)) is not int or getattr(prefix, name) < 0:
             raise Unsupported("Committed selector bounds must be exact integers")
@@ -219,6 +220,23 @@ def _validate_plan(plan):
             or plan.session_id != prefix.session_id or plan.records != prefix.message_count
             or plan.source != derived or plan.backups):
         raise Unsupported("Committed plan recovery/source facts differ from selected prefix")
+
+
+def _prefix_types(prefix):
+    from .transcript_v2 import CommittedPrefix
+    if type(prefix) is not CommittedPrefix:
+        raise Unsupported("Exact committed prefix type required")
+    for key in ("sequence", "committed_bytes", "message_count"):
+        if type(getattr(prefix, key)) is not int or getattr(prefix, key) < 0:
+            raise Unsupported("Committed prefix bounds must be exact integers")
+    for key in ("session_id", "generation", "operation_id"):
+        if type(getattr(prefix, key)) is not str or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,220}", getattr(prefix, key)
+        ):
+            raise Unsupported("Invalid committed source identity")
+    if (prefix.body != f"g-{prefix.generation}.jsonl" or type(prefix.sha256) is not str
+            or not re.fullmatch("[0-9a-f]{64}", prefix.sha256)):
+        raise Unsupported("Invalid committed prefix body/digest")
 
 
 def _saved_plan(directory):
@@ -432,6 +450,7 @@ def preview_committed(
     from .transcript_v2 import CommittedPrefix
     if type(expected) is not CommittedPrefix or not owner:
         raise Unsupported("Exact typed committed prefix and owner required")
+    _prefix_types(expected)
     if not isinstance(session_dir, Path) or not session_dir.is_absolute():
         raise Unsupported("Explicit canonical committed session directory required")
     if selected_records is not None and (
@@ -1370,6 +1389,8 @@ def candidate_facts(operation_dir: Path) -> dict:
                     "message_count": value["records"], "sha256": value["sha256"]}
         if value.get("committed_prefix") != expected:
             raise Unsupported("Candidate selector differs from preserved source plan")
+        from .transcript_v2 import CommittedPrefix
+        _prefix_types(CommittedPrefix(**value["committed_prefix"]))
     elif value.get("committed_prefix") is not None:
         raise Unsupported("Legacy candidate cannot carry a committed selector")
     return value
@@ -1391,6 +1412,8 @@ def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reade
         type(expected_source) is not CommittedPrefix or asdict(expected_source) != plan.committed_prefix
     ):
         raise Unsupported("Independently selected source differs from candidate operation")
+    if expected_source is not None:
+        _prefix_types(expected_source)
     encoded = facts.get("committed_prefix")
     if not isinstance(encoded, dict):
         raise Unsupported("Explicit committed-source candidate required")

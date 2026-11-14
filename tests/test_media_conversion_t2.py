@@ -249,6 +249,23 @@ def test_saved_candidate_selector_is_joined_to_preserved_source_plan(tmp_path):
                 pytest.fail('Forged selector must not open')
 
 
+@pytest.mark.parametrize("field,value", [("sequence", 2.0), ("message_count", True)])
+def test_candidate_selector_exact_types_not_numeric_equality(tmp_path, field, value):
+    with fixture(tmp_path) as (binding, store, fence):
+        binding.append([{'role': 'user', 'content': 'original'}], expected=binding.expected,
+                       operation_id='seed', admit=lambda: None)
+        plan = preview_committed(binding.directory, expected=binding.expected, owner='fixture', fence=fence)
+        build(plan, tmp_path / 'operation', store, fence)
+        path = tmp_path / 'operation/verified.json'
+        receipt = json.loads(path.read_bytes())
+        receipt['committed_prefix'][field] = value
+        path.write_text(json.dumps(receipt))
+        with pytest.raises(Unsupported, match='exact integers'):
+            with open_verified_candidate(tmp_path / 'operation', session_id='session',
+                                         asset_reader=store.resolve_ref, expected_source=binding.expected):
+                pytest.fail('Numeric coercion must not qualify an exact selector')
+
+
 def test_existing_array_refs_preserve_original_role_position(tmp_path):
     with fixture(tmp_path) as (binding, store, fence):
         ref = published(store)
