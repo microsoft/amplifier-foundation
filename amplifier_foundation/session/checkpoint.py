@@ -19,7 +19,7 @@ import hmac
 import json
 import os
 import stat
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import zip_longest
@@ -53,7 +53,8 @@ def _absolute(path: str | Path) -> Path:
 
 
 @contextmanager
-def _primary(session_dir: Path, *, writable: bool = False):
+def _primary(session_dir: Path, *, writable: bool = False,
+             _filename: str = "transcript.jsonl", _pending: bool = True):
     """Pin lexical ancestors and open the regular primary without following links."""
     if os.name != "posix":
         raise CheckpointRefused("Legacy checkpoint acknowledgement is POSIX-only")
@@ -69,15 +70,16 @@ def _primary(session_dir: Path, *, writable: bool = False):
             descriptors.append(directory)
         # An unresolved append can have a perfectly parseable complete-line tail.
         # Never fall through to primary or backup recovery for an acknowledgement.
-        try:
-            os.stat("transcript.jsonl.append-pending", dir_fd=directory,
-                    follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise CheckpointRefused("Unresolved legacy transcript append")
+        if _pending:
+            try:
+                os.stat("transcript.jsonl.append-pending", dir_fd=directory,
+                        follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise CheckpointRefused("Unresolved legacy transcript append")
         descriptor = os.open(
-            "transcript.jsonl",
+            _filename,
             (os.O_RDWR if writable else os.O_RDONLY) | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=directory,
         )
@@ -85,16 +87,17 @@ def _primary(session_dir: Path, *, writable: bool = False):
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise CheckpointRefused("Canonical transcript is not a regular file")
         yield stream, descriptors
-        try:
-            os.stat("transcript.jsonl.append-pending", dir_fd=directory,
-                    follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise CheckpointRefused("Unresolved legacy transcript append")
+        if _pending:
+            try:
+                os.stat("transcript.jsonl.append-pending", dir_fd=directory,
+                        follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise CheckpointRefused("Unresolved legacy transcript append")
         # Opening by a pinned directory is not enough: reject renamed/replaced
         # ancestors and leaf entries, not only changes to an old open inode.
-        if _stamp(os.stat("transcript.jsonl", dir_fd=directory,
+        if _stamp(os.stat(_filename, dir_fd=directory,
                           follow_symlinks=False)) != _stamp(os.fstat(stream.fileno())):
             raise CheckpointRefused("Canonical primary changed during acknowledgement")
         for index in range(1, len(descriptors)):
@@ -171,6 +174,8 @@ class LegacyCheckpointReceipt:
     _seal: object = field(repr=False)
     _attestation: str = field(repr=False)
     kind: str = field(default="legacy-checkpoint-backed-v1", init=False)
+    _operation_dir: Path | None = field(default=None, repr=False)
+    _asset_reader: Callable | None = field(default=None, repr=False, compare=False)
 
     def verify(self) -> dict[str, Any]:
         """Recheck the exact primary before using its reachability acknowledgement."""
@@ -209,6 +214,17 @@ class LegacyCheckpointReceipt:
         responsibility. This method never promotes nested/stringified carriers.
         """
         self.verify()
+        if self._operation_dir is not None:
+            from .media_conversion import iter_verified_candidate_refs
+
+            yield from iter_verified_candidate_refs(
+                self._operation_dir,
+                installed=self._session_dir / "transcript.jsonl",
+                session_id=self.session_id,
+                asset_reader=self._asset_reader,
+            )
+            self.verify()
+            return
         with _primary(self._session_dir) as (stream, _):
             if _stamp(os.fstat(stream.fileno())) != self._source_stamp:
                 raise CheckpointRefused("Canonical checkpoint source changed")
@@ -237,6 +253,8 @@ def _attest(receipt: LegacyCheckpointReceipt) -> str:
         receipt.kind, receipt.session_id, receipt.prefix_bytes,
         receipt.message_count, receipt.sha256, str(receipt._session_dir),
         receipt._source_stamp,
+        str(receipt._operation_dir) if receipt._operation_dir is not None else None,
+        id(receipt._asset_reader) if receipt._asset_reader is not None else None,
     ]
     return hmac.new(_KEY, _canonical(fields), hashlib.sha256).hexdigest()
 
@@ -285,6 +303,71 @@ def acknowledge_legacy_checkpoint(
             raise CheckpointRefused("Canonical checkpoint source changed during flush")
         receipt = LegacyCheckpointReceipt(
             session_id, before[2], count, digest.hexdigest(), path, before, _SEAL, ""
+        )
+        object.__setattr__(receipt, "_attestation", _attest(receipt))
+    return receipt
+
+
+def acknowledge_candidate_checkpoint(
+    operation_dir: str | Path, session_dir: str | Path, *,
+    session_id: str, asset_reader: Callable,
+) -> LegacyCheckpointReceipt:
+    """Bounded acknowledgement of an actually installed canonical v1 candidate.
+
+    This is the historical format owner's path, not an arbitrary hash/report
+    acknowledgement. Its exact verified candidate, manifest, plan, originals,
+    record/ref/slot closure and authorized assets are checked by the existing
+    conversion adapter. The caller holds actual writer/recovery ownership and
+    has already installed the candidate; this function neither installs it nor
+    performs a second save. Unbounded individual strings are never decoded here.
+    """
+    from .media_conversion import iter_verified_candidate_refs
+    import re
+
+    if (not isinstance(session_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,220}", session_id)):
+        raise CheckpointRefused("Invalid canonical session identity")
+    if not callable(asset_reader):
+        raise CheckpointRefused("Historical checkpoint requires an authorized asset reader")
+    path, operation = _absolute(session_dir), _absolute(operation_dir)
+    # Bound and pin the small candidate receipt. It remains data; only the
+    # format-owner verifier below can establish its relationship to actual bytes.
+    with _primary(operation, _filename="verified.json", _pending=False) as (source, _):
+        raw = source.read(16385)
+    if len(raw) > 16384:
+        raise CheckpointRefused("Historical verification receipt is oversized")
+    try:
+        facts = json.loads(raw)
+        digest, size, count = facts["sha256"], facts["bytes"], facts["records"]
+        if (type(size) is not int or size < 0
+                or type(count) is not int or count < 0
+                or not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest)):
+            raise ValueError()
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        raise CheckpointRefused("Invalid historical verification receipt") from None
+    with _primary(path, writable=True) as (stream, directories):
+        before = _stamp(os.fstat(stream.fileno()))
+        for _ in iter_verified_candidate_refs(
+            operation, installed=path / "transcript.jsonl",
+            session_id=session_id, asset_reader=asset_reader,
+        ):
+            pass  # Exhaust before any acknowledgement, including final checks.
+        with _primary(operation, _filename="verified.json", _pending=False) as (source, _):
+            if source.read(16385) != raw:
+                raise CheckpointRefused("Historical verification receipt changed")
+        observed = hashlib.sha256()
+        while chunk := stream.read(_BLOCK):
+            observed.update(chunk)
+        if before[2] != size or observed.hexdigest() != digest:
+            raise CheckpointRefused("Installed historical candidate differs")
+        os.fsync(stream.fileno())
+        for directory in reversed(directories):
+            os.fsync(directory)
+        if _stamp(os.fstat(stream.fileno())) != before:
+            raise CheckpointRefused("Canonical checkpoint source changed during flush")
+        receipt = LegacyCheckpointReceipt(
+            session_id, size, count, digest, path, before, _SEAL, "",
+            _operation_dir=operation, _asset_reader=asset_reader,
         )
         object.__setattr__(receipt, "_attestation", _attest(receipt))
     return receipt
