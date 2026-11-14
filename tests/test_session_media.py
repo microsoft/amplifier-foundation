@@ -992,6 +992,49 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             target.close()
 
+    async def test_real_warning_only_fallback_fit_and_dispatch_share_private_candidate(self):
+        from amplifier_foundation.session.media_provider import MediaPreparedProvider
+        ref = await self.stage()
+        await self.commit(ref)
+        cap = bind_session_media(Coordinator(), store=self.store, enabled=True)
+        canonical = ChatRequest(messages=[Message(role="user", content="picture",
+            metadata={MEDIA_NAMESPACE: {"refs": [ref]}})])
+        original = canonical.model_dump_json()
+        class TextProvider:
+            counted = None
+            sent = None
+            def get_media_request_support(self, *, model, request_options=None):
+                return {"v": 1, "positions": [], "mime_types": []}
+            def request_budget(self, request, *, request_options=None):
+                cap.validate(request, purpose="count", request_options=request_options)
+                self.counted = request
+                return None
+            async def complete(self, request, **kwargs):
+                cap.validate(request, purpose="transport", request_options=kwargs)
+                self.sent = request
+                return "done"
+        provider = TextProvider()
+        wrapper = MediaPreparedProvider(provider, cap, provider_identity={
+            "provider": "text", "account": "a", "generation": "g"})
+        try:
+            with patch.object(self.store, "resolve_ref", side_effect=AssertionError("no pixel reads")):
+                options = {"extended_thinking": True}
+                self.assertIsNone(await wrapper.request_budget(canonical, request_options=options))
+                witness = await wrapper.media_text_fallback_witness(canonical, request_options=options)
+                self.assertEqual(set(witness), {"v", "validated", "projection_digest", "messages"})
+                self.assertTrue(witness["validated"])
+                self.assertNotIn("metadata", witness["messages"][0])
+                self.assertNotIn("experimental.media.v1", json.dumps(witness))
+                self.assertIn("no pixels supplied", json.dumps(witness))
+                with self.assertRaises(ValueError):
+                    wrapper.media_budget_witness(canonical, request_options=options)
+                self.assertEqual(await wrapper.complete(canonical, **options), "done")
+            self.assertIs(provider.counted, provider.sent)
+            self.assertEqual(provider.sent.messages, [])
+            self.assertEqual(canonical.model_dump_json(), original)
+        finally:
+            wrapper.close()
+
 
 if __name__ == "__main__":
     unittest.main()
