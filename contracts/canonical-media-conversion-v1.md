@@ -256,6 +256,7 @@ CaptureMediaOwner(
     checkpoint_receipt_for=verify_installed_diagnostic_operation,
     new_asset_bytes_for=measured_unique_asset_bytes,
     reader_ready=qualified_diagnostic_reader_and_store_scope,
+    single_image_origin=attest_real_original_origin_cardinality,
 )
 ```
 
@@ -270,10 +271,22 @@ boundary. The temporary image stream is not retained after `stage_image`.
   unestablished screenshot expiry or unsupported provenance refuses explicitly.
   A generic event timestamp is **not** expiry/retention authority. Original TTL
   is never derived from migration time, renewed or replaced with durable null.
+  F1 byte ingest binds a real origin to its complete ref-set. This initial sync
+  bridge therefore requires the host to **preflight/attest one image per real
+  origin** before any staging effect. Grouped/unknown-cardinality sources are
+  explicitly held pending an owner-qualified group adapter; no per-image
+  fictitious origin IDs are created to work around that boundary.
 * Its factory returns `StagedImage(replacement=..., receipt=...,
-  new_asset_bytes=...)`. Added bytes must be an actual host measurement of unique
-  asset growth, not decoded size/theoretical savings. The binding refuses missing
-  accounting rather than inventing a claim.
+  new_asset_bytes=...)`. Factory-returned fields must equal the verified expected
+  fields; mutable aliases are detached. The binding stages **and assets-only
+  publishes** before measurement so added bytes reflect actual final unique
+  asset allocation growth, not decoded size/theoretical savings. Filesystem
+  rounding can legitimately exceed logical image bytes; dedup can add zero.
+  Staging/recovery overhead is separately held, never mislabeled final asset
+  allocation. The host tracks exact before/after publication allocation through
+  its required measurement callback; missing accounting refuses rather than
+  inventing a claim. This earlier asset publication is still uncommitted:
+  no diagnostic/canonical reachability exists until the actual file ACK.
 * `publish(manifest)` and `verify(manifest)` page bounded owner manifest rows
   `{origin: <CI source snapshot>, owner: <binding receipt>}`. They reauthorize
   original provenance, validate F1 owner records and original byte closure.
