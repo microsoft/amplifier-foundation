@@ -338,3 +338,49 @@ pixels, promote diagnostic refs into canonical history, or claim vision.
 Exact F1 candidate used for initial integration:
 `8475bca3c17a374b8bcaf0a63974e7b82edc1041`. It is candidate-graph evidence, not
 accepted upstream, publication, installed live adoption or a DTU qualification.
+
+### Complete CI original groups
+
+`CaptureGroupMediaOwner` implements the **same** CI ImageOwner methods, removing
+the earlier single-image-only coverage boundary when the CI source owner can
+attest/enumerate the complete original group:
+
+```python
+CaptureGroupMediaOwner(
+    diagnostic_store,
+    group_sources_for=source_owner_complete_group,
+    staged_factory=StagedImage,
+    origin_for=authorize_original_provenance,
+    checkpoint_receipt_for=verify_installed_diagnostic_operation,
+    new_asset_bytes_for=measured_unique_asset_bytes,
+    reader_ready=qualified_group_reader_and_store_scope,
+)
+```
+
+`group_sources_for(exact_ci_snapshot, original_provenance)` returns a context
+manager over an ordered iterable of `{stream: BinaryIO, mime: str, origin:
+exact_ci_snapshot}`. The stream owner keeps one source valid until advancing
+the iterator; Foundation neither searches a capture pathname nor borrows
+authority from its bytes. Source enumeration must be bound to the existing
+stopped-writer/source-hash/record-mapping fence. Every member must independently
+map to the same unchanged attested original policy. A source position appears
+exactly once and the currently selected image must be present with matching
+digest/length/MIME. No group completion is inferred from callback timing.
+
+The binding uses actual F1 `ingest_group_sync` at `bbfd427...`, verifies the
+complete ordered result, then publishes that complete set. Repeat image-position
+callbacks reconcile the same original set; no new original IDs or renewed
+timestamps are generated. Only host-max-images-bounded ref/source metadata is
+accumulated; pixel streams remain bounded/disk-backed. The group owner receipt is
+still bounded by CI's16KiB manifest schema; unsupported metadata is refused.
+
+The distinct group reader gate is `foundation.capture-image-owner-group.v1`.
+Receipt fields are `binding`, `origin`, complete ordered `refs`,
+`source_origins`, and the selected integer index. Only the selected ref goes
+into this diagnostic image replacement. **The host's installed-file verifier
+must enumerate selected refs at actual installed positions, not blindly commit
+every ref in a publication group receipt.** Other group members can be
+published-uncommitted until their own canonical diagnostic positions are
+verified. Group publication/verification alone never acknowledges reachability.
+The single-image adapter remains an explicitly preflighted compatibility option;
+unknown original provenance remains held in both paths.
