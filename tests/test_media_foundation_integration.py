@@ -5,6 +5,9 @@ import base64
 import io
 import json
 import os
+import shutil
+import tracemalloc
+from contextlib import contextmanager
 
 from amplifier_core import AmplifierSession, ToolResult
 from amplifier_core.message_models import ChatRequest, ImageBlock, Message
@@ -14,14 +17,17 @@ import pytest
 from amplifier_foundation import Bundle, sanitize_message
 from amplifier_foundation.bundle import PreparedBundle, BundleModuleResolver
 from amplifier_foundation.session.checkpoint import (
-    acknowledge_legacy_checkpoint, verified_checkpoint_refs,
+    acknowledge_legacy_checkpoint, acknowledge_candidate_checkpoint,
+    verified_checkpoint_refs,
 )
 from amplifier_foundation.session.fork import fork_session
 from amplifier_foundation.session.history import SessionHistoryStore
 from amplifier_foundation.session.media import (
     MEDIA_NAMESPACE, MediaPolicy, SessionMediaStore, bind_session_media,
 )
-from amplifier_foundation.session.media_conversion import adopt_selected_media
+from amplifier_foundation.session.media_conversion import (
+    adopt_selected_media, build_candidate, preview,
+)
 from amplifier_foundation.session.media_provider import MediaPreparedProvider
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX candidate graph")
@@ -170,3 +176,54 @@ async def test_real_create_and_resume_install_fresh_cap_before_module_initialize
     finally:
         for store in stores:
             store.close()
+
+
+@pytest.mark.asyncio
+async def test_bounded_actual_historical_candidate_ack_without_decoding_huge_row(tmp_path):
+    session = tmp_path / "session"
+    session.mkdir()
+    store = new_store(session / "media", "session")
+    origin = {"kind": "tool", "session_id": "session", "id": "historical-call"}
+    try:
+        ref = (await store.ingest(pixels(), source_format="image-bytes",
+                                  origin=origin, policy=None))["value"]
+        await store.publish([ref], origin=origin, disposition="retain")
+        # Huge non-image owner scalar stays untouched; this is intentionally not
+        # an inline image that conversion could shrink away before ACK.
+        rows = [{"role": "tool", "tool_call_id": "historical-call",
+                 "content": [{"type": "text", "text": f"[Session image {ref['sha256']}]"}],
+                 "metadata": {MEDIA_NAMESPACE: {"refs": [ref]},
+                              "opaque-large-owner-string": "q" * (16 * 1024 * 1024)}}]
+        primary = session / "transcript.jsonl"
+        primary.write_text(json.dumps(rows[0]) + "\n")
+
+        @contextmanager
+        def fence(owner):
+            assert owner == "synthetic-owner"
+            yield
+
+        @contextmanager
+        def reader(item):
+            with store.resolve_ref(item, committed=False) as source:
+                yield source
+
+        plan = preview(primary, owner="synthetic-owner", session_id="session", fence=fence)
+        operation = tmp_path / "operation"
+        await build_candidate(plan, operation, fence=fence, capability=store,
+                              origin_for=lambda *_: origin, asset_reader=reader)
+        shutil.copyfile(operation / "candidate.jsonl", primary)
+        tracemalloc.start()
+        try:
+            receipt = acknowledge_candidate_checkpoint(
+                operation, session, session_id="session", asset_reader=reader
+            )
+            store.acknowledge_checkpoint(receipt)
+            assert receipt.contains(ref)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert receipt.message_count == 1
+        assert peak < 2 * 1024 * 1024
+        assert (operation / "original-0").stat().st_size > 16 * 1024 * 1024
+    finally:
+        store.close()
