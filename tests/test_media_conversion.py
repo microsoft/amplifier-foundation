@@ -127,6 +127,39 @@ def test_semantic_binary_closure_and_original_backup(tmp_path):
     assert "unconfirmed" in reconcile(tmp_path / "operation", installed=tmp_path / "operation/candidate.jsonl")
 
 
+@pytest.mark.parametrize("count,selected_records", [(0, None), (1, None), (2, None), (2, 1)])
+def test_inline_removed_bytes_exact_original_spans_and_saved_receipt(
+    tmp_path, count, selected_records
+):
+    # Deliberately noncanonical whitespace: account source spans, not re-encoded
+    # blocks, decoded pixels, metadata insertion or net transcript reduction.
+    raw_block = (
+        b'{ "type" : "image",  "source": { "type":"base64",'
+        b' "media_type" : "image/png", "data" : "b3JpZ2luYWw=" } }'
+    )
+    assert len(raw_block) != len(json.dumps(json.loads(raw_block)).encode())
+    row = b'{"role":"user","content":[' + raw_block + b'],"metadata":null}\n'
+    original = row * count if count else b'{"role":"user","content":"plain text"}\n'
+    source = tmp_path / "transcript.jsonl"
+    source.write_bytes(original)
+    plan = preview(
+        source, owner="fixture-owner", session_id="fixture", fence=fence,
+        selected_records=selected_records,
+    )
+    operation = tmp_path / "operation"
+    result, _ = build(plan, operation)
+    expected_count = count if selected_records is None else selected_records
+    expected = expected_count * len(raw_block)
+    receipt = json.loads((operation / "verified.json").read_bytes())
+    assert result.images == receipt["images"] == expected_count
+    assert result.inline_removed_bytes == receipt["inline_removed_bytes"] == expected
+    assert result.decoded_bytes == receipt["decoded_bytes"] == expected_count * len(b"original")
+    assert source.read_bytes() == original
+    assert reconcile(operation) == "verified-candidate-not-applied"
+    if expected:
+        assert expected != result.original_bytes - result.bytes
+
+
 @pytest.mark.parametrize("metadata", [None, {}, {"opaque": {"nested": [1, 2, "x"]}}])
 def test_metadata_variants(tmp_path, metadata):
     path, plan = prepare(tmp_path, [{"role": "user", "content": [image()], "metadata": metadata}])
