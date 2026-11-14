@@ -142,7 +142,7 @@ class CaptureMediaOwner:
         image.seek(0)
         if snapshot.get("sha256") != digest or snapshot.get("bytes") != size:
             raise Unsupported("CI source image digest/length disagrees with decoded bytes")
-        result = asyncio.run(self.store.ingest(
+        result = _sync_result(self.store.ingest_sync(
             {"stream": image, "mime": mime}, source_format="image-bytes",
             origin=deepcopy(original), policy=None,
         ))
@@ -155,7 +155,7 @@ class CaptureMediaOwner:
                 or ref["sha256"] != digest or ref["bytes"] != size or ref["mime"] != mime):
             raise Unsupported("Historical staging changed original image/observation identity")
         self.store.validate_ref(deepcopy(ref), committed=False)
-        publication = asyncio.run(self.store.publish(
+        publication = _sync_result(self.store.publish_sync(
             [deepcopy(ref)], origin=deepcopy(original), disposition="retain",
         ))
         if publication["refs"] != [ref]:
@@ -220,7 +220,7 @@ class CaptureMediaOwner:
     def publish(self, manifest: Path) -> None:
         self._ready()
         for ref, original in self._manifest(manifest):
-            result = asyncio.run(self.store.publish(
+            result = _sync_result(self.store.publish_sync(
                 [deepcopy(ref)], origin=deepcopy(original), disposition="retain",
             ))
             if result["refs"] != [ref]:
