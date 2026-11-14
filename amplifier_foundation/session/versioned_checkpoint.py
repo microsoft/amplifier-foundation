@@ -11,11 +11,11 @@ import hmac
 import json
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from weakref import WeakValueDictionary
 
 from ._media_conversion_parser import CHUNK, Scanner
@@ -178,6 +178,120 @@ def _control(path: Path):
     return (str(path), namespace, stamp, raw)
 
 
+def _row_refs(scanner, row, session_id, *, strict, check):
+    """Shared bounded media data lens; no source or admission authority."""
+    check()
+    metadata = scanner.fields(row).get("metadata")
+    if metadata is None or (metadata.kind == 110 and scanner.small(metadata) is None):
+        return
+    envelope = scanner.fields(metadata).get(MEDIA_NAMESPACE)
+    if envelope is None:
+        return
+    members = scanner.fields(envelope)
+    if strict and set(members) - {"refs", "v"}:
+        raise VersionedCheckpointRefused("Unknown prepared media namespace members")
+    if "v" in members:
+        version = scanner.small(members["v"], 128)
+        if type(version) is not int or version != 1:
+            raise VersionedCheckpointRefused("Invalid media namespace version")
+    refs = members.get("refs")
+    if refs is None:
+        raise VersionedCheckpointRefused("Media namespace has no refs")
+    for span in scanner.array(refs):
+        check()
+        ref = scanner.small(span, CHUNK)
+        validate_blob_ref(ref)
+        if ref["session_id"] != session_id:
+            raise VersionedCheckpointRefused("Media ref belongs to another session")
+        check()
+        yield ref
+        # Recheck even when another ref is already in the scanner's buffer.
+        check()
+
+
+class _GuardedScan:
+    """Read/seek-only view, with explicit <=64KiB I/O and caller-owned checks."""
+
+    def __init__(self, stream, check):
+        self.stream, self.check = stream, check
+
+    def tell(self):
+        self.check()
+        return self.stream.tell()
+
+    def seek(self, offset):
+        self.check()
+        result = self.stream.seek(offset)
+        self.check()
+        return result
+
+    def read(self, size=CHUNK):
+        if type(size) is not int or not 0 <= size <= CHUNK:
+            raise VersionedCheckpointRefused("Serialized scan reads must be bounded")
+        self.check()
+        raw = self.stream.read(size)
+        if type(raw) is not bytes or len(raw) > size:
+            raise VersionedCheckpointRefused("Invalid serialized scan bytes")
+        self.check()
+        return raw
+
+
+def _verify_serialized_scan(stream, prefix, check):
+    """Validate exact raw header-bearing EOF/hash/row semantics, not provenance."""
+    check()
+    stream.seek(0)
+    digest, remaining = hashlib.sha256(), prefix.committed_bytes
+    while remaining:
+        raw = stream.read(min(CHUNK, remaining))
+        if not raw:
+            raise VersionedCheckpointRefused("Serialized scan shortened")
+        digest.update(raw)
+        remaining -= len(raw)
+    if stream.read(1) or digest.hexdigest() != prefix.sha256:
+        raise VersionedCheckpointRefused("Serialized scan EOF or digest differs")
+    stream.seek(0)
+    _validate_prefix(stream, prefix)
+    check()
+
+
+def scan_serialized_refs(
+    stream: BinaryIO, *, prefix: CommittedPrefix, check: Callable[[], None],
+) -> Iterator[dict[str, Any]]:
+    """Stream strict media ref DATA from an exact header-bearing V2 snapshot.
+
+    This is NOT a checkpoint verifier or media/source/adoption authority. An
+    unsealed prefix and arbitrary check can validate data, never mint a receipt.
+    The prepared-candidate owner supplies its issued/PID/lifetime-bound stream,
+    prefix and guard, and must exhaust the iterator before admitting anything.
+    Its context must span write + typed ACK; report only after successful exit.
+
+    Exact physical EOF is required here, unlike an existing committed receipt's
+    ignored preexisting tail. All reads are <=64KiB, and only one bounded ref is
+    decoded. Refs-only envelopes remain valid; optional v must be exact int 1;
+    prepared envelopes permit only refs/v. Caller retains stream ownership; its
+    cursor is unspecified afterward. Final validation runs AFTER the last yield.
+    """
+    if type(prefix) is not CommittedPrefix or not callable(check):
+        raise VersionedCheckpointRefused("Explicit serialized prefix and guard required")
+    _prefix_data({item.name: getattr(prefix, item.name) for item in fields(CommittedPrefix)})
+    if prefix.committed_bytes == 0:
+        raise VersionedCheckpointRefused("Serialized scan requires a header")
+    guarded = _GuardedScan(stream, check)
+    try:
+        _verify_serialized_scan(guarded, prefix, check)
+        scanner = Scanner(_PrefixView(guarded, prefix.committed_bytes))
+        for index, row in enumerate(scanner.records()):
+            check()
+            if index:
+                yield from _row_refs(
+                    scanner, row, prefix.session_id, strict=True, check=check,
+                )
+        _verify_serialized_scan(guarded, prefix, check)
+        check()
+    except (OSError, ValueError) as exc:
+        raise VersionedCheckpointRefused("Serialized media references refused") from exc
+
+
 def _capture(path: Path, prefix: CommittedPrefix, *, unsettled=False):
     root = path / "transcript.v2"
     names = (
@@ -306,28 +420,9 @@ class VersionedCheckpointReceipt:
                 for index, row in enumerate(scanner.records()):
                     if index == 0:
                         continue  # Header/schema/count already checked by source owner.
-                    metadata = scanner.fields(row).get("metadata")
-                    if metadata is None or (metadata.kind == 110 and scanner.small(metadata) is None):
-                        continue
-                    envelope = scanner.fields(metadata).get(MEDIA_NAMESPACE)
-                    if envelope is None:
-                        continue
-                    members = scanner.fields(envelope)
-                    if "v" in members:
-                        version = scanner.small(members["v"], 128)
-                        if type(version) is not int or version != 1:
-                            raise VersionedCheckpointRefused("Invalid media namespace version")
-                    refs = members.get("refs")
-                    if refs is None:
-                        raise VersionedCheckpointRefused("Media namespace has no refs")
-                    for span in scanner.array(refs):
-                        # A single ref is a small, strict F1 control object. Never
-                        # load an entire metadata value, array or message/string.
-                        ref = scanner.small(span, CHUNK)
-                        validate_blob_ref(ref)
-                        if ref["session_id"] != self.session_id:
-                            raise VersionedCheckpointRefused("Media ref belongs to another session")
-                        yield ref
+                    yield from _row_refs(
+                        scanner, row, self.session_id, strict=False, check=self._local,
+                    )
             self.verify()
         except (OSError, ValueError) as exc:
             raise VersionedCheckpointRefused("Versioned media references refused") from exc

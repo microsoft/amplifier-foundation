@@ -176,3 +176,89 @@ same-UID filesystem mutation, proof about every historical writer, or
 permission to migrate an old root. Real root/child/resume caller wiring,
 canonical context intent, media transport and installed composition require
 their own affected qualification.
+
+## Prepared serialized-candidate data lens
+
+`scan_serialized_refs(stream, *, prefix: CommittedPrefix, check)` is the shared
+bounded media scanner for the format owner's `PreparedTranscriptCandidate`.
+It consumes an exact header-bearing V2 snapshot: `prefix.sha256` and
+`committed_bytes` describe the raw header plus rows, not the prepared canonical
+rows-only rewrite digest. It requires exact physical EOF, unlike a committed
+receipt which ignores its preexisting uncommitted tail.
+
+This helper yields **data only**, not receipt, publication, admission, or source
+adoption authority. It is not a store `checkpoint_verifier`. The format owner
+must wrap it inside the actual issued prepared object's `open_verified()`,
+using that object's state-bound `candidate_prefix` and `check` guard. Exact
+issued-object membership, PID, lifetime, source ownership and revocation remain
+with that owner. Its preparation context must span write and typed ACK; report
+only after the preparation context also exits successfully. No duck refs query,
+raw prefix/digest tuple, or converter database can substitute for that binding.
+Use a method-local import from the writer to avoid a reverse top-level cycle.
+
+The helper checks complete selected hash/header/role/schema/count/final-LF
+semantics before exposing refs, repeats integrity verification after exhaustion,
+and checks the supplied guard around bounded I/O and before/after each yielded
+ref. Exhaustion after the last yield is mandatory. The caller owns the stream;
+the scanner does not close it and leaves its cursor unspecified.
+
+Prepared precommit envelope checks preserve F1's refs-only form: metadata absent
+or null and namespace absent mean no media. Other metadata must be an object;
+a present namespace must be a non-null object with required array `refs` and
+only optional `v`. If present, `v` must be exact integer 1. Unknown envelope keys
+refuse in this prepared path. Existing receipt envelope compatibility is not
+tightened: its prior unknown-key behavior remains unchanged. Both paths reuse
+the same bounded top-level ref extraction and unchanged PNG/JPEG ref validation;
+the outer owning session must match, while original provenance may differ.
+
+All reads are explicit and at most 64KiB; no message, metadata, refs array or huge
+scalar is decoded wholesale, and at most one <=64KiB ref is materialized. This
+scan is O(serialized history), not a warm O(1) append or final integration claim.
+
+### Bounded serialized candidate replacement
+
+`binding.rewrite_serialized(candidate, *, candidate_prefix, candidate_check,
+expected, operation_id, admit, media_store, on_prepared=None)` accepts the format
+owner's header-bearing v2 candidate as an owned regular seekable binary stream.
+It delegates preparation and publication to `transcript_writer`'s existing
+`prepare_serialized_candidate` / `rewrite_prepared` APIs; it does not encode a
+second format, strip headers, construct message dictionaries, replace fences,
+or create another transcript journal. The ordinary `rewrite` remains an explicit
+materializing full-context API, not the huge-candidate route.
+
+The binding owns the preparation context, whose anonymous raw snapshot and
+canonical-row spool are immutable and locally issued. Admission enumerates refs
+from exactly those verified bytes through the canonical ref owner's data-only
+`scan_serialized_refs` parser and exhausts final checks, then applies the same durable-record,
+physical-asset and expiry checks described above. An exact owning media store
+is required even for zero-ref candidates. Selector fields alone never mint
+authority; the typed checkpoint still establishes actual selected reachability.
+
+The optional synchronous `on_prepared(facts)` observer receives a detached,
+bounded dictionary before any target writer invocation: `candidate_prefix`,
+`canonical_sha256`, `canonical_bytes`, `message_count`, `expected`,
+`operation_id`, and `kind="rewrite"`. A converter may durably record these facts
+in its existing operation journal. They are not a media/source authority token,
+and changing them cannot change the prepared bytes. The canonical digest covers
+message JSONL excluding the header, matching existing `reconcile(kind="rewrite")`
+rather than the candidate's raw header-inclusive hash. Observer failure leaves
+the target untouched; callers retain their own journal and do not infer replay.
+
+The exact predecessor, operation and canonical digest are retained before
+publication. Store acceptance occurs inside the typed acknowledgement context,
+and preparation's final exit is settled inside that same context so a late
+candidate-exit failure revokes a retained receipt. Only after preparation,
+acknowledgement and ownership exits succeed are the result/receipt exposed and
+the binding's expected cursor advanced. Late failures leave an uncertain
+original intent; recovery uses the existing exact-digest reconciliation without
+reopening tools, rewriting the candidate, or allocating another operation.
+The caller must additionally settle its outer converter-owned candidate context
+before reporting its overall conversion result. `candidate_check` pins candidate
+artifacts and live custody; it must not demand the old target descriptor after
+a legitimate canonical CAS.
+
+Async serialized application uses `binding.call("rewrite_serialized", ...)`;
+cancellation joins the physical read/write and all final exits before its stream
+or owner may be closed. Preparation, reference scanning, typed acknowledgement
+and rewrite remain O(history) I/O, with anonymous disk spools and bounded Python
+memory even for one huge row; this is not an O(page), constant-disk, or RSS claim.
