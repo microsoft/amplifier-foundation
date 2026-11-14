@@ -214,3 +214,51 @@ the outer owning session must match, while original provenance may differ.
 All reads are explicit and at most 64KiB; no message, metadata, refs array or huge
 scalar is decoded wholesale, and at most one <=64KiB ref is materialized. This
 scan is O(serialized history), not a warm O(1) append or final integration claim.
+
+### Bounded serialized candidate replacement
+
+`binding.rewrite_serialized(candidate, *, candidate_prefix, candidate_check,
+expected, operation_id, admit, media_store, on_prepared=None)` accepts the format
+owner's header-bearing v2 candidate as an owned regular seekable binary stream.
+It delegates preparation and publication to `transcript_writer`'s existing
+`prepare_serialized_candidate` / `rewrite_prepared` APIs; it does not encode a
+second format, strip headers, construct message dictionaries, replace fences,
+or create another transcript journal. The ordinary `rewrite` remains an explicit
+materializing full-context API, not the huge-candidate route.
+
+The binding owns the preparation context, whose anonymous raw snapshot and
+canonical-row spool are immutable and locally issued. Admission enumerates refs
+from exactly those verified bytes through the canonical ref owner's data-only
+`scan_serialized_refs` parser and exhausts final checks, then applies the same durable-record,
+physical-asset and expiry checks described above. An exact owning media store
+is required even for zero-ref candidates. Selector fields alone never mint
+authority; the typed checkpoint still establishes actual selected reachability.
+
+The optional synchronous `on_prepared(facts)` observer receives a detached,
+bounded dictionary before any target writer invocation: `candidate_prefix`,
+`canonical_sha256`, `canonical_bytes`, `message_count`, `expected`,
+`operation_id`, and `kind="rewrite"`. A converter may durably record these facts
+in its existing operation journal. They are not a media/source authority token,
+and changing them cannot change the prepared bytes. The canonical digest covers
+message JSONL excluding the header, matching existing `reconcile(kind="rewrite")`
+rather than the candidate's raw header-inclusive hash. Observer failure leaves
+the target untouched; callers retain their own journal and do not infer replay.
+
+The exact predecessor, operation and canonical digest are retained before
+publication. Store acceptance occurs inside the typed acknowledgement context,
+and preparation's final exit is settled inside that same context so a late
+candidate-exit failure revokes a retained receipt. Only after preparation,
+acknowledgement and ownership exits succeed are the result/receipt exposed and
+the binding's expected cursor advanced. Late failures leave an uncertain
+original intent; recovery uses the existing exact-digest reconciliation without
+reopening tools, rewriting the candidate, or allocating another operation.
+The caller must additionally settle its outer converter-owned candidate context
+before reporting its overall conversion result. `candidate_check` pins candidate
+artifacts and live custody; it must not demand the old target descriptor after
+a legitimate canonical CAS.
+
+Async serialized application uses `binding.call("rewrite_serialized", ...)`;
+cancellation joins the physical read/write and all final exits before its stream
+or owner may be closed. Preparation, reference scanning, typed acknowledgement
+and rewrite remain O(history) I/O, with anonymous disk spools and bounded Python
+memory even for one huge row; this is not an O(page), constant-disk, or RSS claim.
