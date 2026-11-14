@@ -243,6 +243,10 @@ def test_context_exception_including_fence_exit_revokes_retained_receipt(tmp_pat
                 raise RuntimeError("caller failed")
     with pytest.raises(Refused):
         retained[0].verify()
+    # Revocation is issuer-owned, not a reversible receipt-carried Boolean.
+    retained[0]._life.valid = True
+    with pytest.raises(Refused):
+        retained[0].verify()
 
 
 def test_fsync_failure_creates_no_receipt_or_admission_replay(tmp_path, monkeypatch):
@@ -460,3 +464,85 @@ async def test_store_exhausts_after_last_ref_before_bind_and_after_match(tmp_pat
                 store.resolve_ref(ref)
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("corruption", ["intent-garbage", "intent-kind", "intent-bounds",
+    "plan-missing-selection", "plan-wrong-source", "plan-bool-stamp"])
+def test_preexisting_invalid_writer_controls_cannot_mint_or_settle(tmp_path, corruption):
+    path, writer, ack = session(tmp_path)
+    root = path / "transcript.v2"
+    publication = root / "operations/append/published.json"
+    publication.unlink()
+    if corruption.startswith("intent"):
+        target = root / "operations/append/intent.json"
+        if corruption == "intent-garbage":
+            target.write_bytes(b"not-json")
+        else:
+            intent = json.loads(target.read_bytes())
+            intent["kind" if corruption == "intent-kind" else "suffix_bytes"] = (
+                "migration" if corruption == "intent-kind" else 0)
+            target.write_text(json.dumps(intent))
+    else:
+        target = root / "migration.json"
+        plan = json.loads(target.read_bytes())
+        if corruption == "plan-missing-selection":
+            del plan["source"], plan["sources"]
+        elif corruption == "plan-wrong-source":
+            plan["source"] = "transcript.jsonl"
+        else:
+            plan["sources"]["transcript.jsonl"] = {
+                "dev": True, "ino": 1, "size": 1, "mtime_ns": 1,
+                "ctime_ns": 1, "sha256": "a" * 64,
+            }
+        target.write_text(json.dumps(plan))
+    with pytest.raises(Refused):
+        acknowledge(writer, ack)
+    assert not publication.exists()
+
+
+@pytest.mark.parametrize("version", [b"2.0", b"2e0"])
+def test_float_header_version_refused_even_when_hash_and_operation_records_match(tmp_path, version):
+    path, writer, ack = session(tmp_path)
+    root = path / "transcript.v2"
+    body = root / ack.commit.body
+    raw = body.read_bytes().replace(b'"v":2', b'"v":' + version, 1)
+    altered = dataclasses.replace(ack.commit, committed_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    body.write_bytes(raw)
+    for name in ("current.json", "operations/append/result.json", "operations/append/published.json"):
+        (root / name).write_bytes(_descriptor(altered))
+    # Also adjust intent byte count so refusal is about the header, not bounds.
+    target = root / "operations/append/intent.json"
+    intent = json.loads(target.read_bytes())
+    intent["suffix_bytes"] += len(version) - 1
+    target.write_text(json.dumps(intent))
+    with pytest.raises(Refused):
+        acknowledge(writer, altered)
+
+
+def test_fork_child_requires_fresh_owned_acknowledgement(tmp_path):
+    _, writer, ack = session(tmp_path)
+    receipt = acknowledge(writer, ack)
+    pid = os.fork()
+    if pid == 0:
+        try:
+            with pytest.raises(Refused):
+                receipt.verify()
+            assert acknowledge(writer, ack).verify()["operation_id"] == "append"
+        except BaseException:
+            os._exit(1)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert receipt.verify()["operation_id"] == "append"
+
+
+def test_initialize_and_rewrite_current_operation_closure(tmp_path):
+    path = tmp_path / "session"
+    path.mkdir(mode=0o700)
+    writer = TranscriptWriter(path, fence=fixture_fence)
+    initial = writer.initialize(session_id="session", operation_id="init", admit=lambda: None)
+    assert list(acknowledge(writer, initial).iter_refs()) == []
+    rewrite = writer.rewrite([row()], expected=initial.commit, operation_id="rewrite", admit=lambda: None)
+    receipt = acknowledge(writer, rewrite)
+    assert receipt.generation == "r-rewrite"
+    assert list(receipt.iter_refs()) == [fake_ref()]

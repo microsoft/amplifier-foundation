@@ -10,24 +10,30 @@ import hashlib
 import hmac
 import json
 import os
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
+from weakref import WeakValueDictionary
 
 from ._media_conversion_parser import CHUNK, Scanner
 from .checkpoint import CheckpointRefused
 from .media import MEDIA_NAMESPACE, validate_blob_ref
-from .transcript_source import open_committed_source
+from .transcript_source import _namespace, open_committed_source
 from .transcript_v2 import CommittedPrefix, UnsupportedTranscript, _decode, _file, _stamp
 from .transcript_writer import (
-    CommitAck, TranscriptWriter, _PrefixView, _descriptor, _identity, _receipt,
+    LEGACY, CommitAck, TranscriptWriter, _PrefixView, _descriptor, _identity, _receipt,
 )
 
 _SEAL = object()
 _KEY = os.urandom(32)
 _KIND = "versioned-checkpoint-backed-v1"
+# Issuer-owned, weakly held revocation state is not carried by the receipt.
+# Restoring receipt fields cannot re-enroll an object after exceptional exit.
+_ISSUED = WeakValueDictionary()
+_SHA = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class VersionedCheckpointRefused(CheckpointRefused):
@@ -44,28 +50,79 @@ class _Life:
     valid: bool = True
 
 
-def _namespace(path: Path):
-    """Persistent ancestor identity pin supplementing the owner's byte checks."""
-    if os.name != "posix" or not path.is_absolute() or ".." in path.parts:
-        raise VersionedCheckpointRefused("Qualified lexical absolute path required")
-    descriptors = []
-    try:
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        current = os.open(path.anchor, flags)
-        descriptors.append(current)
-        for name in path.parts[1:]:
-            current = os.open(name, flags, dir_fd=current)
-            descriptors.append(current)
-        identities = tuple((os.fstat(fd).st_dev, os.fstat(fd).st_ino)
-                           for fd in descriptors)
-        for index, name in enumerate(path.parts[1:]):
-            linked = os.stat(name, dir_fd=descriptors[index], follow_symlinks=False)
-            if (linked.st_dev, linked.st_ino) != identities[index + 1]:
-                raise VersionedCheckpointRefused("Checkpoint ancestor replaced")
-        return identities
-    finally:
-        for fd in reversed(descriptors):
-            os.close(fd)
+def _digest_text(value):
+    return type(value) is str and _SHA.fullmatch(value)
+
+
+def _prefix_data(value):
+    if type(value) is not dict or set(value) != set(CommittedPrefix.__dataclass_fields__):
+        raise VersionedCheckpointRefused("Incomplete operation predecessor")
+    for name in ("session_id", "generation", "operation_id"):
+        _identity(value[name])
+    if (value["body"] != f"g-{value['generation']}.jsonl"
+            or not _digest_text(value["sha256"])
+            or any(type(value[name]) is not int or value[name] < 0
+                   for name in ("sequence", "committed_bytes", "message_count"))):
+        raise VersionedCheckpointRefused("Invalid operation predecessor")
+    return CommittedPrefix(**value)
+
+
+def _validate_plan(plan, prefix):
+    if (type(plan) is not dict
+            or set(plan) != {"format", "v", "session_id", "operation_id", "source", "sources"}
+            or type(plan["v"]) is not int or plan["v"] != 2
+            or plan["session_id"] != prefix.session_id
+            or plan["format"] != "amplifier.session.transcript"):
+        raise VersionedCheckpointRefused("Invalid writer transition journal")
+    _identity(plan["operation_id"])
+    sources = plan["sources"]
+    if (type(sources) is not dict or set(sources) != set(LEGACY)
+            or plan["source"] not in (*LEGACY, None)):
+        raise VersionedCheckpointRefused("Invalid writer source selection")
+    for witness in sources.values():
+        if witness is None:
+            continue
+        if (type(witness) is not dict
+                or set(witness) != {"dev", "ino", "size", "mtime_ns", "ctime_ns", "sha256"}
+                or not _digest_text(witness["sha256"])
+                or any(type(witness[name]) is not int or witness[name] < 0
+                       for name in ("dev", "ino", "size", "mtime_ns", "ctime_ns"))):
+            raise VersionedCheckpointRefused("Invalid migration source witness")
+    if ((plan["source"] is None and any(sources.values()))
+            or (plan["source"] is not None and sources[plan["source"]] is None)):
+        raise VersionedCheckpointRefused("Inconsistent migration source selection")
+
+
+def _validate_intent(raw, plan_raw, plan, prefix):
+    intent = _decode(raw)
+    if prefix.operation_id == plan["operation_id"]:
+        if (raw != plan_raw or prefix.sequence != 1
+                or prefix.generation != "m-" + plan["operation_id"]):
+            raise VersionedCheckpointRefused("Initial operation intent differs")
+        return
+    if (type(intent) is not dict
+            or set(intent) != {"kind", "operation_id", "expected", "suffix_sha256",
+                               "suffix_bytes", "suffix_messages"}
+            or intent["kind"] not in ("append", "rewrite")
+            or intent["operation_id"] != prefix.operation_id
+            or not _digest_text(intent["suffix_sha256"])
+            or any(type(intent[name]) is not int or intent[name] < 0
+                   for name in ("suffix_bytes", "suffix_messages"))):
+        raise VersionedCheckpointRefused("Invalid selected operation intent")
+    previous = _prefix_data(intent["expected"])
+    if (previous.session_id != prefix.session_id or previous.sequence + 1 != prefix.sequence
+            or previous.operation_id == prefix.operation_id):
+        raise VersionedCheckpointRefused("Operation predecessor differs")
+    if intent["kind"] == "append":
+        if (prefix.generation != previous.generation
+                or prefix.body != previous.body
+                or prefix.committed_bytes != previous.committed_bytes + intent["suffix_bytes"]
+                or prefix.message_count != previous.message_count + intent["suffix_messages"]):
+            raise VersionedCheckpointRefused("Append result bounds differ from intent")
+    elif (prefix.generation != "r-" + prefix.operation_id
+          or prefix.message_count != intent["suffix_messages"]
+          or prefix.committed_bytes < intent["suffix_bytes"]):
+        raise VersionedCheckpointRefused("Rewrite result differs from intent")
 
 
 def _control(path: Path):
@@ -107,11 +164,8 @@ def _capture(path: Path, prefix: CommittedPrefix, *, unsettled=False):
            for index in (0, 4, 5)):
         raise VersionedCheckpointRefused("Current operation result/publication differs")
     plan, ready = _decode(controls[1][3]), _decode(controls[2][3])
-    if (type(plan) is not dict or type(plan.get("v")) is not int
-            or plan.get("v") != 2 or plan.get("session_id") != prefix.session_id
-            or plan.get("format") != "amplifier.session.transcript"):
-        raise VersionedCheckpointRefused("Invalid writer transition journal")
-    _identity(plan.get("operation_id"))
+    _validate_plan(plan, prefix)
+    _validate_intent(controls[3][3], controls[1][3], plan, prefix)
     if ready != {"format": plan["format"], "v": 2,
                  "session_id": prefix.session_id, "operation_id": plan["operation_id"]}:
         raise VersionedCheckpointRefused("Writer transition is not ready")
@@ -130,6 +184,12 @@ def _capture(path: Path, prefix: CommittedPrefix, *, unsettled=False):
                 or info.st_uid != os.getuid()):
             raise VersionedCheckpointRefused("Committed body is not owner-private")
         stamp = _stamp(info)
+        # The pinned owner's semantic header equality treats 2.0 == 2.
+        # Supplement its bounded check here until the owner ships strict typing;
+        # no alternate descriptor or source authority is created by this guard.
+        header = _decode(body.readline(min(CHUNK + 1, prefix.committed_bytes)))
+        if type(header) is not dict or type(header.get("v")) is not int:
+            raise VersionedCheckpointRefused("Generation header version must be an exact integer")
     return controls, stamp
 
 
@@ -155,10 +215,13 @@ class VersionedCheckpointReceipt:
     _life: _Life = field(repr=False, compare=False)
     _seal: object = field(repr=False, compare=False)
     _attestation: str = field(repr=False, compare=False)
+    _issuer_pid: int = field(repr=False, compare=False)
     kind: str = field(default=_KIND, init=False)
 
     def _local(self):
-        if (type(self) is not VersionedCheckpointReceipt or self._seal is not _SEAL
+        if (type(self) is not VersionedCheckpointReceipt
+                or _ISSUED.get(id(self)) is not self
+                or self._issuer_pid != os.getpid() or self._seal is not _SEAL
                 or type(self._life) is not _Life or not self._life.valid):
             raise VersionedCheckpointRefused("Not a live local versioned checkpoint")
         try:
@@ -238,7 +301,8 @@ def _attest(receipt: VersionedCheckpointReceipt) -> str:
                 for name, namespace, stamp, raw in receipt._controls]
     payload = [receipt.kind, *(getattr(receipt, item.name) for item in fields(CommittedPrefix)),
                str(receipt._session_dir), controls, receipt._body_stamp,
-               id(receipt), id(receipt._seal), id(receipt._life), receipt._life.valid]
+               id(receipt), id(receipt._seal), id(receipt._life), receipt._life.valid,
+               receipt._issuer_pid]
     return hmac.new(_KEY, _json(payload), hashlib.sha256).hexdigest()
 
 
@@ -293,9 +357,10 @@ def acknowledge_versioned_checkpoint(
                         raise VersionedCheckpointRefused("Source changed before checkpoint pin")
                     receipt = VersionedCheckpointReceipt(
                         *(getattr(prefix, item.name) for item in fields(CommittedPrefix)),
-                        writer.session_dir, controls, stamp, life, _SEAL, "",
+                        writer.session_dir, controls, stamp, life, _SEAL, "", os.getpid(),
                     )
                     object.__setattr__(receipt, "_attestation", _attest(receipt))
+                    _ISSUED[id(receipt)] = receipt
                     # Ref schema errors must also refuse a receipt with zero refs
                     # bound; exhaust the exact same scanner used at acceptance.
                     for _ in receipt.iter_refs():
@@ -310,6 +375,8 @@ def acknowledge_versioned_checkpoint(
         receipt.verify()
     except BaseException as exc:
         life.valid = False
+        if receipt is not None:
+            _ISSUED.pop(id(receipt), None)
         if isinstance(exc, (OSError, UnsupportedTranscript)):
             raise VersionedCheckpointRefused("Owned versioned checkpoint refused") from exc
         raise

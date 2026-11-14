@@ -32,7 +32,9 @@ rewrite or migration and never truncates an existing tail.
 
 Writer-created closure is mandatory: matching current/result/publication,
 operation intent, migration journal, ready marker and both legacy directory
-fences. Reader-only fixtures cannot establish this closure. Ancestor directory
+fences. The selected intent's exact schema/predecessor/result bounds and the
+journal's complete source-selection schema are checked before settlement.
+Reader-only fixtures cannot establish this closure. Ancestor directory
 identities and each control file's identity stamp and raw bytes are pinned.
 Files must be no-follow, unaliased owner-private regular files. Body verification
 is capped at `committed_bytes`; existing uncommitted tails are ignored and cannot
@@ -46,7 +48,10 @@ adversarial mutation history between observations.
 `session_id`, `generation`, `body`, `sequence`, `committed_bytes`, `message_count`,
 `sha256`, `operation_id`, and `kind="versioned-checkpoint-backed-v1"`. The exact
 receipt type, issuer seal and process-local HMAC bind all public fields, private
-path/control/body witnesses and object/lifecycle identities. Copies,
+path/control/body witnesses, issuing PID and object/lifecycle identities. An
+issuer-owned weak registry makes exception revocation irreversible by restoring
+receipt-carried fields; a forked child must obtain its own owned acknowledgement.
+Copies,
 serialization, dictionaries and altered fields do not recreate authority.
 Successful context exit leaves the receipt valid for later source-checked
 resolution; every context exception, including final ownership/directory/fence
