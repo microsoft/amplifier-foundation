@@ -1,6 +1,7 @@
-"""Actual Core fixtures; private _observe checks only a PARTIAL callback witness.
+"""Actual Core public positive/negative participating cooperative graph fixtures.
 
-The public ABI remains incomplete pending an enforceable graph contract.
+Earlier private _observe tests remain explicitly PARTIAL mechanism checks; they
+do not replace public construction/seal/boundary/transition qualification.
 """
 
 import asyncio
@@ -1189,4 +1190,336 @@ async def test_participant_loader_swap_restore_invalidates_before_forwarding():
     participant.loader = loader
     assert not bridge.validate_receipt(receipt)
     assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_passive_ready_queue_inspection_reuses_original_callback_record():
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
+        session_id="ready-inspection")
+    loader = ParticipatingFixtureLoader()
+    called = []
+    async def ready(current):
+        called.append(current)
+    loader.enqueue_on_session_ready("host.ready", ready)
+    session.coordinator.loader = loader
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="ready-inspection",
+        participants=("fixture-loop", "fixture-context", "host.ready"))
+    first = session.coordinator.loader.get_on_session_ready_queue()
+    second = session.coordinator.loader.get_on_session_ready_queue()
+    assert first[0][1] is second[0][1]
+    await session.initialize()
+    graph.seal()
+    assert len(called) == 1 and (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_issuer_same_session_mode_transition_issues_new_generation():
+    session, bridge, graph, old_receipt = await positive_graph()
+    old_policy = graph.participant("host.late").hooks.register
+    # Execute the actual participating hook registration/settings operation,
+    # not a Boolean stand-in for the host trigger.
+    with graph.transition() as successor:
+        assert not bridge.validate_receipt(old_receipt)
+        session.config["mode"] = "redacting-mode"
+        successor.participant("host.late").hooks.register(
+            "tool:post", lambda e, d: HookResult(action="modify", data={"result": None}),
+            priority=10, name="mode-redactor")
+        with pytest.raises(ValueError, match="reconstruction"):
+            await bridge(event())
+    receipt = bridge.graph_receipt
+    result = await bridge(event())
+    assert receipt is not old_receipt
+    assert result["complete"] and result["result"] is None
+    # A cached participating registration edge remains source-owned, but an
+    # unscoped late change invalidates the current generation as usual.
+    old_policy("tool:post", lambda e, d: HookResult(), name="late-cached")
+    assert not bridge.validate_receipt(receipt)
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_same_session_transition_rejects_active_boundary_route_and_request():
+    started, release = asyncio.Event(), asyncio.Event()
+    async def callback(e, d):
+        started.set()
+        await release.wait()
+        return HookResult()
+    session, bridge, graph, receipt = await positive_graph([callback])
+    operation = asyncio.create_task(bridge(event()))
+    await started.wait()
+    with pytest.raises(ValueError, match="idle"):
+        with graph.transition():
+            pass
+    release.set()
+    assert (await operation)["complete"]
+    lease, hooks, attributed, _ = enroll(bridge, session.coordinator)
+    with lease:
+        with pytest.raises(ValueError, match="idle"):
+            with graph.transition():
+                pass
+    with bridge.request_scope() as prepared_generation:
+        assert callable(prepared_generation) and prepared_generation() is True
+        with pytest.raises(ValueError, match="idle"):
+            with graph.transition():
+                pass
+    assert prepared_generation() is False
+    with graph.transition() as successor:
+        with pytest.raises(ValueError, match="idle"):
+            with successor.transition():
+                pass
+    assert (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["exception", "cancel", "unowned", "pending"])
+async def test_failed_same_session_transition_never_resurrects_old_receipt(failure):
+    session, bridge, graph, receipt = await positive_graph()
+    if failure in ("exception", "cancel"):
+        error = RuntimeError if failure == "exception" else asyncio.CancelledError
+        with pytest.raises(error):
+            with graph.transition() as successor:
+                successor.participant("host.late").hooks.register(
+                    "tool:post", lambda e, d: HookResult(), name="started-change")
+                raise error()
+    else:
+        with pytest.raises(ValueError):
+            with graph.transition() as successor:
+                if failure == "unowned":
+                    bridge.coordinator.hooks.register("tool:post", lambda e, d: HookResult(), name="unowned")
+                else:
+                    async def pending(c):
+                        pass
+                    session.coordinator.loader.enqueue_on_session_ready("host.late", pending)
+    assert not bridge.validate_receipt(receipt)
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_continue_declared_null_propagates_to_later_native_echo():
+    seen = []
+    def redact(e, d):
+        return HookResult(data={"result": None})
+    def echo(e, d):
+        seen.append(deepcopy(d))
+        return HookResult(action="modify", data=d)
+    session, bridge, graph, receipt = await positive_graph([redact, echo])
+    result = await bridge(event())
+    assert result["complete"] and result["result"] is None
+    assert seen == [{"result": None}]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_special_action_declared_result_is_incomplete_without_reordering():
+    session, bridge, graph, receipt = await positive_graph([
+        lambda e, d: HookResult(action="ask_user", data={"result": None}, approval_prompt="redact+ask")])
+    class Approval:
+        async def request_approval(self, *args):
+            return "allow"
+    session.coordinator.approval_system = Approval()
+    result = await bridge(event())
+    assert not result["complete"] and result["result"] is None
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_normal_return_without_configured_provider_install_never_seals():
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+         "providers": [{"module": "fixture-provider", "config": {}}]},
+        session_id="missing-provider")
+    session.coordinator.loader = ParticipatingFixtureLoader()
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="failed-provider",
+        participants=("fixture-loop", "fixture-context", "fixture-provider"))
+    await session.initialize()
+    with pytest.raises(ValueError):
+        graph.seal()
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_transition_cannot_satisfy_current_config_with_historical_mount():
+    session, bridge, graph, receipt = await positive_graph()
+    with graph.transition() as changed:
+        session.config["session"]["context"] = {"module": "fixture-context", "config": {"version": "B"}}
+        mounted = await session.coordinator.loader.load(
+            "fixture-context", {"version": "B"}, source_hint=None, coordinator=session.coordinator)
+        await mounted(session.coordinator)
+    assert (await bridge(event()))["complete"]
+    with pytest.raises(ValueError):
+        with changed.transition():
+            session.config["session"]["context"] = "fixture-context"
+            # Deliberately NO actual reload/restoration from B to A.
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_cached_participant_view_survives_valid_same_session_generation():
+    session, bridge, graph, receipt = await positive_graph()
+    view = graph.participant("fixture-loop")
+    assert (await bridge(event(), hooks=view.hooks, coordinator=view))["complete"]
+    with graph.transition():
+        pass
+    assert (await bridge(event(), hooks=view.hooks, coordinator=view))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_cached_old_ready_callback_invalidates_current_transition_before_effects():
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
+        session_id="stale-ready")
+    loader = ParticipatingFixtureLoader()
+    calls = []
+    async def original(current):
+        calls.append("ready")
+    loader.enqueue_on_session_ready("host.ready", original)
+    session.coordinator.loader = loader
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="stale", participants=("fixture-loop", "fixture-context", "host.ready"))
+    stale = session.coordinator.loader.get_on_session_ready_queue()[0][1]
+    await session.initialize()
+    graph.seal()
+    with pytest.raises(ValueError):
+        with graph.transition():
+            with pytest.raises(ValueError, match="stale"):
+                await stale(session.coordinator)
+    assert calls == ["ready"] and not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_keeps_transition_guard_until_native_approval_settles():
+    started, release, settled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    session, bridge, graph, receipt = await positive_graph([
+        lambda e, d: HookResult(action="ask_user", approval_prompt="hold actual approval")])
+    class Approval:
+        async def request_approval(self, *args):
+            started.set()
+            try:
+                await release.wait()
+                return "allow"
+            finally:
+                settled.set()
+    session.coordinator.approval_system = Approval()
+    task = asyncio.create_task(bridge(event()))
+    await asyncio.wait_for(started.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    with pytest.raises(ValueError, match="idle"):
+        with graph.transition():
+            pass
+    release.set()
+    await asyncio.wait_for(settled.wait(), 2)
+    for _ in range(10):
+        if not bridge._processing:
+            break
+        await asyncio.sleep(0.01)
+    with graph.transition():
+        pass
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_actual_saved_settings_phase_tracks_load_before_final_late_seal():
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
+        session_id="saved-settings")
+    session.coordinator.loader = ParticipatingFixtureLoader()
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="saved", participants=("fixture-loop", "fixture-context", "host.settings"))
+    await session.initialize()
+    with graph.configure():
+        session.config["session"]["context"] = {"module": "fixture-context", "config": {"saved": True}}
+        mounted = await session.coordinator.loader.load(
+            "fixture-context", {"saved": True}, coordinator=session.coordinator)
+        await mounted(session.coordinator)
+    graph.participant("host.settings").hooks.register(
+        "tool:post", lambda e, d: HookResult(), name="late-settings")
+    graph.seal()
+    assert (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_public_evidence_metadata_detached_identity_opaque_and_strong():
+    session, bridge, graph, receipt = await positive_graph()
+    evidence = graph.participants_evidence()
+    evidence["loads"][0]["config"]["pretend"] = True
+    evidence["registrations"][0]["participant"] = "other"
+    assert type(evidence["registrations"][0]["identity"]) is object
+    assert bridge.validate_receipt(receipt)
+    assert callable(evidence["loads"][0]["mount"])
+    assert callable(evidence["registrations"][0]["original"])
+    assert (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_transition_direct_remount_cannot_inherit_other_config_provenance():
+    session, bridge, graph, receipt = await positive_graph()
+    context_a = session.coordinator.get("context")
+    with graph.transition() as changed:
+        session.config["session"]["context"] = {"module": "fixture-context", "config": {"version": "B"}}
+        mounted = await session.coordinator.loader.load(
+            "fixture-context", {"version": "B"}, coordinator=session.coordinator)
+        await mounted(session.coordinator)
+    assert session.coordinator.get("context") is not context_a
+    assert (await bridge(event()))["complete"]
+    with pytest.raises(ValueError):
+        with changed.transition() as mismatch:
+            await mismatch.participant("fixture-context").mount("context", context_a)
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_explicit_host_adapter_mount_retains_exact_prior_object_provenance():
+    session, bridge, graph, receipt = await positive_graph()
+    previous = session.coordinator.get("context")
+    adapter = object()
+    with graph.transition() as changed:
+        await changed.participant("host.late").mount_adapter(
+            "context", adapter, previous=previous)
+    assert session.coordinator.get("context") is adapter
+    assert (await bridge(event()))["complete"]
+    evidence = changed.participants_evidence()["adapters"]
+    assert evidence[-1]["previous"] is previous and evidence[-1]["installed"] is adapter
+    with pytest.raises(ValueError):
+        with changed.transition() as invalid:
+            await invalid.participant("host.late").mount_adapter(
+                "context", object(), previous=previous)
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_request_scope_yields_literal_validator_for_entire_candidate_lifetime():
+    session, bridge, graph, receipt = await positive_graph()
+    with bridge.request_scope() as validate:
+        assert validate() is True
+        assert validate() is True  # count and send reuse one entered lifetime
+        with pytest.raises(ValueError, match="idle"):
+            with graph.transition():
+                pass
+        session.config["revoked_candidate"] = True
+        assert validate() is False
+        del session.config["revoked_candidate"]
+        assert validate() is False  # restored config cannot revive receipt
+    assert validate() is False
+    assert bridge._active_requests == 0
     await session.cleanup()

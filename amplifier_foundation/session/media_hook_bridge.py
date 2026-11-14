@@ -7,7 +7,9 @@ for host registrations. This is not an interceptor for arbitrary native hooks.
 
 from __future__ import annotations
 
+import asyncio
 from contextvars import ContextVar
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 import inspect
@@ -51,6 +53,7 @@ class _Registration:
     participant: str | None = None
     original: Any = None
     observed: Any = None
+    identity: Any = field(default_factory=object)
 
 
 @dataclass
@@ -68,6 +71,7 @@ class _Witness:
 
 _current: ContextVar[_Witness | None] = ContextVar("media_tool_post_witness", default=None)
 _route_scopes: ContextVar[tuple[Any, ...]] = ContextVar("media_route_scopes", default=())
+_mounting: ContextVar[Any] = ContextVar("media_participating_mount", default=None)
 
 
 class _ConstructionReceipt:
@@ -92,6 +96,11 @@ def _load_plan(config: dict[str, Any]) -> list[tuple[str, Any, Any]]:
     return deepcopy(result)
 
 
+def participating_module_ids(session: Any) -> tuple[str, ...]:
+    """Inspect Core's effective structural plan, NOT approve configured sources."""
+    return tuple(dict.fromkeys(item[0] for item in _load_plan(session.config)))
+
+
 class ParticipatingHookGraph:
     """One actual fresh-session construction, under a cooperative host contract.
 
@@ -112,11 +121,15 @@ class ParticipatingHookGraph:
         self._seen: set[str] = set()
         self._ready: list[list[Any]] = []
         self._wrapped_ready: list[Any] = []
+        self._ready_wrappers: list[tuple[Any, str, Any]] = []
         self._receipt: Any = None
         self._record: Any = None
         self._mount_records: list[tuple[str, Any, str]] = []
+        self._slot_sources: dict[tuple[str, Any], Any] = {}
+        self._adapter_mounts: list[Any] = []
         self._generation = uuid4().hex
         self._core_abi = package_version("amplifier-core")
+        self._transition_parent: Any = None
 
     def _invalidate(self, reason: str) -> None:
         self._state, self._reason = "invalid", reason
@@ -152,30 +165,49 @@ class ParticipatingHookGraph:
             "ready": tuple({"callback": item[0], "participant": item[1],
                             "completed": item[2]} for item in self._ready),
             "registrations": tuple({
-                "identity": item, "participant": item.participant,
+                "identity": item.identity, "participant": item.participant,
                 "original": item.original, "observed": item.observed,
                 "name": item.name, "priority": item.priority, "order": item.order,
             } for item in self._bridge._expected()),
+            "adapters": tuple({"slot": slot, "previous": previous, "installed": installed,
+                               "participant": owner} for slot, previous, installed, owner
+                              in self._adapter_mounts),
         }
 
     def _loading(self, module_id: str, config: Any, source_hint: Any) -> dict[str, Any]:
         self._mutation("additional module loading after seal")
         occurrence = len(self._loads)
         actual = deepcopy((module_id, config or {}, source_hint))
-        if (self._state != "open" or occurrence >= len(self._plan) or
-                self._plan[occurrence] != actual or module_id not in self.participants):
+        if (self._state != "open" or module_id not in self.participants or
+                (self._transition_parent is None and
+                 (occurrence >= len(self._plan) or self._plan[occurrence] != actual))):
             self._invalidate("module load does not match participating construction plan")
-        record = {"plan": actual, "mount": None, "mounted": False}
+        kinds = []
+        current = self._session.config
+        for key in ("providers", "tools"):
+            if any(spec.get("module") == module_id for spec in current.get(key, [])):
+                kinds.append(key)
+        for key in ("orchestrator", "context"):
+            spec = current.get("session", {}).get(key, f"loop-basic" if key == "orchestrator" else "context-simple")
+            if (spec if isinstance(spec, str) else spec.get("module")) == module_id:
+                kinds.append(key)
+        record = {"plan": actual, "mount": None, "mounted": False, "slots": set(), "kinds": kinds}
         self._loads.append(record)
         return record
 
     def _ready_callback(self, callback: Any, participant: str) -> Any:
+        for original, owner, wrapped in self._ready_wrappers:
+            if original is callback and owner == participant:
+                return wrapped
         self._mutation("ready callback added after seal")
         view = self.participant(participant)
         record: list[Any] = [callback, participant, False]
         self._ready.append(record)
 
         async def ready(coordinator: Any) -> Any:
+            if self._bridge._graph is not self:
+                self._bridge._graph._invalidate("stale ready callback generation")
+                raise ValueError("ready callback belongs to a stale graph generation")
             self._mutation("ready callback after seal")
             if record[2]:
                 self._invalidate("ready callback repeated")
@@ -187,6 +219,7 @@ class ParticipatingHookGraph:
                 self._invalidate("ready callback failed")
                 raise
         self._wrapped_ready.append(ready)
+        self._ready_wrappers.append((callback, participant, ready))
         return ready
 
     def _mounts(self) -> tuple[Any, ...]:
@@ -248,7 +281,7 @@ class ParticipatingHookGraph:
                 not self._session.initialized or self._session.coordinator is not bridge._coordinator or
                 self._session.config != self._config or
                 self._seen != set(self.participants) or
-                len(self._loads) != len(self._plan) or
+                not self._plan_complete() or
                 any(not item["mounted"] for item in self._loads) or
                 any(not item[2] for item in self._ready) or
                 not bridge.readiness()["registration_consistent"] or
@@ -262,6 +295,98 @@ class ParticipatingHookGraph:
         if not self._valid(self._receipt):
             raise ValueError("participating construction changed during seal")
         return self._receipt
+
+    @contextmanager
+    def configure(self):
+        """Track actual saved-settings construction after init, before first seal."""
+        bridge = self._bridge
+        if (self._state != "open" or not self._session.initialized or
+                self._receipt is not None or bridge._transition is not None or
+                bridge._active_boundaries or bridge._active_requests or bridge._processing or
+                any(lease._active for lease in bridge._routes) or
+                not self._ready_queue_empty() or not self._plan_complete()):
+            raise ValueError("configuration phase requires complete idle open construction")
+        self._transition_parent = self._transition_parent or object()
+        bridge._transition = self
+        try:
+            yield self
+            self._config = deepcopy(self._session.config)
+            self._plan = _load_plan(self._config)
+            if (not {item[0] for item in self._plan} <= set(self.participants) or
+                    not self._plan_complete() or not self._ready_queue_empty()):
+                raise ValueError("configured modules did not complete actual construction")
+        except BaseException:
+            self._invalidate("participating saved-settings construction failed")
+            raise
+        finally:
+            bridge._transition = None
+
+    def _plan_complete(self) -> bool:
+        if self._transition_parent is None and len(self._loads) != len(self._plan):
+            return False
+        # Only the latest actual occurrence of a module can supply its current
+        # config/source identity. Historical A must not stand in for live B.
+        available = []
+        for item in reversed(self._loads):
+            if not any(other["plan"][0] == item["plan"][0] for other in available):
+                available.append(item)
+        for planned in self._plan:
+            match = next((item for item in available
+                          if item["plan"] == planned and item["mounted"] and
+                          all((self._slot_sources.get(slot, (None, None))[0] is item and
+                               self._bridge._coordinator.get(slot[0], slot[1]) is
+                               self._slot_sources[slot][1]) for slot in item["slots"]) and
+                          all(any(slot[0] == kind and self._bridge._coordinator.get(
+                              slot[0], slot[1]) is not None for slot in item["slots"])
+                              for kind in item["kinds"])), None)
+            if match is None:
+                return False
+            available.remove(match)
+        return True
+
+    @contextmanager
+    def transition(self, *, participants: tuple[str, ...] | None = None):
+        """Issuer-owned idle same-session generation around the REAL host edit."""
+        bridge = self._bridge
+        if (not self._valid(self._receipt) or bridge._active_boundaries or
+                bridge._active_requests or bridge._processing or bridge._transition is not None or
+                any(lease._active for lease in bridge._routes)):
+            raise ValueError("transition requires a valid idle graph without active leases")
+        selected = self.participants if participants is None else participants
+        bridge._validate_participants(selected)
+        if not set(self.participants) <= set(selected):
+            raise ValueError("transition cannot discard existing participant provenance")
+        successor = ParticipatingHookGraph(bridge, self._session, self.owner, selected)
+        successor._transition_parent = self
+        successor._loads = list(self._loads)
+        successor._seen = set(self._seen)
+        successor._views = dict(self._views)
+        successor._mount_records = list(self._mount_records)
+        successor._slot_sources = dict(self._slot_sources)
+        successor._adapter_mounts = list(self._adapter_mounts)
+        successor._ready = [list(item) for item in self._ready]
+        # Completed ready records are provenance history. Never reuse wrappers
+        # closing over the old issuer: fresh enqueue/execution must be tracked
+        # by this successor, including failures swallowed by Core initialization.
+        successor._wrapped_ready = []
+        successor._ready_wrappers = []
+        self._invalidate("issuer began same-session reconstruction")
+        bridge._graph, bridge._transition = successor, successor
+        try:
+            yield successor
+            if bridge._active_boundaries or bridge._active_requests or bridge._processing or any(
+                    lease._active for lease in bridge._routes):
+                raise ValueError("transition acquired active execution")
+            successor._config = deepcopy(self._session.config)
+            successor._plan = _load_plan(successor._config)
+            if not {entry[0] for entry in successor._plan} <= set(selected):
+                raise ValueError("transition selected an undeclared module")
+            successor.seal()
+        except BaseException:
+            successor._invalidate("participating transition failed or was cancelled")
+            raise
+        finally:
+            bridge._transition = None
 
     def reconstruct(self, new_session: Any, *, participants: tuple[str, ...]) -> ParticipatingHookGraph:
         """Issuer-owned fresh generation for a real host mode/settings rebuild.
@@ -311,6 +436,7 @@ class _AttributedRoute:
     coordinator_parent: Any
     source: dict[str, Any]
     observation: dict[str, Any]
+    generation: Any = None
 
 
 class AttributedRouteLease:
@@ -389,8 +515,17 @@ class _RouteProcessor:
         if witness is not None and witness.receipt is not None:
             if not self.bridge.validate_receipt(witness.receipt):
                 witness.complete = False
+        operation = asyncio.ensure_future(self.bridge._native_process(result, event, name))
+        self.bridge._processing.add(operation)
+        def settled(task: Any) -> None:
+            self.bridge._processing.discard(task)
+            if not task.cancelled():
+                task.exception()  # consume unobserved errors after caller cancellation
+        operation.add_done_callback(settled)
         try:
-            processed = await self.bridge._native_process(result, event, name)
+            # Native approval may outlive a cancelled waiter. Track its actual
+            # settlement and keep transitions fenced, without cancelling/replay.
+            processed = await asyncio.shield(operation)
         except BaseException:
             for lease in self.all_routes:
                 if lease._route.observation.get("post_seen"):
@@ -428,7 +563,44 @@ class _CoordinatorView:
             kind = args[0] if args else kwargs["mount_point"]
             module = args[1] if len(args) > 1 else kwargs["module"]
             graph._mount_records.append((kind, module, self._participant))
+            name = args[2] if len(args) > 2 else kwargs.get("name")
+            slot = (kind, name)
+            loading = _mounting.get()
+            if loading is not None and loading[0] is graph:
+                loading[1]["slots"].add(slot)
+                graph._slot_sources[slot] = (loading[1], module)
+            else:
+                # A direct remount cannot inherit an earlier load's config.
+                # Source-owned transparent adapters use mount_adapter below.
+                graph._slot_sources.pop(slot, None)
         return value
+
+    async def mount_adapter(self, mount_point: str, module: Any, *,
+                            previous: Any, name: str | None = None) -> Any:
+        """Record an explicit host-owned adapter edge over an actual live slot.
+
+        This proves construction identity/order, not transparent behavior. The
+        named composition owner reviews the adapter's actual source semantics.
+        """
+        graph = self._bridge._graph
+        slot = (mount_point, name)
+        if graph is None or self._participant not in graph.participants:
+            raise ValueError("adapter mount requires an actual graph participant")
+        graph._mutation("adapter mount after seal")
+        source = graph._slot_sources.get(slot)
+        if (source is None or source[1] is not previous or
+                self._bridge._coordinator.get(mount_point, name) is not previous):
+            graph._invalidate("adapter does not match actual prior construction")
+            raise ValueError("adapter prior endpoint does not match actual loaded slot")
+        try:
+            result = await self._bridge._coordinator.mount(mount_point, module, name)
+        except BaseException:
+            graph._invalidate("participating adapter mount failed")
+            raise
+        graph._mount_records.append((mount_point, module, self._participant))
+        graph._adapter_mounts.append((slot, previous, module, self._participant))
+        graph._slot_sources[slot] = (source[0], module)
+        return result
 
     async def unmount(self, *args: Any, **kwargs: Any) -> Any:
         graph = self._bridge._graph
@@ -436,6 +608,9 @@ class _CoordinatorView:
             graph._mutation("module unmounted after seal")
             if self._participant not in graph.participants:
                 graph._invalidate("unowned module unmount")
+            kind = args[0] if args else kwargs["mount_point"]
+            name = args[1] if len(args) > 1 else kwargs.get("name")
+            graph._slot_sources.pop((kind, name), None)
         return await self._bridge._coordinator.unmount(*args, **kwargs)
 
     def get(self, mount_point: str, name: str | None = None) -> Any:
@@ -499,6 +674,14 @@ class _HooksView:
                         witness.effective = None
                     elif isinstance(result.data, dict) and "result" in result.data:
                         witness.effective = deepcopy(result.data["result"])
+                        if result.action == "continue":
+                            # Core chains only Modify. A declared result field
+                            # must reach later callbacks in this same dispatch.
+                            result = result.model_copy(update={"action": "modify"})
+                        elif result.action != "modify":
+                            # Injection/approval cannot also carry a replacement
+                            # through Core's one-action boundary without loss.
+                            witness.complete = False
                     elif result.action == "modify":
                         witness.effective = None
                     elif data != before:
@@ -608,9 +791,13 @@ class _LoaderView:
 
         async def mounted(coordinator: Any) -> Any:
             if graph:
+                if self._bridge._graph is not graph:
+                    self._bridge._graph._invalidate("stale module mount generation")
+                    raise ValueError("mount callback belongs to a stale graph generation")
                 graph._mutation("module mounted after seal")
                 if record["mounted"]:
                     graph._invalidate("module mounted repeatedly")
+            token = _mounting.set((graph, record)) if graph else None
             try:
                 value = await mount(view)
                 if record is not None:
@@ -620,6 +807,9 @@ class _LoaderView:
                 if graph:
                     graph._invalidate("participating module mount failed")
                 raise
+            finally:
+                if token is not None:
+                    _mounting.reset(token)
 
         if ready := getattr(mount, "__on_session_ready__", None):
             callback = graph._ready_callback(ready[1], module_id) if graph else self._ready(ready[1])
@@ -675,6 +865,10 @@ class MediaHookBridge:
         self._registrations: list[_Registration] = []
         self._routes: list[AttributedRouteLease] = []
         self._graph: ParticipatingHookGraph | None = None
+        self._transition: ParticipatingHookGraph | None = None
+        self._active_boundaries = 0
+        self._active_requests = 0
+        self._processing: set[Any] = set()
         self._revision = 0
         self.hooks = _HooksView(self)
         self.coordinator = _CoordinatorView(self)
@@ -707,10 +901,7 @@ class MediaHookBridge:
             raise ValueError("positive participating graph requires qualified Core ABI 2.0.2")
         if type(owner) is not str or not owner:
             raise ValueError("construction requires a named host owner")
-        if (type(participants) is not tuple or not participants or
-                any(type(name) is not str or not name for name in participants) or
-                len(set(participants)) != len(participants)):
-            raise ValueError("construction requires distinct explicit participants")
+        self._validate_participants(participants)
         if not {entry[0] for entry in _load_plan(session.config)} <= set(participants):
             raise ValueError("all configured modules must participate")
         self._graph = ParticipatingHookGraph(self, session, owner, participants)
@@ -718,6 +909,29 @@ class MediaHookBridge:
             self._graph._invalidate("preexisting unexplained module mounts")
             raise ValueError("participating construction requires unmounted fresh modules")
         return self._graph
+
+    @staticmethod
+    def _validate_participants(participants: tuple[str, ...]) -> None:
+        if (type(participants) is not tuple or not participants or
+                any(type(name) is not str or not name for name in participants) or
+                len(set(participants)) != len(participants)):
+            raise ValueError("construction requires distinct explicit participants")
+
+    @contextmanager
+    def request_scope(self):
+        """Host preparation/refit/send owner prevents a concurrent graph change."""
+        if self._transition is not None:
+            raise ValueError("request cannot start during participating reconstruction")
+        receipt = self.graph_receipt
+        active = True
+        def validate() -> bool:
+            return active and self.validate_receipt(receipt)
+        self._active_requests += 1
+        try:
+            yield validate
+        finally:
+            active = False
+            self._active_requests -= 1
 
     def participant(self, name: str) -> Any:
         if self._graph is None:
@@ -746,10 +960,16 @@ class MediaHookBridge:
 
     async def __call__(self, event: dict[str, Any], *, hooks: Any = None,
                        coordinator: Any = None) -> dict[str, Any]:
+        if self._transition is not None:
+            raise ValueError("tool:post cannot start during participating reconstruction")
         emitter, processor = self._bound_route(event, hooks, coordinator)
         receipt = self.graph_receipt
         qualified = self.validate_receipt(receipt)
-        observed = await self._observe(event, hooks=emitter, coordinator=processor)
+        self._active_boundaries += 1
+        try:
+            observed = await self._observe(event, hooks=emitter, coordinator=processor)
+        finally:
+            self._active_boundaries -= 1
         complete = qualified and self.validate_receipt(receipt) and observed["complete"]
         return {"hook_result": observed["hook_result"],
                 "result": observed["result"] if complete else None,
@@ -784,10 +1004,11 @@ class MediaHookBridge:
             lease = lease._route.hook_parent if hooks else lease._route.coordinator_parent
         return tuple(leases)
 
-    @staticmethod
-    def _routes_valid(routes: tuple[AttributedRouteLease, ...]) -> bool:
+    def _routes_valid(self, routes: tuple[AttributedRouteLease, ...]) -> bool:
         scopes = _route_scopes.get()
-        return all(item._active and any(scope is item for scope in scopes) for item in routes)
+        return all(item._active and item._bridge is self and
+                   item._route.generation is self._graph and
+                   any(scope is item for scope in scopes) for item in routes)
 
     def enroll_attributed_route(
         self, *, hooks: Any, coordinator: Any, parent_hooks: Any,
@@ -829,7 +1050,7 @@ class MediaHookBridge:
         route = _AttributedRoute(hooks, coordinator,
                                  hook_parents[0] if hook_parents else None,
                                  coordinator_parents[0] if coordinator_parents else None,
-                                 deepcopy(source), observation)
+                                 deepcopy(source), observation, self._graph)
         lease = AttributedRouteLease(self, route)
         self._routes.append(lease)
         return lease

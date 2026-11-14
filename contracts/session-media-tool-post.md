@@ -81,6 +81,21 @@ strong references to session/bridge/registry/loader/native endpoints/mounted
 modules/configuration/actual callback identities and generation; no id()-only
 registry or GC/ABA identity test is used.
 
+`participating_module_ids(session)` is only structural inspection of Core defaults
+and selected module IDs, never a cooperative-source approval list. Hosts must
+select the actual named reviewed composition explicitly. Participant views may
+be retained before their optional late callback is installed; this records owner
+enrollment, not a claim that a callback ran.
+
+Initial saved settings applied after initialize but before final late-hook sealing
+can use `with graph.configure():` around the actual owned configurator operation.
+It requires a completed idle OPEN construction, records actual additional module
+loads/mounts and config deltas, and leaves sealing to the final host phase. A
+changed plan cannot be satisfied by an old historical mounted record: the latest
+actual module configuration/source must match its live installed slots. Core
+provider/tool mount rollback or a normal callback return without installation
+cannot qualify a configured occurrence.
+
 `bridge.graph_receipt` returns that issuer-owned token. `validate_receipt(token)`
 checks only that exact issuer/generation and returns False for foreign/copied/
 reconstructed tokens. `receipt_status(token)` returns scalar valid/reason,
@@ -118,6 +133,21 @@ context/orchestrator identity and captured endpoint changes are relevant and
 invalidate. A post mutation invalidates before forwarding; restoring equal names
 or removing the transient handler does not revive the receipt.
 
+An ordinary direct remount retires the old module-load provenance for that slot;
+config B cannot qualify while object A is restored under B's old source record.
+Actual host-owned provider/tool adapters use an explicit edge:
+
+```python
+await graph.participant("host.media").mount_adapter(
+    "providers", actual_wrapper, previous=actual_current_provider, name=provider_id)
+```
+
+This verifies actual prior endpoint identity and records its load provenance,
+the new installed object and participating owner. The named composition owner
+still reviews the adapter source/semantics; a label or claimed transparency is
+not proof. Use it before sealing or within an owned transition, never silently
+swap a sealed runtime. `participants_evidence()["adapters"]` exposes these edges.
+
 Normal settings/mode changes must reconstruct the qualifying generation rather
 than permanently disable a functioning feature or silently reseal the old one:
 
@@ -130,12 +160,63 @@ new_receipt = new_graph.seal()
 ```
 
 This is issuer-owned **distinct fresh session** reconstruction, not resealing the
-old receipt or replaying tool effects. Hosts currently changing modes/providers
-on the same coordinator need an actual coordinated reconstruction lifecycle;
-this method alone does not prove those host entrypoints integrated. Stable normal
+old receipt or replaying tool effects. Same-coordinator normal mode/configurator
+edits have a separate issuer-owned idle transition:
+
+```python
+with graph.transition(participants=all_old_plus_new_participants) as successor:
+    # Run the REAL mode/configurator operation with these persistent views.
+    registration = successor.participant("host.mode")
+    await actual_mode_owner.activate(registration_coordinator=registration)
+# Successful exit checks actual current config/load plan/mount/ready records,
+# then issues a distinct generation/receipt. `successor` is the current graph.
+```
+
+That activation signature is illustrative; the host adapts its actual owner's
+public registration seam, not a new hook engine or caller-provided proof callback.
+Entry requires the old receipt still valid and no active boundary, request scope,
+attributed call lease or nested transition. It invalidates the old generation
+BEFORE the host operation. Existing participants/callback/source objects remain
+strongly referenced; actual new participating registrations/mounts/load work are
+recorded. Source config deltas must correspond to actual loaded occurrences.
+Successful exit seals the new construction; exceptions, cancellation, unowned
+changes, incomplete ready work or mismatch leave it incomplete, with no rollback,
+old receipt resurrection or arbitrary caller reseal. Old routes pin the old
+generation. Parent participant provenance cannot be silently discarded.
+Cached participant views preserve their identities across same-session changes.
+Stale mount/ready callbacks from an earlier generation are refused before effects
+and invalidate the current affected construction; their old completion flags
+cannot hide a caught failure in the new graph.
+
+The host's real prepare/count/refit/send owner must use `bridge.request_scope()`
+and its existing private-candidate identity/invalidation checks across a settings
+transition. This scope blocks starting a transition during that owned request; it
+does not authorize transport, hydrate images or replace provider witnesses. The
+graph helper does not discover opaque third-party in-flight requests by magic.
+The sync zero-argument context factory yields a synchronous zero-argument
+validator. It returns literal True only while that entered candidate scope is
+active and its captured exact receipt/generation remains valid, otherwise False.
+Pass `request_scope=bridge.request_scope` to the actual prepared-provider owner;
+one entered scope spans overlay/support/prepare/count/refit/send and is released
+on candidate release/abandonment/error/cancellation/close, not at each method end.
+Actual provider retry/transport validates the same candidate before each attempt.
+Native processing is retained as one strong, settlement-owned task. Cancelling
+its Python waiter still propagates cancellation and clears observation state,
+but does not advertise idleness until the actual native operation settles. No
+approval operation is cancelled/replayed just to clear the transition fence.
+
+Actual CLI and Unified host triggers still need their own source integration and
+tests; a helper fixture is not proof those entrypoints use it. Stable normal
 provider/tool instrumentation must be installed before sealing and reused across
 turns; repeatedly replacing wrappers invalidates exact endpoint identity. Host
 owners qualify first/second-turn behavior and transition restoration separately.
+
+Ready queue reads reuse the same original-callback/participant identity record;
+passive repeated inspection cannot create unfinished duplicate obligations.
+Late/pending/undeclared ready work still invalidates qualification. Host-only
+`graph.participants_evidence()` exposes detached load metadata plus strong actual
+mount/ready/original/observed callback references and registration identities for
+the owning reviewed source-manifest join; it does not approve that manifest.
 
 ## Structural boundary and effective result
 
@@ -164,6 +245,10 @@ witness supplements the graph receipt. A positive result requires BOTH.
   removal. Modify without result clears the effective value.
 - Continue without result retains the current effective value, never the original
   staged refs after another callback removed them.
+- Continue with a declared data.result normalizes into native Modify, so the
+  replacement/null is visible to later callbacks during the one actual emission.
+  Injection/approval with a declared replacement cannot compose losslessly in
+  one Core action and therefore cannot produce a complete media witness.
 - In-place result edits/deletion followed by Continue normalize into the existing
   native Modify action once, preserving flags and letting later hooks see edits.
 - In-place edits plus injection/approval cannot be represented losslessly by one
