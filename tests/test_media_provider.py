@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import unittest
 from types import MappingProxyType
 
 from amplifier_core import ChatRequest
 from amplifier_core import Message
+from amplifier_core.message_models import ImageBlock, TextBlock, ThinkingBlock
 
 from amplifier_foundation.session.media_provider import MediaPreparedProvider
 
@@ -69,6 +72,34 @@ class Capability:
             raise ValueError("Unknown projection")
         self.witnesses.append((purpose, projected))
         return prepared.validate(request_options=request_options)
+
+
+class FallbackCapability(Capability):
+    """Synthetic projector; actual Foundation projection is qualified separately."""
+
+    async def prepare_request(self, canonical, **binding):
+        prepared = await super().prepare_request(canonical, **binding)
+        for message in prepared.request.messages:
+            refs = (message.metadata or {}).get("experimental.media.v1", {}).get("refs", [])
+            if isinstance(message.content, list):
+                message.content = [
+                    TextBlock(
+                        text="[Image unavailable: inline image is not admitted as session media; no pixels supplied]",
+                        visibility=block.visibility,
+                    ) if isinstance(block, ImageBlock) else
+                    TextBlock(
+                        text="[Image unavailable: provider or execution scope does not support this image position; no pixels supplied]",
+                        visibility=block.visibility,
+                    ) if isinstance(block, TextBlock) and any(
+                        block.text == f"[Session image {ref['sha256']}]" for ref in refs
+                    ) else block
+                    for block in message.content
+                ]
+        prepared.projected = prepared.request.model_dump(mode="json")
+        prepared.projection_digest = hashlib.sha256(
+            json.dumps(prepared.projected, sort_keys=True).encode()
+        ).hexdigest()
+        return prepared
 
 
 class PlainProvider:
@@ -644,6 +675,185 @@ class MediaProviderTests(unittest.IsolatedAsyncioTestCase):
                 self.canonical, request_options={"temperature": 0.5}
             )
         self.assertTrue(self.capability.prepared[-1].released)
+
+
+class TextFallbackTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.capability = FallbackCapability()
+        self.provider = PlainProvider(self.capability)
+        self.identity = {"provider": "fixture", "account": "account", "generation": 1}
+        self.wrapper = MediaPreparedProvider(
+            self.provider, self.capability, provider_identity=self.identity
+        )
+        self.canonical = ChatRequest(messages=[Message(
+            role="tool", name="camera", tool_call_id="actual-call",
+            content=[
+                TextBlock(text="before"),
+                ImageBlock(source={"type": "base64", "data": "not-real-pixels"}),
+                TextBlock(text="after"),
+            ],
+        )])
+
+    async def asyncTearDown(self):
+        await self.wrapper.aclose()
+
+    async def witness(self, **kwargs):
+        return await self.wrapper.media_text_fallback_witness(self.canonical, **kwargs)
+
+    async def test_plain_provider_freezes_warning_view_without_numeric_budget_or_provider_call(self):
+        original = self.canonical.model_dump(mode="json")
+        view = await self.witness(request_options={"extended_thinking": True})
+        self.assertEqual(set(view), {"v", "validated", "projection_digest", "messages"})
+        self.assertEqual(len(view["projection_digest"]), 64)
+        self.assertTrue(view["validated"])
+        self.assertEqual(
+            [block["text"] for block in view["messages"][0]["content"]],
+            ["before",
+             "[Image unavailable: inline image is not admitted as session media; no pixels supplied]",
+             "after"],
+        )
+        self.assertEqual(view["messages"][0]["role"], "tool")
+        self.assertEqual(view["messages"][0]["tool_call_id"], "actual-call")
+        self.assertEqual(view["messages"][0]["name"], "camera")
+        self.assertEqual(self.canonical.model_dump(mode="json"), original)
+        self.assertFalse(self.provider.sent)
+        self.assertFalse(hasattr(self.wrapper, "request_budget"))
+        with self.assertRaises(ValueError):
+            self.wrapper.media_budget_witness(
+                self.canonical, request_options={"extended_thinking": True}
+            )
+        await self.wrapper.complete(self.canonical, extended_thinking=True)
+        self.assertIs(self.provider.sent[0], self.capability.prepared[0].request)
+        self.assertEqual(len(self.capability.prepared), 1)
+        self.assertTrue(self.capability.prepared[0].released)
+
+    async def test_unavailable_budget_reuses_exact_private_warning_projection(self):
+        provider = Provider(self.capability)
+        provider.on_budget = lambda _: None
+        wrapper = MediaPreparedProvider(
+            provider, self.capability, provider_identity=self.identity
+        )
+        try:
+            self.assertIsNone(await wrapper.request_budget(
+                self.canonical, context_estimate=2,
+                request_options={"extended_thinking": True},
+            ))
+            view = await wrapper.media_text_fallback_witness(
+                self.canonical, request_options={"extended_thinking": True}
+            )
+            self.assertTrue(view["validated"])
+            await wrapper.complete(self.canonical, extended_thinking=True)
+            self.assertIs(provider.budgeted[0], provider.sent[0])
+            self.assertEqual(len(self.capability.prepared), 1)
+        finally:
+            await wrapper.aclose()
+
+    async def test_detached_view_does_not_export_refs_or_share_private_buffers(self):
+        ref = {"v": 1, "sha256": "a" * 64}
+        self.canonical.messages[0].metadata = {"experimental.media.v1": {"refs": [ref]}}
+        self.canonical.messages[0].content[1] = TextBlock(text=f"[Session image {ref['sha256']}]")
+        original = self.canonical.model_dump(mode="json")
+        view = await self.witness()
+        self.assertNotIn("metadata", view["messages"][0])
+        self.assertNotIn("experimental.media.v1", json.dumps(view))
+        prepared = self.capability.prepared[0]
+        snapshot = prepared.request.model_dump(mode="json")
+        view["messages"][0]["content"][0]["text"] = "caller-mutated"
+        view["messages"].clear()
+        self.assertEqual(prepared.request.model_dump(mode="json"), snapshot)
+        self.assertEqual(self.canonical.model_dump(mode="json"), original)
+        await self.wrapper.complete(self.canonical)
+
+    async def test_exact_fallback_options_are_required_at_dispatch(self):
+        await self.witness(request_options={"extended_thinking": True})
+        with self.assertRaises(ValueError):
+            await self.wrapper.complete(self.canonical)
+        self.assertEqual(len(self.capability.prepared), 1)
+        self.assertTrue(self.capability.prepared[0].released)
+        self.assertFalse(self.provider.sent)
+
+    async def test_repeated_fallback_revalidates_same_candidate_without_measured_claim(self):
+        first = await self.witness()
+        validations = self.capability.prepared[0].validations
+        self.assertEqual(await self.witness(), first)
+        self.assertEqual(len(self.capability.prepared), 1)
+        self.assertGreater(self.capability.prepared[0].validations, validations)
+        with self.assertRaises(ValueError):
+            self.wrapper.media_budget_witness(self.canonical)
+
+    async def test_fallback_does_not_make_hydrated_projection_locally_countable(self):
+        self.capability = Capability()
+        self.wrapper = MediaPreparedProvider(
+            self.provider, self.capability, provider_identity=self.identity
+        )
+        with self.assertRaises(ValueError):
+            await self.witness()
+        self.assertTrue(self.capability.prepared[0].released)
+        self.assertFalse(self.provider.sent)
+
+    async def test_nontext_blocks_and_unknown_metadata_refuse_instead_of_undercounting(self):
+        mutations = (
+            lambda r: r.messages[0].content.append(ThinkingBlock(thinking="private reasoning")),
+            lambda r: setattr(r.messages[0], "metadata", {"reasoning": "opaque state"}),
+            lambda r: setattr(r, "metadata", {"provider_state": "opaque state"}),
+            lambda r: setattr(r.messages[0], "provider_extra", "opaque state"),
+            lambda r: setattr(r.messages[0].content[0], "provider_extra", "opaque state"),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                canonical = self.canonical.model_copy(deep=True)
+                mutate(canonical)
+                with self.assertRaises(ValueError):
+                    await self.wrapper.media_text_fallback_witness(canonical)
+                self.assertTrue(self.capability.prepared[-1].released)
+        self.assertFalse(self.provider.sent)
+
+    async def test_plain_literal_warning_is_not_a_media_fallback(self):
+        canonical = request("[Image unavailable: session image expired; no pixels supplied]")
+        with self.assertRaises(ValueError):
+            await self.wrapper.media_text_fallback_witness(canonical)
+        self.assertFalse(self.capability.prepared)
+
+    async def test_live_identity_model_or_canonical_mutation_refuses_dispatch(self):
+        for change in ("identity", "model", "canonical"):
+            with self.subTest(change=change):
+                await self.witness()
+                if change == "identity":
+                    self.identity["generation"] += 1
+                elif change == "model":
+                    self.provider.default_model = "changed"
+                else:
+                    self.canonical.messages[0].content[0].text = "changed"
+                with self.assertRaises(ValueError):
+                    await self.wrapper.complete(self.canonical)
+                self.assertTrue(self.capability.prepared[-1].released)
+        self.assertFalse(self.provider.sent)
+
+    async def test_fallback_error_cancellation_and_session_close_release(self):
+        for outcome in ("assets", "cancel", "closed"):
+            with self.subTest(outcome=outcome):
+                self.capability.assets_valid = True
+                self.capability.during_prepare = None
+                if outcome == "assets":
+                    self.capability.assets_valid = False
+                elif outcome == "cancel":
+                    # The capability owns cleanup before it returns an association.
+                    async def prepare(canonical, **binding):
+                        raise asyncio.CancelledError
+                    original = self.capability.prepare_request
+                    self.capability.prepare_request = prepare
+                    try:
+                        with self.assertRaises(asyncio.CancelledError):
+                            await self.witness()
+                    finally:
+                        self.capability.prepare_request = original
+                    continue
+                else:
+                    self.wrapper.close()
+                with self.assertRaises(ValueError):
+                    await self.witness()
+                if outcome == "assets":
+                    self.assertTrue(self.capability.prepared[-1].released)
 
 
 if __name__ == "__main__":
