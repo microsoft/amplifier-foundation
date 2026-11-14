@@ -359,6 +359,129 @@ class MediaPreparedProvider:
             self._release(candidate)
             raise
 
+    @staticmethod
+    def _text_fallback_messages(request: Any) -> list[dict[str, Any]]:
+        """Copy only explicit Core text fields, never provider/owner metadata.
+
+        This is deliberately narrower than arbitrary text-capable vendor input.
+        Unknown content blocks, extras and opaque provider state refuse rather
+        than getting dropped from a supposedly countable fallback.
+        """
+        from amplifier_core.message_models import ChatRequest, Message, TextBlock
+
+        if (
+            type(request) is not ChatRequest
+            or request.model_extra
+            or request.metadata
+        ):
+            raise ValueError("Text fallback cannot omit opaque request state")
+        warnings = {
+            f"[Image unavailable: {reason}; no pixels supplied]"
+            for reason in (
+                "inline image is not admitted as session media",
+                "session image expired",
+                "source owner does not permit this session image",
+                "provider or execution scope does not support this image position",
+                "session image bytes are missing",
+                "compatible media handling is not installed",
+            )
+        }
+        messages = []
+        warned = False
+        for message in request.messages:
+            if type(message) is not Message or message.model_extra:
+                raise ValueError("Text fallback cannot omit opaque message state")
+            metadata = message.metadata
+            if metadata is not None and (
+                type(metadata) is not dict
+                or set(metadata) - {"experimental.media.v1"}
+            ):
+                raise ValueError("Text fallback cannot omit provider metadata")
+            content = message.content
+            if type(content) is list:
+                blocks = []
+                for block in content:
+                    if (
+                        type(block) is not TextBlock
+                        or block.model_extra
+                        or type(block.text) is not str
+                        or block.visibility not in (None, "internal", "developer", "user")
+                    ):
+                        raise ValueError("Text fallback requires text-only projection")
+                    warned = warned or block.text in warnings
+                    blocks.append({
+                        "type": "text", "text": block.text,
+                        "visibility": block.visibility,
+                    })
+                content = blocks
+            elif type(content) is not str:
+                raise ValueError("Text fallback requires text-only projection")
+            if (
+                message.role not in ("system", "developer", "user", "assistant", "function", "tool")
+                or (message.name is not None and type(message.name) is not str)
+                or (message.tool_call_id is not None and type(message.tool_call_id) is not str)
+            ):
+                raise ValueError("Text fallback requires explicit Core message fields")
+            messages.append({
+                "role": message.role, "content": content,
+                "name": message.name, "tool_call_id": message.tool_call_id,
+            })
+        if not warned:
+            raise ValueError("Text fallback has no prepared unavailable warning")
+        return messages
+
+    async def media_text_fallback_witness(
+        self, request: Any, *, request_options: Any = None
+    ) -> dict[str, Any]:
+        """Fit a warning-only private projection without a provider count/call.
+
+        The detached text view is suitable for a caller's *local estimate*, not
+        a numerical provider budget. Pass the exact count-view request/options;
+        successful fitting freezes the same private candidate for dispatch.
+        Canonical refs remain untouched. No images, refs, callbacks or opaque
+        provider state leave this method.
+        """
+        self._begin()
+        try:
+            from amplifier_core.message_models import ChatRequest, ImageBlock
+
+            if type(request) is not ChatRequest or not any(
+                (
+                    type(message.metadata) is dict
+                    and type(message.metadata.get("experimental.media.v1")) is dict
+                    and type(message.metadata["experimental.media.v1"].get("refs")) is list
+                    and bool(message.metadata["experimental.media.v1"]["refs"])
+                )
+                or (
+                    type(message.content) is list
+                    and any(type(block) is ImageBlock for block in message.content)
+                )
+                for message in request.messages
+            ):
+                raise ValueError("Text fallback requires canonical media input")
+            options = self._options(request_options, {})
+            candidate = await self._prepare(request, options, purpose="count")
+            self._validate(candidate, options)
+            messages = self._text_fallback_messages(candidate.prepared.request)
+            digest = candidate.prepared.projection_digest
+            if (
+                type(digest) is not str
+                or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+            ):
+                raise ValueError("Text fallback requires a projection digest")
+            self._validate(candidate, options)
+            candidate.fitted = True
+            return {
+                "v": 1, "validated": True,
+                "projection_digest": digest, "messages": messages,
+            }
+        except BaseException:
+            self._release(self._candidate)
+            raise
+        finally:
+            self._busy = False
+
     def _budget_result(self, candidate: _Candidate, result: Any) -> Any:
         candidate.fitted = True
         candidate.measured = self._measured_budget(result)
