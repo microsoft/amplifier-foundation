@@ -49,6 +49,17 @@ class BundleStateManager:
             "providers": {},
             "agents": {},
         }
+        # Only the bridge's explicit adapter recognizes an issuer-bound view;
+        # do not probe arbitrary coordinators (including mocks) for methods.
+        from amplifier_foundation.session.media_hook_bridge import media_mount_lifecycle
+
+        self._mount_lifecycle = media_mount_lifecycle(self._coordinator)
+        # Keep opaque authority separate from the backward-compatible object
+        # stash. Neither a name nor a stashed instance authorizes restoration.
+        self._mount_suspensions: dict[str, dict[str, Any]] = {
+            "tools": {}, "providers": {}
+        }
+        self._mount_failures: set[tuple[str, str]] = set()
 
         # Snapshot of hook handlers at construction time.
         self._hook_snapshot: dict[str, Any] = {}
@@ -334,18 +345,57 @@ class BundleStateManager:
     # Tool enable / disable (async)
     # ------------------------------------------------------------------
 
+    async def _stash_mount(self, category: str, name: str, instance: Any) -> None:
+        try:
+            if self._mount_lifecycle is None:
+                await self._coordinator.unmount(category, name=name)
+            else:
+                token = await self._mount_lifecycle.suspend(category, name=name)
+                self._mount_suspensions[category][name] = token
+        except BaseException:
+            if self._mount_lifecycle is not None:
+                self._mount_failures.add((category, name))
+            raise
+        finally:
+            # Retain the exact instance even after an uncertain effect. A failed
+            # participating suspension has no token and must never fall back to
+            # ordinary mount() or promote this evidence into authority.
+            self._stash[category][name] = instance
+
+    async def _restore_mount(self, category: str, name: str) -> None:
+        if self._mount_lifecycle is not None:
+            self._check_suspension(category, name)
+            tokens = self._mount_suspensions[category]
+            try:
+                await self._mount_lifecycle.restore(tokens[name])
+            except BaseException:
+                # The native operation may have settled even if this await
+                # failed. Retained tokens are diagnostic evidence, not proof
+                # that the slot remains suspended or permission to retry.
+                self._mount_failures.add((category, name))
+                raise
+            # Success alone consumes authority and removes the object stash.
+            # Failure/cancellation leaves both for diagnosis, not automatic retry.
+            del tokens[name]
+            del self._stash[category][name]
+            return
+
+        instance = self._stash[category].pop(name)
+        try:
+            await self._coordinator.mount(category, instance, name=name)
+        except Exception:
+            self._stash[category][name] = instance
+            raise
+
     async def tool_disable(self, name: str) -> None:
         """Retrieve and stash a tool instance, then unmount it."""
         if name in self._stash["tools"]:
+            self._check_suspension("tools", name)
             return
 
         tools = self._coordinator.get("tools")
         if tools is not None and name in tools:
-            instance = tools[name]
-            try:
-                await self._coordinator.unmount("tools", name=name)
-            finally:
-                self._stash["tools"][name] = instance
+            await self._stash_mount("tools", name, tools[name])
             return
 
         if name in self._module_to_tools:
@@ -363,12 +413,7 @@ class BundleStateManager:
     async def tool_enable(self, name: str) -> None:
         """Remount a previously disabled tool from the stash."""
         if name in self._stash["tools"]:
-            instance = self._stash["tools"].pop(name)
-            try:
-                await self._coordinator.mount("tools", instance, name=name)
-            except Exception:
-                self._stash["tools"][name] = instance  # re-stash on failure
-                raise
+            await self._restore_mount("tools", name)
             return
 
         if name in self._module_to_tools:
@@ -392,6 +437,8 @@ class BundleStateManager:
                 await self.tool_disable(tool_name)
                 disabled.append(tool_name)
             except ValueError:
+                if self._mount_lifecycle is not None:
+                    raise
                 pass
 
         return disabled
@@ -408,14 +455,13 @@ class BundleStateManager:
         enabled: list[str] = []
         for tool_name in self._module_to_tools[module_id]:
             if tool_name in self._stash["tools"]:
-                stashed_instance = self._stash["tools"].pop(tool_name)
                 try:
-                    await self._coordinator.mount(
-                        "tools", stashed_instance, name=tool_name
-                    )
+                    await self._restore_mount("tools", tool_name)
                     enabled.append(tool_name)
                 except Exception:  # noqa: BLE001
-                    self._stash["tools"].setdefault(tool_name, stashed_instance)
+                    if self._mount_lifecycle is not None:
+                        raise
+                    pass  # _restore_mount retains evidence on failure
 
         return enabled
 
@@ -423,32 +469,31 @@ class BundleStateManager:
     # Provider enable / disable (async)
     # ------------------------------------------------------------------
 
+    def _check_suspension(self, category: str, name: str) -> None:
+        if self._mount_lifecycle is not None:
+            if (category, name) in self._mount_failures:
+                raise RuntimeError("Prior participating mount operation did not complete")
+            if name not in self._mount_suspensions[category]:
+                raise ValueError("No successful participating suspension to restore")
+
     async def provider_disable(self, name: str) -> None:
         """Retrieve and stash a provider instance, then unmount it."""
         if name in self._stash["providers"]:
+            self._check_suspension("providers", name)
             return
 
         providers = self._coordinator.get("providers")
         if providers is None or name not in providers:
             available = list(providers.keys()) if providers else []
             raise ValueError(f"Provider {name!r} not found. Available: {available}")
-        instance = providers[name]
-        try:
-            await self._coordinator.unmount("providers", name=name)
-        finally:
-            self._stash["providers"][name] = instance
+        await self._stash_mount("providers", name, providers[name])
 
     async def provider_enable(self, name: str) -> None:
         """Remount a previously disabled provider from the stash."""
         if name not in self._stash["providers"]:
             raise ValueError(f"Provider {name!r} not in stash. Cannot enable.")
 
-        instance = self._stash["providers"].pop(name)
-        try:
-            await self._coordinator.mount("providers", instance, name=name)
-        except Exception:
-            self._stash["providers"][name] = instance  # re-stash on failure
-            raise
+        await self._restore_mount("providers", name)
 
     # ------------------------------------------------------------------
     # Behavior group toggle (async)
@@ -815,6 +860,8 @@ class BundleStateManager:
                 await self.tool_disable(name)
             except Exception as exc:  # noqa: BLE001
                 _log.debug("Skipping stale tool %r: %s", name, exc)
+                if self._mount_lifecycle is not None:
+                    warnings.append(f"Failed to disable tool {name!r}")
 
         for name in disabled.get("hooks", []):
             _log.debug(
@@ -827,6 +874,8 @@ class BundleStateManager:
                 await self.provider_disable(name)
             except Exception as exc:  # noqa: BLE001
                 _log.debug("Skipping stale provider %r: %s", name, exc)
+                if self._mount_lifecycle is not None:
+                    warnings.append(f"Failed to disable provider {name!r}")
 
         for name in disabled.get("agents", []):
             try:
