@@ -18,11 +18,12 @@ import os
 import re
 import stat
 import tempfile
+import weakref
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from uuid import uuid4
 
 from ._media_conversion_parser import CHUNK, Scanner
@@ -324,6 +325,267 @@ def _validate_prefix(stream, prefix):
         raise TranscriptConflict("Committed prefix ends in a torn row")
 
 
+def _candidate_prefix(prefix):
+    """An explicit selector is checked input, never candidate/ownership authority."""
+    if type(prefix) is not CommittedPrefix:
+        raise TypeError("Exact serialized candidate CommittedPrefix required")
+    for key in ("session_id", "operation_id"):
+        _identity(getattr(prefix, key))
+    # Generation is a format identity, not an operation ID. Existing writers
+    # prepend "m-"/"r-" to a legal 180-character operation ID.
+    if type(prefix.generation) is not str or not _IDENTITY.fullmatch(prefix.generation):
+        raise TranscriptConflict("Invalid serialized candidate generation")
+    if (prefix.body != f"g-{prefix.generation}.jsonl"
+            or any(type(getattr(prefix, key)) is not int or getattr(prefix, key) < 0
+                   for key in ("sequence", "committed_bytes", "message_count"))
+            or prefix.committed_bytes == 0 or type(prefix.sha256) is not str
+            or not re.fullmatch("[0-9a-f]{64}", prefix.sha256)):
+        raise TranscriptConflict("Invalid serialized candidate prefix")
+
+
+@contextmanager
+def _serialized_snapshot(candidate, prefix, candidate_check):
+    """Pin a regular FD and copy its exact selected bytes without moving its cursor.
+
+    Namespace/lease ownership is the caller's obligation, checked through the
+    required callback. Dup/pread avoids trusting overridden read/seek methods or
+    sharing the input cursor. The anonymous snapshot is not transcript authority.
+    """
+    if not callable(candidate_check):
+        raise TypeError("Live candidate ownership check required")
+    candidate_check()
+    if os.name != "posix":
+        raise TranscriptConflict("Serialized candidates require qualified POSIX I/O")
+    fd = os.dup(candidate.fileno())
+    try:
+        info = os.fstat(fd)
+        stamp = _stamp(info)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink > 1
+                or info.st_size != prefix.committed_bytes):
+            raise TranscriptConflict("Serialized candidate requires an exact regular-file EOF")
+
+        def check():
+            candidate_check()
+            if (_stamp(os.fstat(fd)) != stamp
+                    or _stamp(os.fstat(candidate.fileno())) != stamp):
+                raise TranscriptConflict("Serialized candidate changed or was replaced")
+
+        check()
+        with tempfile.TemporaryFile("w+b") as snapshot:
+            digest, offset = hashlib.sha256(), 0
+            while offset < prefix.committed_bytes:
+                check()
+                raw = os.pread(fd, min(CHUNK, prefix.committed_bytes - offset), offset)
+                if not raw:
+                    raise TranscriptConflict("Serialized candidate shortened")
+                snapshot.write(raw)
+                digest.update(raw)
+                offset += len(raw)
+            if os.pread(fd, 1, offset) or digest.hexdigest() != prefix.sha256:
+                raise TranscriptConflict("Serialized candidate EOF or digest differs")
+            check()
+            snapshot.flush()
+            snapshot.seek(0)
+            yield snapshot, check
+            check()  # Includes the existing writer's ownership-fence exit.
+    finally:
+        os.close(fd)
+
+
+def _serialized_spool(snapshot, prefix, spool, check):
+    """Header-aware bounded transduction into the same canonical rewrite spool."""
+    snapshot.seek(0)
+    scanner = Scanner(snapshot)
+    digest, size, count, header = hashlib.sha256(), 0, 0, False
+    for index, row in enumerate(scanner.records()):
+        check()
+        fields = scanner.fields(row)
+        if index == 0:
+            _validate_body_header(scanner.small(row), prefix.generation)
+            header = True
+            continue
+        role = fields.get("role")
+        value = scanner.small(role, 32768) if role is not None and role.kind == 34 else None
+        if type(value) is not str or not value or len(value.encode("utf-8")) > 4096:
+            raise TranscriptConflict("Serialized candidate requires canonical message role")
+        for raw in transduce(scanner, row):
+            check()
+            spool.write(raw)
+            digest.update(raw)
+            size += len(raw)
+        spool.write(b"\n")
+        digest.update(b"\n")
+        size += 1
+        count += 1
+    if not header or count != prefix.message_count:
+        raise TranscriptConflict("Serialized candidate header or message count differs")
+    snapshot.seek(prefix.committed_bytes - 1)
+    if snapshot.read(1) != b"\n":
+        raise TranscriptConflict("Serialized candidate ends inside a row")
+    check()
+    return digest, size, count
+
+
+@dataclass(frozen=True)
+class _PreparedState:
+    prefix: CommittedPrefix
+    digest: Any
+    size: int
+    count: int
+    snapshot: BinaryIO
+    rows: BinaryIO
+    guard: Callable[[], None]
+    pid: int
+
+
+_PREPARED = weakref.WeakKeyDictionary()
+
+
+def _prepared_state(candidate):
+    if type(candidate) is not PreparedTranscriptCandidate:
+        raise TranscriptConflict("Exact local prepared candidate required")
+    state = _PREPARED.get(candidate)
+    if state is None or state.pid != os.getpid():
+        raise TranscriptConflict("Prepared candidate is closed, revoked or inherited")
+    try:
+        state.guard()
+    except BaseException:
+        _PREPARED.pop(candidate, None)
+        raise
+    return state
+
+
+class _VerifiedCandidateView:
+    """Read-only bounded seekable view; deliberately exposes no writable FD."""
+
+    def __init__(self, candidate):
+        self._candidate, self._offset, self._active = candidate, 0, True
+
+    def _state(self):
+        if not self._active:
+            raise TranscriptConflict("Verified candidate stream is closed")
+        return _prepared_state(self._candidate)
+
+    def tell(self):
+        self._state()
+        return self._offset
+
+    def seek(self, offset, whence=os.SEEK_SET):
+        state = self._state()
+        if type(offset) is not int or whence not in (os.SEEK_SET, os.SEEK_CUR, os.SEEK_END):
+            raise ValueError("Invalid candidate seek")
+        value = offset + (self._offset if whence == os.SEEK_CUR else
+                          state.prefix.committed_bytes if whence == os.SEEK_END else 0)
+        if not 0 <= value <= state.prefix.committed_bytes:
+            raise ValueError("Candidate seek outside verified bytes")
+        self._offset = value
+        return value
+
+    def read(self, size=CHUNK):
+        if type(size) is not int or not 0 <= size <= CHUNK:
+            raise ValueError("Candidate reads must be explicitly bounded to 64KiB")
+        state = self._state()
+        length = min(size, state.prefix.committed_bytes - self._offset)
+        try:
+            raw = os.pread(state.snapshot.fileno(), length, self._offset)
+            if len(raw) != length:
+                raise TranscriptConflict("Prepared snapshot shortened")
+            self._state()
+        except BaseException:
+            _PREPARED.pop(self._candidate, None)
+            raise
+        self._offset += len(raw)
+        return raw
+
+
+class PreparedTranscriptCandidate:
+    """Local context-issued immutable input, NOT media/source adoption authority.
+
+    Canonical witness is available before publication for stable lost-ack
+    reconciliation. open_verified() exposes the exact raw header-bearing snapshot
+    for the converter's bounded ref validator; no mutable FD or row dict API.
+    A caller-provided prefix/digest or a constructed/copied object cannot replace
+    this issued object. Context exit, source error or fork invalidates it.
+    """
+
+    __slots__ = ("__weakref__",)
+
+    @property
+    def candidate_prefix(self):
+        return _prepared_state(self).prefix
+
+    @property
+    def canonical_sha256(self):
+        return _prepared_state(self).digest.hexdigest()
+
+    @property
+    def canonical_bytes(self):
+        return _prepared_state(self).size
+
+    @property
+    def message_count(self):
+        return _prepared_state(self).count
+
+    def check(self):
+        _prepared_state(self)
+
+    def iter_refs(self):
+        """Strict bounded ref DATA from this exact issued snapshot, not authority.
+
+        The versioned-media owner supplies the shared schema scanner. Callers
+        must exhaust it (including post-last-yield checks) and validate/publish
+        through the actual store before writing. No arbitrary iterator accepted.
+        The lazy import avoids a writer/checkpoint import cycle and fails closed
+        when that explicit composed feature is absent.
+        """
+        self.check()
+        from .versioned_checkpoint import scan_serialized_refs
+        with self.open_verified() as stream:
+            yield from scan_serialized_refs(
+                stream, prefix=self.candidate_prefix, check=self.check)
+            self.check()
+
+    @contextmanager
+    def open_verified(self):
+        self.check()
+        view = _VerifiedCandidateView(self)
+        try:
+            yield view
+            self.check()  # Caller must exhaust its ref iterator, including EOF.
+        except BaseException:
+            _PREPARED.pop(self, None)
+            raise
+        finally:
+            view._active = False
+
+
+@contextmanager
+def prepare_serialized_candidate(
+    candidate: BinaryIO, *, candidate_prefix: CommittedPrefix,
+    candidate_check: Callable[[], None],
+) -> Iterable[PreparedTranscriptCandidate]:
+    """Verify and privately snapshot one owned exact-EOF v2 serialized candidate.
+
+    The host/converter owns real input namespace and ownership and passes its
+    live guard. All snapshot bytes and canonical row hashes are checked before
+    exposing the prepared object. This does not admit/publish media, write target
+    history, manufacture a receipt, or turn selector data into adoption authority.
+    """
+    _candidate_prefix(candidate_prefix)
+    issued = PreparedTranscriptCandidate()
+    with _serialized_snapshot(candidate, candidate_prefix, candidate_check) as (snapshot, guard):
+        with tempfile.TemporaryFile("w+b") as rows:
+            digest, size, count = _serialized_spool(snapshot, candidate_prefix, rows, guard)
+            rows.flush()
+            _PREPARED[issued] = _PreparedState(
+                candidate_prefix, digest.copy(), size, count, snapshot, rows, guard, os.getpid())
+            try:
+                yield issued
+                issued.check()
+            finally:
+                _PREPARED.pop(issued, None)
+
+
 def _fences(session, operation_id=None):
     marker = {"format": _FORMAT, "v": 2, "status": "unsupported-by-legacy-entrypoint"}
     if operation_id is not None:
@@ -484,27 +746,112 @@ class TranscriptWriter:
         return self._write(messages, expected=expected, operation_id=operation_id,
                            admit=admit, rewrite=True)
 
-    def _write(self, messages, *, expected, operation_id, admit, rewrite):
+    def rewrite_serialized(
+        self, candidate: BinaryIO, *, candidate_prefix: CommittedPrefix,
+        expected: CommittedPrefix, operation_id: str, admit: Admission,
+        candidate_check: Callable[[], None],
+    ) -> CommitAck:
+        """Rewrite an owned header-bearing candidate without materializing rows.
+
+        Candidate is an open regular FD, exact EOF == candidate_prefix bytes;
+        header/generation, role-bearing schema, digest/count and session binding
+        are checked before admission or canonical mutation. The caller keeps its
+        actual candidate namespace/lease pinned via candidate_check throughout.
+        No pathname, bare JSONL, ignored tail or arbitrary bytes callback accepted.
+
+        Uses the *same* rewrite engine/intent/kind/opid/CAS as rewrite(). The
+        intent's suffix_sha256 is stable canonical message JSONL (header excluded),
+        NOT the candidate's raw body hash. Reconcile uses that same canonical
+        digest; an ordinary rewrite of the same rows is the same operation.
+        CommitAck remains an unsealed selector, not a typed media receipt.
+        """
+        try:
+            _candidate_prefix(candidate_prefix)
+            if (type(expected) is not CommittedPrefix
+                    or candidate_prefix.session_id != expected.session_id):
+                raise TranscriptConflict("Candidate and target session differ")
+            _identity(operation_id)
+            with prepare_serialized_candidate(
+                candidate, candidate_prefix=candidate_prefix, candidate_check=candidate_check,
+            ) as prepared:
+                return self.rewrite_prepared(
+                    prepared, expected=expected, operation_id=operation_id, admit=admit)
+        except BaseException:
+            # A late input/fence check may fail after pointer publication. It is
+            # an unknown acknowledgement, never permission to replay/new-op.
+            self._warm = None
+            raise
+
+    def rewrite_prepared(
+        self, candidate: PreparedTranscriptCandidate, *, expected: CommittedPrefix,
+        operation_id: str, admit: Admission,
+    ) -> CommitAck:
+        """Consume the exact issued spool validated by admission, same rewrite engine.
+
+        Before calling, retain candidate.canonical_sha256 with the settled intent
+        for reconcile(kind="rewrite"). Admission must validate/publish refs from
+        candidate.open_verified() under the actual store/host ownership, exhausting
+        the converter's ref iterator. Only an exact sealed ACK after publication
+        can establish media reachability; this prepared object is not that ACK.
+        """
+        try:
+            state = _prepared_state(candidate)
+            if type(expected) is not CommittedPrefix or state.prefix.session_id != expected.session_id:
+                raise TranscriptConflict("Candidate and target session differ")
+
+            def load(spool, check):
+                offset = 0
+                while offset < state.size:
+                    check()
+                    raw = os.pread(state.rows.fileno(), min(CHUNK, state.size - offset), offset)
+                    if not raw:
+                        raise TranscriptConflict("Prepared canonical spool shortened")
+                    spool.write(raw)
+                    offset += len(raw)
+                check()
+                return state.digest.copy(), state.size, state.count
+
+            ack = self._write(
+                None, expected=expected, operation_id=operation_id, admit=admit,
+                rewrite=True, _spool_loader=load, _input_check=candidate.check)
+            candidate.check()  # The target owner fence has also exited now.
+            return ack
+        except BaseException:
+            self._warm = None
+            raise
+
+    def _write(self, messages, *, expected, operation_id, admit, rewrite,
+               _spool_loader=None, _input_check=None):
         operation_id = _identity(operation_id)
         if not isinstance(expected, CommittedPrefix) or not callable(admit):
             raise TypeError("Explicit expected commit and admission required")
         with self._owned() as (session, check), tempfile.TemporaryFile("w+b") as spool:
-            digest, size, count = hashlib.sha256(), 0, 0
-            for message in messages:
-                check()
-                if (type(message) is not dict or type(message.get("role")) is not str
-                        or not message["role"] or len(message["role"]) > 4096
-                        or len(message["role"].encode("utf-8")) > 4096):
-                    raise TranscriptConflict("Settled suffix must contain canonical messages")
-                for raw in canonical_bytes(message):
+            if _input_check is not None:
+                owned_check = check
+
+                def check():
+                    owned_check()
+                    _input_check()
+
+            if _spool_loader is not None:
+                digest, size, count = _spool_loader(spool, check)
+            else:
+                digest, size, count = hashlib.sha256(), 0, 0
+                for message in messages:
                     check()
-                    spool.write(raw)
-                    digest.update(raw)
-                    size += len(raw)
-                spool.write(b"\n")
-                digest.update(b"\n")
-                size += 1
-                count += 1
+                    if (type(message) is not dict or type(message.get("role")) is not str
+                            or not message["role"] or len(message["role"]) > 4096
+                            or len(message["role"].encode("utf-8")) > 4096):
+                        raise TranscriptConflict("Settled suffix must contain canonical messages")
+                    for raw in canonical_bytes(message):
+                        check()
+                        spool.write(raw)
+                        digest.update(raw)
+                        size += len(raw)
+                    spool.write(b"\n")
+                    digest.update(b"\n")
+                    size += 1
+                    count += 1
             with session.directory("transcript.v2") as root:
                 _fences(session)
                 intent = _small({

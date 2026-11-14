@@ -593,3 +593,189 @@ def test_append_predecessor_requires_real_row_boundary_and_message_count(tmp_pat
     with pytest.raises(Refused):
         acknowledge(writer, ack)
     assert not publication.exists()
+
+
+def serialized_rows(rows, *, raw=None):
+    if raw is None:
+        raw = _header("serialized") + b"".join(
+            json.dumps(item, separators=(",", ":")).encode() + b"\n" for item in rows)
+    return raw, CommittedPrefix(
+        "session", "serialized", "g-serialized.jsonl", 1, len(raw), len(rows),
+        hashlib.sha256(raw).hexdigest(), "serialized",
+    )
+
+
+def scan_refs(raw, prefix, check=lambda: None):
+    from amplifier_foundation.session.versioned_checkpoint import scan_serialized_refs
+    return scan_serialized_refs(io.BytesIO(raw), prefix=prefix, check=check)
+
+
+@pytest.mark.parametrize("metadata", [
+    None, {}, {MEDIA: {"refs": []}}, {MEDIA: {"refs": [fake_ref()]}},
+    {MEDIA: {"v": 1, "refs": [fake_ref()]}},
+    {"opaque": {MEDIA: {"refs": [fake_ref()]}}},
+])
+def test_serialized_ref_schema_positive_and_no_nested_promotion(metadata):
+    rows = [{"role": "tool", "metadata": metadata,
+             "content": json.dumps({MEDIA: {"refs": [fake_ref()]}})}]
+    raw, prefix = serialized_rows(rows)
+    expected = metadata.get(MEDIA, {}).get("refs", []) if metadata else []
+    assert list(scan_refs(raw, prefix)) == expected
+
+
+@pytest.mark.parametrize("metadata", [
+    False, 0, "", [], {MEDIA: None}, {MEDIA: False}, {MEDIA: []},
+    {MEDIA: {"refs": None}}, {MEDIA: {}}, {MEDIA: {"refs": [], "extra": None}},
+    *({MEDIA: {"v": value, "refs": []}} for value in (True, 1.0, None, 2)),
+    {MEDIA: {"refs": [{**fake_ref(), "mime": "image/webp"}]}},
+    {MEDIA: {"refs": [{**fake_ref(), "session_id": "other"}]}},
+])
+def test_serialized_ref_schema_strict_precommit_refusals(metadata):
+    raw, prefix = serialized_rows([{"role": "tool", "metadata": metadata}])
+    with pytest.raises(Refused):
+        list(scan_refs(raw, prefix))
+
+
+def test_serialized_ref_original_provenance_may_differ_and_data_is_not_authority():
+    ref = fake_ref()
+    ref["provenance"]["session_id"] = "original"
+    raw, prefix = serialized_rows([row([ref])])
+    refs = list(scan_refs(raw, prefix))
+    assert refs == [ref]
+    # Exact prefix + arbitrary stream/guard may validate DATA, not mint ACK.
+    with pytest.raises(Refused):
+        list(verified_refs(prefix))
+    with pytest.raises(Refused):
+        list(verified_refs(refs))
+
+
+@pytest.mark.parametrize("corruption", [
+    "digest", "short", "tail", "count", "header", "float-header", "header-duplicate",
+    "no-final-LF", "duplicate-ref-key", "duplicate-opaque-key", "invalid-role",
+])
+def test_serialized_scan_integrity_and_semantic_refusals(corruption):
+    raw, prefix = serialized_rows([row()])
+    if corruption == "digest":
+        prefix = dataclasses.replace(prefix, sha256="b" * 64)
+    elif corruption == "short":
+        raw = raw[:-1]
+    elif corruption == "tail":
+        raw += b"\n"
+    elif corruption == "count":
+        prefix = dataclasses.replace(prefix, message_count=0)
+    else:
+        if corruption == "header":
+            raw = raw.replace(b'"generation":"serialized"', b'"generation":"other"', 1)
+        elif corruption == "float-header":
+            raw = raw.replace(b'"v":2', b'"v":2.0', 1)
+        elif corruption == "header-duplicate":
+            raw = raw.replace(b'"v":2', b'"v":2,"v":2', 1)
+        elif corruption == "no-final-LF":
+            raw = raw[:-1]
+        elif corruption == "duplicate-ref-key":
+            raw = raw.replace(b'"width":2', b'"width":2,"width":2', 1)
+        elif corruption == "duplicate-opaque-key":
+            raw = raw[:-2] + b',"opaque":{"key":1,"key":2}}\n'
+        else:
+            raw = raw.replace(b'"role":"tool"', b'"role":false', 1)
+        prefix = dataclasses.replace(prefix, committed_bytes=len(raw),
+                                     sha256=hashlib.sha256(raw).hexdigest())
+    with pytest.raises(Refused):
+        list(scan_refs(raw, prefix))
+
+
+@pytest.mark.parametrize("which", ["after-last", "buffered-next", "zero-ref"])
+def test_serialized_scan_rechecks_lifetime_after_yield_and_at_zero_ref_exit(which):
+    from amplifier_foundation.session.versioned_checkpoint import scan_serialized_refs
+    raw, prefix = serialized_rows([row([] if which == "zero-ref" else [fake_ref()] * 2)])
+    live = [True]
+    calls = [0]
+    def check():
+        calls[0] += 1
+        if not live[0]:
+            raise RuntimeError("prepared lifetime ended")
+    if which == "zero-ref":
+        class RevokedEOF(io.BytesIO):
+            eof_checks = 0
+
+            def read(self, size):
+                data = super().read(size)
+                if size == 1 and self.tell() == len(raw) and not data:
+                    self.eof_checks += 1
+                    # Allow preverification and the full zero-ref scan; revoke
+                    # during the final integrity pass, not initial entry.
+                    if self.eof_checks == 2:
+                        live[0] = False
+                return data
+        refs = scan_serialized_refs(RevokedEOF(raw), prefix=prefix, check=check)
+    else:
+        refs = scan_refs(raw, prefix, check)
+        assert next(refs) == fake_ref()
+        if which == "after-last":
+            assert next(refs) == fake_ref()
+        live[0] = False
+    with pytest.raises(RuntimeError, match="lifetime"):
+        next(refs)
+    assert calls[0] > 1
+
+
+def test_serialized_scan_source_mutation_after_last_yield_and_late_schema_refuse():
+    from amplifier_foundation.session.versioned_checkpoint import scan_serialized_refs
+    raw, prefix = serialized_rows([row()])
+    stream = io.BytesIO(raw)
+    refs = scan_serialized_refs(stream, prefix=prefix, check=lambda: None)
+    assert next(refs) == fake_ref()
+    stream.seek(len(raw) - 3)
+    stream.write(b"xxx")
+    with pytest.raises(Refused):
+        next(refs)
+    raw, prefix = serialized_rows([row(), row(metadata={MEDIA: None})])
+    refs = scan_refs(raw, prefix)
+    assert next(refs) == fake_ref()
+    with pytest.raises(Refused):
+        next(refs)
+
+
+def test_receipt_retains_unknown_envelope_key_compatibility(tmp_path):
+    rows = [row(metadata={MEDIA: {"refs": [fake_ref()], "opaque-existing": "keep"}})]
+    _, writer, ack = session(tmp_path, rows)
+    assert list(acknowledge(writer, ack).iter_refs()) == [fake_ref()]
+    raw, prefix = serialized_rows(rows)
+    with pytest.raises(Refused):
+        list(scan_refs(raw, prefix))
+
+
+@pytest.mark.parametrize("shape", ["huge", "wide"])
+def test_serialized_scan_bounded_reads_decode_and_memory(shape, monkeypatch):
+    from amplifier_foundation.session._media_conversion_parser import CHUNK, Scanner
+    from amplifier_foundation.session.versioned_checkpoint import scan_serialized_refs
+    rows = [row([fake_ref()] * (1800 if shape == "wide" else 1),
+                content="q" * ((8 if shape == "huge" else 2) * 1024 * 1024))]
+    rows[0]["metadata"]["opaque"] = "m" * (2 * 1024 * 1024)
+    raw, prefix = serialized_rows(rows)
+    class Bounded(io.BytesIO):
+        def read(self, size):
+            assert type(size) is int and 0 <= size <= CHUNK
+            return super().read(size)
+    original = Scanner.small
+    def small(scanner, span, limit=16384):
+        value = original(scanner, span, limit)
+        if isinstance(value, dict):
+            assert "sha256" in value or set(value) == {"format", "generation", "v", "min_reader"}
+        assert not isinstance(value, list)
+        if isinstance(value, str):
+            assert len(value) <= 4096
+        return value
+    monkeypatch.setattr(Scanner, "small", small)
+    stream = Bounded(raw)
+    del rows, raw
+    tracemalloc.start()
+    try:
+        count = sum(1 for _ in scan_serialized_refs(stream, prefix=prefix, check=lambda: None))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert not stream.closed
+    assert count == (1800 if shape == "wide" else 1)
+    assert peak < 4 * 1024 * 1024, peak
+    print(f"serialized-memory {shape}: refs={count} peak_bytes={peak}")

@@ -8,10 +8,11 @@ prospective cohort; it is NOT an old-writer quiescence or migration mechanism.
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import copy
 import ctypes
 from datetime import datetime, timezone
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -432,6 +433,108 @@ class VersionedSessionBinding:
     def append(self, settled_suffix, *, expected, operation_id, admit, media_store=None):
         return self._write('append', settled_suffix, expected, operation_id, admit, media_store)
 
+    def rewrite_serialized(self, candidate, *, candidate_prefix, candidate_check,
+                           expected, operation_id, admit, media_store=None, on_prepared=None):
+        """Apply a header-bearing candidate through the sole format writer.
+
+        Preparation owns immutable anonymous raw/canonical spools. No row list,
+        decoded giant record, copied writer, header stripping or new persistence
+        journal is used here. The canonical rows digest is retained BEFORE
+        publication for the existing exact-intent reconciliation operation.
+        """
+        from amplifier_foundation.session.transcript_writer import prepare_serialized_candidate
+        from amplifier_foundation.session.versioned_checkpoint import scan_serialized_refs
+        _id(operation_id)
+        if not callable(admit) or not callable(candidate_check):
+            raise TypeError('Explicit candidate and asset admission checks are required.')
+        if on_prepared is not None and not callable(on_prepared):
+            raise TypeError('Prepared intent observer must be callable.')
+        with self._operation():
+            self._selected(expected)
+            # Stream conversion always carries the exact source asset owner,
+            # including zero-ref candidates; this preserves strict empty-
+            # envelope admission without treating an empty iterator as absence.
+            self._media(media_store)
+
+            def check():
+                self.check()
+                candidate_check()
+                self.check()
+
+            receipt = None
+            with ExitStack() as preparation:
+                prepared = preparation.enter_context(prepare_serialized_candidate(
+                    candidate, candidate_prefix=candidate_prefix, candidate_check=check))
+                if prepared.candidate_prefix.session_id != self.session_id:
+                    raise VersionedSessionConflict('The prepared candidate belongs to another session.')
+                canonical_sha256 = prepared.canonical_sha256
+                if on_prepared is not None:
+                    # Bounded, detached selector facts for the converter's
+                    # existing journal; never a source/media authority token.
+                    # This callback precedes every target-writer invocation.
+                    on_prepared({
+                        'candidate_prefix': asdict(prepared.candidate_prefix),
+                        'canonical_sha256': canonical_sha256,
+                        'canonical_bytes': prepared.canonical_bytes,
+                        'message_count': prepared.message_count,
+                        'expected': asdict(expected), 'operation_id': operation_id,
+                        'kind': 'rewrite',
+                    })
+                    prepared.check()
+                    check()
+                self._pending = (operation_id, expected, 'rewrite', canonical_sha256)
+                self._pending_media = True
+                self._uncertain = True
+
+                def admission():
+                    check()
+                    prepared.check()
+                    if media_store is not None:
+                        self._media(media_store)
+                    admit()
+                    check()
+                    if media_store is not None:
+                        self._media(media_store)
+                    # The canonical ref owner's data-only scanner consumes the
+                    # exact prepared bytes, not a manifest/caller's ref list.
+                    # Exhaust it, including final schema/count/source checks.
+                    with prepared.open_verified() as verified:
+                        for ref in scan_serialized_refs(
+                                verified, prefix=prepared.candidate_prefix, check=prepared.check):
+                            if media_store is None:
+                                raise VersionedSessionConflict('Canonical media requires its exact owned asset store.')
+                            self._durable_ref(media_store, ref)
+                    prepared.check()
+                    check()
+                    if media_store is not None:
+                        self._media(media_store)
+
+                ack = self._writer.rewrite_prepared(
+                    prepared, expected=expected, operation_id=operation_id, admit=admission)
+                check()
+                from amplifier_foundation.session.versioned_checkpoint import acknowledge_versioned_checkpoint
+                # Preparation's final exit must occur INSIDE the typed ACK CM:
+                # a late candidate/fence failure revokes even a retained receipt.
+                with acknowledge_versioned_checkpoint(
+                        self._writer, session_id=self.session_id, expected=ack) as receipt:
+                    media_store.acknowledge_checkpoint(receipt)
+                    self._media(media_store)
+                    prepared.check()
+                    check()
+                    preparation.close()
+                    check()
+                check()
+            # Preparation has its own final ownership exit. Do not publish a
+            # successful operation/receipt before that last exit has settled.
+            check()
+            self.expected, self.last_result = ack.commit, ack
+            if receipt is not None:
+                self.last_receipt = receipt
+            self._uncertain = False
+            self._pending = None
+            self._pending_media = False
+            return ack
+
     def _write(self, kind, messages, expected, operation_id, admit, media_store):
         _id(operation_id)
         if not callable(admit):
@@ -461,7 +564,7 @@ class VersionedSessionBinding:
             self._pending_media = False
             return ack
 
-    def _checkpoint(self, expected, media_store):
+    def _checkpoint(self, expected, media_store, *, record=True):
         from amplifier_foundation.session.versioned_checkpoint import acknowledge_versioned_checkpoint
         self._media(media_store)
         with acknowledge_versioned_checkpoint(self._writer, session_id=self.session_id, expected=expected) as receipt:
@@ -469,7 +572,8 @@ class VersionedSessionBinding:
             self._media(media_store)
         self.check()
         self._media(media_store)
-        self.last_receipt = receipt
+        if record:
+            self.last_receipt = receipt
         return receipt
 
     def checkpoint(self, *, expected, media_store):
@@ -597,7 +701,7 @@ class VersionedSessionBinding:
             pass
 
     async def call(self, method, *args, **kwargs):
-        if method not in {'rewrite', 'append', 'checkpoint', 'reconcile', 'load_messages'}:
+        if method not in {'rewrite', 'rewrite_serialized', 'append', 'checkpoint', 'reconcile', 'load_messages'}:
             raise ValueError('Unsupported prospective owner operation.')
         task = asyncio.create_task(asyncio.to_thread(getattr(self, method), *args, **kwargs))
         try:

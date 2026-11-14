@@ -859,3 +859,245 @@ def test_precommit_missing_checkpoint_verifier_refuses_before_write(tmp_path):
                                 admit=lambda: None, media_store=store)
             with open_committed_source(binding.directory, expected=before) as source:
                 assert source.commit == before
+
+
+def serialized_candidate(path, sid, value, *, raw=None):
+    from amplifier_foundation.session.transcript_v2 import CommittedPrefix
+    if raw is None:
+        raw = (b'{"format":"amplifier.session.transcript","v":2,"generation":"converted",'
+               b'"min_reader":["committed-prefix-v2","session-media-v1"]}\n'
+               + b''.join((json.dumps(row, ensure_ascii=False) + '\n').encode() for row in value))
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    return CommittedPrefix(sid, 'converted', 'g-converted.jsonl', 1, len(raw), len(value),
+                           hashlib.sha256(raw).hexdigest(), 'candidate-build')
+
+
+def test_serialized_binding_owns_prepare_journal_digest_and_typed_ack(tmp_path):
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    with closing(create(tmp_path)) as binding:
+        before = binding.expected
+        value = [{'role': 'user', 'content': 'converted \u00e9', 'metadata': None}]
+        path = tmp_path / 'candidate'
+        prefix = serialized_candidate(path, binding.session_id, value)
+        facts = []
+        def prepared(value):
+            assert binding.expected == before and binding.last_receipt is None
+            assert value['canonical_sha256'] == digest([{'role': 'user', 'content': 'converted \u00e9', 'metadata': None}])
+            assert value['canonical_sha256'] != prefix.sha256
+            assert value['expected']['sha256'] == before.sha256
+            facts.append(dict(value))
+            # Detached selector data cannot mutate the prepared spool.
+            value['canonical_sha256'] = '0' * 64
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            with path.open('rb') as source:
+                ack = binding.rewrite_serialized(
+                    source, candidate_prefix=prefix, candidate_check=binding.check,
+                    expected=before, operation_id='converted', admit=binding.check,
+                    media_store=store, on_prepared=prepared)
+            assert binding.load_messages() == value
+            assert binding.last_result == ack and binding.last_receipt.verify()['sha256'] == ack.commit.sha256
+            assert len(facts) == 1 and facts[0]['kind'] == 'rewrite'
+            intent = json.loads((binding.directory / 'transcript.v2/operations/converted/intent.json').read_text())
+            assert intent['suffix_sha256'] == facts[0]['canonical_sha256']
+
+
+@pytest.mark.parametrize('metadata', [False, [], {'experimental.media.v1': None},
+                                     {'experimental.media.v1': {}},
+                                     {'experimental.media.v1': {'refs': [], 'extra': True}}])
+def test_serialized_binding_strict_precommit_matches_ordinary_admission(tmp_path, metadata):
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    with closing(create(tmp_path)) as binding:
+        before = binding.expected
+        path = tmp_path / 'candidate'
+        prefix = serialized_candidate(path, binding.session_id,
+                                      [{'role': 'user', 'content': 'unchanged', 'metadata': metadata}])
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            with path.open('rb') as source, pytest.raises(ValueError):
+                binding.rewrite_serialized(source, candidate_prefix=prefix, candidate_check=binding.check,
+                                           expected=before, operation_id='refuse', admit=binding.check,
+                                           media_store=store)
+            with open_committed_source(binding.directory, expected=before) as selected:
+                assert selected.commit == before
+            assert binding.last_receipt is None
+
+
+@pytest.mark.parametrize('failure', ['journal', 'lost-write-ack', 'prepare-exit'])
+def test_serialized_binding_uncertainty_and_late_prepare_exit(tmp_path, monkeypatch, failure):
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    from amplifier_foundation.session import transcript_writer as writer_module
+    with closing(create(tmp_path)) as binding:
+        before = binding.expected
+        path = tmp_path / 'candidate'
+        value = rows('converted')
+        prefix = serialized_candidate(path, binding.session_id, value)
+        facts, receipts = [], []
+        def journal(value):
+            facts.append(value)
+            if failure == 'journal':
+                raise OSError('journal fsync failed')
+        actual = binding._writer.rewrite_prepared
+        if failure == 'lost-write-ack':
+            def lost(*args, **kwargs):
+                actual(*args, **kwargs)
+                raise OSError('lost writer result')
+            monkeypatch.setattr(binding._writer, 'rewrite_prepared', lost)
+        if failure == 'prepare-exit':
+            prepare = writer_module.prepare_serialized_candidate
+            @contextmanager
+            def late(*args, **kwargs):
+                with prepare(*args, **kwargs) as prepared:
+                    yield prepared
+                raise OSError('late preparation exit')
+            monkeypatch.setattr(writer_module, 'prepare_serialized_candidate', late)
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            accept = store.acknowledge_checkpoint
+            def accepted(receipt):
+                receipts.append(receipt)
+                return accept(receipt)
+            monkeypatch.setattr(store, 'acknowledge_checkpoint', accepted)
+            with path.open('rb') as source, pytest.raises((OSError, ValueError)):
+                binding.rewrite_serialized(
+                    source, candidate_prefix=prefix, candidate_check=binding.check, expected=before,
+                    operation_id='once', admit=binding.check, media_store=store, on_prepared=journal)
+            assert len(facts) == 1 and binding.last_receipt is None and binding.expected == before
+            if failure == 'journal':
+                assert not binding._uncertain
+                with open_committed_source(binding.directory, expected=before):
+                    pass
+            else:
+                assert binding._uncertain
+                if failure == 'prepare-exit':
+                    assert len(receipts) == 1
+                    with pytest.raises(ValueError):
+                        receipts[0].verify()
+                monkeypatch.setattr(binding._writer, 'rewrite_prepared',
+                                    lambda *a, **kw: pytest.fail('rewrote during reconciliation'))
+                ack = binding.reconcile(operation_id='once', expected=before, kind='rewrite',
+                                        suffix_sha256=facts[0]['canonical_sha256'], media_store=store)
+                assert ack.reconciled and binding.load_messages() == value
+
+
+@pytest.mark.parametrize('retention', ['durable', 'request-only'])
+def test_serialized_binding_actual_png_publication_before_reachability(tmp_path, retention):
+    from PIL import Image
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    image = io.BytesIO()
+    Image.new('RGB', (3, 4), (4, 90, 170)).save(image, 'PNG')
+    with closing(create(tmp_path)) as binding:
+        before = binding.expected
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            origin = {'kind': 'tool', 'session_id': binding.session_id, 'id': 'serialized-png'}
+            ref = store.ingest_sync(image.getvalue(), source_format='image-bytes', origin=origin,
+                                    policy={'retention': retention})['value']
+            value = [{'role': 'tool', 'content': 'Image',
+                      'metadata': {'experimental.media.v1': {'refs': [ref]}}}]
+            path = tmp_path / 'candidate'
+            prefix = serialized_candidate(path, binding.session_id, value)
+            def apply():
+                with path.open('rb') as source:
+                    return binding.rewrite_serialized(
+                        source, candidate_prefix=prefix, candidate_check=binding.check,
+                        expected=before, operation_id='png',
+                        admit=lambda: store.publish_sync([ref], origin=origin, disposition='retain'),
+                        media_store=store)
+            if retention == 'request-only':
+                with pytest.raises(ValueError):
+                    apply()
+                with open_committed_source(binding.directory, expected=before):
+                    pass
+                assert binding.last_receipt is None
+            else:
+                apply()
+                assert binding.load_messages() == value
+                with store.resolve_ref(ref) as stream:
+                    assert stream.read() == image.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_serialized_binding_cancel_joins_input_and_writer_before_close(tmp_path):
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    binding = create(tmp_path)
+    before = binding.expected
+    path = tmp_path / 'candidate'
+    prefix = serialized_candidate(path, binding.session_id, rows('streamed'))
+    entered, release = threading.Event(), threading.Event()
+    def admission():
+        entered.set()
+        assert release.wait(10)
+    with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                   checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+        with path.open('rb') as source:
+            task = asyncio.create_task(binding.call(
+                'rewrite_serialized', source, candidate_prefix=prefix, candidate_check=binding.check,
+                expected=before, operation_id='streamed', admit=admission, media_store=store))
+            assert await asyncio.to_thread(entered.wait, 10)
+            task.cancel()
+            retirement = asyncio.create_task(binding.aclose())
+            await asyncio.sleep(0.05)
+            assert not task.done() and not retirement.done() and not source.closed
+            with pytest.raises(Conflict, match='retains'):
+                Binding.resume(binding.directory, session_id=binding.session_id, expected=before)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await retirement
+        with closing(Binding.resume(binding.directory, session_id=binding.session_id,
+                                    expected=binding.expected)) as resumed:
+            assert resumed.load_messages() == rows('streamed')
+
+
+@pytest.mark.parametrize('size', [2 * 1024 * 1024, 8 * 1024 * 1024])
+def test_serialized_binding_huge_row_avoids_materialization(tmp_path, monkeypatch, size):
+    from amplifier_foundation.session.transcript_v2 import CommittedPrefix
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    import tracemalloc
+    path = tmp_path / 'candidate'
+    content_digest = hashlib.sha256()
+    with path.open('wb') as stream:
+        header = (b'{"format":"amplifier.session.transcript","v":2,"generation":"converted",'
+                  b'"min_reader":["committed-prefix-v2","session-media-v1"]}\n')
+        for raw in (header, b'{"role":"user","content":"'):
+            stream.write(raw)
+            content_digest.update(raw)
+        for _ in range(size // 65536):
+            raw = b'x' * 65536
+            stream.write(raw)
+            content_digest.update(raw)
+        raw = b'"}\n'
+        stream.write(raw)
+        content_digest.update(raw)
+    path.chmod(0o600)
+    with closing(create(tmp_path)) as binding:
+        prefix = CommittedPrefix(binding.session_id, 'converted', 'g-converted.jsonl', 1,
+                                 path.stat().st_size, 1, content_digest.hexdigest(), 'candidate-build')
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            def forbidden(*args, **kwargs):
+                pytest.fail('Serialized input used ordinary full-row list/deep-copy rewrite.')
+            monkeypatch.setattr(binding, '_write', forbidden)
+            with path.open('rb') as source:
+                tracemalloc.start()
+                try:
+                    binding.rewrite_serialized(
+                        source, candidate_prefix=prefix, candidate_check=binding.check,
+                        expected=binding.expected, operation_id='huge', admit=binding.check,
+                        media_store=store)
+                    _, peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
+            # A generous regression ceiling distinguishes bounded spools from
+            # one decoded 8MiB string; this is Python allocation, not process RSS.
+            assert peak < 2 * 1024 * 1024
+            with open_committed_source(binding.directory, expected=binding.expected) as selected:
+                assert selected.commit.message_count == 1
