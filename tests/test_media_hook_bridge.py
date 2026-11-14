@@ -1893,3 +1893,64 @@ async def test_actual_core_module_loader_discovers_and_caches_provider_occurrenc
         assert session.coordinator.get("providers", account or "fixture") is provider
     assert (await bridge(event()))["complete"]
     await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+async def test_named_singleton_mount_uses_actual_core_ignored_name_semantics():
+    class NamedLoader(ParticipatingFixtureLoader):
+        async def load(self, module_id, config, **kwargs):
+            async def mount(current):
+                await current.mount("orchestrator" if module_id == "fixture-loop" else "context",
+                                    object(), name="ignored-singleton-name")
+            return mount
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}})
+    session.coordinator.loader = NamedLoader()
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="named-singleton", participants=("fixture-loop", "fixture-context"))
+    await session.initialize()
+    receipt = graph.seal()
+    assert bridge.validate_receipt(receipt) and (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["configure", "transition"])
+async def test_partial_identical_account_addition_preserves_existing_occurrence(phase):
+    session = AmplifierSession({
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "providers": [{"module": "provider-fixture", "instance_id": "account-A", "config": {}}]})
+    loader = ProviderFixtureLoader(automatic=True)
+    session.coordinator.loader = loader
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="partial-config", participants=("fixture-loop", "fixture-context", "provider-fixture"))
+    await session.initialize()
+    if phase == "transition":
+        graph.seal()
+    before = session.coordinator.get("providers", "account-A")
+    with (graph.configure() if phase == "configure" else graph.transition()) as current:
+        session.config["providers"].append(
+            {"module": "provider-fixture", "instance_id": "account-B", "config": {}})
+        # Real public loader and actual Core's named remap operations.
+        mount = await session.coordinator.loader.load("provider-fixture", {}, source_hint=None)
+        await mount(session.coordinator)
+        second = session.coordinator.get("providers", "fixture")
+        await session.coordinator.mount("providers", second, name="account-B")
+        await session.coordinator.unmount("providers", name="fixture")
+        ready = mount.__on_session_ready__
+        session.coordinator.loader.enqueue_on_session_ready(*ready)
+        for _, callback in session.coordinator.loader.get_on_session_ready_queue():
+            await callback(session.coordinator)
+        session.coordinator.loader.clear_on_session_ready_queue()
+    if phase == "configure":
+        current.seal()
+    assert session.coordinator.get("providers", "account-A") is before
+    assert session.coordinator.get("providers", "account-B") is second and second is not before
+    assert [load["occurrence"] for load in current.participants_evidence()["loads"]][-2:] == [
+        ("providers", 0, "account-A"), ("providers", 1, "account-B")]
+    assert (await bridge(event()))["complete"]
+    await session.cleanup()

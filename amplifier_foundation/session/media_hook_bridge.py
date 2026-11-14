@@ -207,6 +207,19 @@ class ParticipatingHookGraph:
             self._invalidate("module load does not match participating construction plan")
         candidates = [(identity, plan) for identity, plan in _occurrence_plan(self._session.config)
                       if plan == actual and identity not in self._phase_loads]
+        if self._transition_parent is not None:
+            # Saved settings may load only a newly added account, not rebuild
+            # the entire repeated-module plan. Prefer occurrences that lack
+            # matching actual construction over already complete accounts.
+            needed = [(identity, plan) for identity, plan in candidates
+                      if not any(item["occurrence"] == identity and item["plan"] == plan
+                                 and item["mounted"] for item in self._loads)]
+            if needed:
+                candidates = needed
+            elif len(candidates) > 1:
+                # load(module, config, source) has no account argument. An
+                # ambiguous partial reload must not guess another account.
+                candidates = []
         identity = candidates[0][0] if candidates else None
         if identity is None:
             self._invalidate("module load has no current configured occurrence")
@@ -606,6 +619,8 @@ class _CoordinatorView:
         value = await self._bridge._coordinator.mount(*args, **kwargs)
         if graph is not None and self._participant in graph.participants:
             name = args[2] if len(args) > 2 else kwargs.get("name")
+            if kind in ("orchestrator", "context"):
+                name = None  # Core ignores names for singleton mount points.
             loading = _mounting.get()
             names = [name]
             if kind in ("providers", "tools"):
