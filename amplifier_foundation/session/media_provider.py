@@ -70,6 +70,15 @@ class MediaPreparedProvider:
     wrapper's buffers, not the underlying provider's resources. Concurrent use
     refuses rather than replacing an in-flight projection. Optional methods are
     assigned only when implemented by the actual provider.
+
+    Optional synchronous ``get_stream_request_support(*, model,
+    request_options=None)`` is forwarded only with an actual stream method.
+    An exact ``{"v": 1, "tools": "chat_request"}`` result is the provider's
+    promise that stream consumes canonical ``ChatRequest.tools`` without a
+    duplicate ``tools=`` runtime-object argument for that model/options. The
+    caller must validate this fact before selecting that route; absence or any
+    other result makes no claim. This wrapper never creates the promise, changes
+    get_info capabilities, strips kwargs or weakens count/dispatch identity.
     """
 
     def __init__(
@@ -110,6 +119,9 @@ class MediaPreparedProvider:
         support = getattr(provider, "get_media_request_support", None)
         if callable(support):
             self.get_media_request_support = support
+        stream_support = getattr(provider, "get_stream_request_support", None)
+        if callable(getattr(provider, "stream", None)) and callable(stream_support):
+            self.get_stream_request_support = stream_support
 
     @property
     def name(self) -> Any:
