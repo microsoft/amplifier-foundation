@@ -60,7 +60,7 @@ jobs:
           uv run --no-sync python -c "from importlib.metadata import version; assert version('amplifier-core') == '2.0.2'; print(version('amplifier-core'))"
       - name: Qualify actual public graph and private media boundaries
         run: |
-          uv run --no-sync pytest tests/test_media_hook_bridge.py tests/test_media_foundation_integration.py tests/test_session_media.py tests/test_media_projection.py tests/test_media_provider.py tests/test_session_checkpoint.py -q --tb=short -rA
+          uv run --no-sync pytest tests/test_media_hook_bridge.py tests/test_media_foundation_integration.py tests/test_session_media.py tests/test_media_projection.py tests/test_media_provider.py tests/test_session_checkpoint.py tests/test_configurator_coordinator.py -q --tb=short -rA
 
   macos-shared-sources:
     name: Shared source publication (macOS, Python 3.13)
