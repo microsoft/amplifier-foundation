@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
+import pytest
 
 from amplifier_foundation.serialization import sanitize_for_json
 from amplifier_foundation.serialization import sanitize_message
@@ -187,3 +189,52 @@ class TestSanitizeMessage:
         result = sanitize_message(message)
         # Should not raise
         json.dumps(result)
+
+
+@pytest.mark.parametrize("field", ["metadata", "output"])
+def test_canonical_media_null_provenance_survives_real_sanitizer_and_save(tmp_path, field):
+    from amplifier_foundation import sanitize_message as public_sanitize
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    ref = {
+        "v": 1, "session_id": "session", "sha256": "b" * 64, "mime": "image/png",
+        "bytes": 70, "width": 1, "height": 1,
+        "provenance": {"kind": "tool", "session_id": "session", "id": "call-1",
+                       "created_at": "2026-01-01T00:00:00Z", "expires_at": None},
+    }
+    message = {
+        "role": "tool", "tool_call_id": "call-1", "content": "image label",
+        field: {"experimental.media.v1": {"refs": [ref]},
+                "other": {"legacy_none": None, "preserve": "unchanged"}},
+    }
+    original = deepcopy(message)
+    clean = public_sanitize(message)
+    assert clean[field]["experimental.media.v1"]["refs"] == [ref]
+    assert clean[field]["other"] == {"preserve": "unchanged"}
+    clean[field]["experimental.media.v1"]["refs"][0]["provenance"]["id"] = "copy"
+    assert message == original
+    store = SessionHistoryStore(tmp_path / "session")
+    store.save([message], {"session_id": "session"}, sanitizer=public_sanitize)
+    stored = store.load_messages()[0]
+    assert stored[field]["experimental.media.v1"]["refs"] == [ref]
+    assert "expires_at" in stored[field]["experimental.media.v1"]["refs"][0]["provenance"]
+
+
+@pytest.mark.parametrize("bad", [b"pixels", object(), float("nan"), {1: "not-string-key"}])
+def test_reserved_media_is_not_lossily_sanitized_or_stringified(bad):
+    message = {"role": "tool", "metadata": {
+        "experimental.media.v1": {"refs": [{"bad": bad}]}
+    }}
+    with pytest.raises(ValueError, match="finite JSON"):
+        sanitize_message(message)
+
+
+def test_text_and_unrelated_nested_namespace_are_not_promoted():
+    message = {
+        "role": "user",
+        "content": '{"experimental.media.v1":{"refs":[{"expires_at":null}]}}',
+        "metadata": {"other": {"experimental.media.v1": {"legacy": None}}},
+    }
+    clean = sanitize_message(message)
+    assert clean["content"] == message["content"]
+    assert clean["metadata"] == {"other": {"experimental.media.v1": {}}}
