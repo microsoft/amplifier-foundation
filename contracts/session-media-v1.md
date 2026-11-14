@@ -157,6 +157,17 @@ Its dispatch-owned ledger is execution-bound, not a model-supplied declaration.
 
 `validate_published_ref(ref, *, check_expiry=False)` is host-only acceptance
 inspection for selected current/recovery history. Staged entries refuse.
+`validate_published_group(refs, *, origin)` verifies an exact ordered **final
+retained publication**, not merely ownership of each member. Supply a list
+bounded by the host's `max_images`, plus explicit `{kind, session_id, id}` or
+complete original provenance. It returns `{valid: True, ref_count: int}` or raises
+`MediaRefusal`. Truncation, duplication, reordering, substituted refs, altered
+original timestamps, absent/unfinished/dropped publication and malformed refs
+refuse. A legitimately redacted subset succeeds only when that exact subset is
+the saved final publication. This inspection never publishes, resolves pixels,
+renews expiry, changes journals or creates checkpoint/model authority. It works
+on guarded read-only observer stores and repeats their selected-source checks;
+the caller still owns the original manifest/source authorization.
 `resolve_published_ref(ref)` verifies accepted original bytes without requiring
 current-model reachability; expired observations remain metadata-only. The host
 must independently authorize the exact selected canonical/recovery source and
