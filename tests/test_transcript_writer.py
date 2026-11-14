@@ -312,6 +312,99 @@ def test_duplicate_header_fails_cold_incremental_verification(tmp_path):
     assert writer._warm is None
 
 
+@pytest.mark.parametrize("kind", ["migration", "append", "rewrite"])
+def test_retry_reestablishes_all_directory_link_durability(tmp_path, monkeypatch, kind):
+    """Model namespace durability obligations, not merely currently visible bytes."""
+    sources = prepare(tmp_path)
+    writer = w.TranscriptWriter(tmp_path, fence=host_fence)
+    if kind == "migration":
+        call = lambda: writer.migrate(session_id="fixture", operation_id="migration",
+                                      expected_sources=sources, source="transcript.jsonl", admit=admit)
+        fail_name = "migration"
+        fail_parent = tmp_path / "recovery"
+    else:
+        _, prefix = migrate(tmp_path, sources)
+        method = writer.append if kind == "append" else writer.rewrite
+        call = lambda: method(ROWS, expected=prefix, operation_id="next", admit=admit)
+        fail_name = "next"
+        fail_parent = tmp_path / "transcript.v2" / "operations"
+    original_mkdir, original_fsync = os.mkdir, os.fsync
+    pending = set()
+    fail_target = None
+    failed = False
+
+    def identity(fd):
+        info = os.fstat(fd)
+        return info.st_dev, info.st_ino
+
+    def mkdir(name, *args, **kwargs):
+        nonlocal fail_target
+        result = original_mkdir(name, *args, **kwargs)
+        fd = kwargs.get("dir_fd")
+        if fd is not None:
+            parent_id = identity(fd)
+            pending.add(parent_id)
+            if name == fail_name and fail_parent.exists():
+                info = fail_parent.stat()
+                if parent_id == (info.st_dev, info.st_ino):
+                    fail_target = parent_id
+        return result
+
+    def fsync(fd):
+        nonlocal failed
+        parent_id = identity(fd)
+        if not failed and fail_target is not None and parent_id == fail_target:
+            failed = True
+            raise OSError("synthetic failed directory-link fsync")
+        original_fsync(fd)
+        pending.discard(parent_id)
+
+    monkeypatch.setattr(os, "mkdir", mkdir)
+    monkeypatch.setattr(os, "fsync", fsync)
+    with pytest.raises(OSError):
+        call()
+    assert failed and fail_target in pending
+    ack = call()
+    assert ack.commit.message_count > 0
+    assert not pending, "acknowledged while an ancestor link still lacked parent fsync"
+    assert_originals(tmp_path, sources)
+
+
+@pytest.mark.parametrize("kind", ["append", "rewrite"])
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("damage", ["disagree", "invalid-identity", "negative", "bad-digest"])
+def test_corrupt_publication_receipts_refuse_all_retry_paths(
+        tmp_path, kind, historical, damage):
+    writer, initial = migrate(tmp_path, prepare(tmp_path))
+    method = writer.append if kind == "append" else writer.rewrite
+    ack = method(ROWS, expected=initial, operation_id="receipt", admit=admit)
+    if historical:
+        writer.append(ROWS, expected=ack.commit, operation_id="later", admit=admit)
+    operation = tmp_path / "transcript.v2" / "operations" / "receipt"
+    data = json.loads((operation / "published.json").read_bytes())
+    if damage == "disagree":
+        data["message_count"] = 999
+    elif damage == "invalid-identity":
+        data["operation_id"] = "some-other-op"
+    elif damage == "negative":
+        data["message_count"] = -1
+    else:
+        data["sha256"] = "not-a-sha"
+    (operation / "published.json").write_bytes(w._small(data))
+    if damage != "disagree":
+        (operation / "result.json").write_bytes(w._small(data))
+    before = (tmp_path / "transcript.v2" / "current.json").read_bytes()
+    with pytest.raises(w.TranscriptConflict):
+        method(ROWS, expected=initial, operation_id="receipt", admit=admit)
+    digest = hashlib.sha256(
+        b"".join(b"".join(canonical_bytes(row)) + b"\n" for row in ROWS)).hexdigest()
+    with pytest.raises(w.TranscriptConflict):
+        writer.reconcile(operation_id="receipt", expected=initial,
+                         suffix_sha256=digest, kind=kind)
+    assert (tmp_path / "transcript.v2" / "current.json").read_bytes() == before
+    assert writer._warm is None
+
+
 @pytest.mark.parametrize("damage", ["hash", "eof", "body-replacement", "symlink", "missing-hash"])
 def test_cold_or_replaced_source_never_uses_warm_hash(tmp_path, damage):
     sources = prepare(tmp_path)
