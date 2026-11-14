@@ -63,19 +63,90 @@ settled = await boundary(event, hooks=current_hooks, coordinator=current_coordin
 ```
 
 `event` is the existing actual tool event, including its `tool_name` and result.
-No tool_name/hook_name keyword is accepted. Optional omitted hooks/coordinator use
-the bound originals. Supplied AttributedHooks and AttributedCoordinator are used,
-not discarded. Public session_id and capability identity bind the coordinator;
-an invalid coordinator refuses **before** emission. The supplied hook wrapper
-must delegate exactly once to this registry. It must not synthesize or retry a
-chain. Per-callback identities/order, not labels alone, witness delegation.
+No tool_name/hook_name keyword is accepted. Omitted arguments, or the exact bound
+native/bridge registration views, select the captured native endpoints. Other
+supplied objects must be one **explicitly enrolled identity pair** below. Arbitrary
+wrapper methods and attributes are never invoked to obtain execution or proof;
+unenrolled/mixed/revoked identities refuse before emission. This is an intentional
+draft contract change from PR485's first prototype, which executed supplied
+wrappers. It requires the dispatcher enrollment integration and changed-risk review.
 
-The boundary awaits current_hooks.emit("tool:post", event) once, then awaits
-current_coordinator.process_hook_result(actual, "tool:post", event["tool_name"])
-once, positionally. It returns that actual **processed** HookResult. Injections
-can be consumed into Continue and approvals can produce Deny. It preserves nested
-attribution/status observations in the supplied processing wrapper. Errors and
-cancellation propagate according to the existing owner; they never trigger replay.
+The boundary executes the captured bound native emit("tool:post", enriched_event)
+once, then the captured real process_hook_result(actual, "tool:post",
+event["tool_name"]) once. It returns that actual **processed** HookResult.
+Injections can be consumed into Continue and approvals can produce Deny. Known
+enrolled nested observations remain ordered below; arbitrary processing overrides
+are not supported. Errors and cancellation propagate without replay.
+
+## Draft enrollment proposal (controlled fixtures only; activation closed)
+
+```python
+lease = bridge.enroll_attributed_route(
+    hooks=attributed_hooks,
+    coordinator=attributed_coordinator,
+    parent_hooks=actual_parent_hooks,
+    parent_coordinator=actual_parent_coordinator,
+    source=actual_dispatcher_source,
+    observation=dispatcher_owned_observation,
+    source_identity={
+        "component": "loop-streaming", "adapter": "attributed-v1",
+        "contract": 1, "module": "amplifier_module_loop_streaming.dispatch",
+    },
+)
+with lease:
+    # Whole existing nested execute/stage/publish lifetime, no duplicate tools.
+    ...
+# __exit__ revokes. lease.revoke() also invalidates an active route.
+```
+
+This host-only enrollment mechanism is not a seventh media operation, source
+grant, generic transformation callback or qualified host graph. It does not enable
+complete:true, even with a well-shaped source descriptor or successful fixture.
+Until accepted integration exists, do not install it in an existing host.
+
+`source` has exactly six keys: `session_id`, `run_id`, `parent_tool_call_id`,
+`tool_call_id`, `tool_name`, `request_id`. The first five are nonempty strings;
+request_id is a nonempty string or null. Session identity equals the actual root.
+The current event's call ID and name must equal the enrolled child call. Source
+is detached at enrollment. Original admission of the run/parent/child call remains
+the dispatch owner's responsibility; a mapping cannot invent it. The exact static
+source_identity descriptor is compatibility data only. Actual accepted source
+commit/loaded bytes, class ownership and graph qualification are external gates,
+not supplied by that descriptor or checked by a names-only readiness method.
+
+The hooks/coordinator objects are opaque identity tokens. Each token can have only
+one live enrollment; no equality methods or private wrapper fields are consulted.
+Parents must be the exact root views or already scoped enrolled identities.
+Parentage captures the actual enrolled lease generation, not a later lookup of
+the same token. Revoking a parent permanently invalidates that child's lineage;
+re-enrolling the same token objects cannot revive it under different ancestry.
+ContextVar scope plus active lifetime is checked before emission and after awaits.
+Revocation during emission does not roll back effects or skip the one actual
+processing operation: it makes the partial witness incomplete. Cancellation
+releases the context-managed route without replay.
+
+Hook and coordinator parent chains are separate, matching the actual dispatcher:
+a nested AttributedHooks can wrap another hook route while AttributedCoordinator
+wraps the root coordinator. Hook enrichment applies current->parent, so a parent
+route's parent_tool_call_id/dispatch_source overwrites the inner enrichment just
+as the existing wrappers do. Post observations unwind parent->current before
+processing; denial observations unwind only the actual coordinator parent chain
+after processing. All root/native hook priorities and approvals remain unchanged.
+Non-post emissions, including tool:error/engine_error and suspension/cancellation
+status events, still use the ordinary existing wrapper path; this helper never
+manufactures them.
+
+For observer compatibility each hook route receives post_seen:true and a detached
+post_result from the **partial effective callback witness**, not the lossy native
+aggregate. A null followed by injection stays null. Incomplete witnesses record
+post_result:null. Emission-stage callback identity/order, registration generation
+and consistency checks run before assigning a non-null observer value. The value
+is still a pre-processing observation, not settled acceptance; invalidation during
+processing clears it before return, and processing exceptions clear it and
+propagate. This is an explicit safety correction to the old observer's
+null/injection behavior, not a publication/status authority. The dispatcher must
+continue to use the settled processed result for success/output classification.
+The public boundary still exposes result:null/complete:false.
 
 ## Partial effective-result mechanism and failure rules
 
@@ -128,7 +199,7 @@ registry lock. Therefore this source deliberately does not turn the partial
 witness into complete:true. Names, a Boolean, a report, or a source digest alone
 must not manufacture that proof.
 
-### Proposed exact-host route (not implemented or accepted)
+### Remaining exact-host qualification (not implemented or accepted)
 
 The smallest no-Core route would explicitly narrow the guarantee to an **exact
 reviewed cooperative graph**, not arbitrary Python/native modules. It needs:
@@ -149,8 +220,8 @@ reviewed cooperative graph**, not arbitrary Python/native modules. It needs:
 - The current per-emission callback identity/order/error/serialization/generation
   witness remains necessary, but does not replace that graph qualification.
 
-Loop architecture owner and the actual streaming dispatcher owner must settle the
-minimal public enrollment descriptor. Parent plus requested Astra/Fable reviews
+The draft enrollment descriptor above was coordinated with the streaming source
+owner, not accepted as an installed graph. Parent plus requested Astra/Fable reviews
 must accept this changed-risk boundary before activation. A source-bound verifier
 is accepted graph evidence, **not** a runtime lock or malicious-Python isolation.
 No such approval or verifier is claimed here. This dependency is not permission
@@ -161,7 +232,10 @@ coordinator and finite RustSession initialization with a fixture loader. It cove
 the effective-output table, exact emit/process counts, real injection/approval,
 Python mount/ready and late host registration, priority/deny/unregistration,
 raw/same-name bypass, callback errors/malformed results, serialization, nested and
-parallel calls, cancellation and unsupported wrapper behavior. These are focused
+parallel calls, cancellation and unsupported wrapper behavior. Enrolled-route
+fixtures additionally cover captured endpoint identities, nested independent
+parent chains, null/injection, revocation before/during emission, source detachment,
+wrong pair/source/session/descriptor and exact scope release. These are focused
 source integration fixtures, not DTU, live host adoption, all-loop acceptance or
 native module parity. Private `_observe` tests qualify only the partial callback
 mechanism; public ABI tests enforce the hold and reproduce the invisible raw
@@ -171,3 +245,8 @@ pair, not just these fallback tests.
 Foundation base dependency for this change is exact
 `31766b42efe71920386975cf10d136b38b85fc14`.
 No dependent merge or activation is implied by publishing a draft bridge PR.
+The original CI43539041037 six Ubuntu/Windows matrix collection failures
+(`test_session_media.py:14`, missing PIL) remain recorded. Its dependency/workflow
+paths are byte-identical to that F1 base. A newer owning F1 union reportedly
+repairs test dependency selection; it is not silently imported or called passed
+by this bridge-only source. Exact accepted dependency refresh remains separate.
