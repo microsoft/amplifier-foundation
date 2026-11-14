@@ -484,12 +484,49 @@ async def _stage_image_groups(scanner, fields, row, db, directory, capability, o
     return True
 
 
+async def _adopt_existing_groups(scanner, selected_records, db, adopt, target_id, limit, journal, cancelled):
+    for row, record in enumerate(scanner.records()):
+        if row >= selected_records:
+            break
+        for span, ref in _refs(scanner, _message(scanner, record)):
+            db.execute("insert into transfer_refs values(?,?,?,?,?,?)", (
+                row, span.start, span.end, _json(ref["provenance"]), _json(ref), None,
+            ))
+    db.commit()
+    for (origin,) in db.execute(
+        "select origin from transfer_refs group by origin order by min(start)",
+    ):
+        if cancelled():
+            raise InterruptedError("Conversion cancelled before reference group adoption")
+        # This is reference metadata only; the actual host adopt method enforces
+        # its selected max_images and owner policy, not a pixel-sized allocation.
+        count = db.execute("select count(*) from transfer_refs where origin=?", (origin,)).fetchone()[0]
+        if count > limit:
+            raise Unsupported("Selected transfer group exceeds host image count")
+        refs = [json.loads(raw) for (raw,) in db.execute(
+            "select ref from transfer_refs where origin=? order by start", (origin,),
+        )]
+        expected = [{**deepcopy(ref), "session_id": target_id} for ref in refs]
+        _event(journal, state="adoption-group-intent", origin=json.loads(origin), count=len(refs))
+        adopted = await adopt(deepcopy(refs))
+        if not isinstance(adopted, list) or adopted != expected:
+            raise Unsupported("Adoption changed bytes or original provenance/expiry")
+        for ref, copied in zip(refs, adopted):
+            _validate_ref(copied)
+            db.execute("update transfer_refs set adopted=? where ref=?", (_json(copied), _json(ref)))
+        db.commit()
+        _event(journal, state="adopted-assets-only", origin=json.loads(origin), count=len(refs))
+        if cancelled():
+            raise InterruptedError("Conversion cancelled after reference adoption")
+
+
 async def build_candidate(
     plan: ConversionPlan, directory: Path, *, fence: Fence, capability: MediaCapability,
     origin_for: Origin, asset_reader: AssetReader, cancelled: Callable[[], bool] = lambda: False,
     export_assets: bool = False,
-    _adopt_ref: Callable[[dict], Awaitable[dict]] | None = None,
+    _adopt_ref: Callable[[list[dict]], Awaitable[list[dict]]] | None = None,
     _target_session_id: str | None = None,
+    _adopt_limit: int | None = None,
 ) -> Candidate:
     """Build assets-first candidate + enumerable journal; NEVER replace source.
 
@@ -517,6 +554,7 @@ async def build_candidate(
                 return await _build(
                     plan, directory, capability, origin_for, asset_reader, cancelled, journal,
                     export_assets, _adopt_ref, _target_session_id,
+                    _adopt_limit,
                 )
             except BaseException as exc:
                 # No exception payload, image data or opaque provider text in journal.
@@ -527,6 +565,7 @@ async def build_candidate(
 async def _build(
     plan, directory, capability, origin_for, reader, cancelled, journal,
     export_assets, adopt_ref, target_session_id,
+    adopt_limit,
 ):
     # Recovery copies are per rewrite, never a standing growing second body.
     for index, identity in enumerate((plan.source, *plan.backups)):
@@ -548,6 +587,15 @@ async def _build(
         db.execute("create table closure(ref blob)")
         db.execute("create table image_groups(row integer,block integer,origin blob,mime text,digest text,bytes integer)")
         db.execute("create index image_groups_row_origin on image_groups(row,origin,block)")
+        db.execute("create table transfer_refs(row integer,start integer,end integer,origin blob,ref blob,adopted blob)")
+        if adopt_ref is not None:
+            if type(adopt_limit) is not int or adopt_limit <= 0:
+                raise Unsupported("Selected transfer needs the target host image bound")
+            with _open(Path(plan.source.path)) as source:
+                await _adopt_existing_groups(
+                    Scanner(source), plan.selected_records, db, adopt_ref, target_session_id,
+                    adopt_limit, journal, cancelled,
+                )
         db.execute("create index assets_row_block on assets(row,block)")
         decoded_bytes = image_count = 0
         selected_end = 0
@@ -565,17 +613,13 @@ async def _build(
                     if cancelled():
                         raise InterruptedError("Conversion cancelled before reference adoption/validation")
                     if adopt_ref is not None:
-                        snapshot = deepcopy(ref)
-                        expected = {**snapshot, "session_id": target_session_id}
-                        _event(journal, state="adoption-intent", row=row, ref=ref)
-                        adopted = await adopt_ref(deepcopy(snapshot))
-                        if adopted != expected:
-                            raise Unsupported("Adoption changed bytes or original provenance/expiry")
+                        raw = db.execute("select adopted from transfer_refs where row=? and start=?",
+                                         (row, span.start)).fetchone()
+                        if raw is None or raw[0] is None:
+                            raise Unsupported("Missing owner-adopted reference group")
+                        adopted = json.loads(raw[0])
                         _patch(db, span.start, span.end, _json(adopted))
                         ref = deepcopy(adopted)
-                        _event(journal, state="adopted-assets-only", row=row, ref=ref)
-                        if cancelled():
-                            raise InterruptedError("Conversion cancelled after reference adoption")
                     elif ref.get("session_id") != plan.session_id:
                         raise Unsupported("Foreign ref requires explicit owner-authorized adoption")
                     _verify_asset(ref, reader)
@@ -764,17 +808,18 @@ async def transfer_prefix(
     if plan.inline_images:
         raise Unsupported("Externalize inline images before transferring reference ownership")
 
-    async def adopt(ref):
-        value = await target_store.adopt([ref], source_store)
+    async def adopt(refs):
+        value = await target_store.adopt(refs, source_store)
         # F1 host store returns the adopted reference sequence.
-        if not isinstance(value, list) or len(value) != 1:
+        if not isinstance(value, list) or len(value) != len(refs):
             raise Unsupported("Invalid owner adoption result")
-        return value[0]
+        return value
 
     return await build_candidate(
         plan, directory, fence=fence, capability=target_store,
         origin_for=lambda *_: {}, asset_reader=asset_reader, cancelled=cancelled,
         export_assets=True, _adopt_ref=adopt, _target_session_id=target_session_id,
+        _adopt_limit=getattr(getattr(target_store, "policy", None), "max_images", None),
     )
 
 
@@ -793,6 +838,38 @@ def adopt_selected_media(
     current = now or datetime.now(timezone.utc)
     if current.utcoffset() is None:
         raise ValueError("Fork media clock must be timezone qualified")
+    # F1 binds the selected complete set for a real origin, not independent
+    # per-image observations. Group across the ALREADY selected snapshot before
+    # copying anything. This API intentionally shares the caller's list cost.
+    groups: dict[bytes, list[dict]] = {}
+    adopted_by_identity: dict[bytes, dict] = {}
+    for message in messages:
+        metadata = message.get("metadata")
+        namespace = metadata.get(NAMESPACE) if isinstance(metadata, dict) else None
+        if namespace is None:
+            continue
+        if not isinstance(namespace, dict) or set(namespace) != {"refs"} or not isinstance(namespace["refs"], list):
+            raise Unsupported("Unknown selected media namespace")
+        for original_ref in namespace["refs"]:
+            _validate_ref(original_ref)
+            ref = deepcopy(original_ref)
+            if source_store is None or target_store is None or not callable(getattr(target_store, "adopt_sync", None)):
+                raise Unsupported("Selected media requires an owner-authorized closure callback")
+            if getattr(source_store, "read_only", False):
+                source_store.validate_published_ref(deepcopy(ref), check_expiry=False)
+            else:
+                source_store.validate_ref(deepcopy(ref), committed=True, check_expiry=False)
+            expiry = ref["provenance"]["expires_at"]
+            if expiry is None or datetime.fromisoformat(expiry) > current:
+                groups.setdefault(_json(ref["provenance"]), []).append(ref)
+    for refs in groups.values():
+        expected = [{**deepcopy(ref), "session_id": target_session_id} for ref in refs]
+        adopted = target_store.adopt_sync(deepcopy(refs), source_store)
+        if not isinstance(adopted, list) or adopted != expected:
+            raise Unsupported("Selected adoption changed original identity or expiry")
+        for ref, copied in zip(refs, adopted):
+            _validate_ref(copied)
+            adopted_by_identity[_json(ref)] = deepcopy(copied)
     result = []
     for message in messages:
         metadata = message.get("metadata")
@@ -839,11 +916,11 @@ def adopt_selected_media(
                 else:
                     warnings.append(warning)
                 continue
-            adopted = target_store.adopt_sync([deepcopy(snapshot)], source_store)
-            if not isinstance(adopted, list) or adopted != [expected]:
+            adopted = adopted_by_identity.get(_json(snapshot))
+            if adopted != expected:
                 raise Unsupported("Selected adoption changed original identity or expiry")
-            _validate_ref(adopted[0])
-            retained.append(deepcopy(adopted[0]))
+            _validate_ref(adopted)
+            retained.append(deepcopy(adopted))
         copied = dict(message)
         copied_metadata = dict(metadata)
         copied_metadata[NAMESPACE] = {"refs": retained}
@@ -912,6 +989,7 @@ def _closure_schema(db):
     allowed = {
         ("table", "closure"), ("table", "patches"), ("table", "assets"),
         ("table", "image_groups"), ("index", "assets_row_block"),
+        ("table", "transfer_refs"),
         ("index", "image_groups_row_origin"),
     }
     for kind, name in db.execute("select type,name from sqlite_master"):

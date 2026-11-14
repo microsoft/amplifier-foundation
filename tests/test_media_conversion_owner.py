@@ -135,7 +135,7 @@ def test_real_owner_candidate_checkpoint_with_huge_opaque_field(stores, tmp_path
 
 
 def test_two_actual_images_one_original_tool_origin(stores, tmp_path):
-    store, _ = stores
+    store, target = stores
     second = io.BytesIO()
     Image.new("RGB", (4, 3), "blue").save(second, format="PNG")
     images = [png(), second.getvalue()]
@@ -170,6 +170,22 @@ def test_two_actual_images_one_original_tool_origin(stores, tmp_path):
         asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
     ))
     assert (tmp_path / "repeat/candidate.jsonl").read_bytes() == (tmp_path / "group/candidate.jsonl").read_bytes()
+    store.acknowledge_checkpoint({"refs": refs})
+    selected = adopt_selected_media([message], source_store=store, target_store=target,
+                                    target_session_id="target")
+    assert selected[0]["metadata"][NAMESPACE]["refs"] == [
+        {**ref, "session_id": "target"} for ref in refs
+    ]
+    transfer_plan = preview(tmp_path / "group/candidate.jsonl", owner="fixture",
+                            session_id="source", fence=fence)
+    asyncio.run(transfer_prefix(
+        transfer_plan, tmp_path / "transferred", source_store=store, target_store=target,
+        target_session_id="target", fence=fence,
+        asset_reader=lambda ref: target.resolve_ref(ref, committed=False),
+    ))
+    transferred = json.loads((tmp_path / "transferred/candidate.jsonl").read_bytes())
+    assert transferred == selected[0]
+    verify_export(tmp_path / "transferred/portable")
 
 
 def test_dynamic_sqlite_closure_cannot_ack_absent_ref(stores, tmp_path):
