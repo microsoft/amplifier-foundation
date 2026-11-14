@@ -123,7 +123,46 @@ class CommittedTranscriptReader:
         self.session_dir = Path(session_dir)
         self.root = self.session_dir / "transcript.v2"
 
+    def _transition(self):
+        """A partially installed namespace is not an empty healthy session.
+
+        Reader-only fixtures without a migration journal retain their original
+        contract. Writer-created sessions additionally require the durable ready
+        witness and both nonempty legacy entry fences before exposing a commit.
+        """
+        journal = self.root / "migration.json"
+        ready = self.root / "ready.json"
+        if not os.path.lexists(journal):
+            if os.path.lexists(ready) or os.path.lexists(self.root / "operations"):
+                raise UnsupportedTranscript("Versioned ready witness lacks migration journal")
+            return
+        with _file(journal) as stream:
+            raw = stream.read(_CHUNK + 1)
+        if len(raw) > _CHUNK:
+            raise UnsupportedTranscript("Oversized migration journal")
+        plan = _decode(raw)
+        if (not isinstance(plan, dict) or plan.get("format") != _FORMAT
+                or plan.get("v") != 2):
+            raise UnsupportedTranscript("Invalid migration journal")
+        with _file(ready) as stream:
+            raw = stream.read(_CHUNK + 1)
+        if len(raw) > _CHUNK or _decode(raw) != {
+            "format": _FORMAT, "v": 2, "session_id": plan.get("session_id"),
+            "operation_id": plan.get("operation_id"),
+        }:
+            raise UnsupportedTranscript("Migration is incomplete")
+        for name in ("transcript.jsonl", "transcript.jsonl.backup"):
+            with _file(self.session_dir / name / "format.json") as stream:
+                raw = stream.read(_CHUNK + 1)
+            if len(raw) > _CHUNK or _decode(raw) != {
+                "format": _FORMAT, "v": 2,
+                "status": "unsupported-by-legacy-entrypoint",
+                "operation_id": plan.get("operation_id"),
+            }:
+                raise UnsupportedTranscript("Migration legacy fence is incomplete")
+
     def _descriptor(self) -> tuple[CommittedPrefix, bytes]:
+        self._transition()
         with _file(self.root / "current.json") as stream:
             raw = stream.read(_CHUNK + 1)
         if len(raw) > _CHUNK:
