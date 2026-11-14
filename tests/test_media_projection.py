@@ -181,6 +181,26 @@ class ProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["message_index"] for call in verified], [1, 1])
         prepared.release()
 
+    async def test_final_witness_rechecks_live_binding_after_inline_owner_callback(self):
+        store = FakeStore([])
+        live = [True]
+        mutate = [False]
+        def verifier(*args, **kwargs):
+            if mutate[0]:
+                live[0] = False
+            return True
+        store.request_only_verifier = verifier
+        canonical = ChatRequest(messages=[Message(role="user", content=[
+            ImageBlock(source={"type": "base64", "media_type": "image/png", "data": "cGl4ZWxz"})
+        ])])
+        prepared = await self.prepare(store, canonical)
+        prepared.set_binding_validator(lambda: live[0])
+        prepared.validate()
+        mutate[0] = True
+        with self.assertRaises(Refusal):
+            prepared.validate()
+        prepared.release()
+
     async def test_invalid_indexed_role_or_index_refuses_before_verifier_or_asset_reads(self):
         ref = make_ref()
         store = FakeStore([ref])

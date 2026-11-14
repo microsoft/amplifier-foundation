@@ -34,6 +34,20 @@ async def _result(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+_ABSENT = object()
+
+
+def _indexed_getter(provider: Any) -> Any:
+    name = "get_media_request_support_for_request"
+    declared = inspect.getattr_static(provider, name, _ABSENT)
+    try:
+        return getattr(provider, name)
+    except AttributeError:
+        if declared is not _ABSENT:
+            raise ValueError("Indexed media support attribute resolution failed") from None
+        return _ABSENT
+
+
 def _accepts_options(method: Any) -> bool:
     try:
         parameters = inspect.signature(method).parameters.values()
@@ -59,6 +73,8 @@ class _Candidate:
     source_digest: str
     lifetime: Any
     overlay_validator: Any
+    release_options: str
+    option_defaults: tuple[Any, Any]
     fitted: bool = False
     measured: bool = False
 
@@ -76,8 +92,8 @@ class _RequestLifetime:
                 raise ValueError("Media request scope requires a synchronous context manager")
             entered = context.__enter__()
             self._context = context
-            self._validator = entered if callable(entered) else getattr(entered, "validate", None)
             try:
+                self._validator = entered if callable(entered) else getattr(entered, "validate", None)
                 if not callable(self._validator):
                     raise ValueError("Media request scope must yield a synchronous validator")
                 self.validate()
@@ -177,7 +193,7 @@ class MediaPreparedProvider:
         support = getattr(provider, "get_media_request_support", None)
         if callable(support):
             self.get_media_request_support = support
-        indexed_support = getattr(provider, "get_media_request_support_for_request", None)
+        indexed_support = _indexed_getter(provider)
         if callable(indexed_support):
             self.get_media_request_support_for_request = indexed_support
         stream_support = getattr(provider, "get_stream_request_support", None)
@@ -234,6 +250,34 @@ class MediaPreparedProvider:
         lifetime.close()
 
     @staticmethod
+    def _release_options(options: dict[str, Any], defaults: tuple[Any, Any]) -> str:
+        normalized = dict(options)
+        for name, default in zip(("model", "reasoning_effort"), defaults):
+            if normalized.get(name) == default:
+                normalized.pop(name, None)
+        return _fingerprint(normalized)
+
+    def release_media_request(
+        self, canonical: Any, *, request_options: Any = None,
+    ) -> bool:
+        """Abandon only this exact cached request/options association.
+
+        This is cleanup, not a new witness: no live provider/graph/asset query is
+        made, so invalidated or mutated canonical requests can still be released.
+        An equal copy or mismatched options cannot release another candidate.
+        """
+        candidate = self._candidate
+        if candidate is None or candidate.canonical is not canonical:
+            return False
+        options = self._options(request_options, {})
+        if self._release_options(options, candidate.option_defaults) != candidate.release_options:
+            return False
+        if self._busy:
+            raise ValueError("Cannot abandon media during an active operation")
+        self._release(candidate)
+        return True
+
+    @staticmethod
     def _clear_overlays(requests: list[Any]) -> None:
         from amplifier_core.message_models import ChatRequest, ImageBlock
         for request in requests:
@@ -266,9 +310,18 @@ class MediaPreparedProvider:
 
     async def aclose(self) -> None:
         """Revoke buffers and close any live underlying stream iterators."""
-        self.close()
+        error = None
+        try:
+            self.close()
+        except BaseException as exc:
+            error = exc
         for stream in tuple(self._streams):
-            await stream.aclose()
+            try:
+                await stream.aclose()
+            except BaseException as exc:
+                error = error or exc
+        if error is not None:
+            raise error
 
     @staticmethod
     def _options(request_options: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -313,11 +366,10 @@ class MediaPreparedProvider:
         return key, identity, model
 
     def _support(self, source: Any, model: Any, options: dict[str, Any]) -> Any:
-        from .media_projection import _digest, _indexed_support, _json_value
+        from .media_projection import _digest, _indexed_support
 
-        absent = object()
-        getter = getattr(self._provider, "get_media_request_support_for_request", absent)
-        if getter is absent:
+        getter = _indexed_getter(self._provider)
+        if getter is _ABSENT:
             support = getattr(self._provider, "get_media_request_support", None)
             return (
                 support(model=model, request_options=copy.deepcopy(options))
@@ -331,6 +383,16 @@ class MediaPreparedProvider:
         model_digest = _digest(model)
         snapshot, option_snapshot = copy.deepcopy(source), copy.deepcopy(options)
         model_snapshot = copy.deepcopy(model)
+        from amplifier_core.message_models import ImageBlock
+
+        # A broken callback may detach or replace blocks before we detect the
+        # mutation. Own original source dictionaries independently of its graph.
+        image_sources = [
+            block.source for message in snapshot.messages
+            if isinstance(message.content, list)
+            for block in message.content
+            if isinstance(block, ImageBlock) and type(block.source) is dict
+        ]
         try:
             value = getter(request=snapshot, model=model_snapshot, request_options=option_snapshot)
             if inspect.isawaitable(value):
@@ -343,9 +405,11 @@ class MediaPreparedProvider:
                 or _digest(model_snapshot) != model_digest
             ):
                 raise ValueError("Indexed media support mutated its read-only input")
-            return _indexed_support(_json_value(value), source)
+            return _indexed_support(value, source)
         finally:
-            self._clear_overlays([snapshot])
+            for image_source in image_sources:
+                image_source.clear()
+            snapshot.messages = []
 
     def _candidate_valid(self, candidate: _Candidate, options: dict[str, Any]) -> bool:
         from .media_projection import _digest
@@ -405,7 +469,11 @@ class MediaPreparedProvider:
         owned_overlays = []
         try:
             lifetime.validate()
-            base_key = self._binding(request, options)[0]
+            base_key, _, selected_model = self._binding(request, options)
+            option_defaults = (
+                selected_model, getattr(request, "reasoning_effort", None),
+            )
+            release_options = self._release_options(options, option_defaults)
             # Even without an overlay, retain a detached prehydration source.
             _digest(request)
             projected_source = copy.deepcopy(request)
@@ -433,6 +501,18 @@ class MediaPreparedProvider:
             key, identity, model = self._binding(request, options, source=projected_source)
             if self._binding(request, options)[0] != base_key:
                 raise ValueError("Media binding changed during support qualification")
+            lifetime.validate()
+            if self._closed or (
+                overlay_validator is not None and overlay_validator() is not True
+            ):
+                raise ValueError("Media admission changed during support qualification")
+            lifetime.validate()
+            if (
+                self._binding(request, options)[0] != base_key
+                or _digest(projected_source) != source_digest
+            ):
+                raise ValueError("Media binding changed during admission validation")
+            lifetime.validate()
             prepared = await _result(
                 self._capability.prepare_request(
                     projected_source, provider_identity=identity, model=model,
@@ -449,7 +529,7 @@ class MediaPreparedProvider:
         self._owned_overlays[id(prepared)] = owned_overlays
         candidate = _Candidate(
             request, key, base_key, prepared, projected_source, source_digest,
-            lifetime, overlay_validator,
+            lifetime, overlay_validator, release_options, option_defaults,
         )
         self._candidates.append(candidate)
         self._active.append(prepared)
@@ -543,8 +623,9 @@ class MediaPreparedProvider:
             type(request) is not ChatRequest
             or request.model_extra
             or request.metadata
+            or request.tools
         ):
-            raise ValueError("Text fallback cannot omit opaque request state")
+            raise ValueError("Text fallback cannot omit request tools or opaque state")
         warnings = {
             f"[Image unavailable: {reason}; no pixels supplied]"
             for reason in (
@@ -709,8 +790,10 @@ class MediaPreparedProvider:
                 self._provider.complete(candidate.prepared.request, **kwargs)
             )
         finally:
-            self._release(self._candidate)
-            self._busy = False
+            try:
+                self._release(self._candidate)
+            finally:
+                self._busy = False
 
     async def _refit_request(
         self, request: Any, *, request_options: Any = None, **kwargs: Any
@@ -759,8 +842,10 @@ class MediaPreparedProvider:
                 self._provider.compact_context(candidate.prepared.request, **kwargs)
             )
         finally:
-            self._release(candidate)
-            self._busy = False
+            try:
+                self._release(candidate)
+            finally:
+                self._busy = False
 
     def _stream(self, request: Any, **kwargs: Any) -> _MediaStream:
         self._begin()
@@ -850,6 +935,8 @@ class _MediaStream:
             if callable(close):
                 await _result(close())
         finally:
-            self._owner._release(candidate)
-            self._owner._busy = False
-            self._owner._streams.discard(self)
+            try:
+                self._owner._release(candidate)
+            finally:
+                self._owner._busy = False
+                self._owner._streams.discard(self)

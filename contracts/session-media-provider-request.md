@@ -26,6 +26,19 @@ Hosts must close abandoned wrappers/candidates; garbage collection is not a
 lifetime protocol. The factory is optional for compatibility, not proof of graph
 binding when omitted.
 
+Loops can abandon a counted-but-unsent candidate without closing a shared
+provider via
+`release_media_request(canonical, *, request_options=None) -> bool`. This wrapper
+method releases only the exact cached canonical **object identity** and its
+frozen effective options association (including normalized redundant defaults).
+It returns `False` for no candidate, an equal copy, or mismatched options, and
+`True` after release. Repeating it is harmless. It makes no live witness query,
+so changed canonical data, expired graph or rotated provider identity cannot
+block cleanup when the caller supplies the original options. It refuses during
+an active count/transport/stream operation; those owners release in their own
+normal/error/cancellation paths. It never refits, recreates a candidate, or closes
+the underlying provider.
+
 The actual host/bridge owns graph transitions. It must refuse transition while a
 scope is active; any accepted same-session transition also needs store revocation,
 identity-generation rotation and clearing old candidates. This wrapper neither
@@ -91,3 +104,10 @@ request witness immediately before **every** real attempt, including after
 backoff. The wrapper's pre-dispatch check cannot replace that provider obligation.
 Pixels, callbacks and private request identities never become canonical metadata
 or diagnostics. Numerical count/support/production facts are not invented here.
+
+The warning-only `media_text_fallback_witness` returns a message-only view for a
+local text estimate, never a provider measurement. It refuses nonempty
+`ChatRequest.tools`: dropping tool schemas from that view could undercount a
+request with an unavailable provider budget. Empty/no tools retain the existing
+warning fallback. Actual provider hard fitting/counting remains provider-owned;
+this refusal does not label an estimate as measured or remove canonical tools.

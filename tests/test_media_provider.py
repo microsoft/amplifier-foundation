@@ -12,7 +12,7 @@ from types import MappingProxyType
 
 from amplifier_core import ChatRequest
 from amplifier_core import Message
-from amplifier_core.message_models import ImageBlock, TextBlock, ThinkingBlock
+from amplifier_core.message_models import ImageBlock, TextBlock, ThinkingBlock, ToolSpec
 
 from amplifier_foundation.session.media_provider import MediaPreparedProvider
 
@@ -497,6 +497,212 @@ class RequestBoundaryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await wrapper.complete(self.canonical)
         self.assertFalse(self.provider.sent)
+        self.assertEqual(self.active, 0)
+
+    async def test_scope_revoked_during_support_refuses_before_projection(self):
+        def support(**kwargs):
+            self.generation += 1
+            return {"v": 2, "positions": [], "mime_types": []}
+        self.provider.get_media_request_support_for_request = support
+        wrapper = self.wrap()
+        with self.assertRaises(ValueError):
+            await self.budget(wrapper)
+        self.assertFalse(self.capability.prepared)
+        self.assertEqual(self.active, 0)
+
+    async def test_close_during_support_refuses_before_projection(self):
+        wrapper = self.wrap()
+        def support(**kwargs):
+            wrapper.close()
+            return {"v": 2, "positions": [], "mime_types": []}
+        self.provider.get_media_request_support_for_request = support
+        with self.assertRaises(ValueError):
+            await self.budget(wrapper)
+        self.assertFalse(self.capability.prepared)
+        self.assertEqual(self.active, 0)
+
+    async def test_overlay_revoked_during_support_refuses_before_projection(self):
+        admitted = [True]
+        def overlay(source, **kwargs):
+            return {"request": source, "validate": lambda: admitted[0]}
+        def support(**kwargs):
+            admitted[0] = False
+            return {"v": 2, "positions": [], "mime_types": []}
+        self.provider.get_media_request_support_for_request = support
+        wrapper = self.wrap(prepare_overlay=overlay)
+        with self.assertRaises(ValueError):
+            await self.budget(wrapper)
+        self.assertFalse(self.capability.prepared)
+        self.assertEqual(self.active, 0)
+
+    async def test_post_support_overlay_validator_cannot_change_binding_before_pixels(self):
+        qualified = [False]
+        def overlay(source, **kwargs):
+            def validate():
+                if qualified[0]:
+                    self.identity["generation"] += 1
+                return True
+            return {"request": source, "validate": validate}
+        def support(**kwargs):
+            qualified[0] = True
+            return {"v": 2, "positions": [], "mime_types": []}
+        self.provider.get_media_request_support_for_request = support
+        wrapper = self.wrap(prepare_overlay=overlay)
+        with self.assertRaises(ValueError):
+            await self.budget(wrapper)
+        self.assertFalse(self.capability.prepared)
+        self.assertEqual(self.active, 0)
+
+    async def test_post_support_overlay_validator_cannot_mutate_frozen_source(self):
+        qualified = [False]
+        def overlay(source, **kwargs):
+            def validate():
+                if qualified[0]:
+                    source.messages[0].content = "changed after facts qualified"
+                return True
+            return {"request": source, "validate": validate}
+        def support(**kwargs):
+            qualified[0] = True
+            return {"v": 2, "positions": [], "mime_types": []}
+        self.provider.get_media_request_support_for_request = support
+        wrapper = self.wrap(prepare_overlay=overlay)
+        with self.assertRaises(ValueError):
+            await self.budget(wrapper)
+        self.assertFalse(self.capability.prepared)
+        self.assertEqual(self.active, 0)
+
+    async def test_declared_descriptor_failure_never_downgrades_to_v1(self):
+        class Broken(Provider):
+            @property
+            def get_media_request_support_for_request(self):
+                raise AttributeError("synthetic failure resolving getter")
+        with self.assertRaises(ValueError):
+            MediaPreparedProvider(
+                Broken(self.capability), self.capability,
+                provider_identity=self.identity, request_scope=self.scope,
+            )
+        self.assertFalse(self.capability.prepared)
+
+    async def test_scope_exit_error_still_closes_stream_and_releases_busy(self):
+        finalized = []
+        @contextmanager
+        def broken_exit():
+            try:
+                yield lambda: True
+            finally:
+                raise RuntimeError("synthetic exit failure")
+        async def stream(projected, **kwargs):
+            try:
+                yield "first"
+                yield "second"
+            finally:
+                finalized.append(True)
+        self.provider.stream = stream
+        wrapper = MediaPreparedProvider(
+            self.provider, self.capability, provider_identity=self.identity,
+            request_scope=broken_exit,
+        )
+        iterator = wrapper.stream(self.canonical)
+        self.assertEqual(await anext(iterator), "first")
+        with self.assertRaises(RuntimeError):
+            await wrapper.aclose()
+        self.assertEqual(finalized, [True])
+        self.assertFalse(wrapper._streams)
+        self.assertFalse(wrapper._busy)
+        self.assertTrue(self.capability.prepared[-1].released)
+        await wrapper.aclose()
+
+    async def test_scope_exit_error_does_not_strand_complete_busy(self):
+        @contextmanager
+        def broken_exit():
+            yield lambda: True
+            raise RuntimeError("synthetic exit failure")
+        wrapper = MediaPreparedProvider(
+            self.provider, self.capability, provider_identity=self.identity,
+            request_scope=broken_exit,
+        )
+        with self.assertRaises(RuntimeError):
+            await wrapper.complete(self.canonical)
+        self.assertFalse(wrapper._busy)
+        self.assertTrue(self.capability.prepared[-1].released)
+        self.assertFalse(wrapper._lifetimes)
+
+    async def test_mutating_getter_cannot_strand_detached_inline_source(self):
+        retained = []
+        def support(*, request, **kwargs):
+            retained.append(request.messages[0].content[0].source)
+            request.messages.clear()
+            return {"v": 2, "positions": [], "mime_types": []}
+        self.provider.get_media_request_support_for_request = support
+        self.canonical.messages[0].content = [
+            ImageBlock(source={"type": "base64", "media_type": "image/png", "data": "cGl4ZWxz"})
+        ]
+        wrapper = self.wrap()
+        with self.assertRaises(ValueError):
+            await self.budget(wrapper)
+        self.assertEqual(retained, [{}])
+        self.assertEqual(self.canonical.messages[0].content[0].source["data"], "cGl4ZWxz")
+        self.assertFalse(self.capability.prepared)
+        self.assertEqual(self.active, 0)
+
+    async def test_public_abandon_releases_exact_candidate_without_closing_provider(self):
+        wrapper = self.wrap()
+        await self.budget(wrapper, temperature=0.1)
+        prepared = self.capability.prepared[-1]
+        other = self.canonical.model_copy(deep=True)
+        self.assertFalse(wrapper.release_media_request(other, request_options={"temperature": 0.1}))
+        self.assertFalse(wrapper.release_media_request(self.canonical, request_options={"temperature": 0.2}))
+        self.assertFalse(prepared.released)
+        self.assertEqual(self.active, 1)
+        # Invalid live state must not prevent cleanup of the owned old binding.
+        self.generation += 1
+        self.identity["generation"] += 1
+        self.canonical.messages[0].content = "changed after fitting"
+        self.assertTrue(wrapper.release_media_request(self.canonical, request_options={"temperature": 0.1}))
+        self.assertTrue(prepared.released)
+        self.assertEqual(self.active, 0)
+        self.assertFalse(wrapper.release_media_request(self.canonical, request_options={"temperature": 0.1}))
+        self.assertFalse(wrapper._closed)
+        await wrapper.complete(other)
+        self.assertTrue(self.provider.sent)
+
+    async def test_public_abandon_budget_refusal_or_between_fit_cancel_releases(self):
+        for cancelled in (False, True):
+            wrapper = self.wrap()
+            await self.budget(wrapper)
+            try:
+                if cancelled:
+                    raise asyncio.CancelledError
+                raise ValueError("local budget refusal")
+            except (ValueError, asyncio.CancelledError):
+                self.assertTrue(wrapper.release_media_request(self.canonical))
+            self.assertEqual(self.active, 0)
+            self.assertTrue(self.capability.prepared[-1].released)
+            self.assertFalse(wrapper.release_media_request(self.canonical))
+
+    async def test_public_abandon_does_not_release_second_request_or_active_transport(self):
+        wrapper = self.wrap()
+        first = self.canonical
+        await self.budget(wrapper)
+        self.canonical = request("second")
+        await self.budget(wrapper)
+        second = self.capability.prepared[-1]
+        self.assertFalse(wrapper.release_media_request(first))
+        self.assertFalse(second.released)
+        async def during_send(_):
+            with self.assertRaises(ValueError):
+                wrapper.release_media_request(self.canonical)
+        self.provider.on_complete = during_send
+        await wrapper.complete(self.canonical)
+        self.assertTrue(second.released)
+        self.assertEqual(self.active, 0)
+
+    async def test_public_abandon_uses_frozen_defaults_not_changed_model(self):
+        wrapper = self.wrap()
+        await self.budget(wrapper, model="fixture")
+        self.provider.default_model = "changed"
+        self.canonical.model = "changed"
+        self.assertTrue(wrapper.release_media_request(self.canonical))
         self.assertEqual(self.active, 0)
 
 
@@ -1080,6 +1286,43 @@ class TextFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prepared.request.model_dump(mode="json"), snapshot)
         self.assertEqual(self.canonical.model_dump(mode="json"), original)
         await self.wrapper.complete(self.canonical)
+
+    async def test_unavailable_budget_with_tools_cannot_get_message_only_fallback(self):
+        provider = Provider(self.capability)
+        provider.on_budget = lambda _: None
+        wrapper = MediaPreparedProvider(
+            provider, self.capability, provider_identity=self.identity,
+        )
+        self.canonical.tools = [ToolSpec(
+            name="large_schema", description="x" * 40090,
+            parameters={"type": "object", "properties": {}},
+        )]
+        before = self.canonical.model_dump(mode="json")
+        try:
+            self.assertIsNone(await wrapper.request_budget(
+                self.canonical, context_estimate=92, request_options={},
+            ))
+            counted = provider.budgeted[-1]
+            with self.assertRaisesRegex(ValueError, "tools"):
+                await wrapper.media_text_fallback_witness(self.canonical)
+            self.assertFalse(provider.sent)
+            self.assertTrue(self.capability.prepared[-1].released)
+            self.assertFalse(wrapper._candidate)
+            self.assertEqual(len(counted.tools[0].description), 40090)
+            self.assertEqual(self.canonical.model_dump(mode="json"), before)
+            with self.assertRaises(ValueError):
+                wrapper.media_budget_witness(self.canonical)
+        finally:
+            await wrapper.aclose()
+
+    async def test_empty_tools_still_allows_unmeasured_warning_fallback(self):
+        self.canonical.tools = []
+        view = await self.witness()
+        self.assertTrue(view["validated"])
+        with self.assertRaises(ValueError):
+            self.wrapper.media_budget_witness(self.canonical)
+        await self.wrapper.complete(self.canonical)
+        self.assertIs(self.provider.sent[-1], self.capability.prepared[-1].request)
 
     async def test_exact_fallback_options_are_required_at_dispatch(self):
         await self.witness(request_options={"extended_thinking": True})

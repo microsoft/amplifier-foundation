@@ -110,7 +110,6 @@ def _expired(ref: dict[str, Any]) -> bool:
 
 def _indexed_support(value: Any, request: ChatRequest) -> Any:
     """Strict v2 facts refer only to this exact prehydration request."""
-    value = _json_value(value)
     if (
         type(value) is not dict or set(value) != {"v", "positions", "mime_types"}
         or type(value["v"]) is not int or value["v"] != 2
@@ -133,7 +132,7 @@ def _indexed_support(value: Any, request: ChatRequest) -> Any:
         ):
             _refuse("invalid indexed media request position")
         seen.add(position["message_index"])
-    return value
+    return _json_value(value)
 
 
 def _can_hydrate(
@@ -345,6 +344,9 @@ class PreparedMediaRequestV1:
                 _refuse("media asset availability changed after preparation")
         # Store/host verifiers are synchronous callbacks; do not let callback
         # side effects alter the fitted request while a witness is being checked.
+        if self._binding_validator is not None:
+            if self._binding_validator() is not True:
+                _refuse("live selected-provider binding changed during validation")
         if (
             self._current_binding_digest() != self._binding_digest
             or _digest(self._canonical) != self._canonical_digest
