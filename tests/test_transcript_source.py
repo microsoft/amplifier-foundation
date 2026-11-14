@@ -3,9 +3,11 @@
 import hashlib
 import json
 import os
-import tracemalloc
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -166,6 +168,21 @@ def test_mutation_during_range_read_never_returns_bytes(tmp_path, monkeypatch):
             source.read_range(0, 10)
 
 
+def test_prepared_namespace_swap_with_same_body_inode_refuses(tmp_path):
+    _, commit, _ = fixture(tmp_path)
+    root = tmp_path / "transcript.v2"
+    prepared = tmp_path / "prepared-root"
+    prepared.mkdir()
+    for name in ("migration.json", "ready.json", "current.json"):
+        (prepared / name).write_bytes((root / name).read_bytes())
+    os.link(root / commit.body, prepared / commit.body)
+    with s.open_committed_source(tmp_path) as source:
+        root.rename(tmp_path / "retained-root")
+        prepared.rename(root)
+        with pytest.raises(UnsupportedTranscript):
+            source.window(0, 1)
+
+
 @pytest.mark.parametrize("damage", ["hash", "short", "nested-duplicate", "count"])
 def test_cold_open_hash_semantic_and_bound_closure(tmp_path, damage):
     _, commit, _ = fixture(tmp_path)
@@ -220,27 +237,27 @@ def test_explicit_range_limits(tmp_path, action):
                 list(source.iter_bytes(chunk_size=s.MAX_RANGE_BYTES + 1))
 
 
-@pytest.mark.parametrize("mib", [2, 8])
 def test_cold_huge_individual_string_is_bounded_and_streamable(
-        tmp_path, record_property, mib):
-    value = "x" * (mib * 1024 * 1024)
-    _, commit, _ = fixture(tmp_path, [{"role": "user", "content": value}])
-    tracemalloc.start()
-    with s.open_committed_source(tmp_path) as source:
-        bounds = source.message_range(0)
-        digest, count = hashlib.sha256(), 0
-        for raw in source.iter_bytes(bounds.start, bounds.end):
-            digest.update(raw)
-            count += len(raw)
-        _, peak = tracemalloc.get_traced_memory()
-        record_property("huge_individual_string_bytes", len(value))
-        record_property("cold_open_and_stream_python_peak", peak)
-        assert peak < 2 * 1024 * 1024
-        assert count > len(value)
-        assert source.commit == commit
+        tmp_path, record_property):
+    # A fresh interpreter isolates the feature measurement from pytest's global
+    # pathlib/sys.intern table resizes. No cold-source verification is warmed.
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, str(root / "tests/qualify_transcript_source.py"),
+         "--work", str(tmp_path / "benchmark")],
+        env={**os.environ, "PYTHONPATH": str(root)}, capture_output=True,
+        text=True, check=True, timeout=120)
+    report = json.loads(result.stdout)
+    for case in report["cases"]:
+        record_property(str(case["huge_string_bytes"]) + "_python_peak", case["python_peak"])
+        assert case["python_peak"] < 2 * 1024 * 1024
+
+
+def test_budget_refusal_preserves_source_for_stream_fallback(tmp_path):
+    fixture(tmp_path, [{"role": "user", "content": "x" * 8192}])
     with s.open_committed_source(tmp_path) as source:
         with pytest.raises(ValueError):
             source.window(0, 1, max_bytes=1024)  # Refusal, not truncation.
         # Budget refusal doesn't poison a verified source's streaming fallback.
+        bounds = source.message_range(0)
         assert source.read_range(bounds.start, bounds.start + 1) == b"{"
-    tracemalloc.stop()

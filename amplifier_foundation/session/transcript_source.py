@@ -38,6 +38,31 @@ DEFAULT_WINDOW_BYTES = 4 * 1024 * 1024
 MAX_WINDOW_BYTES = 16 * 1024 * 1024
 
 
+def _namespace(path):
+    """Pin every directory component identity, never follow a link."""
+    path = Path(path).absolute()
+    if os.name != "posix" or ".." in path.parts:
+        raise UnsupportedTranscript("Qualified POSIX namespace required")
+    fds, identities = [], []
+    try:
+        fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fds.append(fd)
+        for name in path.parts[1:]:
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            fds.append(fd)
+        for fd in fds:
+            info = os.fstat(fd)
+            identities.append((info.st_dev, info.st_ino))
+        for index, name in enumerate(path.parts[1:]):
+            linked = os.stat(name, dir_fd=fds[index], follow_symlinks=False)
+            if (linked.st_dev, linked.st_ino) != identities[index + 1]:
+                raise UnsupportedTranscript("Committed namespace changed during check")
+        return tuple(identities)
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+
+
 @dataclass(frozen=True)
 class TranscriptRange:
     """Exact canonical JSON object byte range [start,end), excluding row LF."""
@@ -64,7 +89,7 @@ class CommittedSource:
     bounded by max_bytes, with oversize individual records refused, never cut.
     """
 
-    def __init__(self, reader, prefix, descriptor, stamp, offsets):
+    def __init__(self, reader, prefix, descriptor, stamp, offsets, namespace):
         self._reader = reader
         self.commit = prefix
         self._descriptor = descriptor
@@ -72,10 +97,13 @@ class CommittedSource:
         self._offsets = offsets
         self._active = True
         self._lock = threading.RLock()
+        self._namespace = namespace
 
     def _check(self):
         if not self._active:
             raise UnsupportedTranscript("Committed source is closed or invalidated")
+        if _namespace(self._reader.root) != self._namespace:
+            raise UnsupportedTranscript("Committed namespace replaced; reopen explicitly")
         prefix, descriptor = self._reader._descriptor()
         if prefix != self.commit or descriptor != self._descriptor:
             raise UnsupportedTranscript("Committed source selection changed; reopen explicitly")
@@ -207,6 +235,7 @@ def open_committed_source(session_dir: str | Path, *,
     rebuildable data, never transcript authority and never persisted hash state.
     """
     reader = CommittedTranscriptReader(session_dir)
+    namespace = _namespace(reader.root)
     prefix, descriptor = reader._descriptor()
     if expected is not None and prefix != expected:
         raise UnsupportedTranscript("Expected committed source differs")
@@ -251,7 +280,7 @@ def open_committed_source(session_dir: str | Path, *,
                 raise UnsupportedTranscript("Committed source ends inside a record")
         reader._unchanged(descriptor)
         offsets.flush()
-        source = CommittedSource(reader, prefix, descriptor, stamp, offsets)
+        source = CommittedSource(reader, prefix, descriptor, stamp, offsets, namespace)
         try:
             # Recheck identity even if it changed after the initial _file exit.
             with source._body():
