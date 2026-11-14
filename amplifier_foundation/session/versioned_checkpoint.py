@@ -24,7 +24,7 @@ from .media import MEDIA_NAMESPACE, validate_blob_ref
 from .transcript_source import _namespace, open_committed_source
 from .transcript_v2 import CommittedPrefix, UnsupportedTranscript, _decode, _file, _stamp
 from .transcript_writer import (
-    LEGACY, CommitAck, TranscriptWriter, _PrefixView, _descriptor, _identity, _receipt,
+    LEGACY, CommitAck, TranscriptWriter, _PrefixView, _descriptor, _header, _identity, _receipt,
 )
 
 _SEAL = object()
@@ -121,8 +121,37 @@ def _validate_intent(raw, plan_raw, plan, prefix):
             raise VersionedCheckpointRefused("Append result bounds differ from intent")
     elif (prefix.generation != "r-" + prefix.operation_id
           or prefix.message_count != intent["suffix_messages"]
-          or prefix.committed_bytes < intent["suffix_bytes"]):
+          or prefix.committed_bytes != len(_header(prefix.generation)) + intent["suffix_bytes"]):
         raise VersionedCheckpointRefused("Rewrite result differs from intent")
+    return intent
+
+
+def _verify_intended_bytes(body, intent, prefix):
+    if intent is None:  # Initialization/migration source ownership is the journal.
+        return
+    if intent["kind"] == "append":
+        previous = _prefix_data(intent["expected"])
+        body.seek(0)
+        remaining, digest = previous.committed_bytes, hashlib.sha256()
+        while remaining:
+            raw = body.read(min(CHUNK, remaining))
+            if not raw:
+                raise VersionedCheckpointRefused("Operation predecessor exceeds selected body")
+            remaining -= len(raw)
+            digest.update(raw)
+        if digest.hexdigest() != previous.sha256:
+            raise VersionedCheckpointRefused("Operation predecessor digest differs")
+    else:
+        body.seek(len(_header(prefix.generation)))
+    remaining, digest = intent["suffix_bytes"], hashlib.sha256()
+    while remaining:
+        raw = body.read(min(CHUNK, remaining))
+        if not raw:
+            raise VersionedCheckpointRefused("Operation suffix exceeds selected body")
+        remaining -= len(raw)
+        digest.update(raw)
+    if body.tell() != prefix.committed_bytes or digest.hexdigest() != intent["suffix_sha256"]:
+        raise VersionedCheckpointRefused("Operation suffix differs from intent")
 
 
 def _control(path: Path):
@@ -165,7 +194,7 @@ def _capture(path: Path, prefix: CommittedPrefix, *, unsettled=False):
         raise VersionedCheckpointRefused("Current operation result/publication differs")
     plan, ready = _decode(controls[1][3]), _decode(controls[2][3])
     _validate_plan(plan, prefix)
-    _validate_intent(controls[3][3], controls[1][3], plan, prefix)
+    intent = _validate_intent(controls[3][3], controls[1][3], plan, prefix)
     if ready != {"format": plan["format"], "v": 2,
                  "session_id": prefix.session_id, "operation_id": plan["operation_id"]}:
         raise VersionedCheckpointRefused("Writer transition is not ready")
@@ -190,6 +219,7 @@ def _capture(path: Path, prefix: CommittedPrefix, *, unsettled=False):
         header = _decode(body.readline(min(CHUNK + 1, prefix.committed_bytes)))
         if type(header) is not dict or type(header.get("v")) is not int:
             raise VersionedCheckpointRefused("Generation header version must be an exact integer")
+        _verify_intended_bytes(body, intent, prefix)
     return controls, stamp
 
 

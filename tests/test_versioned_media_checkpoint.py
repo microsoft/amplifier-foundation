@@ -467,6 +467,7 @@ async def test_store_exhausts_after_last_ref_before_bind_and_after_match(tmp_pat
 
 
 @pytest.mark.parametrize("corruption", ["intent-garbage", "intent-kind", "intent-bounds",
+    "intent-suffix-digest", "intent-predecessor-digest",
     "plan-missing-selection", "plan-wrong-source", "plan-bool-stamp"])
 def test_preexisting_invalid_writer_controls_cannot_mint_or_settle(tmp_path, corruption):
     path, writer, ack = session(tmp_path)
@@ -479,8 +480,13 @@ def test_preexisting_invalid_writer_controls_cannot_mint_or_settle(tmp_path, cor
             target.write_bytes(b"not-json")
         else:
             intent = json.loads(target.read_bytes())
-            intent["kind" if corruption == "intent-kind" else "suffix_bytes"] = (
-                "migration" if corruption == "intent-kind" else 0)
+            if corruption == "intent-suffix-digest":
+                intent["suffix_sha256"] = "b" * 64
+            elif corruption == "intent-predecessor-digest":
+                intent["expected"]["sha256"] = "b" * 64
+            else:
+                intent["kind" if corruption == "intent-kind" else "suffix_bytes"] = (
+                    "migration" if corruption == "intent-kind" else 0)
             target.write_text(json.dumps(intent))
     else:
         target = root / "migration.json"
@@ -502,19 +508,17 @@ def test_preexisting_invalid_writer_controls_cannot_mint_or_settle(tmp_path, cor
 
 @pytest.mark.parametrize("version", [b"2.0", b"2e0"])
 def test_float_header_version_refused_even_when_hash_and_operation_records_match(tmp_path, version):
-    path, writer, ack = session(tmp_path)
+    path = tmp_path / "session"
+    path.mkdir(mode=0o700)
+    writer = TranscriptWriter(path, fence=fixture_fence)
+    ack = writer.initialize(session_id="session", operation_id="init", admit=lambda: None)
     root = path / "transcript.v2"
     body = root / ack.commit.body
     raw = body.read_bytes().replace(b'"v":2', b'"v":' + version, 1)
     altered = dataclasses.replace(ack.commit, committed_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
     body.write_bytes(raw)
-    for name in ("current.json", "operations/append/result.json", "operations/append/published.json"):
+    for name in ("current.json", "operations/init/result.json", "operations/init/published.json"):
         (root / name).write_bytes(_descriptor(altered))
-    # Also adjust intent byte count so refusal is about the header, not bounds.
-    target = root / "operations/append/intent.json"
-    intent = json.loads(target.read_bytes())
-    intent["suffix_bytes"] += len(version) - 1
-    target.write_text(json.dumps(intent))
     with pytest.raises(Refused):
         acknowledge(writer, altered)
 
