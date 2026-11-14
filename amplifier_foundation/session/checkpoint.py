@@ -248,6 +248,26 @@ def verified_checkpoint_refs(receipt: LegacyCheckpointReceipt) -> Iterator[dict[
     yield from receipt.iter_refs()
 
 
+def verified_media_checkpoint_refs(receipt: Any) -> Iterator[dict[str, Any]]:
+    """Explicit opt-in legacy/V2 store verifier; serialized facts are not authority.
+
+    The legacy-only callback above retains its original contract. Hosts choosing
+    both formats can install this callback without duplicating receipt dispatch.
+    V2 is imported only when the supplied object is not an exact legacy receipt;
+    importing this module neither loads nor activates a versioned writer.
+    """
+    if type(receipt) is LegacyCheckpointReceipt:
+        yield from verified_checkpoint_refs(receipt)
+        return
+    from .versioned_checkpoint import (
+        VersionedCheckpointReceipt, verified_versioned_checkpoint_refs,
+    )
+
+    if type(receipt) is not VersionedCheckpointReceipt:
+        raise CheckpointRefused("Not a local canonical media checkpoint acknowledgement")
+    yield from verified_versioned_checkpoint_refs(receipt)
+
+
 def _attest(receipt: LegacyCheckpointReceipt) -> str:
     fields = [
         receipt.kind, receipt.session_id, receipt.prefix_bytes,

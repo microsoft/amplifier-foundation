@@ -12,6 +12,7 @@ from amplifier_foundation.session.checkpoint import (
     CheckpointRefused,
     acknowledge_legacy_checkpoint,
     verified_checkpoint_refs,
+    verified_media_checkpoint_refs,
 )
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX fsync qualification")
@@ -154,6 +155,30 @@ def test_verifier_requires_local_receipt_and_exhausts_refs(tmp_path):
     assert list(verified_checkpoint_refs(ack(path, rows))) == [ref]
     with pytest.raises(CheckpointRefused):
         list(verified_checkpoint_refs({"session_id": "session-1", "refs": [ref]}))
+
+
+def test_opt_in_media_dispatcher_uses_exact_legacy_receipt_and_final_checks(tmp_path):
+    ref = {"v": 1, "session_id": "session-1"}
+    rows = [{"role": "tool", "metadata": {MEDIA: {"refs": [ref]}}}]
+    path = tmp_path / "session"
+    raw = save(path, rows)
+    receipt = ack(path, rows)
+    assert list(verified_media_checkpoint_refs(receipt)) == [ref]
+    refs = verified_media_checkpoint_refs(receipt)
+    assert next(refs) == ref
+    replacement = path / "replacement"
+    replacement.write_bytes(raw)
+    replacement.replace(path / "transcript.jsonl")
+    with pytest.raises(CheckpointRefused):
+        next(refs)
+
+
+@pytest.mark.parametrize("receipt", [
+    None, True, {"kind": "versioned-checkpoint-backed-v1", "session_id": "session-1"},
+])
+def test_opt_in_media_dispatcher_refuses_untyped_authority(receipt):
+    with pytest.raises(CheckpointRefused):
+        list(verified_media_checkpoint_refs(receipt))
 
 
 def test_fifo_is_refused_without_waiting_for_a_writer(tmp_path):

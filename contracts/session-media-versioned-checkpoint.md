@@ -79,8 +79,15 @@ The existing store's disk spool exhausts before binding any acceptance, and its
 resolution verifier exhausts again even after finding the wanted ref. Use this
 V2-only callback or an explicit exact-type legacy/V2 dispatcher; never duck-type
 serialized receipt reports. Existing legacy/candidate ACK paths are unchanged.
-The store's old hardcoded `legacy-checkpoint-backed` output label is unchanged
-in this scoped delta; version-aware label integration belongs to assembly.
+The assembled F1 `checkpoint.verified_media_checkpoint_refs` is an explicit
+opt-in exact-type dispatcher for legacy and V2 receipts; the existing
+`verified_checkpoint_refs` stays legacy-only. Neither callback accepts a report,
+dictionary, Boolean or lookalike as receipt authority. The assembled store emits
+`versioned-checkpoint-backed` only for an exact local `VersionedCheckpointReceipt`
+after verification and complete configured-verifier exhaustion; legacy/custom
+host verifiers retain `legacy-checkpoint-backed`. The serialized `kind` never
+selects this durability label. This source integration does not establish actual
+host lifetime ownership or installed-composition acceptance.
 
 Precommit asset admission remains a separate host obligation. The current
 writer's zero-argument admission callback does not attest to its exact input.

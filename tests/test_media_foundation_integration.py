@@ -20,7 +20,7 @@ from amplifier_foundation import Bundle, sanitize_message
 from amplifier_foundation.bundle import PreparedBundle, BundleModuleResolver
 from amplifier_foundation.session.checkpoint import (
     acknowledge_legacy_checkpoint, acknowledge_candidate_checkpoint,
-    verified_checkpoint_refs,
+    verified_checkpoint_refs, verified_media_checkpoint_refs,
 )
 from amplifier_foundation.session.fork import fork_session
 from amplifier_foundation.session.history import SessionHistoryStore
@@ -45,7 +45,7 @@ def pixels():
 def new_store(root, session_id):
     return SessionMediaStore(
         root, session_id, policy=MediaPolicy(1024 * 1024, 10000, 8),
-        checkpoint_verifier=verified_checkpoint_refs,
+        checkpoint_verifier=verified_media_checkpoint_refs,
     )
 
 
@@ -108,7 +108,7 @@ async def test_versioned_checkpoint_actual_prefix_to_private_request_joint(tmp_p
     path = tmp_path / "v2-joint"
     path.mkdir(mode=0o700)
     store = SessionMediaStore(path / "media", "v2-joint",
-                              checkpoint_verifier=verified_versioned_checkpoint_refs)
+                              checkpoint_verifier=verified_media_checkpoint_refs)
     origin = {"kind": "tool", "session_id": "v2-joint", "id": "call-v2"}
     image = io.BytesIO()
     Image.new("RGB", (2, 2), "purple").save(image, format=image_format)
@@ -140,6 +140,9 @@ async def test_versioned_checkpoint_actual_prefix_to_private_request_joint(tmp_p
         assert result == {"state": "committed", "durability": "versioned-checkpoint-backed",
                           "ref_count": 1}
         assert list(verified_versioned_checkpoint_refs(receipt)) == [ref]
+        assert list(verified_media_checkpoint_refs(receipt)) == [ref]
+        with pytest.raises(ValueError):
+            list(verified_checkpoint_refs(receipt))
         assert SessionHistoryStore(path).load_messages() == rows
         # The format reader ignores a torn/ref-looking tail, but the pinned
         # receipt must refuse ANY later source change, not advance itself.
