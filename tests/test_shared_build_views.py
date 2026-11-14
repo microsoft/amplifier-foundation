@@ -62,7 +62,15 @@ def source(tmp_path, monkeypatch):
 
 def target_for(root):
     data = json.loads((root / ".amplifier_cache_meta.json").read_text())
-    return root.parents[2] / "builds" / shared.source_id(data["git_url"], data["commit"])
+    name = shared.source_id(data["git_url"], data["commit"])
+    # A new Windows entry uses the short store name.
+    return root.parents[2] / "builds" / (name[:16] if os.name == "nt" else name)
+
+
+def plain(path):
+    """The store walks and copies its trees in Windows extended-length form."""
+    text = os.fspath(path)
+    return Path(text[4:] if text.startswith("\\\\?\\") else text)
 
 
 def snapshot(root):
@@ -227,7 +235,7 @@ def test_failed_preparation_never_publishes_and_retry_succeeds(source, monkeypat
 
             def copy(src, dst, *args, **kwargs):
                 result = original(src, dst, *args, **kwargs)
-                if src == root:
+                if plain(src) == root:
                     raise primary
                 return result
 
@@ -272,7 +280,7 @@ def test_cleanup_failure_preserves_original_error_and_owned_residue(source, monk
 
     def copy(src, dst, *args, **kwargs):
         result = original_copy(src, dst, *args, **kwargs)
-        if src == root:
+        if plain(src) == root:
             raise primary
         return result
 
@@ -308,7 +316,7 @@ def test_competing_creators_serialize_completed_publication_and_backend_lock(sou
     original = shared.shutil.copytree
 
     def copy(src, dst, *args, **kwargs):
-        if src == root:
+        if plain(src) == root:
             copies.append(dst)
             entered.set()
             assert release.wait(10)
@@ -579,12 +587,32 @@ def test_unsupported_special_type_is_not_silently_omitted(tmp_path, monkeypatch)
         shared._build_ignore(tmp_path, ["device"])
 
 
-def test_nested_store_lookalikes_cannot_mask_outer_object_or_build_lock(source):
+@pytest.mark.parametrize("width", [64, 16])
+def test_nested_store_lookalikes_cannot_mask_outer_object_or_build_lock(source, width):
+    """Both store-name widths are recognized, so both can imitate a store."""
     root, _ = source
     root.chmod(0o700)
-    nested = root / "vendor/objects" / ("a" * 64) / ("b" * 40)
-    package = nested / "builds" / ("c" * 64) / "package"
-    package.mkdir(parents=True)
+    nested = root / "vendor/objects" / ("a" * width) / ("b" * 40)
+    package = nested / "builds" / ("c" * width) / "package"
+    try:
+        package.mkdir(parents=True)
+    except OSError as error:
+        # Windows reports a directory path of 248 to 259 characters as
+        # ERROR_FILENAME_EXCED_RANGE (206) and a longer one as
+        # ERROR_PATH_NOT_FOUND (3). The 64-digit look-alike needs 201
+        # characters below the object root, so it fits the 247-character limit
+        # only under an object root of 46 or fewer. A build must open the
+        # package by its ordinary path, so where long paths are off this case
+        # is skipped when it does not fit. The 16-digit case fits there and
+        # asserts the same ownership rule; the 64-digit case runs in every job
+        # without the limit.
+        too_long = (
+            os.name == "nt" and width == 64 and len(str(package)) > 247
+            and getattr(error, "winerror", None) in {3, 206}
+        )
+        if not too_long:
+            raise
+        pytest.skip("two nested 64-digit layouts exceed the Windows path limit")
     (nested / ".amplifier_cache_meta.json").write_text('{"immutable": false}')
     (package.parent / ".amplifier_cache_meta.json").write_text('{"buildInput": true}')
     root.chmod(0o555)
@@ -788,7 +816,7 @@ def test_sibling_reuse_work_is_not_full_tree_per_module(
     counts = {"walks": 0, "entries": 0}
 
     def walk(path, *args, **kwargs):
-        observed = path == target
+        observed = plain(path) == target
         if observed:
             counts["walks"] += 1
         for item in original_walk(path, *args, **kwargs):
