@@ -129,6 +129,21 @@ append slice. Calls freeze the selected rows, bind asset validation to those
 rows and the exact owned session media root, and forward to Foundation's sole
 format writer. Precommit admission must publish/fsync every reachable asset;
 the adapter validates canonical media refs before Foundation commits.
+Published identity alone does not establish durable eligibility: under the
+exact owning store lock, admission requires its actual retained record to have
+`retention="durable"` and accepted publication state. Request-only observations
+refuse before canonical publication, even when legitimately published. Admission
+also verifies physical original asset bytes using the store's existing
+private-file/hash rules, except for the same expired committed or explicitly
+adopted expired metadata-only history cases accepted by checkpoint validation.
+It neither hydrates expired history nor renews provenance or model authority.
+Malformed present metadata or media envelopes refuse before publication:
+metadata may be absent/null or an object, while a present media namespace must
+be a strict refs envelope (optional exact integer `v=1`, required array `refs`).
+False/array/scalar metadata and a present null namespace are not absence.
+An empty refs array is structurally valid with the owned media store. A supplied
+store must be writable and have its checkpoint verifier configured before the
+canonical mutation; typed acknowledgement remains mandatory afterward.
 
 When a store is supplied, exact typed acknowledgement occurs inside
 `acknowledge_versioned_checkpoint` while custody is held. `last_receipt` and

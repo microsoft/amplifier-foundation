@@ -685,3 +685,177 @@ def test_failed_standalone_checkpoint_requires_exact_checkpoint_recovery(tmp_pat
             binding.checkpoint(expected=binding.expected, media_store=store)
             assert not binding._uncertain
             binding.append(rows(), expected=binding.expected, operation_id='after', admit=lambda: None)
+
+
+@pytest.mark.parametrize('kind', ['append', 'rewrite'])
+def test_precommit_request_only_publication_refuses_without_canonical_effect(tmp_path, kind):
+    from PIL import Image
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    image = io.BytesIO()
+    Image.new('RGB', (3, 4), (12, 54, 92)).save(image, 'PNG')
+    with closing(create(tmp_path)) as binding:
+        before = binding.expected
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            origin = {'kind': 'tool', 'session_id': binding.session_id, 'id': 'request-only'}
+            ref = store.ingest_sync(image.getvalue(), source_format='image-bytes', origin=origin,
+                                    policy={'retention': 'request-only'})['value']
+            store.publish_sync([ref], origin=origin, disposition='retain')
+            # A real legitimate publication is not necessarily durable-eligible.
+            assert store.validate_published_ref(ref) == ref
+            value = [{'role': 'tool', 'content': 'pixels',
+                      'metadata': {'experimental.media.v1': {'refs': [ref]}}}]
+            with pytest.raises(ValueError):
+                getattr(binding, kind)(value, expected=before, operation_id='request-only',
+                                       admit=lambda: None, media_store=store)
+            # Do not let a late typed-ACK refusal conceal a canonical commit.
+            with open_committed_source(binding.directory, expected=before) as source:
+                assert source.commit == before and source.commit.message_count == 0
+            assert binding.last_receipt is None
+
+
+@pytest.mark.parametrize('kind', ['append', 'rewrite'])
+@pytest.mark.parametrize('with_store', [False, True])
+@pytest.mark.parametrize('metadata', [
+    False, 0, '', [],
+    {'experimental.media.v1': None},
+    {'experimental.media.v1': {}},
+    {'experimental.media.v1': {'refs': None}},
+    {'experimental.media.v1': {'refs': False}},
+    {'experimental.media.v1': {'refs': {}}},
+    {'experimental.media.v1': {'refs': [], 'unknown': True}},
+    {'experimental.media.v1': {'refs': [], 'v': True}},
+    {'experimental.media.v1': {'refs': [{}]}},
+])
+def test_precommit_malformed_carrier_refuses_before_canonical_publication(tmp_path, kind, with_store, metadata):
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    with closing(create(tmp_path)) as binding:
+        before = binding.expected
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            selected = store if with_store else None
+            value = [{'role': 'user', 'content': 'unchanged', 'metadata': metadata}]
+            # Deliberate controlled refusal, not raw KeyError/AttributeError.
+            with pytest.raises(ValueError):
+                getattr(binding, kind)(value, expected=before, operation_id='malformed',
+                                       admit=lambda: None, media_store=selected)
+            with open_committed_source(binding.directory, expected=before) as source:
+                assert source.commit == before and source.commit.message_count == 0
+            assert binding.last_receipt is None
+
+
+@pytest.mark.parametrize('kind', ['append', 'rewrite'])
+@pytest.mark.parametrize('metadata', [None, {}, {'not-media': None}])
+def test_precommit_absent_or_null_metadata_remains_ordinary_history(tmp_path, kind, metadata):
+    with closing(create(tmp_path)) as binding:
+        value = [{'role': 'user', 'content': 'ordinary', 'metadata': metadata}]
+        getattr(binding, kind)(value, expected=binding.expected, operation_id='ordinary',
+                               admit=lambda: None)
+        assert binding.load_messages() == value
+
+
+@pytest.mark.parametrize('kind', ['append', 'rewrite'])
+@pytest.mark.parametrize('damage', ['missing', 'corrupt'])
+def test_precommit_physical_durable_asset_required_before_canonical_effect(tmp_path, kind, damage):
+    from PIL import Image
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    image = io.BytesIO()
+    Image.new('RGB', (2, 2), (4, 90, 170)).save(image, 'PNG')
+    with closing(create(tmp_path)) as binding:
+        before = binding.expected
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            origin = {'kind': 'tool', 'session_id': binding.session_id, 'id': 'damaged'}
+            ref = store.ingest_sync(image.getvalue(), source_format='image-bytes',
+                                    origin=origin, policy=None)['value']
+            store.publish_sync([ref], origin=origin, disposition='retain')
+            asset = store.root / 'assets' / ref['sha256']
+            if damage == 'missing':
+                asset.unlink()
+            else:
+                asset.write_bytes(b'x' * ref['bytes'])
+            value = [{'role': 'tool', 'content': 'pixels',
+                      'metadata': {'experimental.media.v1': {'refs': [ref]}}}]
+            with pytest.raises((ValueError, OSError)):
+                getattr(binding, kind)(value, expected=before, operation_id='damaged',
+                                       admit=lambda: None, media_store=store)
+            with open_committed_source(binding.directory, expected=before) as source:
+                assert source.commit == before and source.commit.message_count == 0
+            assert binding.last_receipt is None
+
+
+def test_precommit_expired_committed_history_and_metadata_only_adoption_preserved(tmp_path, monkeypatch):
+    from datetime import datetime
+    from PIL import Image
+    from amplifier_foundation.session import media as media_module
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    image = io.BytesIO()
+    Image.new('RGB', (2, 2)).save(image, 'PNG')
+    with closing(create(tmp_path)) as binding:
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            origin = {'kind': 'tool', 'session_id': binding.session_id, 'id': 'expired',
+                      'created_at': '2000-01-01T00:00:00+00:00',
+                      'expires_at': '2000-01-02T00:00:00+00:00'}
+            class BeforeExpiry(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return datetime(2000, 1, 1, 12, tzinfo=tz)
+            # Use the real producer/publication before expiry, then advance
+            # ordinary wall time. Never forge record state or renew provenance.
+            with monkeypatch.context() as clock:
+                clock.setattr(media_module, 'datetime', BeforeExpiry)
+                ref = store.ingest_sync(image.getvalue(), source_format='image-bytes',
+                                        origin=origin, policy=None)['value']
+                store.publish_sync([ref], origin=origin, disposition='retain')
+            value = [{'role': 'tool', 'content': 'expired history',
+                      'metadata': {'experimental.media.v1': {'refs': [ref]}}}]
+            # An expired but newly published ordinary record still needs bytes.
+            binding.append(value, expected=binding.expected, operation_id='original',
+                           admit=lambda: None, media_store=store)
+            (store.root / 'assets' / ref['sha256']).unlink()
+            # Once genuinely committed, expired history can remain metadata only.
+            binding.rewrite(value, expected=binding.expected, operation_id='retain-history',
+                            admit=lambda: None, media_store=store)
+            assert binding.load_messages() == value
+            with closing(create(tmp_path, 'adopted')) as target:
+                with closing(SessionMediaStore(target.directory / 'media', target.session_id,
+                                               checkpoint_verifier=verified_media_checkpoint_refs)) as target_store:
+                    copied = target_store.adopt_sync([ref], store)[0]
+                    assert not (target_store.root / 'assets' / copied['sha256']).exists()
+                    adopted = [{'role': 'tool', 'content': 'expired adopted history',
+                                'metadata': {'experimental.media.v1': {'refs': [copied]}}}]
+                    target.rewrite(adopted, expected=target.expected, operation_id='adopt',
+                                   admit=lambda: None, media_store=target_store)
+                    assert target.last_receipt.verify()['session_id'] == target.session_id
+                    assert target.load_messages() == adopted
+
+
+@pytest.mark.parametrize('kind', ['append', 'rewrite'])
+def test_precommit_empty_media_envelope_is_valid_with_owned_store(tmp_path, kind):
+    from amplifier_foundation.session.media import SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    with closing(create(tmp_path)) as binding:
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id,
+                                       checkpoint_verifier=verified_media_checkpoint_refs)) as store:
+            value = [{'role': 'user', 'content': 'ordinary',
+                      'metadata': {'experimental.media.v1': {'refs': [], 'v': 1}}}]
+            getattr(binding, kind)(value, expected=binding.expected, operation_id='empty',
+                                   admit=lambda: None, media_store=store)
+            assert binding.load_messages() == value
+
+
+def test_precommit_missing_checkpoint_verifier_refuses_before_write(tmp_path):
+    from amplifier_foundation.session.media import SessionMediaStore
+    with closing(create(tmp_path)) as binding:
+        before = binding.expected
+        with closing(SessionMediaStore(binding.directory / 'media', binding.session_id)) as store:
+            with pytest.raises(ValueError):
+                binding.rewrite(rows(), expected=before, operation_id='no-verifier',
+                                admit=lambda: None, media_store=store)
+            with open_committed_source(binding.directory, expected=before) as source:
+                assert source.commit == before

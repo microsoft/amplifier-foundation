@@ -11,6 +11,7 @@ import asyncio
 from contextlib import contextmanager
 import copy
 import ctypes
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -343,21 +344,60 @@ class VersionedSessionBinding:
             if media_store is not None:
                 self._media(media_store)
             for row in messages:
-                metadata = row.get('metadata') or {}
-                carrier = metadata.get('experimental.media.v1')
-                if carrier is None:
+                metadata = row.get('metadata')
+                # Absent/null metadata is ordinary history. Present false,
+                # array, scalar or null media namespace is not absence.
+                if metadata is None:
                     continue
-                if (not isinstance(carrier, dict) or set(carrier) - {'refs', 'v'}
+                if type(metadata) is not dict:
+                    raise VersionedSessionConflict('Canonical metadata must be an object or null.')
+                if 'experimental.media.v1' not in metadata:
+                    continue
+                carrier = metadata['experimental.media.v1']
+                if (type(carrier) is not dict or set(carrier) - {'refs', 'v'}
+                        or 'refs' not in carrier
                         or ('v' in carrier and (type(carrier['v']) is not int or carrier['v'] != 1))
-                        or not isinstance(carrier['refs'], list) or media_store is None
+                        or type(carrier['refs']) is not list or media_store is None
                         or media_store.session_id != self.session_id):
                     raise VersionedSessionConflict('Exact session-bound asset admission is required.')
                 for ref in carrier['refs']:
-                    media_store.validate_published_ref(ref)
+                    self._durable_ref(media_store, ref)
             self.check()
             if media_store is not None:
                 self._media(media_store)
         return bound
+
+    def _durable_ref(self, store, ref):
+        """Precommit join to the same media owner's actual retained record.
+
+        Publication alone includes request-only observations. Match the owning
+        store's checkpoint eligibility and physical asset rules BEFORE making a
+        canonical ref reachable; typed ACK afterward is not an admission check.
+        This does not grant model access or renew the original expiry.
+        """
+        from amplifier_foundation.session.media import _key, _date
+        with store._lock:
+            store._writable()
+            normalized = store.validate_published_ref(ref, check_expiry=False)
+            name = _key(normalized) + '.json'
+            record = store._read(store._dirs['records'], name)
+            if (type(record) is not dict or record.get('ref') != normalized
+                    or record.get('state') not in {'published', 'committed'}
+                    or record.get('retention') != 'durable'):
+                raise VersionedSessionConflict('Canonical media requires an owned durable publication.')
+            expiry = normalized['provenance']['expires_at']
+            expired = expiry is not None and _date(expiry) <= datetime.now(timezone.utc)
+            metadata_only = record.get('metadata_only') is True
+            if metadata_only and not expired:
+                raise VersionedSessionConflict('Metadata-only canonical media requires an expired original.')
+            # Preserve the owner's accepted expired committed/metadata-only
+            # history boundary. Newly published non-metadata-only refs always
+            # need their original physical asset, even when already expired.
+            if not ((record['state'] == 'committed' or metadata_only) and expired):
+                with store._open_verified(normalized, store._dirs['assets'], normalized['sha256']):
+                    pass
+            if store._read(store._dirs['records'], name) != record:
+                raise VersionedSessionConflict('Canonical media admission changed during verification.')
 
     def _media(self, store):
         from amplifier_foundation.session.media import SessionMediaStore
@@ -366,7 +406,9 @@ class VersionedSessionBinding:
             raise VersionedSessionConflict('An exact source-bound session asset store is required.')
         # Same-package physical join to the actual store's owned descriptors.
         # A lexical root alone would accept a detached, still-open media tree.
-        store._check()
+        store._writable()
+        if not callable(store.checkpoint_verifier):
+            raise VersionedSessionConflict('Canonical media admission requires a checkpoint verifier.')
         media = os.stat('media', dir_fd=self._root, follow_symlinks=False)
         if not stat.S_ISDIR(media.st_mode) or _identity(media) != _identity(os.fstat(store._root)):
             raise VersionedSessionConflict('The selected media namespace was replaced.')
