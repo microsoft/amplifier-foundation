@@ -182,6 +182,12 @@ copied, consumed or changed-source tokens and occupied destinations refuse.
 An effect failure invalidates construction and preserves token evidence; this
 is not automatic rollback, permission to retry an uncertain effect, or revival
 of an old receipt. Hosts retain tokens until actual successful restoration.
+The pending issuer record is retained before native dispatch, including when
+cancellation prevents a token from reaching the caller. Native mount/unmount
+settlement remains strongly tracked; evidence reports `pending`, `suspended`,
+`restoring` or `interrupted` without granting restoration from an invalid graph.
+Current configured occurrence/source identity is checked before unmount, not
+only at successor sealing.
 
 Suspensions survive only through issuer-validated same-session successors.
 They do not transfer to a fresh session or qualify changed configured entries.

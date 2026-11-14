@@ -192,6 +192,7 @@ class ParticipatingHookGraph:
                               in self._adapter_mounts),
             "suspended": tuple({"slot": slot, "module": record["module"],
                                 "participant": record["owner"],
+                                "state": record["state"],
                                 "occurrence": (record["source"]["occurrence"]
                                                if record["source"] is not None else None)}
                                for slot, record in self._suspended.items()),
@@ -363,7 +364,7 @@ class ParticipatingHookGraph:
         current_plan = dict(_occurrence_plan(self._config))
         for slot, record in self._suspended.items():
             source = record["source"]
-            if (self._bridge._coordinator.get(*slot) is not None or
+            if (record["state"] != "suspended" or self._bridge._coordinator.get(*slot) is not None or
                     (source is not None and (current_plan.get(source["occurrence"]) != source["plan"] or
                                             not self._slot_complete(slot, source)))):
                 return False
@@ -393,7 +394,7 @@ class ParticipatingHookGraph:
         source = self._slot_sources.get(slot, (None, None))
         suspended = self._suspended.get(slot)
         if suspended is not None:
-            return (current is None and suspended["source"] is item and
+            return (suspended["state"] == "suspended" and current is None and suspended["source"] is item and
                     source[0] is item and source[1] is suspended["module"])
         return source[0] is item and current is source[1]
 
@@ -721,6 +722,25 @@ class MediaMountLifecycle:
             raise ValueError("suspension requires owned idle configure/transition")
         return graph
 
+    @staticmethod
+    def _source_current(graph: Any, slot: Any, source: Any) -> bool:
+        current = dict(_occurrence_plan(graph._session.config))
+        latest = next((item for item in reversed(graph._loads)
+                       if item["occurrence"] == source["occurrence"]), None)
+        return (current.get(source["occurrence"]) == source["plan"] and latest is source and
+                graph._slot_sources.get(slot, (None, None))[0] is source)
+
+    @staticmethod
+    async def _settle(graph: Any, operation: Any) -> Any:
+        task = asyncio.ensure_future(operation)
+        graph._bridge._processing.add(task)
+        def settled(actual: Any) -> None:
+            graph._bridge._processing.discard(actual)
+            if not actual.cancelled():
+                actual.exception()
+        task.add_done_callback(settled)
+        return await asyncio.shield(task)
+
     async def suspend(self, mount_point: str, *, name: str) -> Any:
         graph = self._graph()
         slot = (mount_point, name)
@@ -732,19 +752,24 @@ class MediaMountLifecycle:
                         for record_slot, recorded, _ in graph._mount_records)):
             raise ValueError("suspension requires an actual participating installed slot")
         source, installed = graph._slot_sources.get(slot, (None, module))
-        if installed is not module or (source is not None and not graph._slot_complete(slot, source)):
+        if installed is not module or (source is not None and (
+                not self._source_current(graph, slot, source) or not graph._slot_complete(slot, source))):
             raise ValueError("suspension source no longer matches installed slot")
         token = _SuspensionToken()
         record = {"token": token, "owner": self._view._participant, "module": module,
-                  "source": source, "generation": graph._generation}
+                  "source": source, "generation": graph._generation, "state": "pending"}
+        # Retain BEFORE dispatch. Cancellation can occur after the native slot
+        # disappears but before the Python await resumes and returns a token.
+        graph._suspended[slot] = record
         try:
-            await graph._bridge._coordinator.unmount(mount_point, name=name)
+            await self._settle(graph, graph._bridge._coordinator.unmount(mount_point, name=name))
             if graph._bridge._coordinator.get(*slot) is not None:
                 raise ValueError("suspension did not remove actual slot")
         except BaseException:
+            record["state"] = "interrupted"
             graph._invalidate("participating suspension failed")
             raise
-        graph._suspended[slot] = record
+        record["state"] = "suspended"
         return token
 
     async def restore(self, token: Any) -> Any:
@@ -758,20 +783,20 @@ class MediaMountLifecycle:
         source = record["source"]
         if record["owner"] != self._view._participant:
             raise ValueError("suspension belongs to another participating owner")
+        if record["state"] != "suspended":
+            raise ValueError("suspension operation has not successfully settled")
         if graph._bridge._coordinator.get(*slot) is not None:
             raise ValueError("suspended destination is no longer empty")
         if source is not None:
-            current = dict(_occurrence_plan(graph._session.config))
-            latest = next((item for item in reversed(graph._loads)
-                           if item["occurrence"] == source["occurrence"]), None)
-            if (current.get(source["occurrence"]) != source["plan"] or latest is not source or
-                    graph._slot_sources.get(slot, (None, None))[0] is not source):
+            if not self._source_current(graph, slot, source):
                 raise ValueError("suspended configured occurrence changed")
+        record["state"] = "restoring"
         try:
-            await graph._bridge._coordinator.mount(slot[0], record["module"], name=slot[1])
+            await self._settle(graph, graph._bridge._coordinator.mount(slot[0], record["module"], name=slot[1]))
             if graph._bridge._coordinator.get(*slot) is not record["module"]:
                 raise ValueError("restore did not install actual suspended object")
         except BaseException:
+            record["state"] = "interrupted"
             # Keep token/evidence until actual success; an uncertain effect never
             # authorizes retry or revives the old receipt.
             graph._invalidate("participating restoration failed")

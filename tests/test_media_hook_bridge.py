@@ -1954,3 +1954,59 @@ async def test_partial_identical_account_addition_preserves_existing_occurrence(
         ("providers", 0, "account-A"), ("providers", 1, "account-B")]
     assert (await bridge(event()))["complete"]
     await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["providers", "tools"])
+@pytest.mark.parametrize("operation", ["suspend", "restore"])
+async def test_cancelled_mount_lifecycle_retains_pending_evidence_and_no_receipt(kind, operation):
+    session, bridge, graph, receipt = await configured_lifecycle_graph(kind)
+    lifecycle = media_mount_lifecycle(graph.participant("host.settings"))
+    module = session.coordinator.get(kind, "fixture")
+    token = None
+    if operation == "restore":
+        with graph.transition() as graph:
+            token = await lifecycle.suspend(kind, name="fixture")
+    with pytest.raises(asyncio.CancelledError):
+        with graph.transition() as interrupted:
+            pending = asyncio.create_task(
+                lifecycle.suspend(kind, name="fixture") if operation == "suspend"
+                else lifecycle.restore(token))
+            asyncio.get_running_loop().call_soon(pending.cancel)
+            await pending
+    for _ in range(20):
+        if not bridge._processing:
+            break
+        await asyncio.sleep(0.01)
+    assert not bridge._processing
+    actual = session.coordinator.get(kind, "fixture")
+    assert actual is (None if operation == "suspend" else module)
+    evidence = interrupted.participants_evidence()["suspended"]
+    assert len(evidence) == 1 and evidence[0]["module"] is module
+    assert evidence[0]["state"] == "interrupted"
+    assert bridge.validate_receipt(receipt) is False
+    assert not (await bridge(event()))["complete"]
+    with pytest.raises(ValueError, match="idle"):
+        await lifecycle.restore(token)
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drift", ["config", "source", "instance"])
+async def test_suspend_checks_current_configured_occurrence_before_unmount(drift):
+    session, bridge, graph, receipt = await configured_lifecycle_graph("providers")
+    lifecycle = media_mount_lifecycle(graph.participant("host.settings"))
+    actual = session.coordinator.get("providers", "fixture")
+    with pytest.raises(ValueError):
+        with graph.transition():
+            spec = session.config["providers"][0]
+            spec[{"config": "config", "source": "source", "instance": "instance_id"}[drift]] = (
+                {"changed": True} if drift == "config" else "changed")
+            with pytest.raises(ValueError, match="source"):
+                await lifecycle.suspend("providers", name="fixture")
+            assert session.coordinator.get("providers", "fixture") is actual
+            assert bridge._graph.participants_evidence()["suspended"] == ()
+    assert not bridge.validate_receipt(receipt)
+    await session.cleanup()
