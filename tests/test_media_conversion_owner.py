@@ -23,6 +23,9 @@ from amplifier_foundation.session.media_conversion import (
 from amplifier_foundation.session.media_conversion_owner import (
     BINDING, CaptureMediaOwner, diagnostic_image_ref,
 )
+from amplifier_foundation.session.checkpoint import (
+    acknowledge_candidate_checkpoint, verified_checkpoint_refs,
+)
 
 
 def png():
@@ -88,6 +91,47 @@ def test_real_f1_canonical_conversion_publish_ack_and_prefix(stores, tmp_path):
     with target.resolve_ref(adopted) as stream:
         assert stream.read() == pixels
     verify_export(tmp_path / "op/portable")
+
+
+def test_real_owner_candidate_checkpoint_with_huge_opaque_field(stores, tmp_path):
+    import tracemalloc
+    store, _ = stores
+    store.checkpoint_verifier = verified_checkpoint_refs
+    session = tmp_path / "actual"
+    session.mkdir()
+    path = session / "transcript.jsonl"
+    pixels = png()
+    with path.open("wb") as output:
+        output.write(b'{"role":"tool","tool_call_id":"huge","metadata":{"opaque":"')
+        for _ in range(512):
+            output.write(b"x" * 65536)
+        output.write(b'"},"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"')
+        output.write(base64.b64encode(pixels))
+        output.write(b'"}}]}\n')
+    tracemalloc.start()
+    plan = preview(path, owner="fixture", session_id="source", fence=fence)
+    asyncio.run(build_candidate(
+        plan, tmp_path / "candidate-op", fence=fence, capability=store,
+        origin_for=lambda *_: original(), asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+    ))
+    # Explicit synthetic caller apply, never a live migration.
+    import shutil
+    shutil.copyfile(tmp_path / "candidate-op/candidate.jsonl", path)
+    receipt = acknowledge_candidate_checkpoint(
+        tmp_path / "candidate-op", session, session_id="source",
+        asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+    )
+    refs = list(verified_checkpoint_refs(receipt))
+    assert len(refs) == 1
+    store.acknowledge_checkpoint(receipt)
+    with store.resolve_ref(refs[0]) as source:
+        assert source.read() == pixels
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    print(json.dumps({"actual_checkpoint_body_bytes": path.stat().st_size,
+                      "actual_f1_ack_python_peak_bytes": peak}))
+    assert path.stat().st_size > 32 * 1024 * 1024
+    assert peak < 6 * 1024 * 1024
 
 
 @dataclass
@@ -227,7 +271,7 @@ def test_grouped_origin_preflight_refuses_before_staging(stores, monkeypatch):
     store, _ = stores
     async def forbidden(*_, **__):
         raise AssertionError("grouped source must refuse before any ingest")
-    monkeypatch.setattr(store, "ingest", forbidden)
+    monkeypatch.setattr(store, "ingest_sync", forbidden)
     pixels = png()
     with pytest.raises(Unsupported, match="cardinality"):
         owner(store, single_image_origin=lambda *_: False).stage_image(
