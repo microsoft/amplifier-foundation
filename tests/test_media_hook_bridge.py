@@ -2010,3 +2010,41 @@ async def test_suspend_checks_current_configured_occurrence_before_unmount(drift
             assert bridge._graph.participants_evidence()["suspended"] == ()
     assert not bridge.validate_receipt(receipt)
     await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["configure", "transition"])
+async def test_account_config_revert_uses_latest_load_not_historical_completion(phase):
+    session = AmplifierSession({
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "providers": [{"module": "provider-fixture", "instance_id": name, "config": {}}
+                      for name in ("account-A", "account-B")]})
+    session.coordinator.loader = ProviderFixtureLoader(automatic=True)
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="latest-load", participants=("fixture-loop", "fixture-context", "provider-fixture"))
+    await session.initialize()
+    if phase == "transition":
+        graph.seal()
+    account_b = session.coordinator.get("providers", "account-B")
+    original_a = session.coordinator.get("providers", "account-A")
+    for config in ({"version": "Y"}, {}):
+        with (graph.configure() if phase == "configure" else graph.transition()) as current:
+            session.config["providers"][0]["config"] = config
+            mount = await session.coordinator.loader.load("provider-fixture", config, source_hint=None)
+            await mount(session.coordinator)
+            actual = session.coordinator.get("providers", "fixture")
+            await session.coordinator.mount("providers", actual, name="account-A")
+            await session.coordinator.unmount("providers", name="fixture")
+            session.coordinator.loader.enqueue_on_session_ready(*mount.__on_session_ready__)
+            for _, callback in session.coordinator.loader.get_on_session_ready_queue():
+                await callback(session.coordinator)
+            session.coordinator.loader.clear_on_session_ready_queue()
+        graph = current
+        assert session.coordinator.get("providers", "account-B") is account_b
+    if phase == "configure":
+        graph.seal()
+    assert session.coordinator.get("providers", "account-A") is actual and actual is not original_a
+    assert (await bridge(event()))["complete"]
+    await session.cleanup()

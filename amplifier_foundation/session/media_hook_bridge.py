@@ -212,9 +212,14 @@ class ParticipatingHookGraph:
             # Saved settings may load only a newly added account, not rebuild
             # the entire repeated-module plan. Prefer occurrences that lack
             # matching actual construction over already complete accounts.
+            latest = {}
+            for item in self._loads:
+                latest[item["occurrence"]] = item
             needed = [(identity, plan) for identity, plan in candidates
-                      if not any(item["occurrence"] == identity and item["plan"] == plan
-                                 and item["mounted"] for item in self._loads)]
+                      if identity not in latest or latest[identity]["plan"] != plan or
+                      not latest[identity]["mounted"] or
+                      any(not self._slot_complete(slot, latest[identity])
+                          for slot in latest[identity]["slots"])]
             if needed:
                 candidates = needed
             elif len(candidates) > 1:
