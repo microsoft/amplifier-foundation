@@ -123,7 +123,15 @@ source refs adopt as metadata-only terminal observations, not refreshed pixels.
 `import_verified(ref, stream, *, receipt, verifier)` is host-only: its verifier
 must authorize the exact original ref/package/target, not just compare a supplied
 hash. It revalidates original bytes and preserves provenance. An already expired
-ref accepts `stream=None` only after that same host authorization; no bytes copied.
+ref accepts metadata-only import after that same host authorization, whether the
+earlier caller supplied `stream=None` or a stream whose precheck crossed the
+original TTL. Once expired at the owner boundary the stream is not read or retried.
+The owner rechecks after staging and publication as well: crossing expiry becomes
+terminal metadata-only acceptance with exact original provenance/expiry, never a
+fresh observation. Any bytes staged/published before that crossing remain private
+recovery evidence under their owner's cleanup policy; import never deletes them.
+Malformed refs, failed package authorization and mismatched verified bytes still
+refuse rather than being reclassified as an expiry success.
 Packages never supply media journals. Every target still requires canonical ACK.
 
 `validate_ref(ref, committed=True, check_expiry=False)` is the host identity-only
