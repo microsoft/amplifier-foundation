@@ -94,3 +94,70 @@ writer's zero-argument admission callback does not attest to its exact input.
 This ACK proves actual selected canonical reachability, joined by the media
 store to actual published assets; it cannot retroactively prove publication
 ordering or replace production fencing/asset admission qualification.
+
+## Prospective source-lifetime custody
+
+`session.transcript_lifetime.VersionedSessionBinding` is an opt-in,
+host-neutral owner for **new IDs only**, initially qualified on Linux with
+`renameat2(RENAME_NOREPLACE)`. It does not convert existing sessions, activate
+configuration, or establish unknown historical/open-FD writer quiescence.
+CLI and Unified must use this same mechanism before their first native
+transcript open; runtime wiring and installed qualification remain host work.
+
+The parent sessions directory must already be private, owned and free of
+symlinked ancestors. `create_new(path, session_id=..., operation_id=..., admit=...)`
+creates a private unpredictable staging directory, takes a distinct persistent
+FD lease, and fsyncs path/session/inode/token enrollment. Foundation alone
+initializes the transcript. Only after successful initialization and both
+nonempty legacy directory fences does no-replace rename publish the selected
+ID. A preexisting target or publication race refuses without overwriting it.
+The final writer is freshly bound to the published path; staging source
+witnesses or media receipts are not carried across the rename.
+
+Failures retain preparation evidence. An unpublished staging directory is not
+a resumable ID and must not be renamed or reinitialized to erase uncertainty.
+`resume(path, session_id=..., expected=exact_prefix)` opens the existing lease
+without creation, requires exact enrolled path/root/lease identity and verifies
+the actual committed source including both Foundation fences. Arbitrary existing
+T2 directories are not enrolled. After explicit `close`, a fresh owner may
+reacquire this enrolled source. The lease file is never unlinked at retirement.
+
+`append(settled_suffix, expected=..., operation_id=..., admit=..., media_store=...)`
+requires actual producer-settled suffix intent. `rewrite` (also named `commit`)
+is an explicit full-canonical-context replacement, O(history), not a guessed
+append slice. Calls freeze the selected rows, bind asset validation to those
+rows and the exact owned session media root, and forward to Foundation's sole
+format writer. Precommit admission must publish/fsync every reachable asset;
+the adapter validates canonical media refs before Foundation commits.
+
+When a store is supplied, exact typed acknowledgement occurs inside
+`acknowledge_versioned_checkpoint` while custody is held. `last_receipt` and
+the write result become reportable only after successful acknowledgement and
+fence exit. A late error is not an effect-free refusal: retain it as uncertain,
+do not report durable acceptance, and do not replay tools or allocate a new
+operation. `reconcile` requires the original operation/predecessor/kind and
+canonical JSONL digest, delegating outcome settlement to Foundation without
+replaying admission or rewriting. No committed effect and unknown effect stay
+distinct.
+
+The binding holds custody while idle and serializes complete write, ACK,
+reconcile and read operations. Nested mutation callbacks refuse rather than
+deadlocking. Namespace/enrollment/lease identities and creator PID are checked
+at ownership entry and exit. Forked children invalidate and close inherited
+FDs without unlocking the parent's lease. `close()` drains a physical call
+before releasing it; new admissions stop once close starts. Async callers use
+`await binding.call(method, ...)` and `await binding.aclose()` so cancellation
+joins the executor call and final exits before returning cancellation.
+For host-dependent metadata/control/CAS publication following a canonical write,
+`with binding.publication() as check:` retains that same physical owner until
+the auxiliary effects and final check settle; it is not a grant to another
+transcript writer. Nested publication and retirement from inside that scope
+refuse. A host must disclose a committed transcript if a later auxiliary effect
+fails, rather than describe the failure as effect-free.
+
+This is cooperative exclusion for the enrolled prospective cohort plus
+supported legacy entry-filename fences, not protection from arbitrary
+same-UID filesystem mutation, proof about every historical writer, or
+permission to migrate an old root. Real root/child/resume caller wiring,
+canonical context intent, media transport and installed composition require
+their own affected qualification.
