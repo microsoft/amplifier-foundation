@@ -115,3 +115,65 @@ def test_cancellation_before_intent_does_not_change_source(tmp_path):
             tmp_path / 'operation', binding=binding, expected=expected, operation_id='optimize', owner='fixture',
         )
         assert observed.state == 'not-started' and observed.checkpoint is None
+
+
+def test_resume_refuses_journal_kind_substitution(tmp_path, monkeypatch):
+    with fixture(tmp_path) as (binding, store, fence):
+        expected, original, _ = prepared(tmp_path, binding, store, fence, inline=True)
+        def before(*args, **kwargs):
+            raise OSError('before actual rewrite')
+        monkeypatch.setattr(binding, 'rewrite_serialized', before, raising=False)
+        with pytest.raises(OSError, match='before actual'):
+            apply_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
+        journal = tmp_path / 'operation/committed-activation.json'
+        value = json.loads(journal.read_bytes())
+        assert value['kind'] == 'rewrite'
+        value['kind'] = 'checkpoint'
+        journal.write_text(json.dumps(value))
+        with pytest.raises(ActivationRefused, match='intent differs'):
+            resume_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
+        assert binding.expected == expected
+        assert (binding.directory / 'transcript.v2' / expected.body).read_bytes() == original
+
+
+def test_cancel_during_intent_publication_stops_before_checkpoint(tmp_path, monkeypatch):
+    from amplifier_foundation.session import media_activation
+    with fixture(tmp_path) as (binding, store, fence):
+        expected, original, _ = prepared(tmp_path, binding, store, fence)
+        cancelled = [False]
+        actual = media_activation._committed_journal
+        def written(*args):
+            actual(*args)
+            cancelled[0] = True
+        monkeypatch.setattr(media_activation, '_committed_journal', written)
+        def forbidden(*args, **kwargs):
+            raise AssertionError('Checkpoint must not start after cancellation')
+        monkeypatch.setattr(binding, 'checkpoint', forbidden)
+        with pytest.raises(InterruptedError):
+            apply_committed_candidate(tmp_path / 'operation', cancelled=lambda: cancelled[0],
+                                      **arguments(binding, store, expected))
+        assert binding.expected == expected
+        assert (binding.directory / 'transcript.v2' / expected.body).read_bytes() == original
+
+
+def test_historical_reconcile_never_borrows_successor_receipt(tmp_path, monkeypatch):
+    with fixture(tmp_path) as (binding, store, fence):
+        expected, _, _ = prepared(tmp_path, binding, store, fence, inline=True)
+        def before(*args, **kwargs):
+            raise OSError('before actual rewrite')
+        monkeypatch.setattr(binding, 'rewrite_serialized', before, raising=False)
+        with pytest.raises(OSError):
+            apply_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
+        # Existing supported writer API is used only to construct a real
+        # historical-reconcile fixture, never as a streaming implementation.
+        row = json.loads((tmp_path / 'operation/candidate.jsonl').read_bytes().splitlines()[1])
+        actual = binding.rewrite([row], expected=expected, operation_id='optimize',
+                                 admit=lambda: None, media_store=store)
+        binding.append([{'role': 'assistant', 'content': 'later successor'}],
+                       expected=binding.expected, operation_id='successor',
+                       admit=lambda: None, media_store=store)
+        latest = binding.expected
+        result = resume_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
+        assert result.state == 'superseded-original-operation'
+        assert result.checkpoint is None and result.commit == actual.commit
+        assert binding.expected == latest != actual.commit

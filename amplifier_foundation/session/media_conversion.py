@@ -1459,26 +1459,16 @@ def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reade
 
 
 def iter_serialized_candidate_refs(stream, *, candidate_prefix) -> Iterator[dict]:
-    """Strict bounded ref admission over the FORMAT owner's prepared snapshot.
+    """Compatibility data lens; the owning prepared object should use iter_refs.
 
     Consumer must exhaust this iterator and keep its prepared.open_verified()
     context live. No manifest SELECT or caller-provided ref list is authority.
     """
-    from .transcript_v2 import CommittedPrefix
-    if type(candidate_prefix) is not CommittedPrefix:
-        raise Unsupported("Exact prepared candidate selector required")
-    stream.seek(0)
-    scanner = Scanner(stream)
-    count = 0
-    for record in _records(scanner, asdict(candidate_prefix)):
-        fields = _message(scanner, record)
-        for _, ref in _refs(scanner, fields):
-            if ref["session_id"] != candidate_prefix.session_id:
-                raise Unsupported("Prepared canonical ref belongs to another session")
-            yield deepcopy(ref)
-        count += 1
-    if count != candidate_prefix.message_count:
-        raise Unsupported("Prepared candidate message count differs")
+    # One shared strict media-schema scanner, not a converter-specific second
+    # admission grammar. Unsealed prefix/no-op check grants data integrity only;
+    # actual prepared owner binds source/PID/lifetime in prepared.iter_refs().
+    from .versioned_checkpoint import scan_serialized_refs
+    yield from scan_serialized_refs(stream, prefix=candidate_prefix, check=lambda: None)
 
 
 def reconcile(directory: Path, *, installed: Path | None = None) -> str:

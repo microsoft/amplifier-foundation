@@ -470,12 +470,14 @@ def _committed_result(facts, state, binding, receipt=None):
     )
 
 
-def _committed_receipt(binding, receipt):
+def _committed_receipt(binding, receipt, expected_result=None):
     from .versioned_checkpoint import VersionedCheckpointReceipt
     if type(receipt) is not VersionedCheckpointReceipt:
         raise ActivationRefused("Actual source-bound sealed versioned checkpoint required")
     facts = receipt.verify()
-    if facts != asdict(binding.expected) | {"kind": "versioned-checkpoint-backed-v1"}:
+    expected_result = binding.expected if expected_result is None else expected_result
+    if (binding.expected != expected_result
+            or facts != asdict(expected_result) | {"kind": "versioned-checkpoint-backed-v1"}):
         raise ActivationRefused("Sealed checkpoint differs from actual binding result")
     # Independently exhaust; no success from a lazy receipt verifier.
     for _ in receipt.iter_refs():
@@ -605,6 +607,29 @@ def _activate_committed(operation_dir, *, binding, expected, operation_id, owner
         if resume and saved is None:
             raise ActivationRefused("No original committed activation intent to reconcile")
         guard()
+        # Recovery facts are checked against fresh format-owner preparation,
+        # never trusted because a mutable JSON journal says "checkpoint".
+        with conversion.open_verified_candidate(
+            operation, session_id=plan.session_id, expected_source=expected,
+            asset_reader=lambda ref: media_store.resolve_ref(ref, committed=False),
+        ) as (witness_stream, witness_prefix, witness_check):
+            with prepare_serialized_candidate(
+                witness_stream, candidate_prefix=witness_prefix,
+                candidate_check=lambda: (guard(), witness_check()),
+            ) as witness:
+                intent = {
+                    "kind": "checkpoint" if (facts["sha256"], facts["bytes"]) == (
+                        expected.sha256, expected.committed_bytes
+                    ) else "rewrite",
+                    "canonical_sha256": witness.canonical_sha256,
+                    "canonical_bytes": witness.canonical_bytes,
+                    "records": witness.message_count,
+                }
+        if saved is not None and any(
+            type(saved.get(key)) is not type(value) or saved[key] != value
+            for key, value in intent.items()
+        ):
+            raise ActivationRefused("Saved activation intent differs from actual prepared candidate")
         receipt = None
         if saved is not None:
             if saved["phase"] not in {"intent", "acknowledged"}:
@@ -617,6 +642,11 @@ def _activate_committed(operation_dir, *, binding, expected, operation_id, owner
                                         media_store=media_store)
                 if ack is None:
                     return _committed_result(facts, "unconfirmed-no-replay", binding)
+                if ack.commit != binding.expected:
+                    return CommittedActivationResult(
+                        "superseded-original-operation", ack.commit, None,
+                        facts["inline_removed_bytes"], facts.get("held_records", 0),
+                    )
                 receipt = binding.last_receipt
             else:
                 raise ActivationRefused("Unknown original versioned operation kind")
@@ -646,6 +676,7 @@ def _activate_committed(operation_dir, *, binding, expected, operation_id, owner
                     }
                 guard()
                 _committed_journal(opfd, saved)  # Before ANY canonical mutation.
+                guard()  # Cancellation during journal fsync must stop before ACK/write.
                 if saved["kind"] == "checkpoint":
                     receipt = binding.checkpoint(expected=expected, media_store=media_store)
                 else:
