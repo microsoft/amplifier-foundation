@@ -902,6 +902,14 @@ class SessionMediaStore:
         if stream is None:
             raise MediaRefusal("unexpired import requires verified original bytes")
         with self._lock:
+            expected_target = {**original, "session_id": self.session_id}
+            previous = self._read(self._dirs["records"], _key(expected_target) + ".json")
+            if previous is not None and (
+                _json(previous.get("ref")) != _json(expected_target)
+                or previous.get("state") not in {"staged", "published", "committed"}
+                or previous.get("retention") != "durable"
+            ):
+                raise MediaRefusal("import conflicts with existing target acceptance")
             if expired():
                 return self._import_expired_metadata(original)
             target = self._stage(stream, original["provenance"], self.policy)
@@ -944,6 +952,8 @@ class SessionMediaStore:
     def _publish_adopted(self, refs: list) -> None:
         for ref in refs:
             record = self._read(self._dirs["records"], _key(ref) + ".json")
+            if record is None or record.get("state") not in {"staged", "published", "committed"}:
+                raise MediaRefusal("adoption cannot promote dropped or absent acceptance")
             if record.get("metadata_only") is True:
                 continue
             with self._open_verified(ref, self._dirs["staging"], record["staging"]) as source:
