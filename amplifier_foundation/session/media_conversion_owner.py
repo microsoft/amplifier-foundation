@@ -20,6 +20,7 @@ from typing import Any, BinaryIO, Callable, Iterator
 from .media_conversion import NAMESPACE, Unsupported, _digest, _json, _open, _validate_ref
 
 BINDING = "foundation.capture-image-owner.v1"
+GROUP_BINDING = "foundation.capture-image-owner-group.v1"
 DIAGNOSTIC_LABEL = "[Session image {sha256}; diagnostic reference only; no pixels supplied]"
 
 
@@ -248,3 +249,157 @@ class CaptureMediaOwner:
             manifest, source=source, sha256=sha256,
         ))
         _sync_result(self.store.acknowledge_checkpoint(receipt))
+
+
+class CaptureGroupMediaOwner(CaptureMediaOwner):
+    """Same CI ImageOwner protocol with complete real-origin stream groups.
+
+    ``group_sources_for(snapshot, original)`` returns a context manager over an
+    iterable of ``{stream, mime, origin}``, in original image-position order.
+    The source owner must enumerate exactly one complete attested true-origin
+    group from its fenced indexed capture. Each stream stays valid until the
+    iterable advances; no full-record or pixel list is required.
+    """
+
+    def __init__(self, store, *, group_sources_for, staged_factory, origin_for,
+                 checkpoint_receipt_for, new_asset_bytes_for, reader_ready):
+        super().__init__(
+            store, staged_factory=staged_factory, origin_for=origin_for,
+            checkpoint_receipt_for=checkpoint_receipt_for,
+            new_asset_bytes_for=new_asset_bytes_for, reader_ready=reader_ready,
+            single_image_origin=lambda *_: False,
+        )
+        self.group_sources_for = group_sources_for
+
+    def _ready(self):
+        _off_loop()
+        if _sync_result(self.reader_ready(GROUP_BINDING)) is not True:
+            raise Unsupported("Diagnostic reader/group source owner is not qualified")
+
+    def stage_image(self, image, *, mime, origin):
+        self._ready()
+        snapshot = deepcopy(origin)
+        original = self._origin(snapshot)
+        image.seek(0)
+        observed = _digest(image)
+        image.seek(0)
+        if observed != (snapshot.get("sha256"), snapshot.get("bytes")):
+            raise Unsupported("Selected group image differs from exact CI source")
+        snapshots, facts = [], []
+        limit = self.store.policy.max_images  # Existing explicit host bound.
+        manager = _sync_result(self.group_sources_for(deepcopy(snapshot), deepcopy(original)))
+        with manager as sources:
+            def binary_sources():
+                for value in sources:
+                    if len(snapshots) >= limit:
+                        raise Unsupported("Historical group exceeds host image count")
+                    if not isinstance(value, dict) or set(value) != {"stream", "mime", "origin"}:
+                        raise Unsupported("Unknown historical group binary source")
+                    item = deepcopy(value["origin"])
+                    if self._origin(item) != original:
+                        raise Unsupported("Historical group contains a different original observation")
+                    if any(_json(previous) == _json(item) for previous in snapshots):
+                        raise Unsupported("Duplicate historical image position in original group")
+                    if value["mime"] not in ("image/png", "image/jpeg"):
+                        raise Unsupported("Unsupported original group image format")
+                    stream = value["stream"]
+                    stream.seek(0)
+                    digest, size = _digest(stream)
+                    stream.seek(0)
+                    if (digest, size) != (item.get("sha256"), item.get("bytes")):
+                        raise Unsupported("Historical group source image changed")
+                    snapshots.append(item)
+                    facts.append((digest, size, value["mime"]))
+                    yield {"stream": stream, "mime": value["mime"]}
+            result = _sync_result(self.store.ingest_group_sync(
+                binary_sources(), origin=deepcopy(original), policy=None,
+            ))
+        refs = deepcopy(result["staged_refs"])
+        if len(refs) != len(snapshots) or not refs:
+            raise Unsupported("Historical group owner changed complete image count")
+        selected = None
+        for index, (ref, item, fact) in enumerate(zip(refs, snapshots, facts)):
+            _validate_ref(ref)
+            if (ref["session_id"] != self.store.session_id or ref["provenance"] != original
+                    or (ref["sha256"], ref["bytes"], ref["mime"]) != fact):
+                raise Unsupported("Historical group owner changed original identity/order")
+            if _json(item) == _json(snapshot):
+                if fact[2] != mime:
+                    raise Unsupported("Selected historical group media type differs")
+                selected = index
+        if selected is None:
+            raise Unsupported("Selected CI image is absent from complete original group")
+        receipt = {"binding": GROUP_BINDING, "origin": original, "refs": refs,
+                   "source_origins": snapshots, "selected": selected}
+        if len(_json(receipt)) > 16384:
+            raise Unsupported("Historical group receipt exceeds bounded manifest schema")
+        publication = _sync_result(self.store.publish_sync(
+            deepcopy(refs), origin=deepcopy(original), disposition="retain",
+        ))
+        if publication["refs"] != refs:
+            raise Unsupported("Historical group publication changed complete ref set")
+        ref = refs[selected]
+        added = _sync_result(self.new_asset_bytes_for(deepcopy(ref)))
+        if type(added) is not int or added < 0:
+            raise Unsupported("Host must supply measured unique group asset allocation")
+        replacement = {"type": "text", "text": DIAGNOSTIC_LABEL.format(**ref),
+                       "metadata": {NAMESPACE: {"refs": [deepcopy(ref)]}}}
+        produced = _sync_result(self.staged_factory(
+            replacement=deepcopy(replacement), receipt=deepcopy(receipt), new_asset_bytes=added,
+        ))
+        if (getattr(produced, "replacement", None) != replacement
+                or getattr(produced, "receipt", None) != receipt
+                or type(getattr(produced, "new_asset_bytes", None)) is not int
+                or produced.new_asset_bytes != added):
+            raise Unsupported("Historical group factory changed verified output")
+        return _DetachedStagedImage(deepcopy(replacement), deepcopy(receipt), added)
+
+    def _manifest_groups(self, path):
+        with _open(path) as stream:
+            while raw := stream.readline(65537):
+                if len(raw) > 65536 or not raw.endswith(b"\n"):
+                    raise Unsupported("Unbounded/truncated historical group manifest")
+                value = json.loads(raw, object_pairs_hook=_unique)
+                if not isinstance(value, dict) or set(value) != {"origin", "owner"}:
+                    raise Unsupported("Unknown historical group manifest row")
+                receipt, selected_source = value["owner"], value["origin"]
+                if not isinstance(receipt, dict) or set(receipt) != {
+                    "binding", "origin", "refs", "source_origins", "selected",
+                } or receipt["binding"] != GROUP_BINDING or len(_json(receipt)) > 16384:
+                    raise Unsupported("Unknown historical group receipt")
+                refs, snapshots, selected = receipt["refs"], receipt["source_origins"], receipt["selected"]
+                if (not isinstance(refs, list) or not refs or len(refs) > self.store.policy.max_images
+                        or not isinstance(snapshots, list) or len(refs) != len(snapshots)
+                        or type(selected) is not int or not 0 <= selected < len(refs)
+                        or _json(snapshots[selected]) != _json(selected_source)):
+                    raise Unsupported("Historical group position/count drift")
+                original = self._origin(selected_source)
+                if receipt["origin"] != original:
+                    raise Unsupported("Historical group provenance drift")
+                for index, (ref, item) in enumerate(zip(refs, snapshots)):
+                    _validate_ref(ref)
+                    if (self._origin(item) != original or ref["provenance"] != original
+                            or ref["session_id"] != self.store.session_id
+                            or (ref["sha256"], ref["bytes"]) != (item.get("sha256"), item.get("bytes"))
+                            or any(_json(other) == _json(item) for other in snapshots[:index])):
+                        raise Unsupported("Historical group original identity drift")
+                    self.store.validate_published_ref(deepcopy(ref))
+                yield deepcopy(refs), original
+
+    def publish(self, manifest):
+        self._ready()
+        for refs, original in self._manifest_groups(manifest):
+            result = _sync_result(self.store.publish_sync(
+                deepcopy(refs), origin=deepcopy(original), disposition="retain",
+            ))
+            if result["refs"] != refs:
+                raise Unsupported("Historical group publication changed saved complete set")
+        self.verify(manifest)
+
+    def verify(self, manifest):
+        self._ready()
+        for refs, _ in self._manifest_groups(manifest):
+            for ref in refs:
+                with self.store.resolve_published_ref(deepcopy(ref)) as source:
+                    if _digest(source) != (ref["sha256"], ref["bytes"]):
+                        raise Unsupported("Historical group binary closure mismatch")

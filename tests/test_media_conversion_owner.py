@@ -21,7 +21,7 @@ from amplifier_foundation.session.media_conversion import (
     NAMESPACE, Unsupported, adopt_selected_media, build_candidate, preview, transfer_prefix, verify_export,
 )
 from amplifier_foundation.session.media_conversion_owner import (
-    BINDING, CaptureMediaOwner, diagnostic_image_ref,
+    BINDING, GROUP_BINDING, CaptureGroupMediaOwner, CaptureMediaOwner, diagnostic_image_ref,
 )
 from amplifier_foundation.session.checkpoint import (
     acknowledge_candidate_checkpoint, verified_checkpoint_refs,
@@ -377,3 +377,82 @@ def test_actual_allocated_bytes_after_publication_and_dedup(stores):
     second = binding.stage_image(io.BytesIO(pixels), mime="image/png", origin=snapshot(pixels))
     assert first.new_asset_bytes == 4096 > len(pixels)
     assert second.new_asset_bytes == 0
+
+
+def test_ci_complete_original_group_real_store(stores, tmp_path):
+    store, _ = stores
+    blue = io.BytesIO()
+    Image.new("RGB", (4, 3), "blue").save(blue, format="PNG")
+    images = [png(), blue.getvalue()]
+    snapshots = [{**snapshot(data), "image_offset": 150 + index * 100}
+                 for index, data in enumerate(images)]
+    @contextmanager
+    def sources_for(selected, provenance):
+        assert selected in snapshots and provenance == original("real-multi-image-call")
+        def sources():
+            for data, source in zip(images, snapshots):
+                with io.BytesIO(data) as image:
+                    yield {"stream": image, "mime": "image/png", "origin": source}
+        yield sources()
+    measured = set()
+    def added(ref):
+        if ref["sha256"] in measured:
+            return 0
+        measured.add(ref["sha256"])
+        return 4096
+    def checkpoint(manifest, **kwargs):
+        # Exact fixture file verifier: compare same-position diagnostic refs,
+        # then enumerate SELECTED row refs, never grant the whole group merely
+        # because it occurs in owner publication metadata.
+        rows = [json.loads(line) for line in manifest.read_bytes().splitlines()]
+        installed = [json.loads(line) for line in kwargs["source"].read_bytes().splitlines()]
+        assert hashlib.sha256(kwargs["source"].read_bytes()).hexdigest() == kwargs["sha256"]
+        refs = [row["owner"]["refs"][row["owner"]["selected"]] for row in rows]
+        assert refs == [diagnostic_image_ref(block) for block in installed]
+        return {"refs": refs}
+    binding = CaptureGroupMediaOwner(
+        store, group_sources_for=sources_for, staged_factory=Staged,
+        origin_for=lambda _: original("real-multi-image-call"),
+        checkpoint_receipt_for=checkpoint, new_asset_bytes_for=added,
+        reader_ready=lambda name: name == GROUP_BINDING,
+    )
+    staged = [binding.stage_image(io.BytesIO(data), mime="image/png", origin=source)
+              for data, source in zip(images, snapshots)]
+    refs = [diagnostic_image_ref(item.replacement) for item in staged]
+    assert refs[0]["provenance"] == refs[1]["provenance"] == original("real-multi-image-call")
+    assert [ref["sha256"] for ref in refs] == [hashlib.sha256(data).hexdigest() for data in images]
+    manifest = tmp_path / "groups.jsonl"
+    manifest.write_text("".join(json.dumps({"origin": source, "owner": item.receipt}) + "\n"
+                                for source, item in zip(snapshots, staged)))
+    binding.publish(manifest)
+    binding.publish(manifest)
+    binding.verify(manifest)
+    for ref in refs:
+        with pytest.raises(MediaRefusal):
+            store.resolve_ref(ref)
+    actual = tmp_path / "capture.jsonl"
+    actual.write_text("".join(json.dumps(item.replacement) + "\n" for item in staged))
+    binding.acknowledge(manifest, source=actual, sha256=hashlib.sha256(actual.read_bytes()).hexdigest())
+    for ref, data in zip(refs, images):
+        with store.resolve_ref(ref) as image:
+            assert image.read() == data
+    # Stored original policy never becomes a fresh screenshot lifetime.
+    assert all(ref["provenance"] == original("real-multi-image-call") for ref in refs)
+
+
+def test_ci_group_wrong_position_or_provenance_refused(stores):
+    store, _ = stores
+    data = png()
+    selected = snapshot(data)
+    @contextmanager
+    def missing(*_):
+        with io.BytesIO(data) as stream:
+            yield iter([{"stream": stream, "mime": "image/png",
+                         "origin": {**selected, "image_offset": 999}}])
+    binding = CaptureGroupMediaOwner(
+        store, group_sources_for=missing, staged_factory=Staged, origin_for=lambda _: original(),
+        checkpoint_receipt_for=lambda *_: None, new_asset_bytes_for=lambda _: 0,
+        reader_ready=lambda _: True,
+    )
+    with pytest.raises(Unsupported, match="absent"):
+        binding.stage_image(io.BytesIO(data), mime="image/png", origin=selected)
