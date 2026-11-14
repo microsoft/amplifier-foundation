@@ -22,6 +22,8 @@ from amplifier_core import AmplifierSession, HookRegistry, HookResult, ModuleCoo
 
 _KEY = "session.media.tool_post"
 _POST = "tool:post"
+_MODE_EVENTS = frozenset(("mode:activated", "mode:changed", "mode:cleared"))
+_QUALIFIED_EVENTS = _MODE_EVENTS | {_POST}
 _ATTRIBUTED_SOURCE = {
     "component": "loop-streaming", "adapter": "attributed-v1",
     "contract": 1, "module": "amplifier_module_loop_streaming.dispatch",
@@ -146,6 +148,7 @@ class ParticipatingHookGraph:
         self._generation = uuid4().hex
         self._core_abi = package_version("amplifier-core")
         self._transition_parent: Any = None
+        self._contributions: list[Any] = []
 
     def _invalidate(self, reason: str) -> None:
         self._state, self._reason = "invalid", reason
@@ -187,6 +190,11 @@ class ParticipatingHookGraph:
                 "original": item.original, "observed": item.observed,
                 "name": item.name, "priority": item.priority, "order": item.order,
             } for item in self._bridge._expected()),
+            "mode_registrations": tuple({
+                "identity": item.identity, "participant": item.participant,
+                "original": item.original, "observed": item.observed, "event": item.event,
+                "name": item.name, "priority": item.priority, "order": item.order,
+            } for item in self._bridge._registrations if item.active and item.event in _MODE_EVENTS),
             "adapters": tuple({"slot": slot, "previous": previous, "installed": installed,
                                "participant": owner} for slot, previous, installed, owner
                               in self._adapter_mounts),
@@ -196,6 +204,12 @@ class ParticipatingHookGraph:
                                 "occurrence": (record["source"]["occurrence"]
                                                if record["source"] is not None else None)}
                                for slot, record in self._suspended.items()),
+            "contributions": tuple({
+                "event": record["event"], "kind": record["kind"], "state": record["state"],
+                "participant": record["participant"],
+                "registration": record["registration"].identity if record["registration"] else None,
+                "original": record["original"], "observed": record["observed"],
+            } for record in self._contributions),
         }
 
     def _loading(self, module_id: str, config: Any, source_hint: Any) -> dict[str, Any]:
@@ -293,8 +307,63 @@ class ParticipatingHookGraph:
 
     def _callback_snapshot(self) -> tuple[Any, ...]:
         return tuple((item, item.original, item.observed, item.participant,
-                      item.name, item.priority, item.order)
-                     for item in self._bridge._expected())
+                      item.name, item.priority, item.order, item.event)
+                     for item in self._bridge._registrations
+                     if item.active and item.event in _QUALIFIED_EVENTS)
+
+    def _contributions_complete(self) -> bool:
+        return (not self._bridge._active_contributions and
+                all(record["state"] == "completed" for record in self._contributions))
+
+    @contextmanager
+    def _contribution(self, event: str, kind: str, *, registration: Any = None,
+                      participant: str | None = None, original: Any = None, observed: Any = None):
+        """Observe only actual participating calls in the issuer-owned phase."""
+        record = {"event": event, "kind": kind, "state": "pending", "registration": registration,
+                  "participant": participant, "original": original, "observed": observed,
+                  "task": asyncio.current_task()}
+        self._contributions.append(record)
+        self._bridge._active_contributions.append(record)
+        if participant not in self.participants:
+            self._invalidate("unowned mode contribution")
+            record["state"] = "failed"
+        try:
+            yield record
+            if record["state"] == "pending":
+                record["state"] = "completed"
+        except BaseException:
+            record["state"] = "failed"
+            self._invalidate("participating mode contribution failed or was cancelled")
+            raise
+        finally:
+            self._bridge._active_contributions[:] = [
+                item for item in self._bridge._active_contributions if item is not record]
+
+    def _contribution_result(self, record: Any, result: Any) -> None:
+        # None is a legitimate Core lifecycle callback return. Deny and special
+        # actions are not proof that a mode contribution completed successfully.
+        valid = result is None or isinstance(result, HookResult)
+        if isinstance(result, HookResult):
+            valid = result.action in ("continue", "modify")
+            try:
+                _json_value(result.model_dump())
+            except (ValueError, TypeError):
+                valid = False
+        if not valid:
+            record["state"] = "failed"
+            self._invalidate("mode contribution returned an unqualified result")
+
+    def _mode_registry_owned(self) -> bool:
+        bridge = self._bridge
+        for event in _MODE_EVENTS:
+            expected = sorted((item for item in bridge._registrations
+                               if item.active and item.event == event),
+                              key=lambda item: (item.priority, item.order))
+            if (bridge._registry.list_handlers(event).get(event, []) !=
+                    [item.name for item in expected] or
+                    any(item.participant not in self.participants for item in expected)):
+                return False
+        return True
 
     @staticmethod
     def _same_callbacks(first: tuple[Any, ...], second: tuple[Any, ...]) -> bool:
@@ -323,6 +392,7 @@ class ParticipatingHookGraph:
                 self._session.config != self._config or
                 self._seen != set(self.participants) or
                 not self._plan_complete() or
+                not self._contributions_complete() or not self._mode_registry_owned() or
                 any(not item["mounted"] for item in self._loads) or
                 any(not item[2] for item in self._ready) or
                 not bridge.readiness()["registration_consistent"] or
@@ -344,6 +414,7 @@ class ParticipatingHookGraph:
         if (self._state != "open" or not self._session.initialized or
                 self._receipt is not None or bridge._transition is not None or
                 bridge._active_boundaries or bridge._active_requests or bridge._processing or
+                bridge._active_contributions or
                 any(lease._active for lease in bridge._routes) or
                 not self._ready_queue_empty() or not self._plan_complete()):
             raise ValueError("configuration phase requires complete idle open construction")
@@ -354,7 +425,9 @@ class ParticipatingHookGraph:
             yield self
             self._config = deepcopy(self._session.config)
             self._plan = _load_plan(self._config)
-            if (not {item[0] for item in self._plan} <= set(self.participants) or
+            if (self._state != "open" or not self._contributions_complete() or
+                    not self._mode_registry_owned() or
+                    not {item[0] for item in self._plan} <= set(self.participants) or
                     not self._plan_complete() or not self._ready_queue_empty()):
                 raise ValueError("configured modules did not complete actual construction")
         except BaseException:
@@ -409,6 +482,7 @@ class ParticipatingHookGraph:
         bridge = self._bridge
         if (not self._valid(self._receipt) or bridge._active_boundaries or
                 bridge._active_requests or bridge._processing or bridge._transition is not None or
+                bridge._active_contributions or
                 any(lease._active for lease in bridge._routes)):
             raise ValueError("transition requires a valid idle graph without active leases")
         selected = self.participants if participants is None else participants
@@ -482,6 +556,7 @@ class ParticipatingHookGraph:
                 bridge._revision != revision or
                 not self._same_callbacks(self._callback_snapshot(), registrations) or
                 not self._same_mounts(self._mounts(), mounts) or
+                not self._contributions_complete() or not self._mode_registry_owned() or
                 not bridge.readiness()["registration_consistent"]):
             self._invalidate("sealed participating graph changed")
             return False
@@ -700,6 +775,18 @@ class _CoordinatorView:
             return self.hooks
         return self._bridge._coordinator.get(mount_point, name)
 
+    async def process_hook_result(self, result: Any, event: str, name: str) -> Any:
+        graph = self._bridge._transition
+        if graph is None or event not in _MODE_EVENTS:
+            return await self._bridge._native_process(result, event, name)
+        with graph._contribution(event, "process", participant=self._participant,
+                                 original=self._bridge._native_process) as record:
+            # Construction/task setup remains inside the failure witness.
+            processed = await MediaMountLifecycle._await_tracked(
+                graph, self._bridge._native_process(result, event, name))
+            graph._contribution_result(record, processed)
+            return processed
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._bridge._coordinator, name)
 
@@ -841,6 +928,10 @@ class _HooksView:
     def register(self, event: str, handler: Any, priority: int = 0,
                  name: str | None = None) -> Any:
         bridge = self._bridge
+        if event in _MODE_EVENTS and bridge._graph is not None:
+            bridge._graph._mutation("mode contribution registration changed")
+            if self._participant not in bridge._graph.participants:
+                bridge._graph._invalidate("unowned mode contribution registration")
         if event == _POST and bridge._graph is not None:
             bridge._graph._mutation("tool:post registration changed")
             if self._participant not in bridge._graph.participants:
@@ -912,15 +1003,35 @@ class _HooksView:
                     witness.complete = False
                 raise  # Keep Core's existing swallow/log/cancellation semantics.
 
+        async def contribution_observed(actual_event: str, data: dict[str, Any]) -> Any:
+            async def invoke() -> Any:
+                if event == _POST:
+                    return await observed(actual_event, data)
+                value = handler(actual_event, data)
+                return await value if inspect.isawaitable(value) else value
+            graph = bridge._transition
+            if graph is None:
+                if event in _MODE_EVENTS and bridge._graph is not None:
+                    bridge._graph._mutation("mode contribution outside issuer-owned phase")
+                return await invoke()
+            with graph._contribution(
+                    actual_event, "callback", registration=registration,
+                    participant=self._participant, original=handler, observed=contribution_observed) as record:
+                value = await invoke()
+                graph._contribution_result(record, value)
+                return value
+
         unregister = bridge._registry.register(
-            event, observed if event == _POST else handler,
+            event, contribution_observed if event in _QUALIFIED_EVENTS else handler,
             priority=priority, name=registration.name)
         bridge._registrations.append(registration)
-        registration.observed = observed if event == _POST else handler
+        registration.observed = contribution_observed if event in _QUALIFIED_EVENTS else handler
         if event == _POST:
             bridge._revision += 1
 
         def remove() -> None:
+            if event in _MODE_EVENTS and bridge._graph is not None:
+                bridge._graph._mutation("mode contribution registration removed")
             if event == _POST and bridge._graph is not None:
                 bridge._graph._mutation("tool:post registration removed")
             unregister()
@@ -938,6 +1049,8 @@ class _HooksView:
                           if item.active and item.name == name), None)
         if candidate is not None and candidate.event == _POST and self._bridge._graph is not None:
             self._bridge._graph._mutation("tool:post registration removed")
+        if candidate is not None and candidate.event in _MODE_EVENTS and self._bridge._graph is not None:
+            self._bridge._graph._mutation("mode contribution registration removed")
         self._bridge._registry.unregister(name)
         for item in reversed(self._bridge._registrations):
             if item.active and item.name == name:
@@ -950,6 +1063,11 @@ class _HooksView:
         # An ordinary nested emission is not part of its caller's witness.
         token = _current.set(None)
         try:
+            graph = self._bridge._transition
+            if graph is not None and event in _MODE_EVENTS:
+                with graph._contribution(event, "emit", participant=self._participant,
+                                         original=self._bridge._native_emit):
+                    return await self._bridge._registry.emit(event, data)
             return await self._bridge._registry.emit(event, data)
         finally:
             _current.reset(token)
@@ -957,6 +1075,12 @@ class _HooksView:
     async def emit_and_collect(self, *args: Any, **kwargs: Any) -> Any:
         token = _current.set(None)
         try:
+            event = args[0] if args else kwargs.get("event")
+            graph = self._bridge._transition
+            if graph is not None and event in _MODE_EVENTS:
+                with graph._contribution(event, "collect", participant=self._participant,
+                                         original=self._bridge._registry.emit_and_collect):
+                    return await self._bridge._registry.emit_and_collect(*args, **kwargs)
             return await self._bridge._registry.emit_and_collect(*args, **kwargs)
         finally:
             _current.reset(token)
@@ -1071,6 +1195,7 @@ class MediaHookBridge:
         self._active_boundaries = 0
         self._active_requests = 0
         self._processing: set[Any] = set()
+        self._active_contributions: list[Any] = []
         self._revision = 0
         self.hooks = _HooksView(self)
         self.coordinator = _CoordinatorView(self)

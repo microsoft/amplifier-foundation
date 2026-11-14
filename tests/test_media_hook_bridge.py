@@ -2098,3 +2098,208 @@ async def test_account_config_revert_uses_latest_load_not_historical_completion(
     assert session.coordinator.get("providers", "account-A") is actual and actual is not original_a
     assert (await bridge(event()))["complete"]
     await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode_event", ["mode:activated", "mode:changed", "mode:cleared"])
+async def test_transition_owned_mode_callback_failure_cannot_be_swallowed_into_receipt(mode_event):
+    session, bridge, graph, old = await positive_graph()
+    calls = []
+    def contributor(e, data):
+        calls.append((e, deepcopy(data)))
+        session.config["partial_mode_effect"] = True
+        raise RuntimeError("actual participating mode contribution failed")
+    view = graph.participant("host.late")
+    with graph.transition() as graph:
+        view.hooks.register(mode_event, contributor, name="actual-mode-contributor")
+    with pytest.raises(ValueError):
+        with graph.transition():
+            # Actual Rust registry logs/swallow; normal emit return is NOT proof.
+            result = await view.hooks.emit(mode_event, {"transition_id": "actual-operation"})
+            assert isinstance(result, HookResult)
+    assert len(calls) == 1 and calls[0][0] == mode_event
+    assert calls[0][1]["transition_id"] == "actual-operation"
+    assert calls[0][1]["session_id"] == session.session_id
+    assert session.config["partial_mode_effect"] is True  # no rollback or replay
+    assert not bridge.validate_receipt(old) and not bridge.validate_receipt(bridge.graph_receipt)
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+async def mode_contributor_graph(mode_event, callback, *, session_config=None):
+    session, bridge, graph, _ = await positive_graph(session_config=session_config)
+    view = graph.participant("host.late")
+    with graph.transition() as graph:
+        view.hooks.register(mode_event, callback, priority=5, name="mode-contributor")
+    return session, bridge, graph, bridge.graph_receipt, view
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode_event", ["mode:activated", "mode:changed", "mode:cleared"])
+@pytest.mark.parametrize("returned", ["continue", "none", "modify"])
+async def test_mode_contribution_positive_preserves_actual_callback_identity_order(mode_event, returned):
+    calls = []
+    def callback(e, data):
+        calls.append((e, data["transition_id"]))
+        if returned == "none":
+            return None
+        return HookResult(action=returned, data={"unchanged": "native"} if returned == "modify" else None)
+    session, bridge, graph, old, view = await mode_contributor_graph(mode_event, callback)
+    with graph.transition() as current:
+        result = await view.hooks.emit(mode_event, {"transition_id": "actual-call"})
+        session.config["mode_update"] = mode_event
+        view.hooks.register("tool:post", lambda e, d: HookResult(
+            action="modify", data={"result": None}), name="mode-owned-redactor")
+    assert isinstance(result, HookResult) and calls == [(mode_event, "actual-call")]
+    assert not bridge.validate_receipt(old) and bridge.validate_receipt(bridge.graph_receipt)
+    assert (await bridge(event()))["complete"] and (await bridge(event()))["result"] is None
+    evidence = current.participants_evidence()["contributions"]
+    assert [item["kind"] for item in evidence] == ["emit", "callback"]
+    assert all(item["state"] == "completed" and item["participant"] == "host.late" for item in evidence)
+    actual = evidence[1]
+    assert actual["original"] is callback and callable(actual["observed"])
+    assert type(actual["registration"]) is object
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["deny", "malformed", "lossy", "ask_user"])
+async def test_mode_contribution_unqualified_result_cannot_issue_successor(bad):
+    def callback(e, data):
+        if bad == "malformed":
+            return object()
+        if bad == "lossy":
+            return HookResult(data={"unserializable": object()})
+        return HookResult(action=bad, approval_prompt="actual native" if bad == "ask_user" else None)
+    session, bridge, graph, old, view = await mode_contributor_graph("mode:activated", callback)
+    with pytest.raises(ValueError):
+        with graph.transition():
+            await view.hooks.emit("mode:activated", {})
+    assert not bridge.validate_receipt(old) and not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["configure", "transition"])
+async def test_mode_contribution_pending_work_and_partial_side_effects_are_not_healed(phase):
+    session, bridge, graph, _ = await positive_graph()
+    if phase == "configure":
+        # Use a fresh OPEN actual construction for saved settings, not reseal.
+        await session.cleanup()
+        session = AmplifierSession(
+            {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}})
+        session.coordinator.loader = ParticipatingFixtureLoader()
+        bridge = install_media_hook_bridge(session.coordinator)
+        graph = bridge.begin_participating_graph(
+            session, owner="configure-mode", participants=("fixture-loop", "fixture-context", "host.late"))
+        await session.initialize()
+    view = graph.participant("host.late")
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def callback(e, data):
+        calls.append(e)
+        started.set()
+        await release.wait()
+        session.config["late_partial_effect"] = True
+        return HookResult()
+    operation = None
+    with pytest.raises(ValueError):
+        with (graph.configure() if phase == "configure" else graph.transition()) as current:
+            view.hooks.register("mode:changed", callback, name="pending-mode")
+            operation = asyncio.create_task(view.hooks.emit("mode:changed", {}))
+            await asyncio.wait_for(started.wait(), 2)
+            # Exit while actual owned native callback work is pending.
+    assert not bridge.validate_receipt(bridge.graph_receipt)
+    assert any(item["state"] == "pending" for item in current.participants_evidence()["contributions"])
+    release.set()
+    await asyncio.wait_for(operation, 2)
+    assert calls == ["mode:changed"] and session.config["late_partial_effect"] is True
+    assert not bridge._active_contributions and not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collector", [False, True])
+async def test_mode_contribution_callback_cancellation_latches_despite_native_handling(collector):
+    calls = []
+    async def cancelled(e, data):
+        calls.append(e)
+        raise asyncio.CancelledError()
+    session, bridge, graph, old, view = await mode_contributor_graph("mode:cleared", cancelled)
+    with pytest.raises(ValueError):
+        with graph.transition() as current:
+            try:
+                if collector:
+                    await view.hooks.emit_and_collect("mode:cleared", {})
+                else:
+                    await view.hooks.emit("mode:cleared", {})
+            except asyncio.CancelledError:
+                pass  # Even an inner caller catching cancellation cannot heal.
+    assert calls == ["mode:cleared"]
+    assert any(item["state"] == "failed" for item in current.participants_evidence()["contributions"])
+    assert not bridge._active_contributions and not bridge.validate_receipt(old)
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+async def test_mode_operation_post_callback_failure_also_latches_before_seal():
+    session, bridge, graph, old, view = await mode_contributor_graph(
+        "mode:activated", lambda e, d: HookResult())
+    def post_failure(e, data):
+        raise RuntimeError("mode-triggered post contribution failed")
+    with pytest.raises(ValueError):
+        with graph.transition():
+            view.hooks.register("tool:post", post_failure, name="mode-post")
+            await view.hooks.emit("tool:post", event())
+    assert not bridge.validate_receipt(old) and not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+async def test_unowned_raw_mode_callback_is_not_promoted_by_registry_name():
+    session, bridge, graph, old = await positive_graph()
+    session.coordinator.hooks.register(
+        "mode:activated", lambda e, d: HookResult(), name="raw-mode-contributor")
+    assert not bridge.validate_receipt(old)
+    with pytest.raises(ValueError, match="idle"):
+        with graph.transition():
+            pass
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+async def test_mode_process_synchronous_native_failure_latches_even_if_caught_inside_phase():
+    session, bridge, graph, old, view = await mode_contributor_graph(
+        "mode:activated", lambda e, d: HookResult(), session_config={"injection_size_limit": 3})
+    with pytest.raises(ValueError):
+        with graph.transition() as current:
+            with pytest.raises(ValueError, match="Context injection exceeds"):
+                await view.process_hook_result(HookResult(
+                    action="inject_context", context_injection="oversized"), "mode:activated", "mode")
+    assert current.participants_evidence()["contributions"][0]["state"] == "failed"
+    assert not bridge._processing and not bridge.validate_receipt(old)
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+async def test_mode_unrelated_failure_remains_native_and_does_not_invalidate_receipt():
+    session, bridge, graph, receipt = await positive_graph()
+    def unrelated(e, data):
+        raise RuntimeError("ordinary unrelated observer failure")
+    view = graph.participant("host.late")
+    view.hooks.register("session:ordinary-badge", unrelated, name="unrelated")
+    await view.hooks.emit("session:ordinary-badge", {})
+    assert bridge.validate_receipt(receipt)
+    with graph.transition():
+        await view.hooks.emit("session:ordinary-badge", {})
+    assert bridge.validate_receipt(bridge.graph_receipt)
+    await session.cleanup()

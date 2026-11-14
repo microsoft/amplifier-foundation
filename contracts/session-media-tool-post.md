@@ -133,7 +133,10 @@ RuntimeControls' independent tool_result ingress cannot borrow the ordinary
 loop's witness unless its own actual effective result is honored by its adapter.
 
 Only tool:post registration/removal advances the media registry generation.
-Ordinary non-post per-turn badge, completion/provider-request observers and
+The explicitly participating `mode:activated`, `mode:changed` and `mode:cleared`
+callback identities are additionally pinned by the construction snapshot;
+changing them outside an owned phase invalidates the receipt. Ordinary other
+non-post per-turn badge, completion/provider-request observers and
 cleanup registration/removal do not invalidate the receipt just by changing an
 unrelated event. Module loading, ready work, actual config, mounted tool/provider/
 context/orchestrator identity and captured endpoint changes are relevant and
@@ -247,6 +250,43 @@ Cached participant views preserve their identities across same-session changes.
 Stale mount/ready callbacks from an earlier generation are refused before effects
 and invalidate the current affected construction; their old completion flags
 cannot hide a caught failure in the new graph.
+
+### Participating mode-operation contribution witness
+
+Registration through an actual declared participant's hooks view opts the three
+mode events above into the issuer witness; names, event payloads and reports do
+not enroll arbitrary raw callbacks. Actual `ModeTool.execute` set/change/clear
+uses the host's zero-argument synchronous `session.media.graph_transition`
+factory around its admitted operation, after gates/no-ops and before events or
+state effects. The CLI legacy alias may point to that same factory. The context
+must exit before an outer tool error handler and must not suppress errors.
+
+Within `graph.configure()` or `graph.transition()`, the issuer records actual
+participating mode emit/collect, callback and participant-coordinator processing
+calls, plus tool:post callbacks triggered in that phase. Records retain exact
+event, original/observed callable, owner, registration identity/order, task and
+pending/completed/failed state. Actual callback exceptions/cancellation latch an
+invalid construction BEFORE Core can swallow/log them; deny, special-action or
+malformed/lossy callback results cannot qualify. Legitimate None lifecycle
+returns preserve Core semantics. Emission/processing is delegated once, with no
+replacement hook engine, rollback or replay. Failed/pending work at phase exit
+refuses issuance, and eventual late completion cannot revive the old/new graph.
+`participants_evidence()` exposes detached `mode_registrations` and
+`contributions` metadata with strong callable/registration identities for the
+owning reviewed source join. These records are not source approval or receipts.
+
+This witness sees only known participant surfaces and actual exceptions/results
+crossing them. It cannot see a handler's internally swallowed error or infer
+success from a normal native emit return. The actual modes owner separately
+uses `ModeHooks.track_transition(event)` and `transition_id` to require that its
+own expected contribution completed, checking actual apply/revoke success; its
+`verify()` runs inside the host context. Missing/duplicate/stale internal work
+and internally caught failures are that owner's responsibility, not authority
+conferred by a caller Boolean or transition label. Arbitrary hidden/raw callback
+intervention remains outside the cooperative guarantee. Unrelated non-mode
+emissions and the private tool:post witness keep their existing semantics.
+Actual modes/host component pairing must demonstrate both layers; bridge-only
+callbacks do not establish live or installed-host mode integration.
 
 The host's real prepare/count/refit/send owner must use `bridge.request_scope()`
 and its existing private-candidate identity/invalidation checks across a settings
