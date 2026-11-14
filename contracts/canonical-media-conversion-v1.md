@@ -73,6 +73,10 @@ pause a live app, or delete originals, assets, staging, backups or recovery hold
   manifest after exhaustion. The checkpoint owner must fully exhaust before
   binding a receipt. This helper is not an ACK/receipt constructor or authority,
   does not use ordinary whole-record checkpoint readers and never enables T2.
+  Yielded refs come from that **same canonical parsing/validation pass**, never a
+  second SQLite query. Only the generated plain closure table/schema objects
+  qualify; unexpected objects, views, triggers or virtual/dynamic replacements
+  refuse, even if someone recomputes an integrity hash over a forged manifest.
 
 `selected_records` is a prefix selection, including zero. Selection precedes
 asset enumeration/adoption; suffix images are not included in **portable
@@ -140,6 +144,18 @@ The F1 host-only inspection callback is equivalent to
 `store.resolve_ref(ref, committed=False)`, returning a context-managed binary
 handle and validating the owner record. Ordinary model `cap.resolve` requires
 committed refs and is not used to bypass that gate here.
+
+With the actual host store (candidate
+`bbfd427670b6c43b8c4f018fb6ebf8f73c3ef3fd`), canonical per-record image groups use
+`store.ingest_group_sync(binary_sources_iterable, origin=..., policy=None)`:
+images are decoded to private disk spools, grouped in disk SQLite by the complete
+unchanged original provenance, and admitted as the whole ordered true-origin set.
+Only ref metadata bounded by host `max_images` is retained in memory. The
+complete set is published together; per-image fabricated original IDs are never
+introduced. Spool bytes are private operation work/recovery, never portable
+delivery. A minimal injected capability without the host group seam supports
+independently attested single-image origins only; unsupported grouped inputs
+must refuse, not be labeled fully converted.
 
 Each converted inline image becomes exactly the F1 Core text slot
 `[Session image <sha256>]` at the same content index. Its ordered ref is inserted

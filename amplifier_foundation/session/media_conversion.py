@@ -906,8 +906,14 @@ def verify_export(directory: Path) -> None:
         db.close()
 
 def _closure_schema(db):
-    if db.execute("select 1 from sqlite_master where type in ('view','trigger') limit 1").fetchone():
-        raise Unsupported("Executable/dynamic objects in historical manifest")
+    allowed = {
+        ("table", "closure"), ("table", "patches"), ("table", "assets"),
+        ("table", "image_groups"), ("index", "assets_row_block"),
+        ("index", "image_groups_row_origin"),
+    }
+    for kind, name in db.execute("select type,name from sqlite_master"):
+        if (kind, name) not in allowed:
+            raise Unsupported("Unexpected/dynamic objects in historical manifest")
     schema = db.execute("select type,sql from sqlite_master where name='closure'").fetchone()
     if schema is None or schema[0] != "table" or not re.fullmatch(
         r"CREATE TABLE closure\s*\(\s*ref blob\s*\)", schema[1], re.IGNORECASE,
