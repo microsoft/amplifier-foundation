@@ -155,6 +155,42 @@ still reviews the adapter source/semantics; a label or claimed transparency is
 not proof. Use it before sealing or within an owned transition, never silently
 swap a sealed runtime. `participants_evidence()["adapters"]` exposes these edges.
 
+Configured tool/provider disable/enable uses a different, explicit issuer seam:
+
+```python
+from amplifier_foundation.session.media_hook_bridge import media_mount_lifecycle
+
+lifecycle = media_mount_lifecycle(graph.participant("host.settings"))
+# Returns None for a native coordinator, generic proxy or mock. Do not use
+# hasattr to opt arbitrary configurators into this contract.
+with graph.transition() as disabled:
+    token = await lifecycle.suspend("tools", name="actual-tool")
+# Keep token alongside the owner's existing object stash; config stays intact.
+with disabled.transition():
+    same_actual_object = await lifecycle.restore(token)
+```
+
+Both calls require the actual participant view and an idle issuer-owned
+`configure()` or `transition()` phase. Suspension captures the exact live slot,
+strong module/load-occurrence/configuration/source identities and participating
+owner BEFORE unmounting. The issuer tracks that occurrence as deliberately
+disabled in the effective plan, not as a missing load. Successful restoration
+consumes the opaque identity-only token and reinstalls that same object; it
+cannot select a replacement, transfer owners or reconstruct authority from a
+name. Native mount/unmount behavior outside this seam is unchanged. Foreign,
+copied, consumed or changed-source tokens and occupied destinations refuse.
+An effect failure invalidates construction and preserves token evidence; this
+is not automatic rollback, permission to retry an uncertain effect, or revival
+of an old receipt. Hosts retain tokens until actual successful restoration.
+
+Suspensions survive only through issuer-validated same-session successors.
+They do not transfer to a fresh session or qualify changed configured entries.
+`participants_evidence()["suspended"]` exposes detached slot/owner/occurrence
+metadata and the strong actual module identity, never token authority. Actual
+SessionConfigurator and tool-triggered mode owners must integrate this public
+seam and qualify their real operations separately; helper fixtures alone do not
+establish CLI/Unified host delivery.
+
 Normal settings/mode changes must reconstruct the qualifying generation rather
 than permanently disable a functioning feature or silently reseal the old one:
 

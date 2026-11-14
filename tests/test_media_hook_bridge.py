@@ -11,7 +11,7 @@ from importlib.metadata import version as package_version
 import pytest
 from amplifier_core import AmplifierSession, HookResult, ModuleCoordinator
 
-from amplifier_foundation.session.media_hook_bridge import install_media_hook_bridge
+from amplifier_foundation.session.media_hook_bridge import install_media_hook_bridge, media_mount_lifecycle
 
 
 CORE_ABI = package_version("amplifier-core")
@@ -1724,4 +1724,172 @@ async def test_public_unqualified_boundary_never_exposes_media_on_supported_or_l
     assert calls == ["tool:post"] and bridge.graph_receipt is None
     assert bridge.validate_receipt(object()) is False
     assert isinstance(result["hook_result"], HookResult)
+    await session.cleanup()
+
+
+def test_mount_lifecycle_opt_in_does_not_probe_generic_coordinator_or_mock():
+    from unittest.mock import MagicMock
+    class Unrelated:
+        def __getattr__(self, name):
+            pytest.fail("must not duck-type arbitrary coordinator")
+    assert media_mount_lifecycle(Unrelated()) is None
+    assert media_mount_lifecycle(MagicMock()) is None
+    assert media_mount_lifecycle(ModuleCoordinator()) is None
+
+
+async def configured_lifecycle_graph(kind, *, seal=True):
+    class LifecycleLoader(ProviderFixtureLoader):
+        async def load(self, module_id, config, **kwargs):
+            if module_id == "fixture-tool":
+                async def mount(current):
+                    await current.mount("tools", object(), name="fixture")
+                return mount
+            return await super().load(module_id, config, **kwargs)
+    session = AmplifierSession({
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        kind: [{"module": "provider-fixture" if kind == "providers" else "fixture-tool"}]})
+    session.coordinator.loader = LifecycleLoader(automatic=True)
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="lifecycle",
+        participants=("fixture-loop", "fixture-context",
+                      "provider-fixture" if kind == "providers" else "fixture-tool", "host.settings"))
+    graph.participant("host.settings")
+    await session.initialize()
+    receipt = graph.seal() if seal else None
+    return session, bridge, graph, receipt
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["providers", "tools"])
+async def test_configured_suspend_restore_retains_same_actual_object_across_generations(kind):
+    session, bridge, graph, old = await configured_lifecycle_graph(kind)
+    view = graph.participant("host.settings")
+    lifecycle = media_mount_lifecycle(view)
+    module = session.coordinator.get(kind, "fixture")
+    with pytest.raises(ValueError, match="idle"):
+        await lifecycle.suspend(kind, name="fixture")
+    with graph.transition() as disabled:
+        token = await lifecycle.suspend(kind, name="fixture")
+        assert session.coordinator.get(kind, "fixture") is None
+    disabled_receipt = bridge.graph_receipt
+    assert disabled_receipt is not old and not bridge.validate_receipt(old)
+    assert (await bridge(event()))["complete"]  # disabled effective plan is qualified
+    assert session.config[kind]  # original configured occurrence remains
+    with disabled.transition() as enabled:
+        assert await lifecycle.restore(token) is module
+    assert session.coordinator.get(kind, "fixture") is module
+    assert bridge.graph_receipt is not disabled_receipt
+    assert (await bridge(event()))["complete"]
+    with enabled.transition():
+        with pytest.raises(ValueError, match="consumed"):
+            await lifecycle.restore(token)
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["providers", "tools"])
+async def test_configured_initial_settings_can_suspend_before_final_seal(kind):
+    session, bridge, graph, _ = await configured_lifecycle_graph(kind, seal=False)
+    lifecycle = media_mount_lifecycle(graph.participant("host.settings"))
+    with graph.configure():
+        token = await lifecycle.suspend(kind, name="fixture")
+    graph.seal()
+    assert (await bridge(event()))["complete"]
+    with graph.transition():
+        await lifecycle.restore(token)
+    assert (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["foreign", "owner", "config", "slot", "raw", "request"])
+async def test_configured_suspension_never_blesses_unknown_or_changed_provenance(failure):
+    session, bridge, graph, old = await configured_lifecycle_graph("tools")
+    lifecycle = media_mount_lifecycle(graph.participant("host.settings"))
+    if failure == "request":
+        with bridge.request_scope():
+            with pytest.raises(ValueError, match="idle"):
+                await lifecycle.suspend("tools", name="fixture")
+        assert bridge.validate_receipt(old)
+    elif failure == "raw":
+        with pytest.raises(ValueError):
+            with graph.transition():
+                await session.coordinator.mount("tools", object(), name="raw")
+                with pytest.raises(ValueError, match="participating"):
+                    await lifecycle.suspend("tools", name="raw")
+    else:
+        with graph.transition() as disabled:
+            token = await lifecycle.suspend("tools", name="fixture")
+        if failure in ("foreign", "owner"):
+            with disabled.transition():
+                other = (media_mount_lifecycle(bridge.participant("fixture-tool"))
+                         if failure == "owner" else lifecycle)
+                with pytest.raises(ValueError, match="unknown|another"):
+                    await other.restore(object() if failure == "foreign" else token)
+            assert (await bridge(event()))["complete"]
+        else:
+            with pytest.raises(ValueError):
+                with disabled.transition():
+                    if failure == "config":
+                        session.config["tools"][0]["config"] = {"changed": True}
+                    else:
+                        await session.coordinator.mount("tools", object(), name="fixture")
+                    with pytest.raises(ValueError, match="changed|empty"):
+                        await lifecycle.restore(token)
+            assert not bridge.validate_receipt(old) and not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accounts", [(None,), ("account-A",), ("account-A", "account-B")])
+async def test_actual_core_module_loader_discovers_and_caches_provider_occurrences(monkeypatch, accounts):
+    """No replacement loader: Core discovers local fixture modules and caches mounts."""
+    import sys
+    from types import ModuleType
+    from amplifier_core.loader import ModuleLoader
+    mounted, ready, failed = [], [], []
+
+    async def loop_mount(current, config):
+        await current.mount("orchestrator", object())
+    async def context_mount(current, config):
+        await current.mount("context", object())
+    class Provider:
+        name = "fixture"
+    async def provider_mount(current, config):
+        provider = Provider()
+        mounted.append((provider, deepcopy(config)))
+        await current.mount("providers", provider)
+    async def provider_ready(current):
+        ready.append(current)
+
+    for module_id, mount in (("fixture-loop", loop_mount), ("fixture-context", context_mount),
+                             ("provider-fixture", provider_mount)):
+        module = ModuleType(f"amplifier_module_{module_id.replace('-', '_')}")
+        module.mount = mount
+        if module_id == "provider-fixture":
+            module.on_session_ready = provider_ready
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    session = AmplifierSession({
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "providers": [{"module": "provider-fixture", "config": {"account": account},
+                       **({"instance_id": account} if account else {})} for account in accounts]})
+    bridge = install_media_hook_bridge(session.coordinator)
+    assert type(bridge._loader._loader) is ModuleLoader
+    graph = bridge.begin_participating_graph(
+        session, owner="actual-core-loader",
+        participants=("fixture-loop", "fixture-context", "provider-fixture"))
+    graph.participant("fixture-loop").hooks.register(
+        "module:load_failed", lambda e, d: failed.append(d) or HookResult(), name="failed")
+    await session.initialize()
+    assert failed == [] and len(mounted) == len(ready) == len(accounts)
+    graph.seal()
+    for (provider, config), account in zip(mounted, accounts):
+        assert config == {"account": account}
+        assert session.coordinator.get("providers", account or "fixture") is provider
+    assert (await bridge(event()))["complete"]
     await session.cleanup()

@@ -79,6 +79,11 @@ class _ConstructionReceipt:
     __slots__ = ()
 
 
+class _SuspensionToken:
+    """Opaque issuer lookup; no caller-supplied identity/configuration fields."""
+    __slots__ = ()
+
+
 def _load_plan(config: dict[str, Any]) -> list[tuple[str, Any, Any]]:
     result = []
     session = config.get("session", {})
@@ -136,6 +141,7 @@ class ParticipatingHookGraph:
         self._record: Any = None
         self._mount_records: list[tuple[Any, Any, str]] = []
         self._slot_sources: dict[tuple[str, Any], Any] = {}
+        self._suspended: dict[tuple[str, Any], Any] = {}
         self._adapter_mounts: list[Any] = []
         self._generation = uuid4().hex
         self._core_abi = package_version("amplifier-core")
@@ -184,6 +190,11 @@ class ParticipatingHookGraph:
             "adapters": tuple({"slot": slot, "previous": previous, "installed": installed,
                                "participant": owner} for slot, previous, installed, owner
                               in self._adapter_mounts),
+            "suspended": tuple({"slot": slot, "module": record["module"],
+                                "participant": record["owner"],
+                                "occurrence": (record["source"]["occurrence"]
+                                               if record["source"] is not None else None)}
+                               for slot, record in self._suspended.items()),
         }
 
     def _loading(self, module_id: str, config: Any, source_hint: Any) -> dict[str, Any]:
@@ -336,6 +347,13 @@ class ParticipatingHookGraph:
     def _plan_complete(self) -> bool:
         if self._transition_parent is None and len(self._loads) != len(self._plan):
             return False
+        current_plan = dict(_occurrence_plan(self._config))
+        for slot, record in self._suspended.items():
+            source = record["source"]
+            if (self._bridge._coordinator.get(*slot) is not None or
+                    (source is not None and (current_plan.get(source["occurrence"]) != source["plan"] or
+                                            not self._slot_complete(slot, source)))):
+                return False
         # Latest per configured occurrence, NOT per module: two accounts may
         # share a module/config/class while retaining distinct actual objects.
         available = []
@@ -346,16 +364,25 @@ class ParticipatingHookGraph:
             match = next((item for item in available
                           if item["occurrence"] == identity and
                           item["plan"] == planned and item["mounted"] and
-                          all((self._slot_sources.get(slot, (None, None))[0] is item and
-                               self._bridge._coordinator.get(slot[0], slot[1]) is
-                               self._slot_sources[slot][1]) for slot in item["slots"]) and
+                          all(self._slot_complete(slot, item) for slot in item["slots"]) and
                           all(any(slot[0] == kind and self._bridge._coordinator.get(
-                              slot[0], slot[1]) is not None for slot in item["slots"])
+                              slot[0], slot[1]) is not None or
+                              slot[0] == kind and slot in self._suspended
+                              for slot in item["slots"])
                               for kind in item["kinds"])), None)
             if match is None:
                 return False
             available.remove(match)
         return True
+
+    def _slot_complete(self, slot: Any, item: Any) -> bool:
+        current = self._bridge._coordinator.get(*slot)
+        source = self._slot_sources.get(slot, (None, None))
+        suspended = self._suspended.get(slot)
+        if suspended is not None:
+            return (current is None and suspended["source"] is item and
+                    source[0] is item and source[1] is suspended["module"])
+        return source[0] is item and current is source[1]
 
     @contextmanager
     def transition(self, *, participants: tuple[str, ...] | None = None):
@@ -376,6 +403,7 @@ class ParticipatingHookGraph:
         successor._views = dict(self._views)
         successor._mount_records = list(self._mount_records)
         successor._slot_sources = dict(self._slot_sources)
+        successor._suspended = dict(self._suspended)
         successor._adapter_mounts = list(self._adapter_mounts)
         successor._ready = [list(item) for item in self._ready]
         # Completed ready records are provenance history. Never reuse wrappers
@@ -659,6 +687,96 @@ class _CoordinatorView:
                 "loader", "process_hook_result", "session", "config"):
             self._bridge._graph._mutation(f"participating endpoint assignment: {name}")
         setattr(self._bridge._coordinator, name, value)
+
+
+class MediaMountLifecycle:
+    """Explicit opt-in to issuer-owned suspension, not arbitrary duck typing."""
+
+    def __init__(self, view: _CoordinatorView) -> None:
+        self._view = view
+
+    def _graph(self) -> Any:
+        view = self._view
+        bridge = view._bridge
+        graph = bridge._graph
+        if (graph is None or graph._state != "open" or bridge._transition is not graph or
+                not graph._session.initialized or view._participant not in graph.participants or
+                bridge._active_boundaries or bridge._active_requests or bridge._processing or
+                any(lease._active for lease in bridge._routes)):
+            raise ValueError("suspension requires owned idle configure/transition")
+        return graph
+
+    async def suspend(self, mount_point: str, *, name: str) -> Any:
+        graph = self._graph()
+        slot = (mount_point, name)
+        if mount_point not in ("providers", "tools") or type(name) is not str or not name:
+            raise ValueError("suspension requires an exact named provider/tool slot")
+        module = graph._bridge._coordinator.get(*slot)
+        if (module is None or slot in graph._suspended or
+                not any(record_slot == slot and recorded is module
+                        for record_slot, recorded, _ in graph._mount_records)):
+            raise ValueError("suspension requires an actual participating installed slot")
+        source, installed = graph._slot_sources.get(slot, (None, module))
+        if installed is not module or (source is not None and not graph._slot_complete(slot, source)):
+            raise ValueError("suspension source no longer matches installed slot")
+        token = _SuspensionToken()
+        record = {"token": token, "owner": self._view._participant, "module": module,
+                  "source": source, "generation": graph._generation}
+        try:
+            await graph._bridge._coordinator.unmount(mount_point, name=name)
+            if graph._bridge._coordinator.get(*slot) is not None:
+                raise ValueError("suspension did not remove actual slot")
+        except BaseException:
+            graph._invalidate("participating suspension failed")
+            raise
+        graph._suspended[slot] = record
+        return token
+
+    async def restore(self, token: Any) -> Any:
+        graph = self._graph()
+        # Never call hash/equality/attributes on an arbitrary supplied object.
+        match = next(((slot, record) for slot, record in graph._suspended.items()
+                      if record["token"] is token), None)
+        if match is None:
+            raise ValueError("unknown, foreign or consumed suspension token")
+        slot, record = match
+        source = record["source"]
+        if record["owner"] != self._view._participant:
+            raise ValueError("suspension belongs to another participating owner")
+        if graph._bridge._coordinator.get(*slot) is not None:
+            raise ValueError("suspended destination is no longer empty")
+        if source is not None:
+            current = dict(_occurrence_plan(graph._session.config))
+            latest = next((item for item in reversed(graph._loads)
+                           if item["occurrence"] == source["occurrence"]), None)
+            if (current.get(source["occurrence"]) != source["plan"] or latest is not source or
+                    graph._slot_sources.get(slot, (None, None))[0] is not source):
+                raise ValueError("suspended configured occurrence changed")
+        try:
+            await graph._bridge._coordinator.mount(slot[0], record["module"], name=slot[1])
+            if graph._bridge._coordinator.get(*slot) is not record["module"]:
+                raise ValueError("restore did not install actual suspended object")
+        except BaseException:
+            # Keep token/evidence until actual success; an uncertain effect never
+            # authorizes retry or revives the old receipt.
+            graph._invalidate("participating restoration failed")
+            raise
+        graph._mount_records.append((slot, record["module"], self._view._participant))
+        del graph._suspended[slot]
+        return record["module"]
+
+
+def media_mount_lifecycle(coordinator: Any) -> MediaMountLifecycle | None:
+    """Only an actual bound participant view opts into suspension semantics.
+
+    Generic configurators can use this without probing arbitrary coordinators,
+    mocks or proxy attributes. Native/unqualified coordinators return None.
+    """
+    if (type(coordinator) is _CoordinatorView and coordinator._participant is not None and
+            coordinator._bridge._graph is not None and
+            coordinator._participant in coordinator._bridge._graph.participants):
+        return MediaMountLifecycle(coordinator)
+    return None
 
 
 class _HooksView:
