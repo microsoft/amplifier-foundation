@@ -188,6 +188,10 @@ async def bridge_child_cost(
         summary = {"cost_usd": None, "known_subtotal_usd": None, "complete": False}
     try:
         if summary is not None:
+            # Contribution payloads can cross JSON/event boundaries. Keep exact
+            # arithmetic internal and serialize money without float conversion.
+            if summary["cost_usd"] is not None:
+                summary["cost_usd"] = str(summary["cost_usd"])
             # Freeze value in default arg — child coordinator will be torn down after this
             parent_coordinator.register_contributor(
                 "session.cost",

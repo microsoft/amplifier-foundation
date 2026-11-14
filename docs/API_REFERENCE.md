@@ -166,8 +166,9 @@ app-layer spawn wrappers. Import via `from amplifier_foundation import ...`.
 The child bridge omits only absent activity (no contributions, or callbacks
 returning `None`). Unknown child spend is registered as `{"cost_usd": None,
 "known_subtotal_usd": "<decimal>" | None, "complete": False}`. The subtotal is
-not an exact total. Complete contributions retain the `{"cost_usd": Decimal(...)}`
-shape. No prices are recomputed and no historical data is rewritten.
+not an exact total. Complete contributions use the JSON-safe `{"cost_usd":
+"<decimal>"}` shape; the summation API still returns `Decimal`. No prices are
+recomputed and no historical data is rewritten.
 
 ## Reading the Source
 

@@ -1,6 +1,7 @@
 """Tests for cost bridge in PreparedBundle.spawn()."""
 
 import asyncio
+import json
 from decimal import Decimal
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -42,7 +43,7 @@ def test_malformed_cost_cannot_become_an_exact_subtotal(bad):
     [
         ([], None),
         ([None], None),
-        ([None, {"cost_usd": "0"}], {"cost_usd": Decimal("0")}),
+        ([None, {"cost_usd": "0"}], {"cost_usd": "0"}),
         ([{"cost_usd": None}], {
             "cost_usd": None, "known_subtotal_usd": None, "complete": False,
         }),
@@ -74,6 +75,7 @@ async def test_bridge_preserves_absence_unknown_and_zero(contributions, expected
         channel, name, callback = parent.register_contributor.call_args.args
         assert (channel, name) == ("session.cost", "delegate:child")
         assert callback() == expected
+        assert json.loads(json.dumps(callback())) == expected
         # A second delegation hop cannot turn the subtotal back into an exact cost.
         if expected.get("complete") is False:
             assert sum_cost_usd([{"cost_usd": "2"}, callback()]) is None
@@ -134,7 +136,8 @@ async def test_prepared_bundle_spawn_bridges_child_cost():
 
     assert ("session.cost", "delegate:foundation-child-001") in registered
     result = registered[("session.cost", "delegate:foundation-child-001")]()
-    assert result == {"cost_usd": Decimal("0.06")}
+    assert result == {"cost_usd": "0.06"}
+    assert json.loads(json.dumps(result)) == {"cost_usd": "0.06"}
 
 
 @pytest.mark.asyncio
