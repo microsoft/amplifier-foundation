@@ -177,3 +177,44 @@ def test_historical_reconcile_never_borrows_successor_receipt(tmp_path, monkeypa
         assert result.state == 'superseded-original-operation'
         assert result.checkpoint is None and result.commit == actual.commit
         assert binding.expected == latest != actual.commit
+
+
+def test_huge_record_full_streamed_activation_and_export_bound(tmp_path, monkeypatch):
+    import tracemalloc
+    from amplifier_foundation.session.media_conversion import verify_export
+    with fixture(tmp_path) as (binding, store, fence):
+        row = {'role': 'tool', 'tool_call_id': 'huge-original', 'status': 'complete',
+               'provider_state': 'x' * (8 * 1024 * 1024),
+               'content': [{'type': 'image', 'source': {
+                   'type': 'base64', 'media_type': 'image/png', 'data': base64.b64encode(png()).decode(),
+               }}]}
+        binding.append([row], expected=binding.expected, operation_id='seed', admit=lambda: None)
+        del row
+        expected = binding.expected
+        origin = {'kind': 'migration', 'session_id': 'session', 'id': 'huge-original',
+                  'created_at': '2025-01-01T00:00:00+00:00', 'expires_at': '2035-01-01T00:00:00+00:00'}
+        def no_materializing_writer(*args, **kwargs):
+            raise AssertionError('Huge candidate must not enter list/deepcopy writer')
+        monkeypatch.setattr(binding, '_write', no_materializing_writer)
+        tracemalloc.start()
+        try:
+            plan = preview_committed(binding.directory, expected=expected, owner='fixture', fence=fence)
+            candidate = asyncio.run(build_candidate(
+                plan, tmp_path / 'operation', fence=fence, capability=store,
+                origin_for=lambda row, block: origin, eligible_record=lambda row: True,
+                asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+                export_assets=True,
+            ))
+            result = apply_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
+            with open_committed_source(binding.directory, expected=binding.expected) as source:
+                assert source.commit.message_count == 1
+                assert sum(map(len, source.iter_bytes())) > 8 * 1024 * 1024
+            verify_export(tmp_path / 'operation/portable')
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert result.state == 'acknowledged' and result.inline_removed_bytes == candidate.inline_removed_bytes > 0
+        assert type(result.checkpoint) is VersionedCheckpointReceipt
+        assert peak < 6 * 1024 * 1024, peak
+        print({'single_record_bytes': candidate.bytes, 'python_peak_bytes': peak,
+               'installed_records': result.commit.message_count})
