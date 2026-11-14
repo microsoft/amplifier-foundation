@@ -992,6 +992,67 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             target.close()
 
+    async def test_synthetic_public_stream_uses_counted_canonical_tools_and_real_projection(self):
+        from amplifier_core.message_models import ToolSpec
+        from amplifier_foundation.session.media_provider import MediaPreparedProvider
+        ref = await self.stage()
+        await self.commit(ref)
+        cap = bind_session_media(Coordinator(), store=self.store, enabled=True)
+        canonical = ChatRequest(
+            model="fixture",
+            messages=[Message(role="user", content="picture",
+                              metadata={MEDIA_NAMESPACE: {"refs": [ref]}})],
+            tools=[ToolSpec(name="inspect", parameters={"type": "object", "properties": {}})],
+        )
+        original = canonical.model_dump_json()
+        expected_tools = canonical.tools[0].model_dump()
+        case = self
+        class SyntheticStreamOwner:
+            counted = None
+            sent = None
+            counted_options = None
+            claim = {"v": 1, "tools": "chat_request"}
+            def get_media_request_support(self, *, model, request_options=None):
+                return {"v": 1, "positions": ["user"], "mime_types": ["image/png"]}
+            def get_stream_request_support(self, *, model, request_options=None):
+                case.assertEqual(model, "fixture")
+                case.assertEqual(request_options, {"extended_thinking": True})
+                return self.claim
+            def request_budget(self, request, *, request_options=None):
+                cap.validate(request, purpose="count", request_options=request_options)
+                self.counted, self.counted_options = request, request_options
+                return {"estimated_input_tokens": 10, "input_limit_tokens": 100,
+                        "context_token_budget": 100}
+            async def complete(self, request, **kwargs):
+                raise AssertionError("stream fixture must not call complete")
+            async def stream(self, request, **kwargs):
+                cap.validate(request, purpose="transport", request_options=kwargs)
+                self.sent = request
+                case.assertIs(request, self.counted)
+                case.assertEqual(kwargs, self.counted_options)
+                case.assertNotIn("tools", kwargs)
+                case.assertEqual(request.tools[0].model_dump(), expected_tools)
+                image = next(b for b in request.messages[0].content if isinstance(b, ImageBlock))
+                case.assertEqual(base64.b64decode(image.source["data"]), case.data)
+                yield "delta"
+        provider = SyntheticStreamOwner()
+        wrapper = MediaPreparedProvider(provider, cap, provider_identity={
+            "provider": "synthetic-stream", "account": "a", "generation": "g"})
+        options = {"extended_thinking": True}
+        try:
+            self.assertEqual(wrapper.get_stream_request_support(
+                model="fixture", request_options=options), {"v": 1, "tools": "chat_request"})
+            await wrapper.request_budget(canonical, request_options=options)
+            self.assertEqual([chunk async for chunk in wrapper.stream(canonical, **options)], ["delta"])
+            self.assertEqual(provider.sent.messages, [])
+            self.assertEqual(canonical.model_dump_json(), original)
+            provider.claim = None
+            self.assertIsNone(wrapper.get_stream_request_support(
+                model="fixture", request_options=options))
+            self.assertEqual(canonical.model_dump_json(), original)
+        finally:
+            await wrapper.aclose()
+
     async def test_import_never_resurrects_dropped_target_at_expiry_publication_boundary(self):
         from datetime import datetime as RealDatetime, timedelta, timezone
         cutoff = RealDatetime(2030, 1, 1, tzinfo=timezone.utc)

@@ -899,6 +899,10 @@ class StreamRequestSupportTests(unittest.IsolatedAsyncioTestCase):
 
         provider.get_stream_request_support = support
         wrapper = self.wrap(provider)
+        self.assertEqual(
+            wrapper.get_media_request_support(model="fixture"),
+            provider.get_media_request_support(model="fixture"),
+        )
         options = {"extended_thinking": True}
         self.assertIs(
             wrapper.get_stream_request_support(model="fixture", request_options=options),
