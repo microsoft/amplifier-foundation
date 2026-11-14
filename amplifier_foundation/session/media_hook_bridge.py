@@ -96,6 +96,15 @@ def _load_plan(config: dict[str, Any]) -> list[tuple[str, Any, Any]]:
     return deepcopy(result)
 
 
+def _occurrence_plan(config: dict[str, Any]) -> list[tuple[Any, ...]]:
+    """Core's ordered configured occurrences, including provider remap identity."""
+    identities = [("orchestrator", 0, None), ("context", 0, None)]
+    for kind in ("providers", "tools", "hooks"):
+        identities.extend((kind, index, spec.get("instance_id") if kind == "providers" else None)
+                          for index, spec in enumerate(config.get(kind, [])) if spec.get("module"))
+    return [(identity, plan) for identity, plan in zip(identities, _load_plan(config))]
+
+
 def participating_module_ids(session: Any) -> tuple[str, ...]:
     """Inspect Core's effective structural plan, NOT approve configured sources."""
     return tuple(dict.fromkeys(item[0] for item in _load_plan(session.config)))
@@ -117,14 +126,15 @@ class ParticipatingHookGraph:
         self._config = deepcopy(session.config)
         self._plan = _load_plan(self._config)
         self._loads: list[dict[str, Any]] = []
+        self._phase_loads: list[Any] = []
         self._views: dict[str, Any] = {}
         self._seen: set[str] = set()
         self._ready: list[list[Any]] = []
         self._wrapped_ready: list[Any] = []
-        self._ready_wrappers: list[tuple[Any, str, Any]] = []
+        self._ready_wrappers: list[tuple[Any, str, Any, Any]] = []
         self._receipt: Any = None
         self._record: Any = None
-        self._mount_records: list[tuple[str, Any, str]] = []
+        self._mount_records: list[tuple[Any, Any, str]] = []
         self._slot_sources: dict[tuple[str, Any], Any] = {}
         self._adapter_mounts: list[Any] = []
         self._generation = uuid4().hex
@@ -160,6 +170,8 @@ class ParticipatingHookGraph:
             "loads": tuple({"module": item["plan"][0],
                             "config": deepcopy(item["plan"][1]),
                             "source_hint": deepcopy(item["plan"][2]),
+                            "occurrence": item["occurrence"],
+                            "slots": tuple(sorted(item["slots"])),
                             "mount": item["mount"], "mounted": item["mounted"]}
                            for item in self._loads),
             "ready": tuple({"callback": item[0], "participant": item[1],
@@ -182,22 +194,21 @@ class ParticipatingHookGraph:
                 (self._transition_parent is None and
                  (occurrence >= len(self._plan) or self._plan[occurrence] != actual))):
             self._invalidate("module load does not match participating construction plan")
-        kinds = []
-        current = self._session.config
-        for key in ("providers", "tools"):
-            if any(spec.get("module") == module_id for spec in current.get(key, [])):
-                kinds.append(key)
-        for key in ("orchestrator", "context"):
-            spec = current.get("session", {}).get(key, f"loop-basic" if key == "orchestrator" else "context-simple")
-            if (spec if isinstance(spec, str) else spec.get("module")) == module_id:
-                kinds.append(key)
-        record = {"plan": actual, "mount": None, "mounted": False, "slots": set(), "kinds": kinds}
+        candidates = [(identity, plan) for identity, plan in _occurrence_plan(self._session.config)
+                      if plan == actual and identity not in self._phase_loads]
+        identity = candidates[0][0] if candidates else None
+        if identity is None:
+            self._invalidate("module load has no current configured occurrence")
+        self._phase_loads.append(identity)
+        record = {"plan": actual, "occurrence": identity, "mount": None,
+                  "mounted": False, "slots": set(),
+                  "kinds": [identity[0]] if identity is not None and identity[0] != "hooks" else []}
         self._loads.append(record)
         return record
 
-    def _ready_callback(self, callback: Any, participant: str) -> Any:
-        for original, owner, wrapped in self._ready_wrappers:
-            if original is callback and owner == participant:
+    def _ready_callback(self, callback: Any, participant: str, attempt: Any = None) -> Any:
+        for original, owner, recorded_attempt, wrapped in self._ready_wrappers:
+            if original is callback and owner == participant and recorded_attempt is attempt:
                 return wrapped
         self._mutation("ready callback added after seal")
         view = self.participant(participant)
@@ -219,7 +230,7 @@ class ParticipatingHookGraph:
                 self._invalidate("ready callback failed")
                 raise
         self._wrapped_ready.append(ready)
-        self._ready_wrappers.append((callback, participant, ready))
+        self._ready_wrappers.append((callback, participant, attempt, ready))
         return ready
 
     def _mounts(self) -> tuple[Any, ...]:
@@ -235,11 +246,11 @@ class ParticipatingHookGraph:
 
     def _mounts_owned(self) -> bool:
         for kind, value in self._mounts():
-            modules = [module for _, module in value] if kind in ("providers", "tools") else (
-                [] if value is None else [value])
-            if any(not any(record_kind == kind and recorded is module
-                           for record_kind, recorded, _ in self._mount_records)
-                   for module in modules):
+            slots = list(value) if kind in ("providers", "tools") else (
+                [] if value is None else [(None, value)])
+            if any(not any(record_slot == (kind, name) and recorded is module
+                           for record_slot, recorded, _ in self._mount_records)
+                   for name, module in slots):
                 return False
         return True
 
@@ -307,6 +318,7 @@ class ParticipatingHookGraph:
                 not self._ready_queue_empty() or not self._plan_complete()):
             raise ValueError("configuration phase requires complete idle open construction")
         self._transition_parent = self._transition_parent or object()
+        self._phase_loads = []
         bridge._transition = self
         try:
             yield self
@@ -324,15 +336,16 @@ class ParticipatingHookGraph:
     def _plan_complete(self) -> bool:
         if self._transition_parent is None and len(self._loads) != len(self._plan):
             return False
-        # Only the latest actual occurrence of a module can supply its current
-        # config/source identity. Historical A must not stand in for live B.
+        # Latest per configured occurrence, NOT per module: two accounts may
+        # share a module/config/class while retaining distinct actual objects.
         available = []
         for item in reversed(self._loads):
-            if not any(other["plan"][0] == item["plan"][0] for other in available):
+            if not any(other["occurrence"] == item["occurrence"] for other in available):
                 available.append(item)
-        for planned in self._plan:
+        for identity, planned in _occurrence_plan(self._config):
             match = next((item for item in available
-                          if item["plan"] == planned and item["mounted"] and
+                          if item["occurrence"] == identity and
+                          item["plan"] == planned and item["mounted"] and
                           all((self._slot_sources.get(slot, (None, None))[0] is item and
                                self._bridge._coordinator.get(slot[0], slot[1]) is
                                self._slot_sources[slot][1]) for slot in item["slots"]) and
@@ -515,14 +528,15 @@ class _RouteProcessor:
         if witness is not None and witness.receipt is not None:
             if not self.bridge.validate_receipt(witness.receipt):
                 witness.complete = False
-        operation = asyncio.ensure_future(self.bridge._native_process(result, event, name))
-        self.bridge._processing.add(operation)
-        def settled(task: Any) -> None:
-            self.bridge._processing.discard(task)
-            if not task.cancelled():
-                task.exception()  # consume unobserved errors after caller cancellation
-        operation.add_done_callback(settled)
         try:
+            # The native call can raise synchronously before an awaitable exists.
+            operation = asyncio.ensure_future(self.bridge._native_process(result, event, name))
+            self.bridge._processing.add(operation)
+            def settled(task: Any) -> None:
+                self.bridge._processing.discard(task)
+                if not task.cancelled():
+                    task.exception()  # consume unobserved errors after caller cancellation
+            operation.add_done_callback(settled)
             # Native approval may outlive a cancelled waiter. Track its actual
             # settlement and keep transitions fenced, without cancelling/replay.
             processed = await asyncio.shield(operation)
@@ -554,25 +568,44 @@ class _CoordinatorView:
 
     async def mount(self, *args: Any, **kwargs: Any) -> Any:
         graph = self._bridge._graph
+        kind = args[0] if args else kwargs["mount_point"]
+        module = args[1] if len(args) > 1 else kwargs["module"]
+        before = dict(self._bridge._coordinator.get(kind) or {}) if kind in ("providers", "tools") else {}
         if graph is not None:
             graph._mutation("mounted module changed after seal")
             if self._participant not in graph.participants:
                 graph._invalidate("unowned module mount")
         value = await self._bridge._coordinator.mount(*args, **kwargs)
         if graph is not None and self._participant in graph.participants:
-            kind = args[0] if args else kwargs["mount_point"]
-            module = args[1] if len(args) > 1 else kwargs["module"]
-            graph._mount_records.append((kind, module, self._participant))
             name = args[2] if len(args) > 2 else kwargs.get("name")
-            slot = (kind, name)
             loading = _mounting.get()
-            if loading is not None and loading[0] is graph:
-                loading[1]["slots"].add(slot)
-                graph._slot_sources[slot] = (loading[1], module)
-            else:
-                # A direct remount cannot inherit an earlier load's config.
-                # Source-owned transparent adapters use mount_adapter below.
-                graph._slot_sources.pop(slot, None)
+            names = [name]
+            if kind in ("providers", "tools"):
+                after = self._bridge._coordinator.get(kind) or {}
+                # Resolve Core's auto-name from actual newly installed slots,
+                # never from the module's claimed interface or an old object.
+                names = [key for key, installed in after.items()
+                         if installed is module and (key not in before or before[key] is not module)]
+                if loading is None or loading[0] is not graph:
+                    names = [key for key, installed in after.items()
+                             if installed is module and (name is None or key == name)]
+            for resolved in names:
+                slot = (kind, resolved)
+                if loading is not None and loading[0] is graph:
+                    record = loading[1]
+                    occurrence = record["occurrence"]
+                    if (kind == "providers" and occurrence is not None and occurrence[2] and
+                            resolved == record["plan"][0].removeprefix("provider-")):
+                        # Core remaps AFTER the returned mount callback. Record
+                        # only its prescribed final slot; seal verifies the exact
+                        # strongly retained object really arrived there.
+                        slot = (kind, occurrence[2])
+                    record["slots"].add(slot)
+                    graph._slot_sources[slot] = (record, module)
+                else:
+                    # Direct remounts cannot inherit historical load provenance.
+                    graph._slot_sources.pop(slot, None)
+                graph._mount_records.append((slot, module, self._participant))
         return value
 
     async def mount_adapter(self, mount_point: str, module: Any, *,
@@ -597,7 +630,7 @@ class _CoordinatorView:
         except BaseException:
             graph._invalidate("participating adapter mount failed")
             raise
-        graph._mount_records.append((mount_point, module, self._participant))
+        graph._mount_records.append((slot, module, self._participant))
         graph._adapter_mounts.append((slot, previous, module, self._participant))
         graph._slot_sources[slot] = (source[0], module)
         return result
@@ -812,7 +845,7 @@ class _LoaderView:
                     _mounting.reset(token)
 
         if ready := getattr(mount, "__on_session_ready__", None):
-            callback = graph._ready_callback(ready[1], module_id) if graph else self._ready(ready[1])
+            callback = graph._ready_callback(ready[1], module_id, record) if graph else self._ready(ready[1])
             mounted.__on_session_ready__ = (ready[0], callback)
         return mounted
 

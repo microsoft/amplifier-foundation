@@ -6,11 +6,17 @@ do not replace public construction/seal/boundary/transition qualification.
 
 import asyncio
 from copy import deepcopy
+from importlib.metadata import version as package_version
 
 import pytest
 from amplifier_core import AmplifierSession, HookResult, ModuleCoordinator
 
 from amplifier_foundation.session.media_hook_bridge import install_media_hook_bridge
+
+
+CORE_ABI = package_version("amplifier-core")
+requires_core2 = pytest.mark.skipif(
+    CORE_ABI != "2.0.2", reason="cooperative graph semantics require exact Core ABI 2.0.2")
 
 
 def event(value=None, call_id="call"):
@@ -103,7 +109,7 @@ async def test_null_then_injection_preserves_null_and_injection_processing():
     assert result["complete"] is True
     assert result["result"] is None
     # Core consumes the injection and returns the actual processed Continue.
-    assert result["hook_result"].action == "continue"
+    assert result["hook_result"].action == ("continue" if CORE_ABI == "2.0.2" else "inject_context")
     assert len(messages) == 1
 
 
@@ -130,7 +136,7 @@ async def test_swallowed_failure_or_non_hook_result_cannot_qualify(kind):
     assert result["result"] is None
     # Unparseable objects are a native Deny, while callback errors are logged
     # and skipped. The wrapper must not change either Core behavior.
-    assert later == ([] if kind == "malformed" else ["tool:post"])
+    assert later == ([] if kind == "malformed" and CORE_ABI == "2.0.2" else ["tool:post"])
 
 
 @pytest.mark.asyncio
@@ -197,6 +203,7 @@ async def test_parallel_and_nested_emissions_isolate_witnesses():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_cancelled_owned_emission_does_not_leak_to_next_call():
     coordinator = ModuleCoordinator()
     bridge = install_media_hook_bridge(coordinator)
@@ -277,7 +284,7 @@ async def test_real_rust_session_loader_mount_ready_and_late_host_registration()
     bridge.coordinator.hooks.register("tool:post", lambda e, d: hits.append("host") or HookResult(), name="host")
     result = await bridge._observe(event())
     assert result["complete"] is True
-    assert hits == ["mount", "ready", "host"]
+    assert hits == (["mount", "ready", "host"] if CORE_ABI == "2.0.2" else ["mount", "host"])
     assert session.coordinator.get_capability("session.media.tool_post") is bridge
     await session.cleanup()
 
@@ -575,7 +582,8 @@ async def test_enrolled_null_then_injection_observer_never_resurrects():
         result = await partial_enrolled(bridge, event(call_id="inner"), hooks, attributed)
     assert result["complete"] and result["result"] is None
     assert observation == {"post_seen": True, "post_result": None}
-    assert result["hook_result"].action == "continue" and len(messages) == 1
+    assert result["hook_result"].action == ("continue" if CORE_ABI == "2.0.2" else "inject_context")
+    assert len(messages) == 1
 
 
 @pytest.mark.asyncio
@@ -652,6 +660,7 @@ async def test_mid_emit_revoke_preserves_processing_once_but_partial_witness_is_
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_enrolled_parallel_and_cancellation_leave_no_route_or_frame_leak():
     coordinator, bridge = route_fixture()
     calls = []
@@ -813,9 +822,9 @@ class ParticipatingFixtureLoader:
         self.queue.clear()
 
 
-async def positive_graph(handlers=(), late=None):
+async def positive_graph(handlers=(), late=None, session_config=None):
     session = AmplifierSession(
-        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context", **(session_config or {})},
          "hooks": [{"module": "fixture-hooks"}]}, session_id="positive-session")
     session.coordinator.loader = ParticipatingFixtureLoader(handlers)
     bridge = install_media_hook_bridge(session.coordinator)
@@ -835,6 +844,7 @@ async def positive_graph(handlers=(), late=None):
     ("null", None), ("empty", None), ("string", "redacted"), ("list", ["redacted"]),
     ("inplace", {"success": True}), ("delete", None), ("deny", None),
 ])
+@requires_core2
 async def test_public_positive_cooperative_graph_effective_table(kind, expected):
     calls = []
     def policy(e, data):
@@ -863,6 +873,7 @@ async def test_public_positive_cooperative_graph_effective_table(kind, expected)
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_public_positive_outer_redaction_overrides_surviving_inner_result():
     session, bridge, graph, receipt = await positive_graph(
         [lambda e, d: HookResult(action="modify", data={"result": {"inner": "retained"}})],
@@ -874,6 +885,7 @@ async def test_public_positive_outer_redaction_overrides_surviving_inner_result(
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_public_positive_callback_error_is_incomplete_not_original_media():
     def fail(e, d):
         raise RuntimeError("actual participating callback failure")
@@ -885,6 +897,7 @@ async def test_public_positive_callback_error_is_incomplete_not_original_media()
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_graph_late_nonpost_lifecycle_allowed_but_post_mutation_latches_invalid():
     session, bridge, graph, receipt = await positive_graph()
     remove = graph.participant("host.late").hooks.register(
@@ -903,6 +916,7 @@ async def test_graph_late_nonpost_lifecycle_allowed_but_post_mutation_latches_in
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_graph_foreign_receipts_and_config_mutation_cannot_qualify_or_reseal():
     import copy
     session, bridge, graph, receipt = await positive_graph()
@@ -917,6 +931,7 @@ async def test_graph_foreign_receipts_and_config_mutation_cannot_qualify_or_rese
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_public_positive_nested_enrolled_route_and_revoked_identity():
     session, bridge, graph, receipt = await positive_graph()
     lease, hooks, attributed, observation = enroll(bridge, session.coordinator)
@@ -930,6 +945,7 @@ async def test_public_positive_nested_enrolled_route_and_revoked_identity():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_public_positive_midchain_graph_invalidation_keeps_effects_once():
     captured = {}
     calls = []
@@ -950,6 +966,7 @@ async def test_public_positive_midchain_graph_invalidation_keeps_effects_once():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_unowned_registration_and_incomplete_construction_refuse_seal():
     session = AmplifierSession(
         {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
@@ -966,6 +983,7 @@ async def test_unowned_registration_and_incomplete_construction_refuse_seal():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_public_positive_null_then_actual_injection_stays_null():
     messages = []
     class Context:
@@ -1000,6 +1018,7 @@ async def test_public_positive_null_then_actual_injection_stays_null():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad", ["raw", "loader", "context", "callback_identity"])
+@requires_core2
 async def test_public_positive_detected_bypass_or_endpoint_mutation_is_permanent(bad):
     session, bridge, graph, receipt = await positive_graph()
     if bad == "raw":
@@ -1020,6 +1039,7 @@ async def test_public_positive_detected_bypass_or_endpoint_mutation_is_permanent
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_failed_ready_and_source_plan_drift_never_issue_receipt():
     class FailedReadyLoader(ParticipatingFixtureLoader):
         async def load(self, module_id, *args, **kwargs):
@@ -1047,6 +1067,7 @@ async def test_failed_ready_and_source_plan_drift_never_issue_receipt():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_positive_graph_parallel_callbacks_are_independent_and_receipt_reused():
     async def policy(e, data):
         await asyncio.sleep(0)
@@ -1059,6 +1080,7 @@ async def test_positive_graph_parallel_callbacks_are_independent_and_receipt_reu
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_issuer_reconstructs_distinct_fresh_generation_for_settings_change():
     session, bridge, graph, receipt = await positive_graph()
     replacement = AmplifierSession(
@@ -1085,6 +1107,7 @@ async def test_issuer_reconstructs_distinct_fresh_generation_for_settings_change
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_public_positive_cancel_then_next_call_and_route_release():
     started, finished = asyncio.Event(), asyncio.Event()
     async def policy(e, d):
@@ -1108,6 +1131,7 @@ async def test_public_positive_cancel_then_next_call_and_route_release():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_callback_error_cannot_be_healed_by_later_outer_reattachment():
     def error(e, d):
         raise RuntimeError("actual image policy callback failure")
@@ -1121,6 +1145,7 @@ async def test_callback_error_cannot_be_healed_by_later_outer_reattachment():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["pending", "late", "undeclared", "underlying"])
+@requires_core2
 async def test_ready_queue_work_cannot_be_omitted_from_public_qualification(phase):
     if phase == "pending":
         class PendingLoader(ParticipatingFixtureLoader):
@@ -1157,6 +1182,7 @@ async def test_ready_queue_work_cannot_be_omitted_from_public_qualification(phas
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_unowned_preseal_mount_and_preexisting_inventory_never_qualify():
     for preexisting in (False, True):
         session = AmplifierSession(
@@ -1182,6 +1208,7 @@ async def test_unowned_preseal_mount_and_preexisting_inventory_never_qualify():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_participant_loader_swap_restore_invalidates_before_forwarding():
     session, bridge, graph, receipt = await positive_graph()
     participant = graph.participant("host.late")
@@ -1194,6 +1221,7 @@ async def test_participant_loader_swap_restore_invalidates_before_forwarding():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_passive_ready_queue_inspection_reuses_original_callback_record():
     session = AmplifierSession(
         {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
@@ -1218,6 +1246,7 @@ async def test_passive_ready_queue_inspection_reuses_original_callback_record():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_issuer_same_session_mode_transition_issues_new_generation():
     session, bridge, graph, old_receipt = await positive_graph()
     old_policy = graph.participant("host.late").hooks.register
@@ -1243,6 +1272,7 @@ async def test_issuer_same_session_mode_transition_issues_new_generation():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_same_session_transition_rejects_active_boundary_route_and_request():
     started, release = asyncio.Event(), asyncio.Event()
     async def callback(e, d):
@@ -1278,6 +1308,7 @@ async def test_same_session_transition_rejects_active_boundary_route_and_request
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["exception", "cancel", "unowned", "pending"])
+@requires_core2
 async def test_failed_same_session_transition_never_resurrects_old_receipt(failure):
     session, bridge, graph, receipt = await positive_graph()
     if failure in ("exception", "cancel"):
@@ -1302,6 +1333,7 @@ async def test_failed_same_session_transition_never_resurrects_old_receipt(failu
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_continue_declared_null_propagates_to_later_native_echo():
     seen = []
     def redact(e, d):
@@ -1317,6 +1349,7 @@ async def test_continue_declared_null_propagates_to_later_native_echo():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_special_action_declared_result_is_incomplete_without_reordering():
     session, bridge, graph, receipt = await positive_graph([
         lambda e, d: HookResult(action="ask_user", data={"result": None}, approval_prompt="redact+ask")])
@@ -1330,6 +1363,7 @@ async def test_special_action_declared_result_is_incomplete_without_reordering()
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_normal_return_without_configured_provider_install_never_seals():
     session = AmplifierSession(
         {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
@@ -1348,6 +1382,7 @@ async def test_normal_return_without_configured_provider_install_never_seals():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_transition_cannot_satisfy_current_config_with_historical_mount():
     session, bridge, graph, receipt = await positive_graph()
     with graph.transition() as changed:
@@ -1365,6 +1400,7 @@ async def test_transition_cannot_satisfy_current_config_with_historical_mount():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_cached_participant_view_survives_valid_same_session_generation():
     session, bridge, graph, receipt = await positive_graph()
     view = graph.participant("fixture-loop")
@@ -1376,6 +1412,7 @@ async def test_cached_participant_view_survives_valid_same_session_generation():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_cached_old_ready_callback_invalidates_current_transition_before_effects():
     session = AmplifierSession(
         {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
@@ -1401,6 +1438,7 @@ async def test_cached_old_ready_callback_invalidates_current_transition_before_e
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_cancelled_waiter_keeps_transition_guard_until_native_approval_settles():
     started, release, settled = asyncio.Event(), asyncio.Event(), asyncio.Event()
     session, bridge, graph, receipt = await positive_graph([
@@ -1434,6 +1472,7 @@ async def test_cancelled_waiter_keeps_transition_guard_until_native_approval_set
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_actual_saved_settings_phase_tracks_load_before_final_late_seal():
     session = AmplifierSession(
         {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
@@ -1456,6 +1495,7 @@ async def test_actual_saved_settings_phase_tracks_load_before_final_late_seal():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_public_evidence_metadata_detached_identity_opaque_and_strong():
     session, bridge, graph, receipt = await positive_graph()
     evidence = graph.participants_evidence()
@@ -1470,6 +1510,7 @@ async def test_public_evidence_metadata_detached_identity_opaque_and_strong():
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_transition_direct_remount_cannot_inherit_other_config_provenance():
     session, bridge, graph, receipt = await positive_graph()
     context_a = session.coordinator.get("context")
@@ -1488,6 +1529,7 @@ async def test_transition_direct_remount_cannot_inherit_other_config_provenance(
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_explicit_host_adapter_mount_retains_exact_prior_object_provenance():
     session, bridge, graph, receipt = await positive_graph()
     previous = session.coordinator.get("context")
@@ -1508,6 +1550,7 @@ async def test_explicit_host_adapter_mount_retains_exact_prior_object_provenance
 
 
 @pytest.mark.asyncio
+@requires_core2
 async def test_request_scope_yields_literal_validator_for_entire_candidate_lifetime():
     session, bridge, graph, receipt = await positive_graph()
     with bridge.request_scope() as validate:
@@ -1522,4 +1565,163 @@ async def test_request_scope_yields_literal_validator_for_entire_candidate_lifet
         assert validate() is False  # restored config cannot revive receipt
     assert validate() is False
     assert bridge._active_requests == 0
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+async def test_synchronous_native_processing_refusal_clears_nested_observers_once():
+    calls = []
+    session, bridge, graph, receipt = await positive_graph([
+        lambda e, d: calls.append(e) or HookResult(
+            action="inject_context", context_injection="oversize")],
+        session_config={"injection_size_limit": 3})
+    assert session.coordinator.injection_size_limit == 3
+    outer, outer_hooks, outer_coord, outer_observation = enroll(
+        bridge, session.coordinator, call="outer", parent="root")
+    with outer:
+        inner, hooks, attributed, observation = enroll(
+            bridge, session.coordinator, parent_hooks=outer_hooks,
+            parent_coordinator=outer_coord)
+        with inner:
+            with pytest.raises(ValueError, match="Context injection exceeds 3 characters"):
+                await bridge(event(call_id="inner"), hooks=hooks, coordinator=attributed)
+            assert observation == {"post_seen": True, "post_result": None}
+            assert outer_observation == {"post_seen": True, "post_result": None}
+    assert calls == ["tool:post"]
+    assert not bridge._processing and not bridge._routes and bridge._active_boundaries == 0
+    assert bridge.validate_receipt(receipt)
+    await session.cleanup()
+
+
+class ProviderFixtureLoader(ParticipatingFixtureLoader):
+    """Actual Core initialization owns provider remapping and rollback."""
+    def __init__(self, *, automatic=False, decline=False, fail=False, shared=False):
+        super().__init__()
+        self.automatic, self.decline, self.fail = automatic, decline, fail
+        self.providers = []
+        self.ready_calls = []
+        self.shared = shared
+
+    async def provider_ready(self, current):
+        self.ready_calls.append(current)
+
+    async def load(self, module_id, config, **kwargs):
+        if module_id != "provider-fixture":
+            return await super().load(module_id, config, **kwargs)
+
+        class Provider:
+            name = "fixture"
+
+        async def mount(current):
+            if self.decline:
+                return
+            provider = self.providers[0] if self.shared and self.providers else Provider()
+            self.providers.append(provider)
+            if self.automatic:
+                await current.mount("providers", provider)
+            else:
+                await current.mount("providers", provider, name="fixture")
+            if self.fail:
+                raise ValueError("provider failed after mount")
+        # A cached loader may return the same original callback for two accounts.
+        if not hasattr(self, "ready"):
+            self.ready = self.provider_ready
+        mount.__on_session_ready__ = (module_id, self.ready)
+        return mount
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic,accounts,shared", [
+    (True, (None,), False), (False, ("account-A",), False),
+    (True, ("account-A",), False),
+    (False, ("account-A", "account-B"), False),
+    (True, ("account-A", "account-B"), False),
+    (True, ("account-A", "account-B"), True),
+    (True, (None, "account-B"), False),
+])
+async def test_configured_provider_occurrences_seal_after_actual_core_remap(automatic, accounts, shared):
+    session = AmplifierSession({
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "providers": [{"module": "provider-fixture",
+                       **({"instance_id": account} if account else {}),
+                       "config": {}} for account in accounts]})
+    loader = ProviderFixtureLoader(automatic=automatic, shared=shared)
+    session.coordinator.loader = loader
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="provider-occurrences",
+        participants=("fixture-loop", "fixture-context", "provider-fixture"))
+    failures = []
+    bridge.participant("fixture-loop").hooks.register(
+        "module:load_failed", lambda e, d: failures.append(d) or HookResult(), name="load-failures")
+    await session.initialize()
+    assert failures == []
+    for account, provider in zip(accounts, loader.providers):
+        assert session.coordinator.get("providers", account or "fixture") is provider
+    receipt = graph.seal()
+    assert bridge.validate_receipt(receipt) and (await bridge(event()))["complete"]
+    assert len(loader.providers) == len(loader.ready_calls) == len(accounts)
+    with graph.transition():
+        pass
+    assert (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@requires_core2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["decline", "raise", "unmount", "config", "direct", "alias"])
+async def test_provider_occurrence_missing_or_stale_source_cannot_seal(failure):
+    session = AmplifierSession({
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "providers": [{"module": "provider-fixture", "instance_id": "account-A"}]})
+    loader = ProviderFixtureLoader(automatic=True, decline=failure == "decline", fail=failure == "raise")
+    session.coordinator.loader = loader
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="provider-negatives",
+        participants=("fixture-loop", "fixture-context", "provider-fixture"))
+    await session.initialize()
+    if failure == "unmount":
+        await graph.participant("provider-fixture").unmount("providers", name="account-A")
+    elif failure == "config":
+        session.config["providers"][0]["config"] = {"changed": True}
+    elif failure == "direct":
+        await graph.participant("provider-fixture").mount(
+            "providers", loader.providers[0], name="account-A")
+    elif failure == "alias":
+        # A raw alias of an already-owned object is not a configured occurrence.
+        await session.coordinator.mount("providers", loader.providers[0], name="unexplained")
+    with pytest.raises(ValueError):
+        graph.seal()
+    assert bridge.graph_receipt is None and not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ["retain", "null", "deny", "failure"])
+async def test_public_unqualified_boundary_never_exposes_media_on_supported_or_legacy_core(replacement):
+    """Core 1.3 runs real native hooks but cannot issue a positive receipt."""
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}})
+    bridge = install_media_hook_bridge(session.coordinator)
+    if CORE_ABI != "2.0.2":
+        with pytest.raises(ValueError, match="qualified Core ABI 2.0.2"):
+            bridge.begin_participating_graph(
+                session, owner="unsupported", participants=("fixture-loop", "fixture-context"))
+    calls = []
+    def policy(e, d):
+        calls.append(e)
+        if replacement == "failure":
+            raise RuntimeError("actual native callback failure")
+        if replacement == "null":
+            return HookResult(action="modify", data={"result": None})
+        return HookResult(action="deny" if replacement == "deny" else "continue")
+    bridge.hooks.register("tool:post", policy, name="actual-native")
+    result = await bridge(event())
+    assert result["complete"] is False and result["result"] is None
+    assert calls == ["tool:post"] and bridge.graph_receipt is None
+    assert bridge.validate_receipt(object()) is False
+    assert isinstance(result["hook_result"], HookResult)
     await session.cleanup()

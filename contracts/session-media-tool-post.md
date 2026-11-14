@@ -92,7 +92,14 @@ can use `with graph.configure():` around the actual owned configurator operation
 It requires a completed idle OPEN construction, records actual additional module
 loads/mounts and config deltas, and leaves sealing to the final host phase. A
 changed plan cannot be satisfied by an old historical mounted record: the latest
-actual module configuration/source must match its live installed slots. Core
+actual load for each configured occurrence (category, position and provider
+instance ID) must match its current configuration/source and live installed slots.
+Repeated accounts from one module retain separate load/ready obligations, even
+when the loader reuses the same original callback or interface object. Auto-named
+provider/tool mounts resolve the actual changed slot; named providers record the
+specific Core 2.0.2 remap destination and verify the retained object is installed
+there before sealing. An unrelated alias of an owned object is not an owned slot.
+Core
 provider/tool mount rollback or a normal callback return without installation
 cannot qualify a configured occurrence.
 
@@ -204,6 +211,10 @@ Native processing is retained as one strong, settlement-owned task. Cancelling
 its Python waiter still propagates cancellation and clears observation state,
 but does not advertise idleness until the actual native operation settles. No
 approval operation is cancelled/replayed just to clear the transition fence.
+Synchronous native refusal before an awaitable/task exists follows the same
+observer cleanup path as a failed awaited operation; nested attributed
+`post_result` values are cleared and the original exception propagates. No
+successful settlement or canonical forwarding is reported for that operation.
 
 Actual CLI and Unified host triggers still need their own source integration and
 tests; a helper fixture is not proof those entrypoints use it. Stable normal
@@ -316,6 +327,12 @@ null/in-place/string/list/deny, outer redaction, callback error/no later reattac
 receipt forgery, failure/missing ownership, config/loader/mount/callback identity
 mutation, unrelated non-post lifecycle, nested enrolled route, parallel/cancel and
 issuer-owned fresh reconstruction. Earlier partial tests remain labelled partial.
+Exact-ABI graph/cancellation tests carry per-test Core 2.0.2 requirements.
+Locked Core 1.3 runs the portable mechanism checks and real public negative
+boundaries, including explicit positive-construction refusal; its injection,
+serialization and ready-queue differences are tested as Core 1.3 semantics.
+These skips do not establish positive support for an unqualified ABI. The
+original d545 CI failure remains historical failure, not a passing campaign.
 
 This is focused source evidence, not live installation, every host variant,
 all capable model pixel roundtrips, native third-party parity or final review.
