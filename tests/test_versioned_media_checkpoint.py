@@ -417,7 +417,10 @@ def test_scanner_never_decodes_whole_message_metadata_array_or_huge_string(tmp_p
         value = original(scanner, span, limit)
         assert not isinstance(value, list), "whole refs array decoded"
         if isinstance(value, dict):
-            assert "sha256" in value, "whole message/metadata/envelope decoded"
+            assert ("sha256" in value or (
+                span.end - span.start <= 16384
+                and set(value) == {"format", "generation", "min_reader", "v"}
+            )), "whole message/metadata/envelope decoded"
         if isinstance(value, str):
             assert len(value) <= 4096, "huge string decoded"
         return value

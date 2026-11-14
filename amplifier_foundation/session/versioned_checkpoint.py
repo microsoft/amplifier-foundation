@@ -22,7 +22,7 @@ from ._media_conversion_parser import CHUNK, Scanner
 from .checkpoint import CheckpointRefused
 from .media import MEDIA_NAMESPACE, validate_blob_ref
 from .transcript_source import _namespace, open_committed_source
-from .transcript_v2 import CommittedPrefix, UnsupportedTranscript, _decode, _file, _stamp
+from .transcript_v2 import CommittedPrefix, _decode, _file, _stamp
 from .transcript_writer import (
     LEGACY, CommitAck, TranscriptWriter, _PrefixView, _descriptor, _header, _identity, _receipt,
     _validate_prefix,
@@ -415,6 +415,6 @@ def acknowledge_versioned_checkpoint(
         life.valid = False
         if receipt is not None:
             _ISSUED.pop(id(receipt), None)
-        if isinstance(exc, (OSError, UnsupportedTranscript)):
+        if isinstance(exc, (OSError, ValueError)):
             raise VersionedCheckpointRefused("Owned versioned checkpoint refused") from exc
         raise
