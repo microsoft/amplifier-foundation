@@ -77,7 +77,7 @@ AssetReader = Callable[[dict[str, Any]], ContextManager[BinaryIO]]
 
 
 def _json(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode()
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
 
 def _digest(stream: BinaryIO) -> tuple[str, int]:
@@ -416,6 +416,75 @@ def _namespace_patch(
         _patch(db, position, end, suffix)
 
 
+async def _stage_image_groups(scanner, fields, row, db, directory, capability, origin_for, journal, cancelled):
+    """Complete true-origin groups on disk; memory remains host-max-images bound."""
+    ingest_group = getattr(capability, "ingest_group_sync", None)
+    if not callable(ingest_group):
+        return False
+    for index, _, data, mime in _images(scanner, fields):
+        if cancelled():
+            raise InterruptedError("Conversion cancelled before group decoding")
+        origin = deepcopy(origin_for(row, index))
+        if len(_json(origin)) > 16384:
+            raise Unsupported("Original group provenance exceeds adapter bound")
+        file = directory / f"decoded-{row}-{index}"
+        with file.open("xb+") as pixels:
+            os.chmod(file, 0o600)
+            digest, size = _decode(scanner, data, pixels)
+        db.execute("insert into image_groups values(?,?,?,?,?,?)",
+                   (row, index, _json(origin), mime, digest, size))
+    db.commit()
+    for (encoded_origin,) in db.execute(
+        "select origin from image_groups where row=? group by origin order by min(block)", (row,),
+    ):
+        origin = json.loads(encoded_origin)
+        if cancelled():
+            raise InterruptedError("Conversion cancelled before group staging")
+
+        def sources():
+            for index, mime in db.execute(
+                "select block,mime from image_groups where row=? and origin=? order by block",
+                (row, encoded_origin),
+            ):
+                with _open(directory / f"decoded-{row}-{index}") as pixels:
+                    yield {"stream": pixels, "mime": mime}
+
+        _event(journal, state="group-ingest-intent", row=row, origin=origin)
+        result = ingest_group(sources(), origin=deepcopy(origin), policy=None)
+        refs = deepcopy(result["staged_refs"])
+        if not isinstance(refs, list):
+            raise Unsupported("Group owner returned invalid reference sequence")
+        count = 0
+        for index, mime, digest, size in db.execute(
+            "select block,mime,digest,bytes from image_groups where row=? and origin=? order by block",
+            (row, encoded_origin),
+        ):
+            if count >= len(refs):
+                raise Unsupported("Group owner omitted original image")
+            ref = refs[count]
+            _validate_ref(ref)
+            if (ref["provenance"] != origin or ref["sha256"] != digest or ref["bytes"] != size
+                    or ref["mime"] != mime):
+                raise Unsupported("Group owner changed ordered original image identity")
+            db.execute("insert into assets values(?,?,?,?)", (row, index, _json(ref), encoded_origin))
+            count += 1
+        if count != len(refs):
+            raise Unsupported("Group owner returned extra image references")
+        db.commit()
+        _event(journal, state="group-staged", row=row, origin=origin, count=count)
+        if cancelled():
+            raise InterruptedError("Conversion cancelled after group staging")
+        _event(journal, state="group-publication-intent", row=row, origin=origin, count=count)
+        result = await capability.publish(deepcopy(refs), origin=deepcopy(origin), disposition="retain")
+        if result["refs"] != refs:
+            raise Unsupported("Group publication changed complete original ref set")
+        for ref in refs:
+            _event(journal, state="published-assets-only", row=row, ref=ref)
+        if cancelled():
+            raise InterruptedError("Conversion cancelled after group publication")
+    return True
+
+
 async def build_candidate(
     plan: ConversionPlan, directory: Path, *, fence: Fence, capability: MediaCapability,
     origin_for: Origin, asset_reader: AssetReader, cancelled: Callable[[], bool] = lambda: False,
@@ -478,6 +547,8 @@ async def _build(
         db.execute("create table patches(start integer,end integer,value blob)")
         db.execute("create table assets(row integer,block integer,ref blob,origin blob)")
         db.execute("create table closure(ref blob)")
+        db.execute("create table image_groups(row integer,block integer,origin blob,mime text,digest text,bytes integer)")
+        db.execute("create index image_groups_row_origin on image_groups(row,origin,block)")
         db.execute("create index assets_row_block on assets(row,block)")
         decoded_bytes = image_count = inline_removed_bytes = 0
         selected_end = 0
@@ -510,37 +581,47 @@ async def _build(
                         raise Unsupported("Foreign ref requires explicit owner-authorized adoption")
                     _verify_asset(ref, reader)
                     db.execute("insert into closure values(?)", (_json(ref),))
+                grouped = await _stage_image_groups(
+                    scanner, fields, row, db, directory, capability, origin_for, journal, cancelled,
+                )
                 for index, block, data, mime in _images(scanner, fields):
                     if cancelled():
                         raise InterruptedError("Conversion cancelled before image staging")
-                    origin = deepcopy(origin_for(row, index))
-                    with tempfile.TemporaryFile(dir=directory) as pixels:
-                        digest, size = _decode(scanner, data, pixels)
-                        _event(journal, state="ingest-intent", row=row, block=index, origin=origin,
-                               sha256=digest, bytes=size)
-                        result = await capability.ingest(
-                            {"stream": pixels, "mime": mime}, source_format="image-bytes",
-                            origin=deepcopy(origin), policy=None,
+                    if grouped:
+                        raw, raw_origin = db.execute(
+                            "select ref,origin from assets where row=? and block=?", (row, index),
+                        ).fetchone()
+                        ref, origin = json.loads(raw), json.loads(raw_origin)
+                        size = ref["bytes"]
+                    else:
+                        origin = deepcopy(origin_for(row, index))
+                        with tempfile.TemporaryFile(dir=directory) as pixels:
+                            digest, size = _decode(scanner, data, pixels)
+                            _event(journal, state="ingest-intent", row=row, block=index, origin=origin,
+                                   sha256=digest, bytes=size)
+                            result = await capability.ingest(
+                                {"stream": pixels, "mime": mime}, source_format="image-bytes",
+                                origin=deepcopy(origin), policy=None,
+                            )
+                        refs = result["staged_refs"]
+                        if len(refs) != 1:
+                            raise Unsupported("Media ingest must stage exactly one image")
+                        ref = deepcopy(refs[0])
+                        if ref.get("sha256") != digest or ref.get("bytes") != size or ref.get("mime") != mime:
+                            raise Unsupported("Ingest changed original image identity")
+                        db.execute("insert into assets values(?,?,?,?)", (row, index, _json(ref), _json(origin)))
+                        db.commit()
+                        _event(journal, state="staged", row=row, block=index, ref=ref, origin=origin)
+                        if cancelled():
+                            raise InterruptedError("Conversion cancelled after staging")
+                        _event(journal, state="publication-intent", row=row, block=index, ref=ref, origin=origin)
+                        publication = await capability.publish(
+                            [deepcopy(ref)], origin=deepcopy(origin), disposition="retain",
                         )
-                    refs = result["staged_refs"]
-                    if len(refs) != 1:
-                        raise Unsupported("Media ingest must stage exactly one image")
-                    ref = deepcopy(refs[0])
-                    if ref.get("sha256") != digest or ref.get("bytes") != size or ref.get("mime") != mime:
-                        raise Unsupported("Ingest changed original image identity")
+                        if publication["refs"] != [ref]:
+                            raise Unsupported("Publication changed staged ref identity")
                     if ref.get("session_id") != plan.session_id or ref.get("provenance") != origin:
                         raise Unsupported("Ingest changed original observation scope/policy")
-                    db.execute("insert into assets values(?,?,?,?)", (row, index, _json(ref), _json(origin)))
-                    db.commit()
-                    _event(journal, state="staged", row=row, block=index, ref=ref, origin=origin)
-                    if cancelled():
-                        raise InterruptedError("Conversion cancelled after staging")
-                    _event(journal, state="publication-intent", row=row, block=index, ref=ref, origin=origin)
-                    publication = await capability.publish(
-                        [deepcopy(ref)], origin=deepcopy(origin), disposition="retain",
-                    )
-                    if publication["refs"] != [ref]:
-                        raise Unsupported("Publication changed staged ref identity")
                     _verify_asset(ref, reader)
                     db.execute("insert into closure values(?)", (_json(ref),))
                     # Image position is retained as a text slot; F1 owns its exact
@@ -826,7 +907,18 @@ def verify_export(directory: Path) -> None:
     finally:
         db.close()
 
-def _verify_candidate(path, db, reader, expected_records):
+def _closure_schema(db):
+    if db.execute("select 1 from sqlite_master where type in ('view','trigger') limit 1").fetchone():
+        raise Unsupported("Executable/dynamic objects in historical manifest")
+    schema = db.execute("select type,sql from sqlite_master where name='closure'").fetchone()
+    if schema is None or schema[0] != "table" or not re.fullmatch(
+        r"CREATE TABLE closure\s*\(\s*ref blob\s*\)", schema[1], re.IGNORECASE,
+    ):
+        raise Unsupported("Historical manifest closure is not the generated plain table")
+
+
+def _iter_candidate_refs(path, db, reader, expected_records):
+    _closure_schema(db)
     expected = iter(db.execute("select ref from closure order by rowid"))
     count = 0
     with _open(path) as source:
@@ -840,6 +932,9 @@ def _verify_candidate(path, db, reader, expected_records):
                 if item is None or _json(ref) != item[0]:
                     raise Unsupported("Candidate reference closure mismatch")
                 _verify_asset(ref, reader)
+                # Authority comes from this exact parsed canonical position,
+                # never a second query of a potentially dynamic manifest.
+                yield deepcopy(ref)
             if fields["content"].kind == 91 and _media(scanner, fields)[1] is not None:
                 slots = iter(_slots(scanner, fields))
                 for _, ref in _refs(scanner, fields):
@@ -850,6 +945,11 @@ def _verify_candidate(path, db, reader, expected_records):
             count += 1
     if count != expected_records or next(expected, None) is not None:
         raise Unsupported("Candidate record/reference count mismatch")
+
+
+def _verify_candidate(path, db, reader, expected_records):
+    for _ in _iter_candidate_refs(path, db, reader, expected_records):
+        pass
 
 
 def iter_verified_candidate_refs(
@@ -877,10 +977,7 @@ def iter_verified_candidate_refs(
     db = sqlite3.connect(f"file:{operation_dir / 'manifest.sqlite'}?mode=ro", uri=True)
     try:
         db.execute("pragma cache_size=-512")
-        _verify_candidate(installed, db, asset_reader, receipt["records"])
-        for (raw,) in db.execute("select ref from closure order by rowid"):
-            ref = json.loads(raw)  # One bounded manifest ref, never a message.
-            _validate_ref(ref)
+        for ref in _iter_candidate_refs(installed, db, asset_reader, receipt["records"]):
             if ref["session_id"] != session_id:
                 raise Unsupported("Historical candidate ref belongs to another session")
             yield ref

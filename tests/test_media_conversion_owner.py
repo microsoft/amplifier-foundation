@@ -134,6 +134,88 @@ def test_real_owner_candidate_checkpoint_with_huge_opaque_field(stores, tmp_path
     assert peak < 6 * 1024 * 1024
 
 
+def test_two_actual_images_one_original_tool_origin(stores, tmp_path):
+    store, _ = stores
+    second = io.BytesIO()
+    Image.new("RGB", (4, 3), "blue").save(second, format="PNG")
+    images = [png(), second.getvalue()]
+    path = tmp_path / "two.jsonl"
+    path.write_text(json.dumps({
+        "role": "tool", "tool_call_id": "actual-call",
+        "content": [{"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": base64.b64encode(data).decode(),
+        }} for data in images],
+    }) + "\n")
+    plan = preview(path, owner="fixture", session_id="source", fence=fence)
+    asyncio.run(build_candidate(
+        plan, tmp_path / "group", fence=fence, capability=store,
+        origin_for=lambda *_: original("same-real-call"),
+        asset_reader=lambda ref: store.resolve_ref(ref, committed=False), export_assets=True,
+    ))
+    message = json.loads((tmp_path / "group/candidate.jsonl").read_bytes())
+    refs = message["metadata"][NAMESPACE]["refs"]
+    assert len(refs) == 2
+    assert refs[0]["provenance"] == refs[1]["provenance"] == original("same-real-call")
+    assert [ref["sha256"] for ref in refs] == [hashlib.sha256(data).hexdigest() for data in images]
+    for ref, expected in zip(refs, images):
+        with store.resolve_ref(ref, committed=False) as source:
+            assert source.read() == expected
+        with pytest.raises(MediaRefusal):
+            store.resolve_ref(ref)
+    verify_export(tmp_path / "group/portable")
+    # An independent repeat reconciles the whole same ordered true-origin set.
+    asyncio.run(build_candidate(
+        plan, tmp_path / "repeat", fence=fence, capability=store,
+        origin_for=lambda *_: original("same-real-call"),
+        asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+    ))
+    assert (tmp_path / "repeat/candidate.jsonl").read_bytes() == (tmp_path / "group/candidate.jsonl").read_bytes()
+
+
+def test_dynamic_sqlite_closure_cannot_ack_absent_ref(stores, tmp_path):
+    import sqlite3
+    store, _ = stores
+    pixels = png()
+    path = tmp_path / "original.jsonl"
+    path.write_text(json.dumps({"role": "user", "content": [{"type": "image", "source": {
+        "type": "base64", "media_type": "image/png", "data": base64.b64encode(pixels).decode(),
+    }}]}) + "\n")
+    plan = preview(path, owner="fixture", session_id="source", fence=fence)
+    op = tmp_path / "operation"
+    asyncio.run(build_candidate(plan, op, fence=fence, capability=store,
+                                origin_for=lambda *_: original("visible"),
+                                asset_reader=lambda ref: store.resolve_ref(ref, committed=False)))
+    # B is genuinely owned/published, but absent from canonical candidate A.
+    absent = store.ingest_sync(pixels, source_format="image-bytes", origin=original("ABSENT"), policy=None)["value"]
+    store.publish_sync([absent], origin=original("ABSENT"), disposition="retain")
+    visible = json.loads((op / "candidate.jsonl").read_bytes())["metadata"][NAMESPACE]["refs"][0]
+    dbpath = op / "manifest.sqlite"
+    with sqlite3.connect(dbpath) as db:
+        db.execute("drop table closure")
+        first, second = json.dumps(visible, separators=(",", ":")), json.dumps(absent, separators=(",", ":"))
+        # No source file race: one unchanged dynamic view can vary by SELECT.
+        quote = lambda value: "'" + value.replace("'", "''") + "'"
+        db.execute("create view closure as select case when random()%2=0 then " +
+                   quote(first) + " else " + quote(second) + " end as ref")
+    # Even a rewritten integrity receipt cannot turn a view into authority.
+    facts = json.loads((op / "verified.json").read_bytes())
+    facts["manifest_sha256"] = hashlib.sha256(dbpath.read_bytes()).hexdigest()
+    facts["manifest_bytes"] = dbpath.stat().st_size
+    (op / "verified.json").write_text(json.dumps(facts))
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    (actual / "transcript.jsonl").write_bytes((op / "candidate.jsonl").read_bytes())
+    store.checkpoint_verifier = verified_checkpoint_refs
+    for _ in range(10):
+        with pytest.raises(Unsupported, match="dynamic|plain table"):
+            acknowledge_candidate_checkpoint(
+                op, actual, session_id="source",
+                asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+            )
+    with pytest.raises(MediaRefusal):
+        store.resolve_ref(absent)
+
+
 @dataclass
 class Staged:
     replacement: dict
