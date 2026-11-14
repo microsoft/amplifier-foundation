@@ -246,6 +246,17 @@ Optional `media_budget_witness(canonical_request, *, request_options=None)` give
 `{v:1, projection_digest, validated:True}` only for the exact cached candidate
 with a valid actual provider_count association, never text estimates or unavailable
 counts. No witness invents a numeric budget or inference success.
+Async `media_text_fallback_witness(canonical_request, *, request_options=None)`
+can freeze an exact warning-only candidate without a provider call/count.
+It returns `{v:1, validated:True, projection_digest, messages}` with detached safe
+Core text dictionaries only; it provides **no numeric budget**. It requires
+actual canonical media input, a prepared unavailable warning, and a wholly
+text-only private projection. Unknown extras, opaque request/message/provider
+metadata and non-text blocks refuse rather than being omitted from a local
+estimate. Only the recognized reference carrier is removed from this detached
+view; canonical references remain unchanged. Dispatch must use the same candidate
+and effective options, and still revalidates every normal owner witness. This
+does not turn estimated/unavailable usage into `provider_count`.
 Providers own per-attempt witness calls and final vendor encoding. Foundation
 never traverses vendor wire payloads. Known diagnostic image sources must be
 externalized by their owning adapter or omitted in a diagnostic copy **before**
