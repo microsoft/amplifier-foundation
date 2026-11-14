@@ -1,252 +1,245 @@
-# Host-owned tool:post bridge v1
+# Participating cooperative tool:post bridge v1
 
-**Draft, activation closed.** This source delivers a registration facade, the
-single-execution structural callback, partial callback-witness mechanism and
-reproducible public-Core boundary. It does **not** deliver a qualified positive
-media path: the public callback currently always returns complete:false and
-result:null. The forward-media outcome remains pending, not completed by this
-safe fallback. Do not call the private `_observe` test seam from a runtime module.
+This Foundation helper preserves the existing Core 2.0.2 registry/processing
+execution and exposes the structural `session.media.tool_post` capability. It
+adds no seventh operation to `experimental.media.v1`, publishes no refs, and
+acknowledges neither canonical persistence nor model transport.
 
-This helper supplements, and does not add a seventh operation to,
-`experimental.media.v1`. It neither publishes media nor acknowledges persistence.
+## Guarantee and limits
 
-## Public host installation
+The parent accepted implementation and synthetic qualification of an explicitly
+participating **cooperative** graph. A positive witness is conditional on those
+participants registering through their supplied views and not mutating/emitting
+through retained raw registry paths. This is not malicious-Python isolation,
+a universal third-party hook guarantee, source approval, or live adoption.
+
+The original counterexample remains: a raw callback can register, self-unregister
+and throw before the first covered callback. Core logs and swallows its failure;
+public names before/after and all known callbacks can still match. No public
+Core API exposes that hidden native snapshot/failure generation. The construction
+receipt therefore records actual participating lifecycle/callbacks, not an
+impossible guarantee about arbitrary raw/native intervention. Unknown graphs
+remain incomplete. A source label, report, Boolean, hash, or copied receipt never
+creates qualification. Do not claim a swallowed uncooperative error was witnessed.
+
+Final Astra/Fable exact-source review and actual host composition checks remain
+release gates, not a renewed generic permission requirement for ordinary repairs.
+No Core edits, live host enabling/restart, Mac operations or DTU launches belong
+to this worker. Prior f0d7149/default-false proofs remain historical evidence, not
+a positive result for this implementation.
+
+## Actual host construction
 
 ```python
 from amplifier_foundation.session.media_hook_bridge import install_media_hook_bridge
 
-async def before_initialize(session):
-    bridge = install_media_hook_bridge(session.coordinator)
-    # Every subsequent host hook registration uses this view, including callbacks
-    # installed after initialization. Other coordinator operations delegate.
-    bridge.coordinator.hooks.register("tool:post", host_callback, name="host")
+# In before_initialize, BEFORE bind_media's policy hooks or other host callbacks:
+bridge = install_media_hook_bridge(session.coordinator)
+graph = bridge.begin_participating_graph(
+    session,
+    owner="cli.interactive",  # actual named host variant
+    participants=("loop-basic", "context-simple", "provider-actual", "tool-actual",
+                  "host.incremental_save"),
+)
+# Existing initialization loads modules, invokes mounts and on_session_ready.
+# Do not replace session.coordinator, native identity checks, or mount wrappers.
+await session.initialize()
+
+# Late hooks use a persistent explicitly owned registration view:
+registration = graph.participant("host.incremental_save")
+registration.hooks.register("tool:post", actual_autosave, priority=900,
+                            name="incremental-save")
+# bridge.participant(name) is the public bound-graph lookup for later helpers.
+
+# Only AFTER every actual late registration, before the first tool pipeline:
+receipt = graph.seal()
+assert bridge.validate_receipt(receipt)
 ```
 
-The installer returns a per-coordinator `MediaHookBridge`, with `.hooks` and
-`.coordinator` registration views. `.coordinator.get("hooks")` returns the same
-view. Existing tool:post registrations refuse installation: public names cannot
-recover their callback identities. Repeated installation by the same owner returns
-the existing bridge, not another wrapper.
+This example is schematic, not a blanket accepted source inventory. Actual
+selected orchestrator/context/provider/tool/hook module IDs must be explicitly
+selected by the host's cooperative composition owner, not auto-approved merely
+because they occur in configuration. The helper checks that each actual load's
+module/config/source hint matches its detached initial plan, records returned
+mount/ready callback identities and completion, and retains persistent module
+participant views. Module IDs may originate in string/dictionary session config.
+A cached mount/ready path must still traverse the decorated public loader.
 
-Core 2.0.2's session.coordinator, coordinator.hooks and registry.register are
-read-only. This helper does not patch them or replace Core execution. It decorates
-the **public coordinator.loader** setter. Python module loading, mount callbacks
-and on_session_ready callbacks receive the registration view; the original loader
-still resolves and loads modules. Native registry emit, priority ordering, deny
-short-circuiting, injection and approval processing remain their existing owners.
-Hosts retain their chosen session, orchestrator, resolver and provider selection.
+`session` must be the actual fresh Core session bound to this coordinator, before
+initialization. Calling this API on an arbitrary initialized coordinator, with a
+user verifier, or with a caller-created receipt is unsupported. The helper uses
+existing public Core type objects; currently qualified positive ABI is exactly
+Core 2.0.2. Other ABI versions refuse positive construction explicitly.
 
-This route covers Python loader callbacks and explicit host registrations only.
-A module that registers through session.coordinator instead of the supplied view,
-a native module that bypasses Python mounting, or later host raw registrations
-are **not qualified**. Hosts must establish the exact supported graph before
-enabling ref-producing tools. Do not infer native coverage or activation authority
-from handler names, an installed callback, a loop report, or one passing fixture.
+An owner and distinct participant tuple are required. Every declared participant
+must actually enter construction; every active tool:post registration must retain
+its participating owner, original callable, installed observer callable and exact
+registration identity. `seal()` requires actual successful initialization,
+completed ordered load/mount/ready plan, prescribed late owners and consistent
+native registry. It issues one opaque identity-only token. Its record retains
+strong references to session/bridge/registry/loader/native endpoints/mounted
+modules/configuration/actual callback identities and generation; no id()-only
+registry or GC/ABA identity test is used.
 
-`bridge.readiness()` returns `contract:1`, `registration_consistent`,
-`authoritative:false`, `scope:"python-loader-and-explicit-host"`, and
-`native_coverage:false`. This is a passive consistency diagnostic, not a completed
-execution witness or permission to enable. A host may use separately accepted
-exact-graph qualification for bootstrap; it must not run a synthetic tool:post
-chain to manufacture readiness. Such a probe could repeat real hook effects.
+`bridge.graph_receipt` returns that issuer-owned token. `validate_receipt(token)`
+checks only that exact issuer/generation and returns False for foreign/copied/
+reconstructed tokens. `receipt_status(token)` returns scalar valid/reason,
+qualified Core ABI, owner, generation and conditional guarantee. These inspect a
+real construction; they do not let reports or descriptors issue one.
 
-## Structural loop callback
+Core's session.coordinator/hooks/register surfaces are read-only. The installer
+uses only the public coordinator.loader setter, delegating resolution/loading and
+passing owner-specific views into actual mounts/ready callbacks. It does not patch
+Core, replace session.coordinator, or unwrap private callbacks. `get("hooks")`
+returns the same registration view. The views delegate non-registration operations
+to the actual coordinator, preserving host wrapper chains and capabilities.
 
-The installer registers the bridge at `session.media.tool_post`:
+## Sealing, invalidation and normal transitions
+
+The lifecycle is OPEN -> SEALED -> INVALID. Sealing is a final explicit host step,
+not the final module mount or automatic ready callback. Failed/skipped/unexpected
+loads, repeated or failed ready/mount work, missing participants and unowned/raw
+post handlers cannot seal. Default installed-but-unsealed paths execute ordinary
+hooks without qualifying media.
+
+Root CLI sealing is after saved settings, incremental/json trace/goal observers;
+root Unified sealing is after Worker activity/app access/native/naming/controls
+post observers, not its earlier media binding call. Finite/custom children need
+their own explicit final phase; do not assume prepare_execution runs. Raw spawn,
+retry and resumed coordinators each get a fresh construction and receipt.
+RuntimeControls' independent tool_result ingress cannot borrow the ordinary
+loop's witness unless its own actual effective result is honored by its adapter.
+
+Only tool:post registration/removal advances the media registry generation.
+Ordinary non-post per-turn badge, completion/provider-request observers and
+cleanup registration/removal do not invalidate the receipt just by changing an
+unrelated event. Module loading, ready work, actual config, mounted tool/provider/
+context/orchestrator identity and captured endpoint changes are relevant and
+invalidate. A post mutation invalidates before forwarding; restoring equal names
+or removing the transient handler does not revive the receipt.
+
+Normal settings/mode changes must reconstruct the qualifying generation rather
+than permanently disable a functioning feature or silently reseal the old one:
 
 ```python
-boundary = coordinator.get_capability("session.media.tool_post")
-settled = await boundary(event, hooks=current_hooks, coordinator=current_coordinator)
-# settled == {"hook_result": processed_actual_hook_result,
-#             "result": None,
-#             "complete": False}  # Until exact-graph contract acceptance.
+new_graph = graph.reconstruct(fresh_actual_session, participants=new_participants)
+# Same named owner; old receipt invalidated, new actual session/bridge/generation.
+# Host restores canonical rows/settings/authority through its existing owners,
+# initializes modules and installs actual late observers; no tool re-execution.
+new_receipt = new_graph.seal()
 ```
 
-`event` is the existing actual tool event, including its `tool_name` and result.
-No tool_name/hook_name keyword is accepted. Omitted arguments, or the exact bound
-native/bridge registration views, select the captured native endpoints. Other
-supplied objects must be one **explicitly enrolled identity pair** below. Arbitrary
-wrapper methods and attributes are never invoked to obtain execution or proof;
-unenrolled/mixed/revoked identities refuse before emission. This is an intentional
-draft contract change from PR485's first prototype, which executed supplied
-wrappers. It requires the dispatcher enrollment integration and changed-risk review.
+This is issuer-owned **distinct fresh session** reconstruction, not resealing the
+old receipt or replaying tool effects. Hosts currently changing modes/providers
+on the same coordinator need an actual coordinated reconstruction lifecycle;
+this method alone does not prove those host entrypoints integrated. Stable normal
+provider/tool instrumentation must be installed before sealing and reused across
+turns; repeatedly replacing wrappers invalidates exact endpoint identity. Host
+owners qualify first/second-turn behavior and transition restoration separately.
 
-The boundary executes the captured bound native emit("tool:post", enriched_event)
-once, then the captured real process_hook_result(actual, "tool:post",
-event["tool_name"]) once. It returns that actual **processed** HookResult.
-Injections can be consumed into Continue and approvals can produce Deny. Known
-enrolled nested observations remain ordered below; arbitrary processing overrides
-are not supported. Errors and cancellation propagate without replay.
+## Structural boundary and effective result
 
-## Draft enrollment proposal (controlled fixtures only; activation closed)
+```python
+settled = await bridge(event, hooks=current_hooks, coordinator=current_coordinator)
+# {hook_result: actual_processed_HookResult,
+#  result: final_effective_value_including_None_if_complete_else_None,
+#  complete: bool}
+```
+
+The ABI is unchanged: no tool_name/hook_name keyword; event carries the actual
+tool_name/tool_call_id/result. Omitted args, actual native roots or participant
+views select captured native emit/process. Unknown/mixed/revoked arbitrary wrapper
+objects refuse before effects. Known nested dispatcher identities enroll below.
+No arbitrary supplied .emit/.process_hook_result methods execute as proof.
+
+The existing native emit("tool:post", enriched_event) executes exactly once,
+followed by captured native process_hook_result(actual, "tool:post", tool_name)
+exactly once. Native priority/deny/injection/approval ordering is preserved.
+Receipt identity/generation is captured before emission and checked around emit
+and process. All actual participating callbacks are observed, not a terminal
+last-priority sentinel. Their identity/order/error/serialization/deny-prefix
+witness supplements the graph receipt. A positive result requires BOTH.
+
+- data.result is authoritative by presence, including null, string/list or output
+  removal. Modify without result clears the effective value.
+- Continue without result retains the current effective value, never the original
+  staged refs after another callback removed them.
+- In-place result edits/deletion followed by Continue normalize into the existing
+  native Modify action once, preserving flags and letting later hooks see edits.
+- In-place edits plus injection/approval cannot be represented losslessly by one
+  Core action: preserve the special action and return incomplete media rather
+  than reorder effects. Native processing may consume injection into Continue.
+- Deny has no promotable result. Actual native short-circuit prefixes are known;
+  unvisited suffix callbacks are not falsely counted as executed.
+- Callback errors, malformed/non-HookResult returns, lossy serialization,
+  missing/extra identities, generation changes or failed receipt checks return
+  complete:false/result:null; later outer callbacks cannot heal that failure.
+- An actual participating outer redaction is part of the same native chain and
+  wins before publication. Arbitrary outer transforms are not enrolled by labels.
+- Mid-emission revocation/invalidation does not roll back or replay effects; the
+  existing actual result is still processed once. Cancellation propagates and
+  releases witness/route scopes. Native approval may outlive caller cancellation,
+  matching baseline Core; do not claim its underlying operation was cancelled.
+
+Complete=True is not publication, canonical ACK or provider-send authority.
+The loop must validate surviving source-bound refs, publish assets, append the
+settled canonical rows and acknowledge their durable checkpoint. Integration
+checks must equate final effective refs, actual canonical ACK refs and private
+candidate refs, with negative alteration-between checks. No report creates ACK.
+Private `_observe` remains a partial mechanism test seam, not runtime acceptance.
+
+## Explicit streaming attributed route
 
 ```python
 lease = bridge.enroll_attributed_route(
-    hooks=attributed_hooks,
-    coordinator=attributed_coordinator,
-    parent_hooks=actual_parent_hooks,
-    parent_coordinator=actual_parent_coordinator,
-    source=actual_dispatcher_source,
-    observation=dispatcher_owned_observation,
-    source_identity={
-        "component": "loop-streaming", "adapter": "attributed-v1",
-        "contract": 1, "module": "amplifier_module_loop_streaming.dispatch",
-    },
+    hooks=actual_attributed_hooks, coordinator=actual_attributed_coordinator,
+    parent_hooks=actual_parent_hooks, parent_coordinator=actual_parent_coordinator,
+    source=actual_dispatcher_source, observation=dispatcher_owned_observation,
+    source_identity={"component": "loop-streaming", "adapter": "attributed-v1",
+                     "contract": 1, "module": "amplifier_module_loop_streaming.dispatch"},
 )
 with lease:
-    # Whole existing nested execute/stage/publish lifetime, no duplicate tools.
-    ...
-# __exit__ revokes. lease.revoke() also invalidates an active route.
+    ...  # whole existing nested execute/stage/publish; finally revoke
 ```
 
-This host-only enrollment mechanism is not a seventh media operation, source
-grant, generic transformation callback or qualified host graph. It does not enable
-complete:true, even with a well-shaped source descriptor or successful fixture.
-Until accepted integration exists, do not install it in an existing host.
+The exact fixed descriptor is compatibility data, never source provenance or
+retention authority. Source has exactly six keys: session_id/run_id/
+parent_tool_call_id/tool_call_id/tool_name are nonempty strings, request_id is
+nonempty string or null. Session/call/name bind the actual event. Host/dispatcher
+owners still authorize actual run/parent/child admission. Source is detached.
 
-`source` has exactly six keys: `session_id`, `run_id`, `parent_tool_call_id`,
-`tool_call_id`, `tool_name`, `request_id`. The first five are nonempty strings;
-request_id is a nonempty string or null. Session identity equals the actual root.
-The current event's call ID and name must equal the enrolled child call. Source
-is detached at enrollment. Original admission of the run/parent/child call remains
-the dispatch owner's responsibility; a mapping cannot invent it. The exact static
-source_identity descriptor is compatibility data only. Actual accepted source
-commit/loaded bytes, class ownership and graph qualification are external gates,
-not supplied by that descriptor or checked by a names-only readiness method.
+Tokens are object identities, no private fields/attributes/equality calls.
+Parent lease generations, not token re-lookup, pin ancestry; revocation cannot be
+undone by reusing a parent's token objects. ContextVar active scope is checked
+before/after awaits; parallel calls and nested structural emissions isolate frames.
+Ordinary facade emit/collect does not join an outer witness.
 
-The hooks/coordinator objects are opaque identity tokens. Each token can have only
-one live enrollment; no equality methods or private wrapper fields are consulted.
-Parents must be the exact root views or already scoped enrolled identities.
-Parentage captures the actual enrolled lease generation, not a later lookup of
-the same token. Revoking a parent permanently invalidates that child's lineage;
-re-enrolling the same token objects cannot revive it under different ancestry.
-ContextVar scope plus active lifetime is checked before emission and after awaits.
-Revocation during emission does not roll back effects or skip the one actual
-processing operation: it makes the partial witness incomplete. Cancellation
-releases the context-managed route without replay.
+Hook and coordinator chains are separate, matching actual dispatcher behavior:
+current->parent hook enrichment means parent attribution overwrites inner fields;
+post observations unwind parent->current before processing, denial observations
+unwind the actual coordinator chain after processing. post_seen/post_result are
+observer compatibility only. Emission-stage identity/revision checks run before
+non-null post_result; later processing invalidation clears it. Null then injection
+stays null. The dispatcher uses the settled result for actual success/output.
+Non-post error/suspension/cancellation statuses remain their existing owners.
 
-Hook and coordinator parent chains are separate, matching the actual dispatcher:
-a nested AttributedHooks can wrap another hook route while AttributedCoordinator
-wraps the root coordinator. Hook enrichment applies current->parent, so a parent
-route's parent_tool_call_id/dispatch_source overwrites the inner enrichment just
-as the existing wrappers do. Post observations unwind parent->current before
-processing; denial observations unwind only the actual coordinator parent chain
-after processing. All root/native hook priorities and approvals remain unchanged.
-Non-post emissions, including tool:error/engine_error and suspension/cancellation
-status events, still use the ordinary existing wrapper path; this helper never
-manufactures them.
+## Verification and retained limitations
 
-For observer compatibility each hook route receives post_seen:true and a detached
-post_result from the **partial effective callback witness**, not the lossy native
-aggregate. A null followed by injection stays null. Incomplete witnesses record
-post_result:null. Emission-stage callback identity/order, registration generation
-and consistency checks run before assigning a non-null observer value. The value
-is still a pre-processing observation, not settled acceptance; invalidation during
-processing clears it before return, and processing exceptions clear it and
-propagate. This is an explicit safety correction to the old observer's
-null/injection behavior, not a publication/status authority. The dispatcher must
-continue to use the settled processed result for success/output classification.
-The public boundary still exposes result:null/complete:false.
+Maintained tests use actual Core 2.0.2 RustSession initialization, loader mount/
+ready, Rust registry and processing. Positive public ABI tests cover effective
+null/in-place/string/list/deny, outer redaction, callback error/no later reattach,
+receipt forgery, failure/missing ownership, config/loader/mount/callback identity
+mutation, unrelated non-post lifecycle, nested enrolled route, parallel/cancel and
+issuer-owned fresh reconstruction. Earlier partial tests remain labelled partial.
 
-## Partial effective-result mechanism and failure rules
+This is focused source evidence, not live installation, every host variant,
+all capable model pixel roundtrips, native third-party parity or final review.
+Actual owners pair immutable Foundation/loop/host candidates; their failures,
+skips and unknowns remain distinct. No paid inference authority is added here.
 
-Wrapped callbacks record their actual return before Core's lossy summary:
-
-- data.result is authoritative by field presence, including null, strings/lists,
-  replacement mappings and mappings without an output member.
-- Modify without result clears the effective result; later injection cannot
-  resurrect it from a pre-hook carrier.
-- Continue without result retains the current effective result.
-- In-place result edits/deletion followed by Continue are returned through Core's
-  existing Modify action so later callbacks see the redaction. Other fields and
-  flags remain intact. This is normalization of the one executed callback, not a
-  second callback or another hook engine.
-- In-place result edits combined with injection/approval cannot be represented
-  losslessly as one Core action. Preserve that special action and processing,
-  return complete:false/result:null rather than reordering or dropping effects.
-- Deny has no promotable result. Known native short-circuit prefixes are observed;
-  unvisited suffix callbacks are not claimed executed.
-- Callback exceptions, malformed/non-HookResult returns, serialization failures,
-  missing/extra callbacks, changed registration generation, loader replacement or
-  inconsistent registry names make the witness incomplete. Core's existing
-  swallow/log or malformed-result denial semantics remain unchanged.
-
-Public returns always carry result:null; the caller must preserve ordinary
-non-media error/status handling but cannot publish original staged refs or report
-media readiness from that call. Even a future accepted positive witness would not
-be staged origin validation, publication, canonical append/checkpoint or transport
-proof. Those remain with the six-operation capability and respective owners.
-
-A ContextVar carries each actual emission's witness. Nested structural calls and
-parallel batches get independent state; completed/cancelled witnesses are marked
-inactive and reset. Ordinary facade emits/collects do not join an outer witness.
-The helper never calls emit_and_collect to recover information after execution.
-
-## Qualification boundary
-
-The independent adversarial review reproduced an invisible callback:
-
-1. A supplied emitter registers a raw callback at priority -100, then invokes the
-   actual native emit exactly once.
-2. The raw callback unregisters itself and raises before the first covered
-   callback. Core logs and swallows the error, then runs the covered callbacks.
-3. Public names before/after and all covered callback identities/order match.
-   Even checking names inside every covered callback misses this prefix.
-
-Core's native execution snapshot, callback identities and swallowed-failure
-generation are not exposed by its public API. A loader facade cannot enforce a
-registry lock. Therefore this source deliberately does not turn the partial
-witness into complete:true. Names, a Boolean, a report, or a source digest alone
-must not manufacture that proof.
-
-### Remaining exact-host qualification (not implemented or accepted)
-
-The smallest no-Core route would explicitly narrow the guarantee to an **exact
-reviewed cooperative graph**, not arbitrary Python/native modules. It needs:
-
-- Captured bound native emit/process identities and actual supported Core type.
-- All Python mounts, on_session_ready, host/runtime registration paths and the
-  selected loader accounted for by their source owners, with no uncontrolled raw
-  registration/emission/collection/unregistration path in the accepted graph.
-- Direct real-registry/bridge-view routes accepted by object identity; no arbitrary
-  supplied emitter may self-attest completeness.
-- One explicitly enrolled nested dispatcher route for the exact hooks/coordinator
-  pair, actual parent route/source/observation, bounded lifetime and revocation.
-  Arguments become route identity tokens. The bridge performs the known
-  attribution-before, captured native emit once, reverse post-observation,
-  captured real processing once, and denial-observation order. It must preserve
-  the actual existing nested wrapper semantics, without private unwrapping or a
-  general arbitrary-transform callback engine.
-- The current per-emission callback identity/order/error/serialization/generation
-  witness remains necessary, but does not replace that graph qualification.
-
-The draft enrollment descriptor above was coordinated with the streaming source
-owner, not accepted as an installed graph. Parent plus requested Astra/Fable reviews
-must accept this changed-risk boundary before activation. A source-bound verifier
-is accepted graph evidence, **not** a runtime lock or malicious-Python isolation.
-No such approval or verifier is claimed here. This dependency is not permission
-to edit Core or permanently discard forward images.
-
-`tests/test_media_hook_bridge.py` uses the mounted actual Core 2.0.2 Rust registry,
-coordinator and finite RustSession initialization with a fixture loader. It covers
-the effective-output table, exact emit/process counts, real injection/approval,
-Python mount/ready and late host registration, priority/deny/unregistration,
-raw/same-name bypass, callback errors/malformed results, serialization, nested and
-parallel calls, cancellation and unsupported wrapper behavior. Enrolled-route
-fixtures additionally cover captured endpoint identities, nested independent
-parent chains, null/injection, revocation before/during emission, source detachment,
-wrong pair/source/session/descriptor and exact scope release. These are focused
-source integration fixtures, not DTU, live host adoption, all-loop acceptance or
-native module parity. Private `_observe` tests qualify only the partial callback
-mechanism; public ABI tests enforce the hold and reproduce the invisible raw
-callback. Dependent loop owners still need a future accepted positive full-loop
-pair, not just these fallback tests.
-
-Foundation base dependency for this change is exact
-`31766b42efe71920386975cf10d136b38b85fc14`.
-No dependent merge or activation is implied by publishing a draft bridge PR.
-The original CI43539041037 six Ubuntu/Windows matrix collection failures
-(`test_session_media.py:14`, missing PIL) remain recorded. Its dependency/workflow
-paths are byte-identical to that F1 base. A newer owning F1 union reportedly
-repairs test dependency selection; it is not silently imported or called passed
-by this bridge-only source. Exact accepted dependency refresh remains separate.
+This bridge branch originally depended on exact F1
+31766b42efe71920386975cf10d136b38b85fc14. Original CI43539041037 six Ubuntu/Windows
+collection failures (missing PIL at tests/test_session_media.py:14) remain failed;
+separate installed/shared-source lanes were not full suite success. Owning newer
+F1 assembly supplies its accepted dependency repair; do not rewrite this history
+or borrow unreviewed moving-main inputs. This worker changes only its three files.

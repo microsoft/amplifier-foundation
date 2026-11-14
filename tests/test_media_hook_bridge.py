@@ -784,3 +784,409 @@ def test_spoofed_builtin_names_are_not_supported_core_endpoint_types():
     FakeCoordinator.__module__, FakeCoordinator.__name__ = "builtins", "RustCoordinator"
     with pytest.raises(ValueError, match="actual bound Core Rust endpoints"):
         install_media_hook_bridge(FakeCoordinator())
+
+
+class ParticipatingFixtureLoader:
+    def __init__(self, handlers=()):
+        self.queue, self.handlers, self.views = [], handlers, []
+    async def load(self, module_id, config, *, source_hint=None, coordinator=None):
+        self.views.append(coordinator)
+        async def mount(current):
+            if module_id == "fixture-loop":
+                await current.mount("orchestrator", object())
+            elif module_id == "fixture-context":
+                await current.mount("context", object())
+            elif module_id == "fixture-hooks":
+                for index, handler in enumerate(self.handlers):
+                    current.hooks.register("tool:post", handler, name=f"participant-{index}")
+        if module_id == "fixture-hooks":
+            async def ready(current):
+                current.hooks.register("tool:post", lambda e, d: HookResult(), name="ready")
+            mount.__on_session_ready__ = (module_id, ready)
+        return mount
+    def enqueue_on_session_ready(self, name, callback):
+        self.queue.append((name, callback))
+    def get_on_session_ready_queue(self):
+        return self.queue
+    def clear_on_session_ready_queue(self):
+        self.queue.clear()
+
+
+async def positive_graph(handlers=(), late=None):
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+         "hooks": [{"module": "fixture-hooks"}]}, session_id="positive-session")
+    session.coordinator.loader = ParticipatingFixtureLoader(handlers)
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="controlled.public.core2",
+        participants=("fixture-loop", "fixture-context", "fixture-hooks", "host.late"))
+    await session.initialize()
+    graph.participant("host.late").hooks.register(
+        "tool:post", late or (lambda e, d: HookResult()), name="late")
+    receipt = graph.seal()
+    return session, bridge, graph, receipt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,expected", [
+    ("retain", {"success": True, "output": {"experimental.media.v1": {"refs": ["staged-fixture"]}}}),
+    ("null", None), ("empty", None), ("string", "redacted"), ("list", ["redacted"]),
+    ("inplace", {"success": True}), ("delete", None), ("deny", None),
+])
+async def test_public_positive_cooperative_graph_effective_table(kind, expected):
+    calls = []
+    def policy(e, data):
+        calls.append(e)
+        if kind == "null":
+            return HookResult(action="modify", data={"result": None})
+        if kind == "empty":
+            return HookResult(action="modify", data={})
+        if kind == "string":
+            return HookResult(action="modify", data={"result": "redacted"})
+        if kind == "list":
+            return HookResult(action="modify", data={"result": ["redacted"]})
+        if kind == "inplace":
+            del data["result"]["output"]
+        if kind == "delete":
+            del data["result"]
+        return HookResult(action="deny" if kind == "deny" else "continue")
+    session, bridge, graph, receipt = await positive_graph([policy])
+    result = await bridge(event())
+    assert bridge.validate_receipt(receipt) is True
+    assert result["complete"] is True and result["result"] == expected
+    assert calls == ["tool:post"]
+    assert all(item.original is not None and item.observed is not None
+               and item.participant in graph.participants for item in bridge._expected())
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_public_positive_outer_redaction_overrides_surviving_inner_result():
+    session, bridge, graph, receipt = await positive_graph(
+        [lambda e, d: HookResult(action="modify", data={"result": {"inner": "retained"}})],
+        late=lambda e, d: HookResult(action="modify", data={"result": None}))
+    result = await bridge(event())
+    assert result["complete"] is True and result["result"] is None
+    assert bridge.validate_receipt(receipt)
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_public_positive_callback_error_is_incomplete_not_original_media():
+    def fail(e, d):
+        raise RuntimeError("actual participating callback failure")
+    session, bridge, graph, receipt = await positive_graph([fail])
+    result = await bridge(event())
+    assert not result["complete"] and result["result"] is None
+    assert bridge.validate_receipt(receipt)  # graph valid, individual chain failed
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_graph_late_nonpost_lifecycle_allowed_but_post_mutation_latches_invalid():
+    session, bridge, graph, receipt = await positive_graph()
+    remove = graph.participant("host.late").hooks.register(
+        "orchestrator:steering_injected", lambda e, d: HookResult(), name="badge")
+    assert (await bridge(event()))["complete"]
+    remove()
+    assert bridge.validate_receipt(receipt)
+    late = graph.participant("host.late").hooks.register(
+        "tool:post", lambda e, d: HookResult(), name="late-extra")
+    late()
+    assert not bridge.validate_receipt(receipt)
+    assert not (await bridge(event()))["complete"]
+    with pytest.raises(ValueError, match="cannot seal"):
+        graph.seal()
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_graph_foreign_receipts_and_config_mutation_cannot_qualify_or_reseal():
+    import copy
+    session, bridge, graph, receipt = await positive_graph()
+    assert not bridge.validate_receipt(object())
+    assert not bridge.validate_receipt(copy.copy(receipt))
+    session.config["extra"] = {"changed": True}
+    assert not bridge.validate_receipt(receipt)
+    del session.config["extra"]
+    assert not bridge.validate_receipt(receipt)
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_public_positive_nested_enrolled_route_and_revoked_identity():
+    session, bridge, graph, receipt = await positive_graph()
+    lease, hooks, attributed, observation = enroll(bridge, session.coordinator)
+    with lease:
+        result = await bridge(event(call_id="inner"), hooks=hooks, coordinator=attributed)
+    assert result["complete"] and observation["post_result"] == event()["result"]
+    assert bridge.validate_receipt(receipt)
+    with pytest.raises(ValueError):
+        await bridge(event(call_id="inner"), hooks=hooks, coordinator=attributed)
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_public_positive_midchain_graph_invalidation_keeps_effects_once():
+    captured = {}
+    calls = []
+    async def change(e, data):
+        calls.append("callback")
+        remove = captured["graph"].participant("host.late").hooks.register(
+            "tool:post", lambda e, d: HookResult(), name="transient-participant")
+        remove()
+        await asyncio.sleep(0)
+        return HookResult()
+    session, bridge, graph, receipt = await positive_graph([change])
+    captured["graph"] = graph
+    result = await bridge(event())
+    assert calls == ["callback"]
+    assert not result["complete"] and result["result"] is None
+    assert not bridge.validate_receipt(receipt)
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_unowned_registration_and_incomplete_construction_refuse_seal():
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
+        session_id="unowned-session")
+    session.coordinator.loader = ParticipatingFixtureLoader()
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="controlled", participants=("fixture-loop", "fixture-context", "missing.host"))
+    await session.initialize()
+    with pytest.raises(ValueError, match="incomplete"):
+        graph.seal()
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_public_positive_null_then_actual_injection_stays_null():
+    messages = []
+    class Context:
+        async def add_message(self, message):
+            messages.append(message)
+    # Install the real context endpoint during its participating mount.
+    class ContextLoader(ParticipatingFixtureLoader):
+        async def load(self, module_id, *args, **kwargs):
+            mounted = await super().load(module_id, *args, **kwargs)
+            if module_id == "fixture-context":
+                async def context(current):
+                    await current.mount("context", Context())
+                return context
+            return mounted
+    session = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+         "hooks": [{"module": "fixture-hooks"}]}, session_id="null-injection-session")
+    session.coordinator.loader = ContextLoader([
+        lambda e, d: HookResult(action="modify", data={"result": None}),
+        lambda e, d: HookResult(action="inject_context", context_injection="retained notice")])
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="test.null-injection",
+        participants=("fixture-loop", "fixture-context", "fixture-hooks"))
+    await session.initialize()
+    graph.seal()
+    result = await bridge(event())
+    assert result["complete"] and result["result"] is None
+    assert result["hook_result"].action == "continue" and len(messages) == 1
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["raw", "loader", "context", "callback_identity"])
+async def test_public_positive_detected_bypass_or_endpoint_mutation_is_permanent(bad):
+    session, bridge, graph, receipt = await positive_graph()
+    if bad == "raw":
+        session.coordinator.hooks.register("tool:post", lambda e, d: HookResult(), name="raw")
+    elif bad == "loader":
+        session.coordinator.loader = object()
+    elif bad == "context":
+        await session.coordinator.mount("context", object())
+    else:
+        bridge._expected()[0].original = lambda e, d: HookResult()
+    result = await bridge(event())
+    assert not result["complete"] and result["result"] is None
+    assert not bridge.validate_receipt(receipt)
+    with pytest.raises(ValueError, match="fresh"):
+        bridge.begin_participating_graph(
+            session, owner="reseal", participants=("fixture-loop", "fixture-context", "fixture-hooks"))
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_failed_ready_and_source_plan_drift_never_issue_receipt():
+    class FailedReadyLoader(ParticipatingFixtureLoader):
+        async def load(self, module_id, *args, **kwargs):
+            mount = await super().load(module_id, *args, **kwargs)
+            if module_id == "fixture-hooks":
+                async def failed(current):
+                    raise RuntimeError("actual ready failure")
+                mount.__on_session_ready__ = (module_id, failed)
+            return mount
+    for fail_ready in (False, True):
+        session = AmplifierSession(
+            {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+             "hooks": [{"module": "fixture-hooks"}]}, session_id="failed-construction")
+        session.coordinator.loader = FailedReadyLoader() if fail_ready else ParticipatingFixtureLoader()
+        bridge = install_media_hook_bridge(session.coordinator)
+        graph = bridge.begin_participating_graph(
+            session, owner="failed", participants=("fixture-loop", "fixture-context", "fixture-hooks"))
+        if not fail_ready:
+            session.config["hooks"][0]["source"] = "different-source"
+        await session.initialize()
+        with pytest.raises(ValueError):
+            graph.seal()
+        assert bridge.graph_receipt is None and not (await bridge(event()))["complete"]
+        await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_positive_graph_parallel_callbacks_are_independent_and_receipt_reused():
+    async def policy(e, data):
+        await asyncio.sleep(0)
+        return HookResult(action="modify", data={"result": data["tool_call_id"]})
+    session, bridge, graph, receipt = await positive_graph([policy])
+    result = await asyncio.gather(*(bridge(event(call_id=str(index))) for index in range(4)))
+    assert [item["result"] for item in result] == ["0", "1", "2", "3"]
+    assert all(item["complete"] for item in result) and bridge.validate_receipt(receipt)
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_issuer_reconstructs_distinct_fresh_generation_for_settings_change():
+    session, bridge, graph, receipt = await positive_graph()
+    replacement = AmplifierSession(
+        {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
+        session_id="reconstructed-session")
+    replacement.coordinator.loader = ParticipatingFixtureLoader()
+    new_graph = graph.reconstruct(
+        replacement, participants=("fixture-loop", "fixture-context", "host.new-policy"))
+    new_bridge = replacement.coordinator.get_capability("session.media.tool_post")
+    assert not bridge.validate_receipt(receipt)
+    assert not (await bridge(event()))["complete"]
+    await replacement.initialize()
+    new_graph.participant("host.new-policy").hooks.register(
+        "tool:post", lambda e, d: HookResult(action="modify", data={"result": "new-policy"}),
+        name="new-policy")
+    new_receipt = new_graph.seal()
+    assert new_receipt is not receipt and not new_bridge.validate_receipt(receipt)
+    assert (await new_bridge(event()))["result"] == "new-policy"
+    assert bridge.receipt_status(receipt)["generation"] != new_bridge.receipt_status(new_receipt)["generation"]
+    with pytest.raises(ValueError, match="distinct fresh"):
+        new_graph.reconstruct(replacement, participants=("fixture-loop", "fixture-context"))
+    await replacement.cleanup()
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_public_positive_cancel_then_next_call_and_route_release():
+    started, finished = asyncio.Event(), asyncio.Event()
+    async def policy(e, d):
+        if d["tool_call_id"] == "cancel":
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
+        return HookResult()
+    session, bridge, graph, receipt = await positive_graph([policy])
+    task = asyncio.create_task(bridge(event(call_id="cancel")))
+    await asyncio.wait_for(started.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(finished.wait(), 2)
+    result = await bridge(event(call_id="next"))
+    assert result["complete"] and bridge.validate_receipt(receipt)
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_callback_error_cannot_be_healed_by_later_outer_reattachment():
+    def error(e, d):
+        raise RuntimeError("actual image policy callback failure")
+    session, bridge, graph, receipt = await positive_graph([error], late=lambda e, d: HookResult(
+        action="modify", data={"result": {"success": True, "output": {"experimental.media.v1": {
+            "refs": ["must-not-reappear"]}}}}))
+    result = await bridge(event())
+    assert not result["complete"] and result["result"] is None
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["pending", "late", "undeclared", "underlying"])
+async def test_ready_queue_work_cannot_be_omitted_from_public_qualification(phase):
+    if phase == "pending":
+        class PendingLoader(ParticipatingFixtureLoader):
+            def clear_on_session_ready_queue(self):
+                super().clear_on_session_ready_queue()
+                # Public underlying loader path leaves unexecuted ready work.
+                self.queue.append(("fixture-loop", lambda c: None))
+        session = AmplifierSession(
+            {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
+            session_id="pending-ready")
+        session.coordinator.loader = PendingLoader()
+        bridge = install_media_hook_bridge(session.coordinator)
+        graph = bridge.begin_participating_graph(
+            session, owner="pending", participants=("fixture-loop", "fixture-context"))
+        await session.initialize()
+        with pytest.raises(ValueError):
+            graph.seal()
+        assert not (await bridge(event()))["complete"]
+    else:
+        session, bridge, graph, receipt = await positive_graph()
+        async def null_redactor(current):
+            current.hooks.register("tool:post", lambda e, d: HookResult(
+                action="modify", data={"result": None}), name="deferred-null")
+        if phase == "undeclared":
+            with pytest.raises(ValueError, match="declared"):
+                session.coordinator.loader.enqueue_on_session_ready("unknown-owner", null_redactor)
+        elif phase == "underlying":
+            session.coordinator.loader._loader.enqueue_on_session_ready("fixture-hooks", null_redactor)
+        else:
+            session.coordinator.loader.enqueue_on_session_ready("fixture-hooks", null_redactor)
+        assert not bridge.validate_receipt(receipt)
+        assert not (await bridge(event()))["complete"]
+    await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_unowned_preseal_mount_and_preexisting_inventory_never_qualify():
+    for preexisting in (False, True):
+        session = AmplifierSession(
+            {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"}},
+            session_id="unowned-mount")
+        session.coordinator.loader = ParticipatingFixtureLoader()
+        if preexisting:
+            await session.coordinator.mount("tools", object(), name="preexisting")
+        bridge = install_media_hook_bridge(session.coordinator)
+        if preexisting:
+            with pytest.raises(ValueError, match="unmounted"):
+                bridge.begin_participating_graph(
+                    session, owner="bad", participants=("fixture-loop", "fixture-context"))
+        else:
+            graph = bridge.begin_participating_graph(
+                session, owner="bad", participants=("fixture-loop", "fixture-context"))
+            await session.initialize()
+            await bridge.coordinator.mount("tools", object(), name="unowned")
+            with pytest.raises(ValueError):
+                graph.seal()
+            assert not (await bridge(event()))["complete"]
+        await session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_participant_loader_swap_restore_invalidates_before_forwarding():
+    session, bridge, graph, receipt = await positive_graph()
+    participant = graph.participant("host.late")
+    loader = participant.loader
+    participant.loader = object()
+    participant.loader = loader
+    assert not bridge.validate_receipt(receipt)
+    assert not (await bridge(event()))["complete"]
+    await session.cleanup()
