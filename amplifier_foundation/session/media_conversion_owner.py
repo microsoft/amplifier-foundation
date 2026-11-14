@@ -384,6 +384,10 @@ class CaptureGroupMediaOwner(CaptureMediaOwner):
                             or any(_json(other) == _json(item) for other in snapshots[:index])):
                         raise Unsupported("Historical group original identity drift")
                     self.store.validate_published_ref(deepcopy(ref))
+                validator = getattr(self.store, "validate_published_group", None)
+                if not callable(validator):
+                    raise Unsupported("Media owner lacks exact read-only publication-group validation")
+                _sync_result(validator(deepcopy(refs), origin=deepcopy(original)))
                 yield deepcopy(refs), original
 
     def publish(self, manifest):

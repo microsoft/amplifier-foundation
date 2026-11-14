@@ -438,6 +438,21 @@ def test_ci_complete_original_group_real_store(stores, tmp_path):
             assert image.read() == data
     # Stored original policy never becomes a fresh screenshot lifetime.
     assert all(ref["provenance"] == original("real-multi-image-call") for ref in refs)
+    # Standalone verify, not a mutating publish, must establish exact full order.
+    good = [json.loads(line) for line in manifest.read_text().splitlines()]
+    import copy
+    for transform in ("truncate", "reverse"):
+        bad = copy.deepcopy(good[0])
+        if transform == "truncate":
+            bad["owner"]["refs"] = bad["owner"]["refs"][:1]
+            bad["owner"]["source_origins"] = bad["owner"]["source_origins"][:1]
+        else:
+            bad["owner"]["refs"].reverse()
+            bad["owner"]["source_origins"].reverse()
+            bad["owner"]["selected"] = 1
+        manifest.write_text(json.dumps(bad) + "\n")
+        with pytest.raises((Unsupported, MediaRefusal)):
+            binding.verify(manifest)
 
 
 def test_ci_group_wrong_position_or_provenance_refused(stores):
@@ -456,3 +471,37 @@ def test_ci_group_wrong_position_or_provenance_refused(stores):
     )
     with pytest.raises(Unsupported, match="absent"):
         binding.stage_image(io.BytesIO(data), mime="image/png", origin=selected)
+
+
+def test_selected_helper_real_readonly_transfer_guard_and_expiry(stores, tmp_path):
+    store, target = stores
+    policy = store.policy
+    ref = store.ingest_sync(png(), source_format="image-bytes", origin=original(), policy=None)["value"]
+    store.publish_sync([ref], origin=original(), disposition="retain")
+    store.close()
+    current = True
+    calls = 0
+    def verify(value, *, purpose):
+        nonlocal calls
+        calls += 1
+        assert purpose == "transfer"
+        return current and value == ref
+    observer = SessionMediaStore(
+        tmp_path / "source-store", "source", policy=policy, read_only=True,
+        source_read_verifier=verify,
+    )
+    message = {"role": "tool", "tool_call_id": "original-call", "content": [
+        {"type": "text", "text": "[Session image " + ref["sha256"] + "]"}],
+        "metadata": {NAMESPACE: {"refs": [ref]}, "opaque": {"signature": "keep"}}}
+    try:
+        result = adopt_selected_media([message], source_store=observer, target_store=target,
+                                      target_session_id="target")
+        assert result[0]["metadata"][NAMESPACE]["refs"] == [{**ref, "session_id": "target"}]
+        assert calls >= 3
+        current = False
+        with pytest.raises(MediaRefusal):
+            adopt_selected_media([message], source_store=observer, target_store=target,
+                                 target_session_id="target")
+        assert message["metadata"][NAMESPACE]["refs"] == [ref]
+    finally:
+        observer.close()
