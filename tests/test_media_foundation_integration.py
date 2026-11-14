@@ -211,6 +211,7 @@ async def test_public_graph_final_refs_checkpoint_private_request_joint(
 
             def request_budget(self, request, *, request_options=None):
                 cap.validate(request, purpose="count", request_options=request_options)
+                assert request is not canonical and canonical.model_dump_json() == original
                 self.counted = request
                 assert request.messages[0].metadata[MEDIA_NAMESPACE]["refs"] == final_refs
                 image = next(b for b in request.messages[0].content if isinstance(b, ImageBlock))
@@ -220,6 +221,7 @@ async def test_public_graph_final_refs_checkpoint_private_request_joint(
 
             async def complete(self, request, **kwargs):
                 cap.validate(request, purpose="transport", request_options=kwargs)
+                assert request is not canonical and canonical.model_dump_json() == original
                 assert request is self.counted and kwargs == options
                 self.sent = request
                 return "qualified-fixture"
@@ -227,8 +229,11 @@ async def test_public_graph_final_refs_checkpoint_private_request_joint(
         provider = PrivateProvider()
         wrapper = MediaPreparedProvider(provider, cap, provider_identity={
             "provider": "synthetic", "account": "fixture", "generation": "joint",
-        })
+        }, request_scope=bridge.request_scope)
         await wrapper.request_budget(canonical, request_options=options)
+        with pytest.raises(ValueError, match="idle graph"):
+            with graph.transition():
+                raise AssertionError("Counted private request must hold graph generation")
         canonical.messages[0].metadata[MEDIA_NAMESPACE]["refs"][0]["sha256"] = "0" * 64
         with pytest.raises(ValueError, match="changed before dispatch"):
             await wrapper.complete(canonical, **options)
@@ -239,6 +244,16 @@ async def test_public_graph_final_refs_checkpoint_private_request_joint(
         assert provider.sent.messages == []  # private buffers released after dispatch
         assert canonical.model_dump_json() == original and encoded not in original
         assert encoded.encode() not in (path / "transcript.jsonl").read_bytes()
+        await wrapper.request_budget(canonical, request_options=options)
+        abandoned = provider.counted
+        assert not wrapper.release_media_request(deepcopy(canonical), request_options=options)
+        assert wrapper.release_media_request(canonical, request_options=options)
+        assert abandoned.messages == []
+        assert not wrapper.release_media_request(canonical, request_options=options)
+        with graph.transition():
+            pass
+        assert not bridge.validate_receipt(receipt)
+        assert bridge.validate_receipt(bridge.graph_receipt)
     finally:
         if wrapper is not None:
             await wrapper.aclose()
