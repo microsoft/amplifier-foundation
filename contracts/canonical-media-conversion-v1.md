@@ -264,6 +264,66 @@ original replaced **image-block spans**, including their JSON wrapper/base64
 spelling. It excludes metadata:null or other edits, is not net transcript delta,
 and is not decoded asset bytes or allocated savings.
 
+## Explicit prospective T2 committed-source conversion
+
+This extension selects an **already enrolled prospective** T2 source. It never
+migrates old writers, opens directory legacy fences as files, or installs a T2
+body directly. The original canonical-v1 entry points remain separate.
+
+```python
+plan = preview_committed(
+    session_dir, expected=actual_committed_prefix, owner=host_owner,
+    fence=actual_binding_publication_fence, selected_records=None,
+)
+candidate = await build_candidate(
+    plan, new_operation_dir, fence=actual_binding_publication_fence,
+    capability=actual_session_store, origin_for=attested_original_policy,
+    asset_reader=published_asset_reader, eligible_record=explicit_record_policy,
+    export_assets=False,
+)
+```
+
+`preview_committed` requires the actual `CommittedPrefix` type and uses only
+`open_committed_source(expected=...)`, `read_range` and checked message bounds.
+It never uses decoded windows or `load_messages` for huge strings. Message
+counts exclude the strict T2 generation header; private recovery copies retain
+the **entire selected committed prefix including that header**, never physical
+uncommitted tail bytes. Source advance or namespace/body identity change requires
+a new explicit preview, never silent selection advance. Existing metadata,
+status, provider state, tool IDs and role-position refs remain unchanged.
+
+The candidate keeps the original exact header and original generation/operation
+selector. `Candidate.committed_prefix` updates its hash, byte bound and selected
+message count; these are **unsealed candidate integrity facts**, not an installed
+commit or checkpoint. `Candidate.inline_removed_bytes` remains replaced original
+image-object spans only; refs-first no-op history reports zero, not compression.
+
+For inline rows, `eligible_record(row)` must explicitly return `True` before any
+decode/staging effect. Missing/false policy holds that original row byte-for-byte
+and increments `held_records`; it neither invents original expiry/cardinality nor
+blocks independently eligible text/ref rows. Portable export refuses held inline
+pixels rather than treating a held retention decision as export consent.
+An eligible inline row still needs complete original `origin_for` facts accepted
+by the actual store. Existing published refs require expiry-neutral owner
+identity validation. Expired references remain metadata-only, with no pixel read,
+renewed TTL or fresh observation; the actual writer retains its own admission.
+
+`open_verified_candidate(operation_dir, session_id=..., asset_reader=...)` yields
+`(owned_regular_binary_stream, candidate_prefix, live_check)` after bounded
+candidate/manifest/binary verification. It does not create a new T2 generation,
+grant media reachability or mint a receipt. The sole format/lifetime writer must
+prepare its own immutable streamed snapshot and canonical-row fingerprint before
+publication: the whole header-bearing hash is **not** the canonical-row intent
+hash used by rewrite reconciliation.
+
+`iter_serialized_candidate_refs(stream, candidate_prefix=...)` is the bounded
+strict canonical top-level ref enumerator for the format owner's
+`prepared.open_verified()` view. The prepared context must span full enumeration,
+actual retained-asset admission, writer publication and typed checkpoint exit.
+It accepts neither a caller-supplied ref list nor an independent manifest query
+as admission authority. Consumers must exhaust it, including final count/read
+checks. T2 candidates explicitly refuse the legacy installed-body ref/ACK seam.
+
 ## Qualification
 
 `tests/test_media_conversion*.py` use isolated synthetic sources only: strict
