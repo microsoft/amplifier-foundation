@@ -8,6 +8,7 @@ does not qualify CLI/Unified entrypoints or Windows namespace durability.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -76,6 +77,8 @@ def main():
     parser.add_argument("--baseline-root", required=True, type=Path)
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--writer-fixture", action="store_true",
+                        help="Exercise actual candidate migration output, not layout-only fixture")
     args = parser.parse_args()
     baseline = args.baseline_root.absolute()
     if not (baseline / "amplifier_foundation/session/history.py").is_file():
@@ -105,6 +108,32 @@ def main():
             '{"role":"user","content":"preserved-original"}\n'
         )
         (session / "metadata.json").write_text('{"session_id":"fixture"}')
+        if args.writer_fixture:
+            # Use a separate, genuinely generated fixture rather than deleting
+            # or repurposing any bytes from the layout-only qualification above.
+            from amplifier_foundation.session import transcript_writer as writer
+            generated = args.work / (operation + "-writer")
+            generated.mkdir()
+            for name in writer.LEGACY:
+                (generated / name).write_text(
+                    '{"role":"user","content":"retained-original"}\n')
+
+            @contextmanager
+            def fixture_fence(path):
+                with (path / ".fixture-owner").open("a+b") as lock:
+                    writer.fcntl.flock(lock.fileno(), writer.fcntl.LOCK_EX)
+                    def check():
+                        assert not lock.closed
+                    yield check
+            owner = writer.TranscriptWriter(generated, fence=fixture_fence)
+            witnesses = {name: writer.observe_source(generated, name) for name in writer.LEGACY}
+            commit = owner.migrate(
+                session_id="fixture", operation_id="migration", expected_sources=witnesses,
+                source="transcript.jsonl", admit=lambda: None).commit
+            with (generated / "transcript.v2" / commit.body).open("ab") as body:
+                body.write(b'{"role":"user","content":"uncommitted-tail"}\n')
+            (generated / "metadata.json").write_text('{"session_id":"fixture"}')
+            session = generated
         before = inventory(session)
         result = subprocess.run(
             [sys.executable, "-c", PROBE, str(baseline), str(session.absolute()), operation],
@@ -125,7 +154,9 @@ def main():
         "baseline_revision": args.revision,
         "baseline_files": inventory(baseline),
         "platform": sys.platform,
-        "scope": "actual-old-Foundation-entrypoints-directory-fence-fixtures",
+        "scope": ("actual-old-Foundation-entrypoints-candidate-migration-output"
+                  if args.writer_fixture else
+                  "actual-old-Foundation-entrypoints-directory-fence-fixtures"),
         "not_qualified": [
             "CLI", "Unified", "migration", "writer", "Windows durability",
             "interrupted fence installation", "missing or damaged fence",
