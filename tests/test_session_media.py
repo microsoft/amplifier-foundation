@@ -767,6 +767,21 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             self.store.validate_published_group([other], origin=other_origin)
         with self.assertRaises(MediaRefusal):
             self.store.validate_published_group([], origin=other_origin)
+        all_redacted = {**self.origin, "id": "all-redacted-retain"}
+        await self.stage(origin=all_redacted)
+        publication = await self.store.publish([], origin=all_redacted, disposition="retain")
+        self.assertEqual(publication["publication"], {"state": "dropped", "durability": "none"})
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group([], origin=all_redacted)
+        observer = SessionMediaStore(
+            self.root, "session1", policy=self.policy, read_only=True,
+            source_read_verifier=None,
+        )
+        try:
+            with self.assertRaises(MediaRefusal):
+                observer.validate_published_group([], origin=all_redacted)
+        finally:
+            observer.close()
 
     async def test_published_group_inspection_never_writes_or_reads_pixels(self):
         refs = self.store.ingest_group_sync(
@@ -839,6 +854,143 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
                 observer.validate_published_group(refs, origin=self.origin)
         finally:
             observer.close()
+
+    async def test_import_final_owner_expiry_preserves_metadata_without_source_retry(self):
+        from datetime import datetime as RealDatetime, timedelta, timezone
+        cutoff = RealDatetime(2030, 1, 1, tzinfo=timezone.utc)
+        now = cutoff - timedelta(seconds=1)
+        class Clock(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now
+        origin = {**self.origin, "created_at": (cutoff - timedelta(hours=1)).isoformat(),
+                  "expires_at": cutoff.isoformat()}
+        original = await self.stage(origin=origin)
+        # Mirrors an admitted host precheck/decode followed by irreversible
+        # source release. The import must never request a second source copy.
+        source_requests = 0
+        def decode_and_release():
+            nonlocal source_requests
+            source_requests += 1
+            return io.BytesIO(self.data)
+        decoded = decode_and_release()
+        verifier_calls = []
+        def authorize(ref, *, receipt, target_session_id):
+            nonlocal now
+            verifier_calls.append((ref, receipt, target_session_id))
+            now = cutoff  # Cross TTL at the actual final owner boundary.
+            return True
+        target = SessionMediaStore(Path(self.directory.name) / "expiry-race", "target",
+                                   policy=self.policy, checkpoint_verifier=lambda r: r["refs"])
+        try:
+            with (
+                patch("amplifier_foundation.session.media.datetime", Clock),
+                patch("amplifier_foundation.session.media_projection.datetime", Clock),
+                patch.object(decoded, "read", side_effect=AssertionError("expired source must not be read")),
+                patch.object(target, "_stage", side_effect=AssertionError("no new pixels")),
+                patch.object(target, "_publish_adopted", side_effect=AssertionError("no pixel publication")),
+            ):
+                accepted = target.import_verified(original, decoded, receipt={"signed": True},
+                                                   verifier=authorize)
+                self.assertEqual(accepted, {**original, "session_id": "target"})
+                self.assertEqual(source_requests, 1)
+                self.assertEqual(len(verifier_calls), 1)
+                self.assertEqual(list((target.root / "assets").iterdir()), [])
+                self.assertEqual(list((target.root / "staging").iterdir()), [])
+                target.acknowledge_checkpoint({"refs": [accepted]})
+                with self.assertRaises(MediaRefusal) as cm:
+                    target.resolve_ref(accepted)
+                self.assertEqual(cm.exception.code, "expired")
+                cap = self._prepared_expired_import_cap(target)
+                prepared = await cap.prepare_request(
+                    ChatRequest(messages=[Message(role="user", content="picture",
+                        metadata={MEDIA_NAMESPACE: {"refs": [accepted]}})]),
+                    provider_identity={"provider": "p", "account": "a", "generation": "g",
+                                       "media_support": {"v": 1, "positions": ["user"]}},
+                    model="vision", request_options={}, purpose="model", execution_scope={})
+                try:
+                    self.assertIn("session image expired", prepared.request.model_dump_json())
+                    self.assertTrue(cap.validate(prepared.request, purpose="transport",
+                                                 request_options={})["valid"])
+                finally:
+                    prepared.release()
+        finally:
+            decoded.close()
+            target.close()
+
+    @staticmethod
+    def _prepared_expired_import_cap(target):
+        coordinator = Coordinator()
+        coordinator.session_id = target.session_id
+        return bind_session_media(coordinator, store=target, enabled=True)
+
+    async def test_import_expiry_crossing_during_stage_or_publish_is_terminal_metadata(self):
+        from datetime import datetime as RealDatetime, timedelta, timezone
+        cutoff = RealDatetime(2030, 1, 1, tzinfo=timezone.utc)
+        now = cutoff - timedelta(seconds=1)
+        class Clock(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now
+        original = await self.stage(origin={
+            **self.origin, "created_at": (cutoff - timedelta(hours=1)).isoformat(),
+            "expires_at": cutoff.isoformat(),
+        })
+        for phase in ("stage", "publish"):
+            with self.subTest(phase=phase):
+                now = cutoff - timedelta(seconds=1)
+                target = SessionMediaStore(Path(self.directory.name) / ("race-" + phase), "target",
+                    policy=self.policy, checkpoint_verifier=lambda r: r["refs"])
+                stream = io.BytesIO(self.data)
+                method = "_stage" if phase == "stage" else "_publish_adopted"
+                operation = getattr(target, method)
+                calls = []
+                def cross_expiry(*args, **kwargs):
+                    nonlocal now
+                    calls.append(phase)
+                    result = operation(*args, **kwargs)
+                    now = cutoff
+                    return result
+                try:
+                    with (
+                        patch("amplifier_foundation.session.media.datetime", Clock),
+                        patch.object(target, method, side_effect=cross_expiry),
+                    ):
+                        accepted = target.import_verified(original, stream, receipt={"signed": True},
+                            verifier=lambda *args, **kwargs: True)
+                        self.assertEqual(calls, [phase])
+                        self.assertEqual(accepted, {**original, "session_id": "target"})
+                        records = [r for r in target.journal() if "checkpoint" in r]
+                        self.assertEqual(len(records), 1)
+                        self.assertTrue(records[0]["metadata_only"])
+                        self.assertEqual(records[0]["state"], "published")
+                        self.assertEqual(len(list((target.root / "assets").iterdir())),
+                                         0 if phase == "stage" else 1)
+                        target.acknowledge_checkpoint({"refs": [accepted]})
+                        with self.assertRaises(MediaRefusal) as cm:
+                            target.resolve_ref(accepted)
+                        self.assertEqual(cm.exception.code, "expired")
+                finally:
+                    stream.close()
+                    target.close()
+
+    async def test_expired_import_still_requires_valid_ref_and_real_authorization(self):
+        original = await self.stage(origin={
+            **self.origin, "created_at": "2020-01-01T00:00:00+00:00",
+            "expires_at": "2020-01-01T00:01:00+00:00",
+        })
+        target = SessionMediaStore(Path(self.directory.name) / "unauthorized-expired", "target",
+                                   policy=self.policy)
+        try:
+            with self.assertRaises(MediaRefusal):
+                target.import_verified({**original, "v": True}, io.BytesIO(self.data),
+                    receipt={}, verifier=lambda *args, **kwargs: True)
+            with self.assertRaises(MediaRefusal):
+                target.import_verified(original, io.BytesIO(self.data),
+                    receipt={}, verifier=lambda *args, **kwargs: False)
+            self.assertEqual(list(target.journal()), [])
+        finally:
+            target.close()
 
 
 if __name__ == "__main__":
