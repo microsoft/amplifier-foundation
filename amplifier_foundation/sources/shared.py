@@ -153,7 +153,9 @@ def _index_refresh_owned(root):
     for name in ("commondir", "gitdir", "objects/info/alternates", "objects/info/http-alternates"):
         if (git_dir / name).exists() or (git_dir / name).is_symlink():
             return False
-    for parent, directories, files in os.walk(git_dir, followlinks=False):
+    # is_symlink() reports False for a path Windows cannot reach; walk the
+    # metadata in the form that reaches every entry so no link goes unseen.
+    for parent, directories, files in os.walk(extended(git_dir), followlinks=False):
         if any((Path(parent) / name).is_symlink() for name in directories + files):
             return False
     paths = subprocess.check_output(
@@ -312,7 +314,7 @@ class SharedSourceStore:
                     # Builds must use writable build views, never modify this
                     # tree. Worktree modes are already final; seal only Git here.
                     git_dir = stage / ".git"
-                    for path in git_dir.rglob("*"):
+                    for path in extended(git_dir).rglob("*"):
                         if not path.is_symlink():
                             path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
                     git_dir.chmod(stat.S_IMODE(git_dir.stat().st_mode) & ~0o222)

@@ -180,8 +180,8 @@ async def test_new_entries_use_the_selected_name_width(tmp_path, monkeypatch, sh
     with build_lock(build) as lock:
         assert lock.lock_file == str(view) + ".lock"
     assert build_view(target / MODULE) == (build, True)
-    assert not list(store.root.rglob(".source-*"))
-    assert not list(store.root.rglob(".build-*"))
+    assert not list(target.parent.glob(".source-*"))
+    assert not list(view.parent.glob(".build-*"))
 
 
 @pytest.mark.asyncio
