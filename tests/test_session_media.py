@@ -711,6 +711,135 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             with self.store.resolve_ref(ref):
                 pass
 
+    async def test_published_group_requires_exact_order_members_and_original_origin(self):
+        refs = self.store.ingest_group_sync(
+            [self.data, image_bytes(color="blue")], origin=self.origin, policy=None
+        )["staged_refs"]
+        await self.store.publish(refs, origin=self.origin, disposition="retain")
+        self.assertEqual(
+            self.store.validate_published_group(refs, origin=self.origin),
+            {"valid": True, "ref_count": 2},
+        )
+        self.assertTrue(self.store.validate_published_group(
+            refs, origin=refs[0]["provenance"])["valid"])
+        for changed in ([], refs[:1], refs[::-1], [refs[0], refs[0]]):
+            with self.subTest(changed=changed), self.assertRaises(MediaRefusal):
+                self.store.validate_published_group(changed, origin=self.origin)
+        for origin in (
+            None, {**self.origin, "id": "not-this-call"},
+            {**self.origin, "session_id": "other-session"},
+            {**self.origin, "extra": "not-allowed"},
+            {**refs[0]["provenance"], "created_at": "2000-01-01T00:00:00+00:00"},
+        ):
+            with self.subTest(origin=origin), self.assertRaises(MediaRefusal):
+                self.store.validate_published_group(refs, origin=origin)
+        malformed = copy.deepcopy(refs)
+        malformed[0]["v"] = True
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group(malformed, origin=self.origin)
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group(tuple(refs), origin=self.origin)
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group(
+                [refs[0]] * (self.policy.max_images + 1), origin=self.origin)
+        other_origin = {**self.origin, "id": "another-published-call"}
+        other = await self.stage(origin=other_origin, value=image_bytes(color="green"))
+        await self.store.publish([other], origin=other_origin, disposition="retain")
+        # Every member is genuinely owned and published, but not this group.
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group([refs[0], other], origin=self.origin)
+
+    async def test_published_group_uses_final_selection_not_original_staging_set(self):
+        refs = self.store.ingest_group_sync(
+            [self.data, image_bytes(color="blue")], origin=self.origin, policy=None
+        )["staged_refs"]
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group(refs, origin=self.origin)
+        await self.store.publish(refs[1:], origin=self.origin, disposition="retain")
+        self.assertEqual(self.store.validate_published_group(
+            refs[1:], origin=self.origin), {"valid": True, "ref_count": 1})
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group(refs, origin=self.origin)
+        other_origin = {**self.origin, "id": "dropped-call"}
+        other = await self.stage(origin=other_origin)
+        await self.store.publish([other], origin=other_origin, disposition="drop")
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group([other], origin=other_origin)
+        with self.assertRaises(MediaRefusal):
+            self.store.validate_published_group([], origin=other_origin)
+
+    async def test_published_group_inspection_never_writes_or_reads_pixels(self):
+        refs = self.store.ingest_group_sync(
+            [self.data, image_bytes(color="blue")], origin=self.origin, policy=None
+        )["staged_refs"]
+        await self.store.publish(refs, origin=self.origin, disposition="retain")
+        before = {str(p.relative_to(self.root)): p.read_bytes()
+                  for p in self.root.rglob("*") if p.is_file()}
+        guard_calls = []
+        def guard(ref, *, purpose):
+            guard_calls.append((ref, purpose))
+            return True
+        observer = SessionMediaStore(
+            self.root, "session1", policy=self.policy, read_only=True,
+            source_read_verifier=guard,
+        )
+        try:
+            with (
+                patch.object(observer, "_write", side_effect=AssertionError("no writes")),
+                patch.object(observer, "_open_verified", side_effect=AssertionError("no pixels")),
+                patch.object(observer, "_origin", side_effect=AssertionError("no new origin")),
+            ):
+                self.assertEqual(observer.validate_published_group(
+                    refs, origin=self.origin), {"valid": True, "ref_count": 2})
+            self.assertEqual(len(guard_calls), 4)
+            self.assertTrue(all(purpose == "transfer" for _, purpose in guard_calls))
+            observer.source_read_verifier = lambda *args, **kwargs: False
+            with self.assertRaises(MediaRefusal):
+                observer.validate_published_group(refs, origin=self.origin)
+        finally:
+            observer.close()
+        after = {str(p.relative_to(self.root)): p.read_bytes()
+                 for p in self.root.rglob("*") if p.is_file()}
+        self.assertEqual(before, after)
+        # Publication inspection is not canonical acceptance or model delivery.
+        with self.assertRaises(MediaRefusal):
+            self.store.resolve_ref(refs[0])
+
+    async def test_published_group_rejects_late_source_or_publication_change(self):
+        refs = self.store.ingest_group_sync(
+            [self.data, image_bytes(color="blue")], origin=self.origin, policy=None
+        )["staged_refs"]
+        await self.store.publish(refs, origin=self.origin, disposition="retain")
+        calls = 0
+        def late_denial(ref, *, purpose):
+            nonlocal calls
+            calls += 1
+            return calls <= len(refs)
+        observer = SessionMediaStore(
+            self.root, "session1", policy=self.policy, read_only=True,
+            source_read_verifier=late_denial,
+        )
+        try:
+            with self.assertRaises(MediaRefusal):
+                observer.validate_published_group(refs, origin=self.origin)
+            origin_dir = self.store._dirs["origins"]
+            origin_file = next(p for p in (self.root / "origins").iterdir()
+                               if not p.name.startswith("."))
+            calls = 0
+            def change_final_publication(ref, *, purpose):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    saved = json.loads(origin_file.read_bytes())
+                    saved["publication"]["refs"] = refs[::-1]
+                    self.store._write(origin_dir, origin_file.name, saved)
+                return True
+            observer.source_read_verifier = change_final_publication
+            with self.assertRaises(MediaRefusal):
+                observer.validate_published_group(refs, origin=self.origin)
+        finally:
+            observer.close()
+
 
 if __name__ == "__main__":
     unittest.main()
