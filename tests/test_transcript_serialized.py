@@ -291,6 +291,24 @@ def test_verified_view_refusal_bounds_and_scope(tmp_path):
         prepared.canonical_sha256
 
 
+def test_caught_verified_snapshot_io_failure_still_revokes(tmp_path, monkeypatch):
+    path = tmp_path / "candidate"
+    prefix = candidate(path)
+    with path.open("rb") as stream, pytest.raises(w.TranscriptConflict):
+        with w.prepare_serialized_candidate(
+            stream, candidate_prefix=prefix, candidate_check=lambda: None,
+        ) as prepared:
+            with prepared.open_verified() as view:
+                with monkeypatch.context() as patch:
+                    def io_error(*args, **kwargs):
+                        raise OSError("synthetic private snapshot read error")
+                    patch.setattr(os, "pread", io_error)
+                    with pytest.raises(OSError):
+                        view.read(1)
+                with pytest.raises(w.TranscriptConflict):
+                    prepared.check()
+
+
 def test_candidate_late_parse_and_precommit_errors_preserve_original_tail(tmp_path):
     writer, previous = owner(tmp_path / "session")
     body = writer.session_dir / "transcript.v2" / previous.body
