@@ -550,3 +550,19 @@ def test_initialize_and_rewrite_current_operation_closure(tmp_path):
     receipt = acknowledge(writer, rewrite)
     assert receipt.generation == "r-rewrite"
     assert list(receipt.iter_refs()) == [fake_ref()]
+
+
+@pytest.mark.parametrize("change", ["suffix-bytes", "suffix-hash"])
+def test_rewrite_intent_bytes_must_match_selected_actual_region(tmp_path, change):
+    path, writer, ack = session(tmp_path)
+    rewritten = writer.rewrite([row()], expected=ack.commit, operation_id="rewrite", admit=lambda: None)
+    operation = path / "transcript.v2/operations/rewrite"
+    (operation / "published.json").unlink()
+    target = operation / "intent.json"
+    intent = json.loads(target.read_bytes())
+    intent["suffix_bytes" if change == "suffix-bytes" else "suffix_sha256"] = (
+        0 if change == "suffix-bytes" else "0" * 64)
+    target.write_text(json.dumps(intent))
+    with pytest.raises(Refused):
+        acknowledge(writer, rewritten)
+    assert not (operation / "published.json").exists()
