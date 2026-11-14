@@ -19,6 +19,8 @@ from amplifier_foundation.session.transcript_lifetime import (
 from amplifier_foundation.session.transcript_encoding import canonical_bytes
 from amplifier_foundation.session.transcript_source import open_committed_source
 
+pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='Prospective lifetime positive cases qualify Linux renameat2 only.')
+
 
 def create(parent, sid='new-session', admit=lambda: None):
     return Binding.create_new(parent / sid, session_id=sid, operation_id='init', admit=admit)
