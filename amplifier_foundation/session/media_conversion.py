@@ -1422,11 +1422,20 @@ def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reade
             or prefix.committed_bytes != facts["bytes"] or prefix.message_count != facts["records"]):
         raise Unsupported("Candidate selector differs from exact candidate facts")
     identity = _identity(operation_dir / "candidate.jsonl")
+    witnesses = [identity]
+    for name in ("verified.json", "plan.json", "manifest.sqlite", "original-0"):
+        witnesses.append(_identity(operation_dir / name))
 
     def check():
-        _check(identity)
-        if candidate_facts(operation_dir) != facts:
-            raise Unsupported("Candidate operation changed during publication")
+        # Prepared-owner checks can run for every output chunk. Rehashing the
+        # entire candidate here would make huge-string handoff quadratic.
+        # Pin exact namespace/regular-file stamps; full hashes check on entry
+        # and after the consumer context settles.
+        for witness in witnesses:
+            with _open(Path(witness.path)) as stream:
+                if _stamp(stream) != (witness.dev, witness.ino, witness.size,
+                                      witness.mtime_ns, witness.ctime_ns):
+                    raise Unsupported("Candidate operation changed during publication")
 
     db = sqlite3.connect(f"file:{operation_dir / 'manifest.sqlite'}?mode=ro", uri=True)
     try:
@@ -1443,6 +1452,8 @@ def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reade
                 raise Unsupported("Candidate descriptor changed")
             yield stream, prefix, check
             check()
+            if candidate_facts(operation_dir) != facts:
+                raise Unsupported("Candidate operation changed during final verification")
     finally:
         db.close()
 

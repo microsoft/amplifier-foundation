@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 from . import media_conversion as conversion
@@ -426,3 +427,195 @@ def _activate(operation_dir, session_dir, *, session_id, owner, fence, admit,
         saved["phase"] = "acknowledged"
         _journal(opfd, saved)
         return _result(binding, "acknowledged", receipt)
+
+
+@dataclass(frozen=True)
+class CommittedActivationResult:
+    """Actual T2 result: installed commit is distinct from candidate identity."""
+
+    state: str
+    commit: object | None
+    checkpoint: object | None = None
+    inline_removed_bytes: int = 0
+    held_records: int = 0
+
+
+_COMMITTED_JOURNAL = "committed-activation.json"
+
+
+def _committed_facts(operation, binding, expected, operation_id, owner):
+    from .transcript_lifetime import VersionedSessionBinding
+    from .transcript_v2 import CommittedPrefix
+    if type(binding) is not VersionedSessionBinding or type(expected) is not CommittedPrefix:
+        raise ActivationRefused("Actual prospective binding and exact committed predecessor required")
+    conversion._prefix_types(expected)
+    if (type(operation_id) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,179}", operation_id)
+            or not owner):
+        raise ActivationRefused("Stable original operation identity and owner required")
+    binding.check()
+    facts = conversion.candidate_facts(operation)
+    plan = conversion._saved_plan(operation)
+    if (plan.owner != owner or plan.committed_prefix != asdict(expected)
+            or plan.committed_session_dir != str(binding.directory)
+            or plan.session_id != binding.session_id
+            or plan.selected_records != plan.records):
+        raise ActivationRefused("Only exact full same-owner prospective source may activate")
+    return facts, plan
+
+
+def _committed_result(facts, state, binding, receipt=None):
+    return CommittedActivationResult(
+        state, None if receipt is None else binding.expected, receipt,
+        facts["inline_removed_bytes"], facts.get("held_records", 0),
+    )
+
+
+def _committed_receipt(binding, receipt):
+    from .versioned_checkpoint import VersionedCheckpointReceipt
+    if type(receipt) is not VersionedCheckpointReceipt:
+        raise ActivationRefused("Actual source-bound sealed versioned checkpoint required")
+    facts = receipt.verify()
+    if facts != asdict(binding.expected) | {"kind": "versioned-checkpoint-backed-v1"}:
+        raise ActivationRefused("Sealed checkpoint differs from actual binding result")
+    # Independently exhaust; no success from a lazy receipt verifier.
+    for _ in receipt.iter_refs():
+        pass
+    return receipt
+
+
+def _committed_journal(opfd, value):
+    raw = _journal_bytes(value)
+    name = ".committed-activation-" + uuid.uuid4().hex
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=opfd)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(name, _COMMITTED_JOURNAL, src_dir_fd=opfd, dst_dir_fd=opfd)
+    os.fsync(opfd)
+
+
+def apply_committed_candidate(operation_dir: Path, *, binding, expected, operation_id: str,
+                              owner: str, media_store, admit,
+                              cancelled=lambda: False) -> CommittedActivationResult:
+    """Use only the real prospective binding's serialized writer and sealed ACK.
+
+    A saved intent is never replayed here. Callback admission must settle real
+    host authorization/publication. It is not source/writer exclusion by itself.
+    """
+    return _activate_committed(operation_dir, binding=binding, expected=expected,
+                               operation_id=operation_id, owner=owner, media_store=media_store,
+                               admit=admit, cancelled=cancelled, resume=False)
+
+
+def resume_committed_candidate(operation_dir: Path, *, binding, expected, operation_id: str,
+                               owner: str, media_store, admit,
+                               cancelled=lambda: False) -> CommittedActivationResult:
+    """Reconcile only the original exact intent; never rebuild/rewrite or replay."""
+    return _activate_committed(operation_dir, binding=binding, expected=expected,
+                               operation_id=operation_id, owner=owner, media_store=media_store,
+                               admit=admit, cancelled=cancelled, resume=True)
+
+
+def _activate_committed(operation_dir, *, binding, expected, operation_id, owner, media_store,
+                        admit, cancelled, resume):
+    from .transcript_writer import prepare_serialized_candidate
+    for callback in (admit, cancelled):
+        if (not callable(callback) or inspect.iscoroutinefunction(callback)
+                or inspect.isgeneratorfunction(callback)):
+            raise ActivationRefused("Settled synchronous admission and cancellation required")
+    with _directory(operation_dir) as (operation, opfd, checkop):
+        facts, plan = _committed_facts(operation, binding, expected, operation_id, owner)
+        if facts.get("held_records", 0):
+            return _committed_result(facts, "held-original-policy", binding)
+
+        def guard():
+            checkop()
+            binding.check()
+            if admit() is not True:
+                raise ActivationRefused("Current prospective activation admission refused")
+            decision = cancelled()
+            if type(decision) is not bool:
+                raise ActivationRefused("Cancellation must be a synchronous boolean")
+            if decision:
+                raise InterruptedError("Committed conversion cancelled; reconcile saved intent if present")
+
+        identity = {
+            "format": "foundation.committed-media-activation.v1",
+            "session_id": plan.session_id, "session_dir": str(binding.directory),
+            "owner": owner, "expected": asdict(expected), "operation_id": operation_id,
+            "candidate_sha256": facts["sha256"], "candidate_bytes": facts["bytes"],
+            "plan_sha256": facts["plan_sha256"], "manifest_sha256": facts["manifest_sha256"],
+        }
+        try:
+            saved = _small(opfd, _COMMITTED_JOURNAL)
+        except FileNotFoundError:
+            saved = None
+        if saved is not None and (saved.get("identity") != identity or set(saved) != {
+            "identity", "kind", "canonical_sha256", "canonical_bytes", "records", "phase",
+        }):
+            raise ActivationRefused("Saved committed activation conflicts with original intent")
+        if saved is not None and not resume:
+            raise ActivationRefused("Saved activation exists; reconcile/resume, never replay apply")
+        if resume and saved is None:
+            raise ActivationRefused("No original committed activation intent to reconcile")
+        guard()
+        receipt = None
+        if saved is not None:
+            if saved["phase"] not in {"intent", "acknowledged"}:
+                raise ActivationRefused("Unknown committed activation state")
+            if saved["kind"] == "checkpoint":
+                receipt = binding.checkpoint(expected=expected, media_store=media_store)
+            elif saved["kind"] == "rewrite":
+                ack = binding.reconcile(operation_id=operation_id, expected=expected,
+                                        suffix_sha256=saved["canonical_sha256"], kind="rewrite",
+                                        media_store=media_store)
+                if ack is None:
+                    return _committed_result(facts, "unconfirmed-no-replay", binding)
+                receipt = binding.last_receipt
+            else:
+                raise ActivationRefused("Unknown original versioned operation kind")
+            _committed_receipt(binding, receipt)
+            guard()
+        else:
+            with conversion.open_verified_candidate(
+                operation, session_id=plan.session_id, expected_source=expected,
+                asset_reader=lambda ref: media_store.resolve_ref(ref, committed=False),
+            ) as (stream, prefix, candidate_check):
+                # The format owner defines canonical intent bytes. Header SHA
+                # cannot be substituted for its row fingerprint.
+                def checked():
+                    guard()
+                    candidate_check()
+                with prepare_serialized_candidate(
+                    stream, candidate_prefix=prefix, candidate_check=checked,
+                ) as prepared:
+                    saved = {
+                        "identity": identity,
+                        "kind": "checkpoint" if (facts["sha256"], facts["bytes"]) == (
+                            expected.sha256, expected.committed_bytes
+                        ) else "rewrite",
+                        "canonical_sha256": prepared.canonical_sha256,
+                        "canonical_bytes": prepared.canonical_bytes,
+                        "records": prepared.message_count, "phase": "intent",
+                    }
+                guard()
+                _committed_journal(opfd, saved)  # Before ANY canonical mutation.
+                if saved["kind"] == "checkpoint":
+                    receipt = binding.checkpoint(expected=expected, media_store=media_store)
+                else:
+                    # This method owns its own immutable preparation, strict
+                    # actual-store admission and typed-ACK context through exit.
+                    binding.rewrite_serialized(
+                        stream, candidate_prefix=prefix, candidate_check=checked,
+                        expected=expected, operation_id=operation_id,
+                        admit=guard, media_store=media_store,
+                    )
+                    receipt = binding.last_receipt
+                _committed_receipt(binding, receipt)
+                guard()
+            # An outer candidate-context failure must never produce success.
+        guard()
+        saved["phase"] = "acknowledged"
+        _committed_journal(opfd, saved)
+        return _committed_result(facts, "acknowledged", binding, receipt)
