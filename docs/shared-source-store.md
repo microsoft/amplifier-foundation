@@ -123,6 +123,42 @@ are left untouched and rejected for operator inspection. Interrupted stages and
 quarantines are not automatically collected. These cooperative API guarantees
 do not protect against unrelated writers changing paths outside the locks.
 
+## Windows path length
+
+A default Windows PC has long paths off; turning them on needs an administrator.
+Windows then refuses an ordinary file path of 260 characters or more (248 for a
+new directory). Git writes deeper checkouts anyway, because it is started with
+`core.longpaths`. The store therefore does two things on Windows:
+
+- Its own tree operations (sealing a stage, copying an adopted source, removing
+  a failed stage, validating and copying a build view) address the tree in the
+  extended-length form (`\\?\C:\...`). That form is used for traversal only.
+  Paths returned to callers, Git working directories, lock files and metadata
+  files keep their ordinary spelling, and the two forms are never compared.
+- New entries use the first 16 digits of the 64-digit names:
+  `objects/<16>/<commit>` and `builds/<16>`. This saves 48 characters for the
+  files that other programs read by ordinary paths: module sources read by a
+  build backend, and bundle content read by the host. An entry that already
+  exists under the 64-digit name stays in use and is never moved. An existing
+  short entry stays selected when a 64-digit one appears beside it later.
+
+A store name locates an entry; it does not establish identity. `verify()` and
+the build validators compare the complete recorded repository and commit. Two
+sources whose names share 16 digits cannot share an entry: the second one fails
+with an identity or provenance error, and nothing is adopted or removed. Every
+platform recognizes both name widths as store entries. Only Windows selects the
+short name; elsewhere `checkout()` returns the same path as before.
+
+Limits that remain: a child program still cannot use a working directory or an
+ordinary path beyond the limit. A new object adds 67 characters to the store
+root before the repository path (`\objects\<16>\<40-digit commit>\`; 91 for a
+64-digit SHA-256 commit) and a new build view adds 25 (`\builds\<16>\`). So a
+repository file deeper than `259 - len(store root) - 67` characters in an
+object, or `- 25` in a build view, is reachable by Git and by the store but not
+by a program that opens it by its ordinary path. The `windows-long-paths-off` CI job turns the setting off on the
+runner, requires a canary to show that the limit is in force, and then stages,
+seals, cleans up and builds a repository whose files exceed it.
+
 `AMPLIFIER_INSTALL_PREPARATION` can name one isolated preparation attempt with
 a fresh 32-character hexadecimal token. With explicit dependency refresh, a
 duplicate installation can reuse that attempt's receipt only when source content,

@@ -37,6 +37,8 @@ import stat
 import sys
 from pathlib import Path
 
+from amplifier_foundation.sources._winpath import extended
+
 __all__ = ["rmtree_robust"]
 
 
@@ -94,14 +96,19 @@ def rmtree_robust(path: Path | str, *, ignore_errors: bool = False) -> None:
             retries).
     """
     target = Path(path)
+    # Git writes checkouts deeper than the ordinary Windows path limit. Remove
+    # the tree in the form that reaches every file; report the caller's path.
+    tree = extended(target)
 
     if sys.version_info >= (3, 12):
         # onerror is deprecated since 3.12 in favor of onexc.
-        shutil.rmtree(target, onexc=_onexc)
+        shutil.rmtree(tree, onexc=_onexc)
     else:
-        shutil.rmtree(target, onerror=_onerror)
+        shutil.rmtree(tree, onerror=_onerror)
 
-    if not ignore_errors and target.exists():
+    # An ordinary path beyond the Windows limit reads as absent even when the
+    # tree is still there. Ask in the form that was used to remove it.
+    if not ignore_errors and tree.exists():
         raise OSError(
             f"Failed to remove directory even after clearing read-only "
             f"attributes and retrying: {target}. This is not a transient "

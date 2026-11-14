@@ -429,7 +429,11 @@ async def test_preparation_rejects_changed_stage_without_repairing_authority(
 
     def mutate_copy(source, destination, *args, **kwargs):
         result = copytree(source, destination, *args, **kwargs)
-        if Path(destination).name == "checkout":
+        # The store copies in Windows extended-length form; Git gets the
+        # ordinary spelling of the same directory.
+        text = os.fspath(destination)
+        destination = Path(text[4:] if text.startswith("\\\\?\\") else text)
+        if destination.name == "checkout":
             if mutation == "head":
                 git(destination, "commit", "--allow-empty", "-m", "different HEAD")
             else:
