@@ -26,9 +26,6 @@ def main():
     args.work.mkdir(mode=0o700, exist_ok=False)
     sys.path.insert(0, str(root))
     from amplifier_foundation.session.media import MediaRefusal, SessionMediaStore
-    from amplifier_foundation.session.media_conversion import (
-        iter_serialized_candidate_refs,
-    )
     from amplifier_foundation.session.versioned_checkpoint import (
         acknowledge_versioned_checkpoint,
     )
@@ -44,6 +41,42 @@ def main():
         with (path / ".synthetic-owner").open("a+b") as lease:
             w.fcntl.flock(lease.fileno(), w.fcntl.LOCK_EX)
             yield lambda: None
+
+    @contextmanager
+    def prepared_row(row, name, check=lambda: None):
+        raw = w._header("candidate") + (json.dumps(row) + "\n").encode()
+        path = args.work / name
+        path.write_bytes(raw)
+        prefix = w.CommittedPrefix("fixture", "candidate", "g-candidate.jsonl", 1,
+                                  len(raw), 1, hashlib.sha256(raw).hexdigest(), "build")
+        with path.open("rb") as stream, w.prepare_serialized_candidate(
+            stream, candidate_prefix=prefix, candidate_check=check,
+        ) as prepared:
+            yield prepared
+
+    controls = []
+    for index, metadata in enumerate((
+        None, {}, {media_namespace: {"refs": []}},
+        {media_namespace: {"refs": [], "v": 1}},
+    )):
+        with prepared_row({"role": "user", "metadata": metadata}, f"valid-{index}") as prepared:
+            assert list(prepared.iter_refs()) == []
+        controls.append({"control": f"valid-{index}", "passed": True})
+    for index, metadata in enumerate((
+        [], "", {media_namespace: None}, {media_namespace: []},
+        {media_namespace: {}}, {media_namespace: {"refs": None}},
+        {media_namespace: {"refs": [], "unknown": True}},
+        {media_namespace: {"refs": [], "v": True}},
+        {media_namespace: {"refs": [], "v": 1.0}},
+        {media_namespace: {"refs": [], "v": 2}},
+    )):
+        try:
+            with prepared_row({"role": "user", "metadata": metadata}, f"refuse-{index}") as prepared:
+                list(prepared.iter_refs())
+        except ValueError:
+            controls.append({"control": f"refuse-{index}", "passed": True})
+        else:
+            raise AssertionError("Invalid prepared media envelope accepted")
 
     results = []
     for image_format in ("PNG", "JPEG"):
@@ -77,12 +110,9 @@ def main():
                     admitted = []
 
                     def admit():
-                        with prepared.open_verified() as verified:
-                            for actual in iter_serialized_candidate_refs(
-                                verified, candidate_prefix=prepared.candidate_prefix,
-                            ):
-                                store.validate_published_ref(actual)
-                                admitted.append(actual)
+                        for actual in prepared.iter_refs():
+                            store.validate_published_ref(actual)
+                            admitted.append(actual)
                         prepared.check()
 
                     ack = writer.rewrite_prepared(prepared, expected=initial.commit,
@@ -115,7 +145,7 @@ def main():
                             "ref_count": result["ref_count"], "canonical_sha256": digest,
                             "kind": facts["kind"], "sha256": ack.commit.sha256})
     print(json.dumps({"scope": "synthetic-exported-candidate-graph-actual-F1-typedACK",
-                      "results": results}))
+                      "results": results, "controls": controls}))
     return 0
 
 

@@ -486,10 +486,14 @@ class _VerifiedCandidateView:
             raise ValueError("Candidate reads must be explicitly bounded to 64KiB")
         state = self._state()
         length = min(size, state.prefix.committed_bytes - self._offset)
-        raw = os.pread(state.snapshot.fileno(), length, self._offset)
-        if len(raw) != length:
-            raise TranscriptConflict("Prepared snapshot shortened")
-        self._state()
+        try:
+            raw = os.pread(state.snapshot.fileno(), length, self._offset)
+            if len(raw) != length:
+                raise TranscriptConflict("Prepared snapshot shortened")
+            self._state()
+        except BaseException:
+            _PREPARED.pop(self._candidate, None)
+            raise
         self._offset += len(raw)
         return raw
 
@@ -524,6 +528,22 @@ class PreparedTranscriptCandidate:
 
     def check(self):
         _prepared_state(self)
+
+    def iter_refs(self):
+        """Strict bounded ref DATA from this exact issued snapshot, not authority.
+
+        The versioned-media owner supplies the shared schema scanner. Callers
+        must exhaust it (including post-last-yield checks) and validate/publish
+        through the actual store before writing. No arbitrary iterator accepted.
+        The lazy import avoids a writer/checkpoint import cycle and fails closed
+        when that explicit composed feature is absent.
+        """
+        self.check()
+        from .versioned_checkpoint import scan_serialized_refs
+        with self.open_verified() as stream:
+            yield from scan_serialized_refs(
+                stream, prefix=self.candidate_prefix, check=self.check)
+            self.check()
 
     @contextmanager
     def open_verified(self):
