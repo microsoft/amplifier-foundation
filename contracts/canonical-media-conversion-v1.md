@@ -316,13 +316,20 @@ prepare its own immutable streamed snapshot and canonical-row fingerprint before
 publication: the whole header-bearing hash is **not** the canonical-row intent
 hash used by rewrite reconciliation.
 
-`iter_serialized_candidate_refs(stream, candidate_prefix=...)` is the bounded
-strict canonical top-level ref enumerator for the format owner's
-`prepared.open_verified()` view. The prepared context must span full enumeration,
+The format owner's `prepared.iter_refs()` uses the shared canonical checkpoint
+owner's strict `scan_serialized_refs`, not a new converter media grammar.
+`iter_serialized_candidate_refs(stream, candidate_prefix=...)` remains a data-only
+compatibility wrapper over that same scanner; it does not bind source ownership
+or become an admission capability. The prepared context must span full enumeration,
 actual retained-asset admission, writer publication and typed checkpoint exit.
 It accepts neither a caller-supplied ref list nor an independent manifest query
 as admission authority. Consumers must exhaust it, including final count/read
 checks. T2 candidates explicitly refuse the legacy installed-body ref/ACK seam.
+T2 portable export is an integrity surface, not a target writer/import grant.
+The legacy `transfer_prefix` entry point explicitly refuses a T2 plan before any
+asset effect rather than returning source-session selectors mixed with foreign
+target refs. Import/fork target enrollment requires its own explicit target
+binding selection; this prospective Optimize extension does not manufacture one.
 
 ## Qualification
 

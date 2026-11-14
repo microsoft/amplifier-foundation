@@ -1079,6 +1079,10 @@ async def transfer_prefix(
     adapter) itself; bundle possession or a digest does not create one. Filter
     prefix with preview FIRST. Target asset adoption does not commit a transcript.
     """
+    if plan.committed_prefix is not None:
+        raise Unsupported(
+            "T2 portable export is integrity only; target adoption requires an explicit target binding plan"
+        )
     if plan.inline_images:
         raise Unsupported("Externalize inline images before transferring reference ownership")
     limit = _host_image_limit(target_store)

@@ -190,12 +190,13 @@ def test_historical_reconcile_never_borrows_successor_receipt(tmp_path, monkeypa
         assert binding.expected == latest != actual.commit
 
 
-def test_huge_record_full_streamed_activation_and_export_bound(tmp_path, monkeypatch):
+@pytest.mark.parametrize('size', [2 * 1024 * 1024, 8 * 1024 * 1024])
+def test_huge_record_full_streamed_activation_and_export_bound(tmp_path, monkeypatch, size):
     import tracemalloc
     from amplifier_foundation.session.media_conversion import verify_export
     with fixture(tmp_path) as (binding, store, fence):
         row = {'role': 'tool', 'tool_call_id': 'huge-original', 'status': 'complete',
-               'provider_state': 'x' * (8 * 1024 * 1024),
+               'provider_state': 'x' * size,
                'content': [{'type': 'image', 'source': {
                    'type': 'base64', 'media_type': 'image/png', 'data': base64.b64encode(png()).decode(),
                }}]}
@@ -219,7 +220,7 @@ def test_huge_record_full_streamed_activation_and_export_bound(tmp_path, monkeyp
             result = apply_committed_candidate(tmp_path / 'operation', **arguments(binding, store, expected))
             with open_committed_source(binding.directory, expected=binding.expected) as source:
                 assert source.commit.message_count == 1
-                assert sum(map(len, source.iter_bytes())) > 8 * 1024 * 1024
+                assert sum(map(len, source.iter_bytes())) > size
             verify_export(tmp_path / 'operation/portable')
             _, peak = tracemalloc.get_traced_memory()
         finally:

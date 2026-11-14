@@ -15,6 +15,7 @@ from amplifier_foundation.session.media_conversion import (
     Unsupported, build_candidate, candidate_facts, open_verified_candidate,
     preview, preview_committed, reconcile, verify_export,
     iter_serialized_candidate_refs,
+    transfer_prefix,
 )
 from amplifier_foundation.session.transcript_lifetime import VersionedSessionBinding
 from amplifier_foundation.session.transcript_source import open_committed_source
@@ -111,6 +112,12 @@ def test_selected_prefix_keeps_header_excludes_suffix_asset(tmp_path):
         assert not list((tmp_path / 'operation/portable/assets').iterdir())
         assert len((tmp_path / 'operation/candidate.jsonl').read_bytes().splitlines()) == 2
         verify_export(tmp_path / 'operation/portable')
+        with pytest.raises(Unsupported, match='explicit target binding plan'):
+            asyncio.run(transfer_prefix(
+                plan, tmp_path / 'foreign', fence=fence, source_store=store,
+                target_store=store, target_session_id='foreign', asset_reader=store.resolve_ref,
+            ))
+        assert not (tmp_path / 'foreign').exists()
 
 
 def test_unknown_inline_policy_held_per_record_not_invented(tmp_path):
