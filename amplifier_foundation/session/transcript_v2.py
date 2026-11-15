@@ -51,9 +51,14 @@ def _decode(raw):
         raise UnsupportedTranscript("Invalid versioned transcript JSON") from None
 
 
+def _is_v2_object(value):
+    """JSON version 2 is an integer, not a numerically equal float/bool."""
+    return type(value) is dict and type(value.get("v")) is int and value["v"] == 2
+
+
 def _validate_body_header(value, generation):
     """Validate JSON schema types, not Python's numeric-coercing dict equality."""
-    if (type(value) is not dict or type(value.get("v")) is not int
+    if (not _is_v2_object(value)
             or value != {
                 "format": _FORMAT, "v": 2, "generation": generation,
                 "min_reader": ["committed-prefix-v2", "session-media-v1"],
@@ -151,12 +156,12 @@ class CommittedTranscriptReader:
         if len(raw) > _CHUNK:
             raise UnsupportedTranscript("Oversized migration journal")
         plan = _decode(raw)
-        if (not isinstance(plan, dict) or plan.get("format") != _FORMAT
-                or plan.get("v") != 2):
+        if not _is_v2_object(plan) or plan.get("format") != _FORMAT:
             raise UnsupportedTranscript("Invalid migration journal")
         with _file(ready) as stream:
             raw = stream.read(_CHUNK + 1)
-        if len(raw) > _CHUNK or _decode(raw) != {
+        value = _decode(raw) if len(raw) <= _CHUNK else None
+        if not _is_v2_object(value) or value != {
             "format": _FORMAT, "v": 2, "session_id": plan.get("session_id"),
             "operation_id": plan.get("operation_id"),
         }:
@@ -164,7 +169,8 @@ class CommittedTranscriptReader:
         for name in ("transcript.jsonl", "transcript.jsonl.backup"):
             with _file(self.session_dir / name / "format.json") as stream:
                 raw = stream.read(_CHUNK + 1)
-            if len(raw) > _CHUNK or _decode(raw) != {
+            value = _decode(raw) if len(raw) <= _CHUNK else None
+            if not _is_v2_object(value) or value != {
                 "format": _FORMAT, "v": 2,
                 "status": "unsupported-by-legacy-entrypoint",
                 "operation_id": plan.get("operation_id"),

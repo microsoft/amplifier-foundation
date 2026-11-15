@@ -211,6 +211,59 @@ def test_cold_open_hash_semantic_and_bound_closure(tmp_path, damage):
             pytest.fail("exposed an invalid source")
 
 
+@pytest.mark.parametrize("control", [
+    "transcript.v2/migration.json", "transcript.v2/ready.json",
+    "transcript.jsonl/format.json", "transcript.jsonl.backup/format.json",
+])
+@pytest.mark.parametrize("version", [b"2.0", b"2e0", b"true", b"false", b"null", b'"2"', None])
+@pytest.mark.parametrize("entrypoint", ["reader", "source", "live-source", "writer", "warm-writer"])
+def test_noninteger_transition_control_version_refuses_without_mutation(
+        tmp_path, control, version, entrypoint):
+    writer, commit, _ = fixture(tmp_path, [{"role": "user", "content": "preserved"}])
+
+    def damage():
+        path = tmp_path / control
+        value = json.loads(path.read_bytes())
+        del value["v"]
+        raw = json.dumps(value).encode()
+        if version is not None:
+            raw = raw[:-1] + b',"v":' + version + b"}"
+        path.write_bytes(raw)
+
+    def inventory():
+        return {str(path.relative_to(tmp_path)):
+                path.read_bytes() if path.is_file() else None
+                for path in tmp_path.rglob("*")}
+
+    def forbidden_admission():
+        pytest.fail("malformed transition admitted new content")
+
+    if entrypoint == "live-source":
+        with s.open_committed_source(tmp_path, expected=commit) as source:
+            damage()
+            before = inventory()
+            with pytest.raises(UnsupportedTranscript):
+                source.window(0, 1)
+            with pytest.raises(UnsupportedTranscript):
+                source.read_range(0, 1)
+    else:
+        damage()
+        before = inventory()
+        with pytest.raises(UnsupportedTranscript):
+            if entrypoint == "reader":
+                CommittedTranscriptReader(tmp_path).load_messages()
+            elif entrypoint == "source":
+                with s.open_committed_source(tmp_path, expected=commit):
+                    pytest.fail("exposed malformed transition")
+            else:
+                selected = writer if entrypoint == "warm-writer" else w.TranscriptWriter(
+                    tmp_path, fence=fence)
+                selected.append([{"role": "assistant", "content": "must-not-append"}],
+                                expected=commit, operation_id="refused",
+                                admit=forbidden_admission)
+    assert inventory() == before
+
+
 @pytest.mark.parametrize("version", [b"2.0", b"2e0", b"true", b"false", b"null", b'"2"'])
 @pytest.mark.parametrize("entrypoint", ["reader", "source", "writer"])
 def test_noninteger_body_header_version_refuses_even_with_matching_witnesses(
