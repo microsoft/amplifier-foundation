@@ -28,10 +28,17 @@ Canonical `metadata["experimental.media.v1"]["refs"]` on depth/turn/scope-select
 rows is strictly validated with Foundation's public `validate_blob_ref` and copied
 without unrelated metadata. This is structural validation, **not access authority**.
 Tool text results retain the same scope selection and assistant-labelled summary.
-Their refs are never attached to that synthetic assistant summary: ref-only tool
-carriers retain the actual selected `role: tool`, `name` and `tool_call_id`.
-Selected assistant media carriers, or tool media without a nonempty name/call ID,
-refuse before spawn rather than guessing or reconstructing a tool association.
+Their refs are never attached to that synthetic assistant summary. **Selected
+tool-result media is unavailable with this ref-only transport and refuses before
+spawn**, including a healthy complete parent tool-call/result group: only
+ref-bearing rows are transported, so the child's receiver cannot retain the
+complete group. The actual CLI receiver's complete-group guard remains intact.
+The delegate does not invent calls, rescan excluded history, widen selection,
+move refs onto another role, drop tool identity, or retry as text-only. If a
+selection mixes user and tool media, the delegation refuses atomically rather
+than partially forwarding only the user refs. Tool results without media still
+inherit their bounded text summary as before. Selected assistant media also
+refuses rather than guessing a supported carrier.
 Ordinary plain-JSON text results retain their existing container formatting;
 inline image blocks and ambiguous image/source/data envelopes are reduced to
 explicit text blocks rather than stringified into context. Serialized JSON tool
@@ -42,11 +49,17 @@ also refuse: unsuccessful privacy inspection never falls back to forwarding raw
 serialized text.
 
 Text still appears once in the existing bounded parent-context instruction.
-Only ref-bearing rows are also passed to the host's existing `session.spawn`
+Only supported user ref-bearing rows are passed to the host's existing `session.spawn`
 `parent_messages` kwarg, with their selected role, empty `content`, and canonical
-refs. Image-only selected rows can therefore carry refs without an empty text
+refs. Image-only selected user rows can therefore carry refs without an empty text
 wrapper. `none`, disabled inheritance, and text-only calls pass no such kwarg.
 No additional history read or selection is performed.
+
+The maintained source-join tests use the actual CLI `inherit_selected_messages`
+with synthetic sessions and owners when the CLI is installed or
+`AMPLIFIER_CLI_SOURCE` points to an existing checkout. Foundation-only environments
+skip that optional lane; a skip is not a CLI pass. These tests do not install the
+CLI or establish an installed/provider/native-vision route.
 
 A missing/unknown `parent_messages` ABI refuses ref-bearing inheritance before
 invoking spawn; legacy text-only hosts keep working unchanged. Accepting a kwarg

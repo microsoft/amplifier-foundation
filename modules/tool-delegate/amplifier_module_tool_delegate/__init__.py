@@ -1392,20 +1392,17 @@ class DelegateTool:
             raise ValueError("Invalid inherited media reference") from None
         if refs:
             role = source.get("role")
-            if role not in ("user", "tool"):
-                raise ValueError("Media inheritance unavailable for selected carrier role")
             if role == "tool":
-                name, call_id = source.get("name"), source.get("tool_call_id")
-                if (
-                    not isinstance(name, str) or not name.strip()
-                    or not isinstance(call_id, str) or not call_id.strip()
-                ):
-                    raise ValueError(
-                        "Media inheritance unavailable: selected tool carrier needs name and tool_call_id"
-                    )
-                # The bounded text summary may use an assistant label, but the
-                # media carrier must retain its actual selected tool slot.
-                target.update(role="tool", name=name, tool_call_id=call_id)
+                # This channel contains ref-only rows, not a complete canonical
+                # tool-call/result history. Receivers such as the CLI require
+                # complete groups. Do not invent calls, widen selection, rehome
+                # refs, or report forwarding when this transport cannot comply.
+                raise ValueError(
+                    "Media inheritance unavailable: ref-only tool carriers cannot "
+                    "preserve complete tool-call/result groups"
+                )
+            if role != "user":
+                raise ValueError("Media inheritance unavailable for selected carrier role")
             target["metadata"] = {namespace: {"refs": refs}}
         return target
 
@@ -2329,10 +2326,6 @@ class DelegateTool:
             media_messages = [
                 {
                     "role": msg["role"], "content": "", "metadata": msg["metadata"],
-                    **(
-                        {"name": msg["name"], "tool_call_id": msg["tool_call_id"]}
-                        if msg["role"] == "tool" else {}
-                    ),
                 }
                 for msg in (parent_messages or [])
                 if msg.get("metadata")

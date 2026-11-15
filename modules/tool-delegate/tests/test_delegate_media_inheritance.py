@@ -4,7 +4,11 @@ from copy import deepcopy
 import base64
 from contextlib import ExitStack
 import io
+import importlib
 import json
+import os
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -69,19 +73,259 @@ def labels(rows):
     return [r["metadata"][NS]["refs"][0]["provenance"]["id"] for r in rows]
 
 
+@pytest.fixture
+def actual_cli_inheritance(monkeypatch):
+    """Optional source-join lane; never replaces CLI functions or their imports.
+
+    Set AMPLIFIER_CLI_SOURCE to an existing CLI checkout. The CLI is not a
+    Foundation dependency, so absence skips this lane rather than installing it.
+    """
+    source = os.environ.get("AMPLIFIER_CLI_SOURCE")
+    if source:
+        monkeypatch.syspath_prepend(source)
+    # The public doctor startup route imports modules without initializing the
+    # application, credentials or TLS shim. No function or class is substituted.
+    with monkeypatch.context() as startup:
+        startup.setattr(sys, "argv", ["amplifier", "doctor"])
+        try:
+            module = importlib.import_module("amplifier_app_cli.session_media_inheritance")
+            media = importlib.import_module("amplifier_app_cli.session_media")
+            native = importlib.import_module("amplifier_app_cli.session_store")
+        except ModuleNotFoundError as error:
+            if error.name == "amplifier_app_cli" and not source:
+                pytest.skip("Actual CLI join requires installed CLI or AMPLIFIER_CLI_SOURCE")
+            raise
+    if source:
+        assert Path(module.__file__).is_relative_to(Path(source).resolve())
+    return module, media, native
+
+
+def complete_tool_parent(name, *, with_media=True):
+    result = row("tool", "selected observation", "selectedrefs",
+                 name=name, tool_call_id="selected-call-1")
+    if not with_media:
+        result.pop("metadata")
+    return [
+        {"role": "user", "content": "inspect the selected observation"},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "selected-call-1", "type": "function",
+            "function": {"name": name, "arguments": "{}"},
+        }]},
+        result,
+        {"role": "assistant", "content": "finished"},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope,name", [
+    ("agents", "delegate"), ("agents", "task"), ("full", "bash"),
+])
+async def test_actual_cli_complete_tool_parent_refuses_before_spawn(actual_cli_inheritance, scope, name):
+    from amplifier_foundation.session.diagnosis import diagnose_transcript
+
+    cli, _, _ = actual_cli_inheritance
+    messages = complete_tool_parent(name)
+    assert diagnose_transcript(messages)["status"] == "healthy"
+    original = deepcopy(messages)
+    owner_lookup = MagicMock(side_effect=AssertionError("No media owner lookup permitted"))
+    child_context = SimpleNamespace(add_message=AsyncMock())
+    child = SimpleNamespace(session_id="child", coordinator=SimpleNamespace(
+        get_capability=owner_lookup, get=lambda _: child_context,
+    ))
+    parent = SimpleNamespace(session_id="parent", coordinator=SimpleNamespace(
+        get_capability=owner_lookup,
+    ))
+    forwarded = []
+    cli_errors = []
+
+    async def actual_receiver(*, parent_messages, **kwargs):
+        forwarded.append(deepcopy(parent_messages))
+        try:
+            await cli.inherit_selected_messages(child, parent, parent_messages)
+        except ValueError as error:
+            cli_errors.append(str(error))
+            raise
+        return {"output": "done", "session_id": "child"}
+
+    tool, _, hooks, _ = harness(messages, actual_receiver)
+    result = await execute(tool, context_scope=scope)
+    assert not result.success
+    assert forwarded == [], f"Spawn received isolated tool rows; actual CLI refused: {cli_errors}"
+    assert "unavailable" in str(result.error).lower()
+    assert "tool" in str(result.error).lower()
+    assert cli_errors == []  # Refusal belongs before the receiver/adoption boundary.
+    owner_lookup.assert_not_called()
+    child_context.add_message.assert_not_awaited()
+    assert messages == original
+    assert "media_inheritance" not in json.dumps(result.model_dump())
+    assert "selectedrefs" not in json.dumps(hooks.emit.call_args_list, default=str)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope,name", [
+    ("agents", "delegate"), ("agents", "task"), ("full", "bash"),
+])
+async def test_mixed_user_tool_media_never_partially_forwards(scope, name):
+    messages = complete_tool_parent(name)
+    messages[0]["metadata"] = {NS: {"refs": [ref("user-ref")]}}
+    before = deepcopy(messages)
+    tool, captured, _, _ = harness(messages)
+    result = await execute(tool, context_scope=scope)
+    assert not result.success
+    assert captured == []
+    assert "unavailable" in str(result.error).lower()
+    assert messages == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope,name", [
+    ("agents", "delegate"), ("agents", "task"), ("full", "bash"),
+])
+async def test_empty_tool_ref_envelope_keeps_text_only_semantics(scope, name):
+    messages = complete_tool_parent(name)
+    messages[2]["metadata"] = {NS: {"refs": []}}
+    tool, captured, _, _ = harness(messages)
+    result = await execute(tool, context_scope=scope)
+    assert result.success
+    assert "parent_messages" not in captured[0]
+    assert captured[0]["instruction"].count("ASSISTANT: [") == 1
+
+
+@pytest.mark.asyncio
+async def test_actual_cli_group_guard_stays_intact(actual_cli_inheritance):
+    """The receiver must still refuse the historical isolated tool carrier."""
+    cli, _, _ = actual_cli_inheritance
+    lookup = MagicMock(side_effect=AssertionError("Guard must precede owner lookup"))
+    context = SimpleNamespace(add_message=AsyncMock())
+    child = SimpleNamespace(coordinator=SimpleNamespace(
+        get_capability=lookup, get=lambda _: context,
+    ))
+    parent = SimpleNamespace(coordinator=SimpleNamespace(get_capability=lookup))
+    selected = row("tool", "", "selectedrefs", name="delegate", tool_call_id="selected-call-1")
+    with pytest.raises(ValueError, match="complete tool-call/result groups"):
+        await cli.inherit_selected_messages(child, parent, [selected])
+    lookup.assert_not_called()
+    context.add_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope,name", [
+    ("agents", "delegate"), ("agents", "task"), ("full", "bash"),
+])
+async def test_actual_cli_text_only_tool_parent_keeps_summary_once(actual_cli_inheritance, scope, name):
+    cli, _, _ = actual_cli_inheritance
+    messages = complete_tool_parent(name, with_media=False)
+    context = SimpleNamespace(add_message=AsyncMock())
+    lookup = MagicMock(side_effect=AssertionError("No text-only media owner lookup"))
+    child = SimpleNamespace(coordinator=SimpleNamespace(
+        get_capability=lookup, get=lambda _: context,
+    ))
+    parent = SimpleNamespace(coordinator=SimpleNamespace(get_capability=lookup))
+    calls = []
+
+    async def actual_receiver(**kwargs):
+        calls.append(kwargs)
+        assert "parent_messages" not in kwargs
+        assert await cli.inherit_selected_messages(child, parent, kwargs.get("parent_messages")) is False
+        # Ordinary explicit text-only receiver input also remains supported.
+        selected = [{"role": "user", "content": kwargs["instruction"]}]
+        assert await cli.inherit_selected_messages(child, parent, selected) is False
+        return {"output": "done", "session_id": "child"}
+
+    tool, _, _, _ = harness(messages, actual_receiver)
+    assert (await execute(tool, context_scope=scope)).success
+    assert len(calls) == 1
+    assert calls[0]["instruction"].count("selected observation") == 2  # Question + result, once each.
+    assert calls[0]["instruction"].count("ASSISTANT: [") == 1
+    lookup.assert_not_called()
+    context.add_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_actual_cli_user_ref_carrier_adopts_independent_bytes(actual_cli_inheritance, tmp_path):
+    """Real CLI owner/adoption, synthetic sessions/ACK; no provider/installed claim."""
+    from amplifier_core import AmplifierSession
+    from amplifier_foundation.session.checkpoint import acknowledge_legacy_checkpoint
+    from amplifier_foundation.session.media import MediaRefusal
+    from amplifier_foundation.session.store import write_jsonl
+    from PIL import Image
+
+    cli, cli_media, cli_native = actual_cli_inheritance
+    sessions = [AmplifierSession(
+        {"session": {"orchestrator": "unused", "context": "unused"}},
+        session_id=identity,
+    ) for identity in ("parent", "child")]
+    native = cli_native.SessionStore(base_dir=tmp_path / "sessions")
+    owners = [cli_media.install_session_media(session, native, config={"session_media": {"enabled": True}})
+              for session in sessions]
+    parent, child = sessions
+    source, target = owners
+    added = []
+
+    async def add_message(message):
+        added.append(deepcopy(message))
+
+    await child.coordinator.mount("context", SimpleNamespace(add_message=add_message))
+    try:
+        buffer = io.BytesIO()
+        Image.new("RGB", (2, 3), "purple").save(buffer, "PNG")
+        pixels = buffer.getvalue()
+        origin = {"kind": "upload", "session_id": "parent", "id": "synthetic-upload",
+                  "created_at": "2025-01-01T00:00:00+00:00",
+                  "expires_at": "2035-01-01T00:00:00+00:00"}
+        original_ref = (await source.store.ingest(
+            pixels, source_format="image-bytes", origin=origin, policy=None,
+        ))["value"]
+        await source.store.publish([original_ref], origin=origin, disposition="retain")
+        messages = [{"role": "user", "content": "inspect upload",
+                     "metadata": {NS: {"refs": [original_ref]}}}]
+        parent_dir = native.base_dir / "parent"
+        write_jsonl(parent_dir / "transcript.jsonl", messages)
+        source.store.acknowledge_checkpoint(acknowledge_legacy_checkpoint(
+            parent_dir, session_id="parent", expected_messages=messages,
+        ))
+        calls = []
+
+        async def actual_receiver(*, parent_messages, **kwargs):
+            calls.append(deepcopy(parent_messages))
+            assert await cli.inherit_selected_messages(child, parent, parent_messages) is True
+            adopted = added[0]["metadata"][NS]["refs"][0]
+            with pytest.raises(MediaRefusal):
+                target.store.resolve_ref(adopted)  # Receiver publication is not an ACK.
+            child_dir = native.base_dir / "child"
+            write_jsonl(child_dir / "transcript.jsonl", added)
+            target.store.acknowledge_checkpoint(acknowledge_legacy_checkpoint(
+                child_dir, session_id="child", expected_messages=added,
+            ))
+            return {"output": "done", "session_id": "child"}
+
+        tool, _, _, _ = harness(messages, actual_receiver)
+        result = await execute(tool, context_depth="all", context_scope="conversation")
+        assert result.success and len(calls) == 1
+        assert calls[0] == [{"role": "user", "content": "", "metadata": {NS: {"refs": [original_ref]}}}]
+        adopted = added[0]["metadata"][NS]["refs"][0]
+        assert adopted == {**original_ref, "session_id": "child"}
+        assert messages[0]["metadata"][NS]["refs"] == [original_ref]
+        source.store.close()
+        with target.store.resolve_ref(adopted) as stream:
+            assert stream.read() == pixels
+        assert result.output["metadata"]["media_inheritance"]["acceptance"] == "unknown"
+    finally:
+        for owner in owners:
+            await owner.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scope", ["agents", "full"])
-async def test_selected_tool_slot_counterexample(scope):
-    """Exact ff923 counterexample: refs must not migrate to an assistant summary."""
+async def test_selected_tool_slot_counterexample_refuses_without_rehoming(scope):
+    """Refs must neither migrate to a summary nor form an isolated tool result."""
     selected = row("tool", "selected text", "selectedrefs",
                    name="delegate", tool_call_id="selected-call-1")
     tool, captured, _, _ = harness([selected])
-    assert (await execute(tool, context_scope=scope)).success
-    assert captured[0]["parent_messages"] == [{
-        "role": "tool", "name": "delegate", "tool_call_id": "selected-call-1",
-        "content": "", "metadata": {NS: {"refs": [ref("selectedrefs")]}},
-    }]
-    assert captured[0]["instruction"].count("selected text") == 1
+    result = await execute(tool, context_scope=scope)
+    assert not result.success
+    assert captured == []
+    assert "complete tool-call/result groups" in str(result.error)
 
 
 @pytest.mark.asyncio
@@ -182,7 +426,7 @@ async def test_carrier_selection_keeps_toolslot_and_excludes_tool_calls(scope, d
     ]
     original = deepcopy(messages)
     tool, captured, _, context = harness(messages)
-    assert (await execute(tool, context_scope=scope, context_depth=depth, context_turns=1)).success
+    result = await execute(tool, context_scope=scope, context_depth=depth, context_turns=1)
     expected = []
     if depth != "none" and scope != "conversation":
         if depth == "all":
@@ -190,14 +434,13 @@ async def test_carrier_selection_keeps_toolslot_and_excludes_tool_calls(scope, d
         expected.append("selected")
         if scope == "full":
             expected.append("excluded")
-    forwarded = captured[0].get("parent_messages", [])
-    assert labels(forwarded) == expected
-    assert all(r["role"] == "tool" and set(r) == {
-        "role", "name", "tool_call_id", "content", "metadata",
-    } and r["content"] == "" for r in forwarded)
-    assert all(r["tool_call_id"] == {"old": "old-call", "selected": "selected-call",
-                                    "excluded": "excluded-call"}[label]
-               for r, label in zip(forwarded, expected))
+    if expected:
+        assert not result.success
+        assert captured == []
+        assert "complete tool-call/result groups" in str(result.error)
+    else:
+        assert result.success
+        assert "parent_messages" not in captured[0]
     assert messages == original
     assert "tool_calls" not in json.dumps(captured, default=str)
     if depth == "none":
@@ -269,6 +512,12 @@ async def test_execute_selected_refs_only_scope_order_roles_and_no_text_duplicat
     original = deepcopy(messages)
     tool, captured, hooks, _ = harness(messages)
     result = await execute(tool, context_scope=scope)
+    if scope != "conversation":
+        assert not result.success
+        assert captured == []  # Never partially forward the user row on tool refusal.
+        assert messages == original
+        assert "complete tool-call/result groups" in str(result.error)
+        return
     assert result.success
     assert len(captured) == 1
     kwargs = captured[0]
@@ -386,8 +635,13 @@ async def test_depth_scope_cross_product_has_no_hidden_widening(scope, tail, dep
                 row("user", "new", "new"), row("tool", "agent", "agent", name="delegate"),
                 row("tool", "shell", "shell", name="bash")]
     tool, captured, _, _ = harness(messages)
-    assert (await execute(tool, context_depth=depth, context_scope=scope, context_turns=1)).success
+    result = await execute(tool, context_depth=depth, context_scope=scope, context_turns=1)
     expected = [] if depth == "none" else (["old"] if depth == "all" else []) + tail
+    if depth != "none" and scope != "conversation":
+        assert not result.success
+        assert captured == []
+        return
+    assert result.success
     assert labels(captured[0].get("parent_messages", [])) == expected
 
 
@@ -462,11 +716,11 @@ async def test_tool_payloads_are_never_stringified_into_text_or_output(scope, na
                 row("tool", content, "image", name=name)]
     tool, captured, hooks, _ = harness(messages)
     result = await execute(tool, context_scope=scope)
-    assert result.success
+    assert not result.success
+    assert captured == []
     visible = json.dumps([captured, result.model_dump(), hooks.emit.call_args_list], default=str)
     assert "PIXEL SENTINEL" not in visible
-    assert labels(captured[0]["parent_messages"]) == ["image"]
-    assert ("safe text" in captured[0]["instruction"]) == isinstance(content, list)
+    assert "safe text" not in visible
 
 
 @pytest.mark.asyncio
@@ -519,6 +773,11 @@ async def test_full_scope_falsy_tool_content_keeps_refs_without_length_error(con
         message.pop("metadata")
     tool, captured, _, _ = harness([message])
     result = await execute(tool, context_scope="full")
+    if with_refs:
+        assert not result.success
+        assert captured == []
+        assert "complete tool-call/result groups" in str(result.error)
+        return
     assert result.success
     assert captured[0]["instruction"] == "inspect selected media"
     assert labels(captured[0].get("parent_messages", [])) == (
@@ -578,10 +837,10 @@ async def test_missing_public_validator_refuses_media_but_not_text(monkeypatch):
 @pytest.mark.parametrize("expired", [False, True])
 @pytest.mark.parametrize("image_format,mime", [("PNG", "image/png"), ("JPEG", "image/jpeg")])
 @pytest.mark.parametrize("carrier_role", ["user", "tool"])
-async def test_execute_to_real_adoption_and_actual_checkpoint(
+async def test_user_adopts_or_tool_refuses_before_adoption(
     tmp_path, expired, image_format, mime, carrier_role,
 ):
-    """Real public media APIs on synthetic roots; the spawn host is a test double."""
+    """User public API joint; selected tool refs must not reach the synthetic host."""
     from PIL import Image
     from amplifier_foundation.session.checkpoint import (
         acknowledge_legacy_checkpoint, verified_media_checkpoint_refs,
@@ -636,11 +895,9 @@ async def test_execute_to_real_adoption_and_actual_checkpoint(
         observed = []
 
         async def synthetic_host(*, parent_messages, **kwargs):
+            assert carrier_role == "user", "Tool refs must refuse before any host/adoption"
             forwarded = deepcopy(parent_messages)
             assert forwarded[0]["role"] == carrier_role
-            if carrier_role == "tool":
-                assert forwarded[0]["name"] == "delegate"
-                assert forwarded[0]["tool_call_id"] == "selected-call-1"
             assert forwarded[0]["metadata"][NS]["refs"] == [original_ref]
             if expired:
                 # Reuse the predecessor expiry/metadata-only API control.
@@ -678,8 +935,6 @@ async def test_execute_to_real_adoption_and_actual_checkpoint(
                 )
                 try:
                     assert prepared.request.messages[0].role == carrier_role
-                    if carrier_role == "tool":
-                        assert prepared.request.messages[0].tool_call_id == "selected-call-1"
                     images = [b for b in prepared.request.messages[0].content
                               if isinstance(b, ImageBlock)]
                     assert len(images) == 1
@@ -695,6 +950,13 @@ async def test_execute_to_real_adoption_and_actual_checkpoint(
         result = await execute(
             tool, context_scope="agents" if carrier_role == "tool" else "conversation",
         )
+        if carrier_role == "tool":
+            assert not result.success
+            assert "complete tool-call/result groups" in str(result.error)
+            assert observed == []
+            assert list((child.root / "assets").iterdir()) == []
+            assert not (child_path / "transcript.jsonl").exists()
+            return
         assert result.success
         assert len(observed) == 1
         adopted = observed[0]
