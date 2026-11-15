@@ -264,6 +264,143 @@ original replaced **image-block spans**, including their JSON wrapper/base64
 spelling. It excludes metadata:null or other edits, is not net transcript delta,
 and is not decoded asset bytes or allocated savings.
 
+## Explicit prospective T2 committed-source conversion
+
+This extension selects an **already enrolled prospective** T2 source. It never
+migrates old writers, opens directory legacy fences as files, or installs a T2
+body directly. The original canonical-v1 entry points remain separate.
+
+```python
+plan = preview_committed(
+    session_dir, expected=actual_committed_prefix, owner=host_owner,
+    fence=actual_binding_publication_fence, selected_records=None,
+)
+candidate = await build_candidate(
+    plan, new_operation_dir, fence=actual_binding_publication_fence,
+    capability=actual_session_store, origin_for=attested_original_policy,
+    asset_reader=published_asset_reader, eligible_record=explicit_record_policy,
+    export_assets=False,
+)
+```
+
+`preview_committed` requires the actual `CommittedPrefix` type and uses only
+`open_committed_source(expected=...)`, `read_range` and checked message bounds.
+It never uses decoded windows or `load_messages` for huge strings. Message
+counts exclude the strict T2 generation header; private recovery copies retain
+the **entire selected committed prefix including that header**, never physical
+uncommitted tail bytes. Source advance or namespace/body identity change requires
+a new explicit preview, never silent selection advance. Existing metadata,
+status, provider state, tool IDs and role-position refs remain unchanged.
+
+The candidate keeps the original exact header and original generation/operation
+selector. `Candidate.committed_prefix` updates its hash, byte bound and selected
+message count; these are **unsealed candidate integrity facts**, not an installed
+commit or checkpoint. `Candidate.inline_removed_bytes` remains replaced original
+image-object spans only; refs-first no-op history reports zero, not compression.
+
+For inline rows, `eligible_record(row)` must explicitly return `True` before any
+decode/staging effect. Missing/false policy holds that original row byte-for-byte
+and increments `held_records`; it neither invents original expiry/cardinality nor
+blocks independently eligible text/ref rows. Portable export refuses held inline
+pixels rather than treating a held retention decision as export consent.
+An eligible inline row still needs complete original `origin_for` facts accepted
+by the actual store. Existing published refs require expiry-neutral owner
+identity validation. Expired references remain metadata-only, with no pixel read,
+renewed TTL or fresh observation; the actual writer retains its own admission.
+
+`open_verified_candidate(operation_dir, session_id=..., asset_reader=...)` yields
+`(owned_regular_binary_stream, candidate_prefix, live_check)` after bounded
+candidate/manifest/binary verification. It does not create a new T2 generation,
+grant media reachability or mint a receipt. The sole format/lifetime writer must
+prepare its own immutable streamed snapshot and canonical-row fingerprint before
+publication: the whole header-bearing hash is **not** the canonical-row intent
+hash used by rewrite reconciliation.
+
+The format owner's `prepared.iter_refs()` uses the shared canonical checkpoint
+owner's strict `scan_serialized_refs`, not a new converter media grammar.
+`iter_serialized_candidate_refs(stream, candidate_prefix=...)` remains a data-only
+compatibility wrapper over that same scanner; it does not bind source ownership
+or become an admission capability. The prepared context must span full enumeration,
+actual retained-asset admission, writer publication and typed checkpoint exit.
+It accepts neither a caller-supplied ref list nor an independent manifest query
+as admission authority. Consumers must exhaust it, including final count/read
+checks. T2 candidates explicitly refuse the legacy installed-body ref/ACK seam.
+T2 portable export is an integrity surface, not a target writer/import grant.
+The legacy `transfer_prefix` entry point still refuses T2; use the explicitly
+typed prospective paths below instead of mixing source header/session selectors
+with foreign target refs.
+
+### Selected T2 fork and offline portable import
+
+```python
+await transfer_committed_prefix(
+    selected_source_plan, new_operation_dir, fence=actual_both_owner_fence,
+    source_store=actual_accepted_source_store, target_binding=actual_empty_target,
+    target_store=actual_target_store, expected_target=independent_target_prefix,
+    asset_reader=target_published_reader, cancelled=...,
+)
+import_plan = preview_import(
+    portable_dir, owner=host_owner, fence=actual_target_purpose_fence,
+    authorize=authorize_exact_export_package, selected_records=None,
+)
+await import_committed_prefix(
+    import_plan, new_operation_dir, fence=actual_target_purpose_fence,
+    target_binding=actual_empty_target, target_store=actual_target_store,
+    expected_target=independent_target_prefix, asset_reader=target_published_reader,
+    receipt=host_authorized_package_receipt, verifier=actual_F1_import_verifier,
+    cancelled=...,
+)
+```
+
+Both paths require an **already explicitly created/enrolled empty prospective
+target** and its exact real binding, current target prefix and physical media
+store. Neither creates a new target, enrolls arbitrary history, grants import
+permission or writes a transcript. Target initialization remains the owning
+host/lifetime API's separate authorized action. Nonempty or changed targets
+refuse before adoption.
+
+Source selection occurs before reachability: only selected canonical refs are
+grouped on disk by exact original provenance, adopted/imported, rewritten and
+exported. Original expiry and ordered same-origin identity are retained; duplicate
+positions are not collapsed by hash. Fork requires the source store's actual
+committed acceptance or guarded read-only transfer authority and uses existing
+`SessionMediaStore.adopt`. Offline import requires no live source store: it
+verifies the portable closure, independently authorizes the exact package, and
+uses existing `import_verified(ref, stream_or_None, receipt=..., verifier=...)`.
+The host verifier authorizes each exact original ref/package/target, not merely
+its digest. Original receipt/retention authority is never recovered from the
+portable hashes themselves. Expired adopted/imported observations are original
+metadata only; no pixel copy/read or TTL renewal.
+
+Before import selection or package authorization, `verify_export` requires exact
+nonnegative integer agreement between the T2 prefix's `message_count`, portable
+`records`, and all observed message rows (excluding the header). Prefix byte/hash
+facts must also match the complete candidate. Boolean/float counts and
+understated/overstated packages refuse; host authorization cannot excuse an
+internally contradictory package. Only after full-package validation may
+`preview_import(selected_records=...)` select an explicitly smaller prefix.
+Omitting that argument selects the entire validated package, never an implicit
+truncation inferred from contradictory receipt data.
+
+The same converter engine copies the actual selected target's issued header
+into its **candidate**, patches source-owner refs to exact target-owned refs,
+and keeps all other selected message bytes/metadata unchanged. The same sole
+writer later creates its own new generation/header. The plan retains independent
+source and target selectors: `committed_prefix`/source recovery describe the
+source; `target_prefix`/`target_session_dir` identify the original empty target.
+Private `original-0` preserves full source committed bytes and
+`original-target` preserves the exact original target header. Neither full
+recovery surface enters the selected-only portable child.
+
+After assets-first preparation, call `apply_committed_candidate` using the
+actual **target** binding and original target prefix. That path verifies the
+source/target plan join and uses the same target writer, precommit admission,
+sealed V2 checkpoint, and no-replay reconciliation. A staged/published target
+asset is not canonically committed before this actual target ACK. Failure,
+cancellation or lost replies retain original source, target old generations and
+operation evidence. A partial preparation directory never authorizes automatic
+re-adoption or rebuilding under the same/new operation identity.
+
 ## Qualification
 
 `tests/test_media_conversion*.py` use isolated synthetic sources only: strict
