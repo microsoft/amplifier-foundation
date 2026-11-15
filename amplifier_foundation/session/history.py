@@ -13,6 +13,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -101,11 +102,32 @@ class _InvalidFile(ValueError):
         self.line = line
 
 
-def _read_messages(path: Path, *, windows_policy: str = "legacy") -> list[dict[str, Any]]:
+def _read_messages(
+    path: Path, *, windows_policy: str = "legacy", prepare_index: bool = False
+) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
+    rows = None
+    if prepare_index:
+        from .jsonl import (
+            _MAX_ROWS,
+            Row,
+            TranscriptIndex,
+            _digest,
+            _index_state,
+            _remember,
+        )
+
+        path, stamp, cached = _index_state(path, windows_policy=windows_policy)
+        if stamp is not None and cached is None:
+            rows = []
+    offset, terminated = 0, True
     # Decode per line so failures have a useful location without leaking payloads.
     with _open_binary(path, windows_policy=windows_policy) as stream:
         for line_number, raw in enumerate(stream, 1):
+            if rows is not None:
+                row_offset = offset
+                offset += len(raw)
+                terminated = raw.endswith(b"\n")
             if not raw.strip():
                 continue
             try:
@@ -115,6 +137,19 @@ def _read_messages(path: Path, *, windows_policy: str = "legacy") -> list[dict[s
             if not _valid_message(message):
                 raise _InvalidFile(line_number)
             messages.append(message)
+            if rows is not None and len(rows) >= _MAX_ROWS:
+                rows = None
+            if rows is not None:
+                try:
+                    rows.append(Row(row_offset, len(raw), _digest(message)))
+                except (ValueError, UnicodeError, RecursionError):
+                    # Reading accepts some values the writer cannot encode.
+                    # Preparing an index must not change that read contract.
+                    rows = None
+    if rows is not None and file_stamp(path, windows_policy=windows_policy) == stamp:
+        _remember(
+            TranscriptIndex(path, stamp, rows, terminated, windows_policy=windows_policy)
+        )
     return messages
 
 
@@ -271,11 +306,16 @@ class SessionHistoryStore:
         self.diagnostics = []
         return self._recover(self.transcript_path, "transcript", indexed, [])
 
-    def load(self, *, include_events: bool = True) -> SessionHistory:
+    def load(
+        self, *, include_events: bool = True, prepare_index: bool = False
+    ) -> SessionHistory:
         """Load an in-memory view, reporting files changed during the read.
 
         Use ``include_events=False`` for resume: no event data is opened or
         materialized. Use ``iter_events`` for streaming large activity logs.
+        ``prepare_index=True`` also prepares the existing bounded transcript
+        index while decoding, for hosts that will save incrementally on resume.
+        This is best effort and never makes otherwise readable values invalid.
         A changed-file diagnostic tells hosts to retry under their ownership lock
         if they require a consistent revision before continuing a conversation.
         """
@@ -287,7 +327,12 @@ class SessionHistoryStore:
             key: file_stamp(path, windows_policy=self.windows_policy)
             for key, path in paths.items()
         }
-        messages = self._recover(self.transcript_path, "transcript", _read_messages, [])
+        reader = (
+            partial(_read_messages, prepare_index=True)
+            if prepare_index
+            else _read_messages
+        )
+        messages = self._recover(self.transcript_path, "transcript", reader, [])
         metadata = self._recover(self.metadata_path, "metadata", _read_metadata, {})
         events = list(self._iter_events()) if include_events else []
         after = {

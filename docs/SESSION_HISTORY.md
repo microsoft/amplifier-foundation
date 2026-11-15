@@ -42,6 +42,18 @@ Redaction and choosing which data to persist are application policy.
 `save_messages` and `save_metadata` support incremental persistence; explicit
 renames use the field-oriented metadata API below.
 
+A host that loads a conversation before an incremental checkpoint can opt into
+`store.load(include_events=False, prepare_index=True)`. On a cache miss, this
+builds the existing payload-free transcript index during the required read,
+avoiding a second source decode on the first save. A valid cached index is reused.
+Index preparation is best effort: source changes or values accepted by the reader
+but not the writer leave ordinary read/recovery behavior intact. The index uses
+the existing process-local row/file limits and policy-specific stamps. Saves
+still encode and validate the current mutable messages, including late edits;
+this option neither writes history nor changes ownership or recovery rules.
+Transcripts exceeding the existing row limit discard the prepared index and stop
+optional hashing; the already processed prefix is extra work, not a speedup.
+
 ```python
 from amplifier_foundation.session.metadata import SessionMetadataStore
 SessionMetadataStore(session_dir).set_name("Updated name")

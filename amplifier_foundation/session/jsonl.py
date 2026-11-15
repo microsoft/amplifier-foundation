@@ -190,9 +190,9 @@ def _remember(index: TranscriptIndex) -> TranscriptIndex:
     return index
 
 
-def indexed(path: Path, *, windows_policy: str = "legacy") -> TranscriptIndex:
-    from .history import _decode, _InvalidFile, _valid_message
-
+def _index_state(
+    path: Path, *, windows_policy: str = "legacy"
+) -> tuple[Path, FileStamp | None, TranscriptIndex | None]:
     if _private_windows(windows_policy):
         from ._windows_ownership import _absolute
 
@@ -200,14 +200,23 @@ def indexed(path: Path, *, windows_policy: str = "legacy") -> TranscriptIndex:
     else:
         path = path.absolute()
     stamp = file_stamp(path, windows_policy=windows_policy)
-    if stamp is None:
-        raise FileNotFoundError(path)
     with _LOCK:
         key = (path, windows_policy)
         cached = _CACHE.get(key)
         if cached is not None and cached.stamp == stamp:
             _CACHE.move_to_end(key)
-            return cached
+            return path, stamp, cached
+    return path, stamp, None
+
+
+def indexed(path: Path, *, windows_policy: str = "legacy") -> TranscriptIndex:
+    from .history import _decode, _InvalidFile, _valid_message
+
+    path, stamp, cached = _index_state(path, windows_policy=windows_policy)
+    if stamp is None:
+        raise FileNotFoundError(path)
+    if cached is not None:
+        return cached
     # External writers can edit a prefix while growing the file. Only our own
     # verified append may extend an index; size growth alone is not evidence.
     rows = []
