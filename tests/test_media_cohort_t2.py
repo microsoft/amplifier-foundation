@@ -284,8 +284,8 @@ def test_actual_decoded_identity_mismatch_refuses_before_staging(tmp_path, monke
         monkeypatch.setattr(store, 'ingest_group_sync', lambda *a, **k: pytest.fail('No staging on mismatch'))
         with producer.custody(), pytest.raises(Unsupported, match='decoded image identity'), bind_committed_media_cohort(
             binding.directory, expected=binding.expected, owner='fixture', fence=fence, producer=producer, store=store,
-        ):
-            pass
+        ) as cohort:
+            cohort.eligible_record(1)
 
 
 def test_expired_original_held_without_decode_or_asset_read(tmp_path, monkeypatch):
@@ -392,6 +392,169 @@ def test_cold_reopen_rebinds_original_source_and_real_store_not_cached_callbacks
                 assert current.eligible_record(1) is True
                 with pytest.raises(Unsupported, match='closed'):
                     previous.eligible_record(1)
+
+
+@pytest.mark.parametrize('expiry', [False, True])
+def test_classification_change_is_rechecked_before_any_decode(tmp_path, monkeypatch, expiry):
+    from datetime import datetime, timezone
+    import amplifier_foundation.session.media_conversion as conversion
+    class Future(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2036, 1, 1, tzinfo=timezone.utc)
+    with fixture(tmp_path) as (binding, store, fence):
+        producer, _, _, _ = seed(binding, store, known_rows=2)
+        producer.mapping.pop(2)
+        def resolver(**facts):
+            value = producer(**facts)
+            if facts['rowfacts']['index'] == 2:
+                if expiry:
+                    monkeypatch.setattr(conversion, 'datetime', Future)
+                else:
+                    producer.revoked = True
+            return value
+        monkeypatch.setattr(conversion, '_decode', lambda *a, **k: pytest.fail('Decode after changed permission/expiry'))
+        with producer.custody():
+            with pytest.raises(Unsupported), bind_committed_media_cohort(
+                binding.directory, expected=binding.expected, owner='fixture', fence=fence, producer=resolver, store=store,
+            ):
+                pass
+            producer.revoked = False
+
+
+def test_duplicate_true_origin_groups_in_one_row_hold_before_decode(tmp_path, monkeypatch):
+    with fixture(tmp_path) as (binding, store, fence):
+        producer, _, refs, _ = seed(binding, store, duplicate=True, subset=True)
+        origin = refs[0]['provenance']
+        producer.mapping[1] = [
+            {'origin': origin, 'retention': 'durable',
+             'members': [{'block_index': block, 'occurrence_id': f'different-{block}', 'ref': refs[0]}]}
+            for block in (1, 2)
+        ]
+        monkeypatch.setattr('amplifier_foundation.session.media_conversion._decode',
+                            lambda *a, **k: pytest.fail('Repeated origin must HOLD before decode'))
+        with producer.custody(), bind_committed_media_cohort(
+            binding.directory, expected=binding.expected, owner='fixture', fence=fence, producer=producer, store=store,
+        ) as cohort:
+            assert cohort.eligible_record(1) is False
+
+
+@pytest.mark.parametrize('selection', [0, 1])
+def test_selected_prefix_does_not_decode_unselected_qualified_inline(tmp_path, monkeypatch, selection):
+    with fixture(tmp_path) as (binding, store, fence):
+        producer, _, _, _ = seed(binding, store)
+        expected = binding.expected
+        plan = preview_committed(binding.directory, expected=expected, owner='fixture', fence=fence, selected_records=selection)
+        monkeypatch.setattr('amplifier_foundation.session.media_conversion._decode',
+                            lambda *a, **k: pytest.fail('Selected unknown prefix cannot decode later qualified pixels'))
+        with producer.custody(), bind_committed_media_cohort(
+            binding.directory, expected=expected, owner='fixture', fence=fence, producer=producer, store=store,
+        ) as cohort:
+            candidate = build(plan, tmp_path / 'operation', store, cohort)
+            assert candidate.records == candidate.held_records == selection
+            assert candidate.images == candidate.inline_removed_bytes == 0
+
+
+def test_selected_known_prefix_decodes_only_requested_origin_not_later_qualified_row(tmp_path, monkeypatch):
+    import amplifier_foundation.session.media_conversion as conversion
+    with fixture(tmp_path) as (binding, store, fence):
+        producer, rows, refs, data = seed(binding, store)
+        other_origin = refs[0]['provenance'] | {'id': 'other-original'}
+        other = store.ingest_group_sync([{'stream': io.BytesIO(data), 'mime': 'image/png'}],
+                                        origin=other_origin, policy=None)['staged_refs']
+        store.publish_sync(other, origin=other_origin, disposition='retain')
+        selected_rows = [rows[1], rows[1],
+                         {'role': 'assistant', 'content': 'original refs',
+                          'metadata': {'experimental.media.v1': {'refs': [*refs, *other]}}}]
+        binding.rewrite(selected_rows, expected=binding.expected, operation_id='selected-source',
+                        admit=lambda: None, media_store=store)
+        producer.expected = binding.expected
+        producer.rows = (binding.directory / 'transcript.v2' / binding.expected.body).read_bytes().splitlines()[1:]
+        producer.mapping = {
+            0: producer.mapping[1],
+            1: [{'origin': other_origin, 'retention': 'durable',
+                 'members': [{'block_index': 1, 'occurrence_id': 'other-member', 'ref': other[0]}]}],
+        }
+        expected = binding.expected
+        plan = preview_committed(binding.directory, expected=expected, owner='fixture', fence=fence, selected_records=1)
+        decoded_rows = []
+        actual = conversion._decode
+        with open_committed_source(binding.directory, expected=expected) as source:
+            boundary = source.message_range(1).start
+        def selected_only(scanner, span, output):
+            assert span.start < boundary, 'Unselected qualified row decoded'
+            decoded_rows.append(span.start)
+            return actual(scanner, span, output)
+        monkeypatch.setattr(conversion, '_decode', selected_only)
+        with producer.custody(), bind_committed_media_cohort(
+            binding.directory, expected=expected, owner='fixture', fence=fence, producer=producer, store=store,
+        ) as cohort:
+            assert decoded_rows == []  # Classification is structural only.
+            candidate = build(plan, tmp_path / 'operation', store, cohort)
+            assert candidate.records == candidate.images == 1
+        assert decoded_rows  # Actual selected positive, not all-held/no-op.
+
+
+def test_missing_strong_store_validator_refuses_without_final_only_fallback(tmp_path, monkeypatch):
+    with fixture(tmp_path) as (binding, store, fence):
+        producer, _, _, _ = seed(binding, store)
+        monkeypatch.setattr(store, 'validate_reingest_group', None, raising=False)
+        monkeypatch.setattr('amplifier_foundation.session.media_conversion._decode',
+                            lambda *a, **k: pytest.fail('Missing original validation cannot decode'))
+        with producer.custody(), pytest.raises(Unsupported, match='reingestion validator'), bind_committed_media_cohort(
+            binding.directory, expected=binding.expected, owner='fixture', fence=fence, producer=producer, store=store,
+        ):
+            pass
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_checked_callback_mispair_refuses_before_operation(tmp_path, reverse):
+    with fixture(tmp_path) as (binding, store, fence):
+        producer, _, refs, _ = seed(binding, store)
+        expected = binding.expected
+        plan = preview_committed(binding.directory, expected=expected, owner='fixture', fence=fence)
+        with producer.custody(), bind_committed_media_cohort(
+            binding.directory, expected=expected, owner='fixture', fence=fence, producer=producer, store=store,
+        ) as cohort:
+            origin = refs[0]['provenance'] | {'id': 'UNRELATED-NOT-ORIGINAL'}
+            with pytest.raises(Unsupported, match='callbacks'):
+                asyncio.run(build_candidate(
+                    plan, tmp_path / 'operation', fence=cohort.fence, capability=store,
+                    origin_for=cohort.origin_for if reverse else lambda *_: origin,
+                    eligible_record=(lambda *_: True) if reverse else cohort.eligible_record,
+                    asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+                ))
+        assert not (tmp_path / 'operation').exists()
+        assert binding.expected == expected
+
+
+@pytest.mark.parametrize('request_only', [False, True])
+def test_original_ingest_subset_or_actual_request_only_record_hold_before_decode(tmp_path, monkeypatch, request_only):
+    with fixture(tmp_path) as (binding, store, fence):
+        data = png()
+        origin = {'kind': 'tool', 'session_id': 'session', 'id': 'original-admission',
+                  'created_at': '2025-01-01T00:00:00+00:00', 'expires_at': '2035-01-01T00:00:00+00:00'}
+        refs = store.ingest_group_sync(
+            [{'stream': io.BytesIO(data), 'mime': 'image/png'} for _ in range(1 if request_only else 2)],
+            origin=origin, policy={'retention': 'request-only'} if request_only else None,
+        )['staged_refs']
+        store.publish_sync(refs[:1], origin=origin, disposition='retain')
+        assert store.policy.retention == 'durable'
+        assert store.validate_published_group(refs[:1], origin=origin)['valid']
+        rows = [{'role': 'tool', 'content': [inline(data, 'image/png')]}]
+        # No falsely durable canonical ref checkpoint for request-only record.
+        binding.append(rows, expected=binding.expected, operation_id='raw', admit=lambda: None)
+        raw = (binding.directory / 'transcript.v2' / binding.expected.body).read_bytes().splitlines()[1:]
+        producer = SyntheticProducer(binding.expected, raw, {0: [{
+            'origin': origin, 'retention': 'durable',
+            'members': [{'block_index': 0, 'occurrence_id': 'original-0', 'ref': refs[0]}],
+        }]})
+        monkeypatch.setattr('amplifier_foundation.session.media_conversion._decode',
+                            lambda *a, **k: pytest.fail('Actual original admission must qualify BEFORE decode'))
+        with producer.custody(), bind_committed_media_cohort(
+            binding.directory, expected=binding.expected, owner='fixture', fence=fence, producer=producer, store=store,
+        ) as cohort:
+            assert cohort.eligible_record(0) is False
 
 
 @pytest.mark.parametrize('opaque', [2 * 1024 * 1024, 8 * 1024 * 1024])

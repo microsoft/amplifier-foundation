@@ -385,15 +385,23 @@ The strict returned data shape is:
 The producer owns original policy, full original member cardinality/order and
 occurrences, and its current-purpose decision. Matching returned data alone does
 not establish that truth. All mappings are exhausted and checked against the
-complete source's physical positions and F1's actual final ordered retained
-`validate_published_group` **before** any inline decode. Unknown, incomplete,
+complete source's physical positions and F1's actual original ordered ingestion,
+final retained publication and each actual durable record using the public
+`validate_reingest_group` **before** any inline decode. The weaker final-only
+`validate_published_group` cannot prove re-ingestion compatibility. Unknown, incomplete,
 expired, request-only, unsupported projection/echo, cross-row true-origin groups
 or incompatible post-hook subsets hold their whole affected rows in this first
 slice. Duplicated byte hashes do not collapse distinct original occurrences.
-Contradictory prefix/row/block/MIME identities refuse. Only complete qualified
-rows are then decoded incrementally to anonymous temporary files and compared to
+Contradictory prefix/row/block/MIME identities refuse. Entry performs structural
+classification only, never decoding unselected pixels. Only complete qualified
+rows actually requested by `eligible_record(row)` (or `origin_for`) are decoded
+incrementally to anonymous temporary files and compared to
 the producer's already-admitted ref identities. No corpus-sized list is built;
 metadata is disk-backed, except F1's existing O(one true-origin group) list API.
+Producer permission, original expiry and F1 re-ingestion validation are rechecked
+immediately before and after each decode, not merely during initial classification
+or on context exit. Cached decoded identity is immutable source data, never cached
+permission; each later callback still performs fresh live checks.
 
 Eligible/origin calls and builder ingestion/publication boundaries recheck live
 source, producer mapping/current purpose and actual final publication. Reuse

@@ -126,8 +126,11 @@ class _BoundCohort:
             if not refs:
                 held = True
             else:
+                validator = getattr(self.store, 'validate_reingest_group', None)
+                if not callable(validator):
+                    raise Unsupported("Actual F1 original-group reingestion validator is required")
                 try:
-                    self.store.validate_published_group(refs, origin=origin)
+                    validator(refs, origin=origin)
                 except ValueError:
                     if not initial:
                         raise
@@ -141,7 +144,10 @@ class _BoundCohort:
         self._live()  # Includes checks after exhaustion of producer group generators.
         observed = self.db.execute('select count(*) from pending where row=?', (row,)).fetchone()[0]
         expected = self.db.execute('select count(*) from images where row=?', (row,)).fetchone()[0]
-        if held or observed != expected or not observed:
+        repeated_origin = self.db.execute(
+            'select 1 from pending where row=? group by origin having count(distinct grp)>1 limit 1', (row,),
+        ).fetchone()
+        if held or repeated_origin is not None or observed != expected or not observed:
             return None
         return fingerprint.result()
 
@@ -174,12 +180,24 @@ class _BoundCohort:
             self.db.execute('insert into members select * from pending where row=?', (row,))
         self.db.execute('update rows set eligible=0 where row in (select row from members where origin in '
                         '(select origin from members group by origin having count(distinct row)>1))')
-        # Decode only after all source/schema/policy/group coverage is settled.
-        for row, block, image_raw, ref_raw in self.db.execute(
-            'select i.row,i.block,i.facts,m.ref from images i join members m using(row,block) '
-            'join rows r using(row) where r.eligible=1 order by i.row,i.block'
+        self.db.commit()
+        self.check()
+
+    def _ensure_decoded(self, row):
+        from . import media_conversion as c
+        # Classification covers the complete source for cross-row groups.
+        # Pixel decoding must cover ONLY a row actually selected by the caller.
+        if self.db.execute('select 1 from decoded where row=?', (row,)).fetchone():
+            return
+        for image_raw, ref_raw in self.db.execute(
+            'select i.facts,m.ref from images i join members m using(row,block) '
+            'where i.row=? order by i.block', (row,),
         ):
-            self._live()
+            # Later classification callbacks may revoke an earlier row or
+            # advance time beyond its original expiry. Recheck immediately
+            # BEFORE exposing its base64 to the decoder, not only on CM exit.
+            if not self._check_row(row):
+                raise Unsupported("Cohort row became held before decoding")
             image, ref = json.loads(image_raw), json.loads(ref_raw)
             scanner = Scanner(c._CommittedView(self.source, 0))
             span = Span(image['data_start'], image['data_end'], 34)
@@ -187,9 +205,10 @@ class _BoundCohort:
                 digest, size = c._decode(scanner, span, decoded)
             if (digest, size) != (ref['sha256'], ref['bytes']):
                 raise Unsupported("Producer decoded image identity differs from committed inline bytes")
-            self._live()
-        self.db.commit()
-        self.check()
+            self._check_row(row)
+        # This caches only the decoded identity of an immutable pinned row.
+        # Current producer permission, expiry, source and store are NEVER cached.
+        self.db.execute('insert into decoded values(?)', (row,))
 
     def _check_row(self, row):
         from . import media_conversion as c
@@ -211,11 +230,16 @@ class _BoundCohort:
         self._live()
 
     def eligible_record(self, row):
-        return self._check_row(_index(row))
+        row = _index(row)
+        eligible = self._check_row(row)
+        if eligible:
+            self._ensure_decoded(row)
+        return eligible
 
     def origin_for(self, row, block):
         if not self._check_row(_index(row)):
             raise Unsupported("Held row has no permitted original provenance")
+        self._ensure_decoded(row)
         item = self.db.execute('select origin from members where row=? and block=?', (row, _index(block))).fetchone()
         if item is None:
             raise Unsupported("Unknown cohort image position")
@@ -250,6 +274,7 @@ def bind(session_dir, *, expected, owner, fence, producer, store):
             db.execute('create table images(row integer,block integer,facts blob,primary key(row,block))')
             db.execute('create table pending(row integer,block integer,occurrence text,origin blob,ref blob,grp integer,primary key(row,block),unique(row,occurrence))')
             db.execute('create table members(row integer,block integer,occurrence text,origin blob,ref blob,grp integer,primary key(row,block))')
+            db.execute('create table decoded(row integer primary key)')
             cohort = _BoundCohort(source, owner, producer, store, db, Path(session_dir))
             try:
                 cohort._inventory()

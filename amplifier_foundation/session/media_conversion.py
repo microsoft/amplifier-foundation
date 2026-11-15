@@ -823,11 +823,14 @@ async def build_candidate(
         raise Unsupported("Canonical conversion durability is currently qualified on POSIX only")
     if not directory.is_absolute() or directory.parent.resolve() != directory.parent:
         raise Unsupported("Explicit private operation directory required")
-    cohort = _checked_cohort(origin_for)
+    cohort = _checked_cohort(origin_for) or _checked_cohort(eligible_record)
     if cohort is not None:
         if (getattr(eligible_record, "__self__", None) is not cohort
                 or getattr(eligible_record, "__func__", None) is not type(cohort).eligible_record
-                or getattr(origin_for, "__func__", None) is not type(cohort).origin_for):
+                or getattr(origin_for, "__self__", None) is not cohort
+                or getattr(origin_for, "__func__", None) is not type(cohort).origin_for
+                or getattr(fence, "__self__", None) is not cohort
+                or getattr(fence, "__func__", None) is not type(cohort).fence):
             raise Unsupported("Checked cohort callbacks must belong to the same live binding")
         cohort.check_builder(plan, capability)
     with fence(plan.owner):
