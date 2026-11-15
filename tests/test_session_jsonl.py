@@ -32,6 +32,189 @@ def save(store, messages):
     store.save(messages, {"test": True}, incremental=True)
 
 
+@pytest.mark.parametrize("prepare_index", [False, True])
+@pytest.mark.parametrize("warm", [False, True])
+def test_resume_load_and_first_save_share_only_prepared_source_index(
+    tmp_path, monkeypatch, prepare_index, warm
+):
+    from amplifier_foundation.session import history
+
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    data = rows(8)
+    store.save(data, {"unknown": {"retained": [1, 2]}})
+    jsonl._CACHE.clear()
+    if warm:
+        store.indexed_messages()
+    original_bytes = store.transcript_path.read_bytes()
+    original_stamp = jsonl.file_stamp(store.transcript_path, windows_policy="private")
+    decode, digest = history._decode, jsonl._digest
+    decoded, digested = [], []
+
+    def counted_decode(raw):
+        value = decode(raw)
+        if isinstance(value, dict) and "role" in value:
+            decoded.append(len(raw))
+        return value
+
+    def counted_digest(value):
+        digested.append(value["role"])
+        return digest(value)
+
+    monkeypatch.setattr(history, "_decode", counted_decode)
+    monkeypatch.setattr(jsonl, "_digest", counted_digest)
+    loaded = store.load(include_events=False, prepare_index=prepare_index)
+    assert loaded.messages == data
+    assert loaded.metadata == {"unknown": {"retained": [1, 2]}}
+    assert not loaded.diagnostics
+    assert len(decoded) == len(data)
+    assert len(digested) == (len(data) if prepare_index and not warm else 0)
+    store.save(loaded.messages, loaded.metadata, incremental=True)
+    assert len(decoded) == len(data) * (2 if not prepare_index and not warm else 1)
+    assert store.transcript_path.read_bytes() == original_bytes
+    assert jsonl.file_stamp(store.transcript_path, windows_policy="private") == original_stamp
+
+
+def test_resume_prepared_index_preserves_append_and_borrowed_nested_edit(tmp_path):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    data = rows(3)
+    data[0]["continuation"] = {"nested": [{"value": True}]}
+    store.save(data, {})
+    jsonl._CACHE.clear()
+    loaded = store.load(include_events=False, prepare_index=True)
+    before_append = store.transcript_path.read_bytes()
+    loaded.messages.append({"role": "assistant", "content": "next"})
+    save(store, loaded.messages)
+    assert store.transcript_path.with_suffix(".jsonl.backup").read_bytes() == before_append
+    assert store.load_messages() == loaded.messages
+    before_edit = store.transcript_path.read_bytes()
+    # Python equality treats True == 1; canonical bytes must still detect this.
+    loaded.messages[0]["continuation"]["nested"][0]["value"] = 1
+    save(store, loaded.messages)
+    assert store.transcript_path.read_bytes() != before_edit
+    assert store.transcript_path.with_suffix(".jsonl.backup").read_bytes() == before_edit
+    assert type(store.load_messages()[0]["continuation"]["nested"][0]["value"]) is int
+
+
+def test_resume_preparation_stops_at_existing_row_budget(tmp_path, monkeypatch):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    store.save(rows(4), {})
+    jsonl._CACHE.clear()
+    monkeypatch.setattr(jsonl, "_MAX_ROWS", 2)
+    digest = jsonl._digest
+    digested = []
+
+    def counted(value):
+        digested.append(value["role"])
+        return digest(value)
+
+    monkeypatch.setattr(jsonl, "_digest", counted)
+    loaded = store.load(include_events=False, prepare_index=True)
+    assert loaded.messages == rows(4)
+    assert len(digested) == 2
+    assert not jsonl._CACHE
+    save(store, loaded.messages)
+    assert store.load_messages() == rows(4)
+    assert not jsonl._CACHE
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_resume_preparation_keeps_recovered_backup_separate(tmp_path, pending):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    store.save(rows(2), {})
+    store.save(rows(3), {})
+    if pending:
+        jsonl.intent_path(store.transcript_path).write_text("{}")
+    else:
+        store.transcript_path.write_bytes(b"invalid primary\n")
+    jsonl._CACHE.clear()
+    loaded = store.load(include_events=False, prepare_index=True)
+    assert loaded.messages == rows(2)
+    assert "recovered_backup" in {item.code for item in loaded.diagnostics}
+    primary = (store.transcript_path.absolute(), "private")
+    backup = (store.transcript_path.with_suffix(".jsonl.backup").absolute(), "private")
+    assert primary not in jsonl._CACHE
+    assert backup in jsonl._CACHE
+    save(store, loaded.messages)
+    assert store.load_messages() == rows(2)
+    assert not jsonl.intent_path(store.transcript_path).exists()
+
+
+def test_resume_preparation_declines_changed_source_without_changing_read(tmp_path, monkeypatch):
+    from amplifier_foundation.session import history
+
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    store.save(rows(2), {})
+    jsonl._CACHE.clear()
+    decode = history._decode
+    changed = False
+    extra = {"role": "assistant", "content": "external append"}
+
+    def append_during_read(raw):
+        nonlocal changed
+        value = decode(raw)
+        if isinstance(value, dict) and "role" in value and not changed:
+            changed = True
+            with store.transcript_path.open("ab") as stream:
+                stream.write(json.dumps(extra).encode() + b"\n")
+        return value
+
+    monkeypatch.setattr(history, "_decode", append_during_read)
+    loaded = store.load(include_events=False, prepare_index=True)
+    assert loaded.messages == rows(2) + [extra]
+    assert "changed_during_read" in {item.code for item in loaded.diagnostics}
+    assert (store.transcript_path.absolute(), "private") not in jsonl._CACHE
+    assert list(store.indexed_messages()) == loaded.messages
+
+
+@pytest.mark.parametrize("value", [b'"\\ud800"', b"1e400"])
+def test_resume_preparation_does_not_reject_readable_unwritable_values(tmp_path, value):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    store.save(rows(1), {"unknown": ["keep"]})
+    raw = b'{"role":"assistant","content":' + value + b"}\n"
+    store.transcript_path.write_bytes(raw)
+    jsonl._CACHE.clear()
+    expected = store.load(include_events=False)
+    loaded = store.load(include_events=False, prepare_index=True)
+    assert loaded.messages == expected.messages
+    assert loaded.diagnostics == expected.diagnostics == []
+    assert (store.transcript_path.absolute(), "private") not in jsonl._CACHE
+    metadata = store.metadata_path.read_bytes()
+    backup = store.transcript_path.with_suffix(".jsonl.backup")
+    assert not backup.exists()
+    with pytest.raises((ValueError, UnicodeError)):
+        save(store, loaded.messages)
+    assert store.transcript_path.read_bytes() == raw
+    assert store.metadata_path.read_bytes() == metadata
+    assert not backup.exists()
+
+
+@pytest.mark.parametrize("value", [b"NaN", b"Infinity", b"-Infinity"])
+def test_resume_preparation_retains_invalid_json_recovery(tmp_path, value):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    store.save(rows(1), {})
+    store.save(rows(2), {})
+    store.transcript_path.write_bytes(b'{"role":"assistant","content":' + value + b"}\n")
+    jsonl._CACHE.clear()
+    loaded = store.load(include_events=False, prepare_index=True)
+    assert loaded.messages == rows(1)
+    assert "recovered_backup" in {item.code for item in loaded.diagnostics}
+
+
+@pytest.mark.parametrize("raw", [b"", b"\n \n", b'\n{"role":"user","content":"x"}\r\n\n', b'{"role":"user","content":"x"}'])
+def test_resume_prepared_index_preserves_physical_offsets_and_termination(tmp_path, raw):
+    store = SessionHistoryStore(tmp_path, windows_policy="private")
+    store.save([], {})
+    store.transcript_path.write_bytes(raw)
+    jsonl._CACHE.clear()
+    loaded = store.load(include_events=False, prepare_index=True)
+    prepared = store.indexed_messages()
+    jsonl._CACHE.clear()
+    independent = store.indexed_messages()
+    assert prepared.rows == independent.rows
+    assert prepared.terminated == independent.terminated
+    assert list(prepared) == loaded.messages
+
+
 def test_append_noop_and_backup_advance_without_prefix_reads(tmp_path, monkeypatch):
     store = SessionHistoryStore(tmp_path, windows_policy="private")
     data = rows(10)
