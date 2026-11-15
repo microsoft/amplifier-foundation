@@ -35,6 +35,7 @@ from .transcript_v2 import (
     CommittedTranscriptReader,
     UnsupportedTranscript,
     _decode,
+    _is_v2_object,
     _stamp,
     _validate_body_header,
 )
@@ -593,8 +594,7 @@ def _fences(session, operation_id=None):
     for name in LEGACY:
         with session.directory(name) as fence:
             value = json.loads(fence.read("format.json"))
-            if (not isinstance(value, dict) or value.get("format") != _FORMAT
-                    or value.get("v") != 2
+            if (not _is_v2_object(value) or value.get("format") != _FORMAT
                     or value.get("status") != "unsupported-by-legacy-entrypoint"
                     or (operation_id is not None and value != marker)):
                 raise TranscriptConflict("Missing or invalid legacy directory fence")
