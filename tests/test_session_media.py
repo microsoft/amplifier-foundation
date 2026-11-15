@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -25,6 +26,380 @@ def image_bytes(fmt="PNG", color="red"):
     output = io.BytesIO()
     Image.new("RGB", (3, 2), color).save(output, format=fmt)
     return output.getvalue()
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX media store")
+class ReingestGroupTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name) / "media"
+        self.store = SessionMediaStore(self.root, "session1", policy=MediaPolicy(max_images=10),
+                                       checkpoint_verifier=lambda receipt: receipt["refs"])
+        self.origin = {"kind": "tool", "session_id": "session1", "id": "original-call",
+                       "created_at": "2020-01-01T00:00:00+00:00", "expires_at": None}
+
+    def tearDown(self):
+        self.store.close()
+        self.directory.cleanup()
+
+    def group(self, *, policy=None, values=None, origin=None, disposition="retain"):
+        refs = self.store.ingest_group_sync(
+            values if values is not None else [image_bytes(), image_bytes("JPEG", "blue")],
+            origin=origin or self.origin, policy=policy)["staged_refs"]
+        if disposition is not None:
+            self.store.publish_sync(refs, origin=origin or self.origin, disposition=disposition)
+        return refs
+
+    def snapshot(self):
+        return {str(p.relative_to(self.root)): (p.stat().st_mode, p.read_bytes())
+                for p in self.root.rglob("*") if p.is_file()}
+
+    @contextmanager
+    def inspection(self, store=None, *, changed_paths=()):
+        store = store or self.store
+        before = self.snapshot()
+        original_open = os.open
+        pixel_opens = []
+        def metadata_open(path, flags, *args, **kwargs):
+            if kwargs.get("dir_fd") in (store._dirs["assets"], store._dirs["staging"]):
+                pixel_opens.append(path)
+                raise AssertionError("validator must not open pixel files")
+            return original_open(path, flags, *args, **kwargs)
+        with ExitStack() as stack:
+            forbidden = [stack.enter_context(patch.object(
+                store, name, side_effect=AssertionError("inspection cannot " + name)))
+                for name in ("_write", "_origin", "_stage", "_source", "_open_verified",
+                             "resolve_ref", "resolve_published_ref", "ingest_sync",
+                             "ingest_group_sync", "publish_sync", "acknowledge_checkpoint")]
+            stack.enter_context(patch("amplifier_foundation.session.media.os.open", metadata_open))
+            decode = stack.enter_context(patch(
+                "amplifier_foundation.session.media._decode_image",
+                side_effect=AssertionError("inspection cannot decode")))
+            try:
+                yield
+            finally:
+                for operation in [*forbidden, decode]:
+                    operation.assert_not_called()
+                self.assertEqual(pixel_opens, [])
+                after = self.snapshot()
+                self.assertEqual(before.keys(), after.keys())
+                for name in before:
+                    if name not in changed_paths:
+                        self.assertEqual(before[name], after[name], name)
+
+    def refuse(self, refs, *, origin=None, store=None, changed_paths=()):
+        with self.inspection(store, changed_paths=changed_paths), self.assertRaises(MediaRefusal):
+            (store or self.store).validate_reingest_group(
+                refs, origin=self.origin if origin is None else origin)
+
+    def observer(self, guard=None):
+        observer = SessionMediaStore(self.root, "session1", policy=self.store.policy,
+                                     read_only=True, source_read_verifier=guard)
+        self.addCleanup(observer.close)
+        return observer
+
+    def test_reingest_original_png_jpeg_published_and_committed(self):
+        refs = self.group()
+        for committed in (False, True):
+            if committed:
+                self.store.acknowledge_checkpoint({"refs": refs})
+            with self.inspection():
+                self.assertEqual(self.store.validate_reingest_group(refs, origin=self.origin),
+                                 {"valid": True, "ref_count": 2})
+
+    def test_reingest_duplicate_multiplicity_is_original_data(self):
+        refs = self.group(values=[image_bytes(), image_bytes("JPEG"), image_bytes()])
+        self.assertEqual(refs[0], refs[2])
+        with self.inspection():
+            self.assertEqual(self.store.validate_reingest_group(refs, origin=self.origin),
+                             {"valid": True, "ref_count": 3})
+        self.refuse(refs[:2])
+        self.refuse([refs[0], refs[0], refs[1]])
+
+    def test_reingest_refuses_real_nested_carrier_but_preserves_carrier_ingest(self):
+        child = {**self.origin, "id": "child"}
+        parent = {**self.origin, "id": "parent"}
+        source = image_bytes(color="green")
+        refs = self.group(values=[source], origin=child)
+        self.store.nested_verifier = lambda enclosing, ref: enclosing == parent and ref == refs[0]
+        carrier = ToolResult(output={MEDIA_NAMESPACE: {"refs": copy.deepcopy(refs)}})
+        parent_refs = self.store.ingest_sync(
+            carrier, source_format="core-tool-result", origin=parent, policy=None)["staged_refs"]
+        self.store.publish_sync(parent_refs, origin=parent, disposition="retain")
+        self.assertEqual(parent_refs, refs)
+        self.assertNotEqual(parent_refs[0]["provenance"], parent)
+        # The same attested Core carrier remains legitimate; byte-group preflight
+        # must not conflate its inherited child provenance with the parent origin.
+        self.assertEqual(self.store.ingest_sync(
+            carrier, source_format="core-tool-result", origin=parent, policy=None)["staged_refs"],
+            parent_refs)
+        with self.inspection():
+            self.assertEqual(self.store.validate_published_group(parent_refs, origin=parent),
+                             {"valid": True, "ref_count": 1})
+            try:
+                result = self.store.validate_reingest_group(parent_refs, origin=parent)
+            except MediaRefusal:
+                result = "refused"
+            self.assertEqual(result, "refused", "nested carrier is not an original byte group")
+        self.assertEqual(self.store.ingest_sync(
+            carrier, source_format="core-tool-result", origin=parent, policy=None)["staged_refs"],
+            parent_refs)
+        with self.inspection():
+            self.assertEqual(self.store.validate_published_group(parent_refs, origin=parent),
+                             {"valid": True, "ref_count": 1})
+
+    def test_reingest_refuses_real_subset_accepted_by_publication_validator(self):
+        refs = self.group(disposition=None)
+        self.store.publish_sync(refs[1:], origin=self.origin, disposition="retain")
+        with self.inspection():
+            self.assertEqual(self.store.validate_published_group(refs[1:], origin=self.origin),
+                             {"valid": True, "ref_count": 1})
+        self.refuse(refs[1:])
+
+    def test_reingest_refuses_actual_request_only_under_durable_default(self):
+        refs = self.group(policy={"retention": "request-only"})
+        self.assertEqual(self.store.policy.retention, "durable")
+        with self.inspection():
+            self.assertEqual(self.store.validate_published_group(refs, origin=self.origin),
+                             {"valid": True, "ref_count": 2})
+        self.refuse(refs)
+
+    def test_reingest_requires_explicit_original_five_field_origin(self):
+        refs = self.group()
+        for origin in (False, True, {}, {"kind": "tool", "session_id": "session1",
+                                        "id": "original-call"},
+                       {**self.origin, "id": "false-call"},
+                       {**self.origin, "created_at": "2021-01-01T00:00:00+00:00"},
+                       {**self.origin, "extra": True}):
+            self.refuse(refs, origin=origin)
+        with self.inspection(), self.assertRaises(MediaRefusal):
+            self.store.validate_reingest_group(refs, origin=None)
+
+    def test_reingest_refuses_reordered_omitted_extra_and_invalid_groups(self):
+        refs = self.group()
+        for changed in (refs[::-1], refs[:1], [*refs, refs[0]], [], False, tuple(refs)):
+            self.refuse(changed)
+
+    def test_reingest_uses_actual_ref_schema_provenance_and_limits(self):
+        refs = self.group()
+        for field, value in (("v", True), ("bytes", True), ("mime", "image/gif"),
+                             ("width", 0), ("extra", True)):
+            changed = copy.deepcopy(refs)
+            changed[0][field] = value
+            self.refuse(changed)
+        changed = copy.deepcopy(refs)
+        changed[0]["provenance"]["id"] = "forged"
+        self.refuse(changed)
+        self.store.policy = MediaPolicy(max_images=1)
+        self.refuse(refs)
+
+    def test_reingest_refuses_staged_and_dropped(self):
+        refs = self.group(disposition=None)
+        self.refuse(refs)
+        self.store.publish_sync(refs, origin=self.origin, disposition="drop")
+        self.refuse(refs)
+
+    def test_reingest_refuses_foreign_and_substituted_owned_refs(self):
+        refs = self.group()
+        changed = copy.deepcopy(refs)
+        changed[0]["session_id"] = "foreign"
+        self.refuse(changed)
+        other = self.group(origin={**self.origin, "id": "other"})
+        self.refuse([refs[0], other[1]])
+
+    def test_reingest_refuses_expired_metadata_without_pixels(self):
+        origin = {**self.origin, "expires_at": "2020-01-02T00:00:00+00:00"}
+        # Real publication is made before the clock crosses the original TTL.
+        from datetime import datetime as RealDatetime, timezone
+        class Clock(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2020, 1, 1, 1, tzinfo=timezone.utc)
+        with patch("amplifier_foundation.session.media.datetime", Clock):
+            refs = self.group(origin=origin)
+        self.refuse(refs, origin=origin)
+        # Same actual expired records, now explicitly metadata-only.
+        for path in (self.root / "records").iterdir():
+            record = json.loads(path.read_bytes())
+            record["metadata_only"] = True
+            self.store._write(self.store._dirs["records"], path.name, record)
+        self.refuse(refs, origin=origin)
+
+    def test_reingest_refuses_current_request_only_and_drop_policy(self):
+        refs = self.group()
+        for retention in ("request-only", "drop"):
+            self.store.policy = MediaPolicy(retention=retention)
+            self.refuse(refs)
+
+    def test_reingest_refuses_actual_record_retention_state_and_ref_changes(self):
+        refs = self.group()
+        path = next((self.root / "records").iterdir())
+        original = json.loads(path.read_bytes())
+        for update in ({"retention": "request-only"}, {"state": "staged"},
+                       {"state": "dropped"}, {"ref": {**original["ref"], "bytes": True}},
+                       {"metadata_only": True}):
+            self.store._write(self.store._dirs["records"], path.name, {**original, **update})
+            self.refuse(refs)
+        self.store._write(self.store._dirs["records"], path.name, original)
+
+    def test_reingest_observer_requires_transfer_guard_and_repeats_it(self):
+        refs = self.group()
+        self.refuse(refs, store=self.observer())
+        calls = []
+        def guard(ref, *, purpose):
+            calls.append((ref, purpose))
+            return True
+        observer = self.observer(guard)
+        with self.inspection(observer):
+            self.assertEqual(observer.validate_reingest_group(refs, origin=self.origin),
+                             {"valid": True, "ref_count": 2})
+        self.assertGreaterEqual(len(calls), 2 * len(refs))
+        self.assertTrue(all(purpose == "transfer" for _, purpose in calls))
+
+    def test_reingest_observer_refuses_late_denial_and_callback_error(self):
+        refs = self.group()
+        calls = 0
+        def late(ref, *, purpose):
+            nonlocal calls
+            calls += 1
+            return calls <= len(refs)
+        self.refuse(refs, store=self.observer(late))
+        def broken(ref, *, purpose):
+            raise RuntimeError("source guard unavailable")
+        self.refuse(refs, store=self.observer(broken))
+
+    def test_reingest_refuses_callback_record_mutation_even_after_last_ref_check(self):
+        refs = self.group()
+        path = next((self.root / "records").iterdir())
+        calls = 0
+        def mutate(ref, *, purpose):
+            nonlocal calls
+            calls += 1
+            if calls == 2 * len(refs):
+                record = json.loads(path.read_bytes())
+                record["retention"] = "request-only"
+                self.store._write(self.store._dirs["records"], path.name, record)
+            return True
+        self.refuse(refs, store=self.observer(mutate),
+                    changed_paths=("records/" + path.name,))
+        self.assertEqual(calls, 2 * len(refs))  # No retry after detecting change.
+        self.assertEqual(json.loads(path.read_bytes())["retention"], "request-only")
+
+    def test_reingest_refuses_callback_original_group_mutation(self):
+        refs = self.group()
+        path = next((self.root / "origins").iterdir())
+        calls = 0
+        def mutate(ref, *, purpose):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                saved = json.loads(path.read_bytes())
+                saved["refs"] = refs[:1]
+                self.store._write(self.store._dirs["origins"], path.name, saved)
+            return True
+        self.refuse(refs, store=self.observer(mutate),
+                    changed_paths=("origins/" + path.name,))
+        self.assertEqual(json.loads(path.read_bytes())["refs"], refs[:1])
+
+    def test_reingest_refuses_callback_current_policy_and_guard_revocation(self):
+        refs = self.group()
+        observer = self.observer()
+        def revoke_policy(ref, *, purpose):
+            observer.policy = MediaPolicy(retention="request-only")
+            return True
+        observer.source_read_verifier = revoke_policy
+        self.refuse(refs, store=observer)
+        observer.policy = self.store.policy
+        def revoke_guard(ref, *, purpose):
+            observer.source_read_verifier = None
+            return True
+        observer.source_read_verifier = revoke_guard
+        self.refuse(refs, store=observer)
+
+    def test_reingest_refuses_callback_epoch_revocation(self):
+        refs = self.group()
+        observer = self.observer()
+        calls = 0
+        def revoke(ref, *, purpose):
+            nonlocal calls
+            calls += 1
+            if calls == 2 * len(refs):
+                observer.revoke()
+            return True
+        observer.source_read_verifier = revoke
+        self.refuse(refs, store=observer)
+        self.assertEqual(calls, 2 * len(refs))
+
+    def test_reingest_snapshots_even_otherwise_eligible_record_changes(self):
+        refs = self.group()
+        path = next((self.root / "records").iterdir())
+        calls = 0
+        def mutate(ref, *, purpose):
+            nonlocal calls
+            calls += 1
+            if calls == 2 * len(refs):
+                record = json.loads(path.read_bytes())
+                record["checkpoint"] = {"changed": "during-inspection"}
+                self.store._write(self.store._dirs["records"], path.name, record)
+            return True
+        self.refuse(refs, store=self.observer(mutate),
+                    changed_paths=("records/" + path.name,))
+        self.assertEqual(calls, 2 * len(refs))
+
+    def test_reingest_refuses_callback_final_publication_change(self):
+        refs = self.group()
+        path = next((self.root / "origins").iterdir())
+        calls = 0
+        def mutate(ref, *, purpose):
+            nonlocal calls
+            calls += 1
+            if calls == 2 * len(refs):
+                saved = json.loads(path.read_bytes())
+                saved["publication"]["refs"] = refs[::-1]
+                self.store._write(self.store._dirs["origins"], path.name, saved)
+            return True
+        self.refuse(refs, store=self.observer(mutate),
+                    changed_paths=("origins/" + path.name,))
+        self.assertEqual(calls, 2 * len(refs))
+
+    def test_reingest_does_not_invent_model_or_optimize_purpose(self):
+        refs = self.group()
+        with patch.object(self.store, "policy_verifier",
+                          side_effect=AssertionError("producer owns current host purpose")) as guard:
+            with self.inspection():
+                self.assertEqual(self.store.validate_reingest_group(refs, origin=self.origin),
+                                 {"valid": True, "ref_count": 2})
+            guard.assert_not_called()
+
+    def test_reingest_refuses_late_policy_limit_change_and_expiry(self):
+        from datetime import datetime as RealDatetime, timezone
+        now = RealDatetime(2030, 1, 1, tzinfo=timezone.utc)
+        class Clock(RealDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now
+        origin = {**self.origin, "expires_at": "2030-01-01T00:00:01+00:00"}
+        refs = self.group(origin=origin)
+        observer = self.observer()
+        def expire(ref, *, purpose):
+            nonlocal now
+            now = RealDatetime(2030, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+            return True
+        observer.source_read_verifier = expire
+        with patch("amplifier_foundation.session.media.datetime", Clock):
+            self.refuse(refs, origin=origin, store=observer)
+        def limit(ref, *, purpose):
+            observer.policy = MediaPolicy(max_images=1)
+            return True
+        observer.source_read_verifier = limit
+        self.refuse(refs, origin=origin, store=observer)
+
+    def test_reingest_refuses_metadata_read_error_and_closed_store(self):
+        refs = self.group()
+        with patch.object(self.store, "_read", side_effect=OSError("metadata unavailable")):
+            self.refuse(refs)
+        self.store.close()
+        self.refuse(refs)
 
 
 class Coordinator:

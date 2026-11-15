@@ -711,6 +711,78 @@ class SessionMediaStore:
                 raise MediaRefusal("published media group changed during verification")
         return {"valid": True, "ref_count": len(normalized)}
 
+    def validate_reingest_group(self, refs: Any, *, origin: Any) -> dict:
+        """Read-only data check for re-ingesting one complete original group.
+
+        Unlike final-publication inspection, require explicit original five-field
+        provenance on every ref, the original ordered refs (including duplicates),
+        and actual durable, unexpired published records under current durable policy.
+        Observer guards keep their existing transfer purpose. No pixels, writes,
+        expiry renewal, checkpoint or authority result: the producer still owns
+        current host purpose/consent and must hold incompatible inline input.
+        """
+        with self._lock:
+            try:
+                self._check()
+                policy = self.policy
+                if not isinstance(policy, MediaPolicy) or policy.retention != "durable":
+                    raise MediaRefusal("re-ingestion requires current durable media policy")
+                if (not isinstance(refs, list) or not refs
+                        or (policy.max_images is not None and len(refs) > policy.max_images)):
+                    raise MediaRefusal("invalid or over-limit original media group")
+                if not isinstance(origin, Mapping) or set(origin) != _ORIGIN_FIELDS:
+                    raise MediaRefusal("re-ingestion requires explicit original provenance")
+                supplied_origin = copy.deepcopy(dict(origin))
+                normalized = [validate_blob_ref(ref) for ref in refs]
+                if any(_json(ref["provenance"]) != _json(supplied_origin) for ref in normalized):
+                    raise MediaRefusal("re-ingestion requires each ref's exact original provenance")
+                name = _key({key: supplied_origin[key]
+                             for key in ("kind", "session_id", "id")}) + ".json"
+                policy_snapshot = _json(vars(policy))
+                epoch, owner = self.epoch, self.session_id
+                observer, guard = self.read_only, self.source_read_verifier
+
+                def snapshot() -> bytes:
+                    self._check()
+                    if (self.policy is not policy or _json(vars(self.policy)) != policy_snapshot
+                            or self.epoch != epoch or self.session_id != owner
+                            or self.read_only != observer or self.source_read_verifier is not guard):
+                        raise MediaRefusal("media policy or source binding changed during verification")
+                    saved = self._read(self._dirs["origins"], name)
+                    if (not isinstance(saved, dict)
+                            or _json(saved.get("origin")) != _json(supplied_origin)
+                            or _json(saved.get("refs")) != _json(normalized)
+                            or _json(saved.get("publication")) != _json(
+                                {"refs": normalized, "disposition": "retain"})):
+                        raise MediaRefusal("re-ingestion differs from complete original retained group")
+                    records = []
+                    for ref in normalized:
+                        record = self._read(self._dirs["records"], _key(ref) + ".json")
+                        if (not isinstance(record, dict)
+                                or _json(record.get("ref")) != _json(ref)
+                                or record.get("state") not in {"published", "committed"}
+                                or record.get("retention") != "durable"
+                                or record.get("metadata_only") is True):
+                            raise MediaRefusal("re-ingestion requires actual owned durable publication")
+                        expires = ref["provenance"]["expires_at"]
+                        if expires is not None and _date(expires) <= datetime.now(timezone.utc):
+                            raise MediaRefusal("expired original cannot be re-ingested", code="expired")
+                        records.append(record)
+                    return _json([saved, records])
+
+                before = snapshot()
+                # Snapshot before callbacks, then repeat public ownership/source
+                # checks and actual metadata snapshots under this same store lock.
+                for _ in range(2):
+                    self.validate_published_group(normalized, origin=supplied_origin)
+                    if snapshot() != before:
+                        raise MediaRefusal("original media group changed during verification")
+                return {"valid": True, "ref_count": len(normalized)}
+            except MediaRefusal:
+                raise
+            except Exception as exc:
+                raise MediaRefusal("cannot verify original durable media group") from exc
+
     def resolve_published_ref(self, ref: Any) -> BinaryIO:
         normalized = self.validate_published_ref(ref)
         expires = normalized["provenance"]["expires_at"]
