@@ -78,12 +78,13 @@ and new children receive protected DACLs.
 Pins above the configured state/native root share read and write. Pins on the
 root and below share read only. No pin shares delete. So while ownership is
 held, no pinned directory can be renamed, moved or deleted, and Windows refuses
-a write-class open of the root and of each pinned directory below it: an
-ordinary Win32 rename, move or replace into one of those directories fails with
-error 32. Other programs can still rename, replace and move entries in the
-directories above the root, for example the profile and installation
-directories. A share check only refuses an open; it grants no ACL right, and it
-protects each pinned directory, not an unrelated path such as the workspace.
+a write-class open (one that asks to add a file or a subdirectory) of the root
+and of each pinned directory below it: an ordinary Win32 rename, move or replace
+into one of those directories fails with error 32. Other programs can still
+rename, replace and move entries in the directories above the root, for example
+the profile and installation directories. A share check only refuses an open; it
+grants no ACL right, and it protects each pinned directory, not an unrelated
+path such as the workspace.
 
 Win32 sharing does **not** exclude attribute-only access. The ACL checks, not
 the share mode, prevent untrusted reparse conversion before absolute-path

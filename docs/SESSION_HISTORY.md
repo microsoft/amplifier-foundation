@@ -128,11 +128,15 @@ retain their existing lifetimes. One rule sets the sharing of every pin:
 
 - A pin on the directory that the operation owns, and on each directory below
   it, shares read only. Windows then refuses a write-class open of that
-  directory. An ordinary Win32 rename, move or replace (`MoveFileEx`,
-  `os.rename`, `os.replace`) opens the target's parent directory that way, so
-  it fails there with error 32. The restriction is the refusal of that open, not
-  of every namespace change: creating a new entry is not refused, and the
-  adapter's own publication renames by leaf name without opening the parent.
+  directory: an open that asks to add a file (`FILE_ADD_FILE`, the same bit as
+  `FILE_WRITE_DATA`) or a subdirectory (`FILE_ADD_SUBDIRECTORY`, the same bit as
+  `FILE_APPEND_DATA`). Attribute and ACL writes are not share-checked; the ACL
+  validation, not the share mode, addresses those. An ordinary Win32 rename,
+  move or replace (`MoveFileEx`, `os.rename`, `os.replace`) opens the target's
+  parent directory that way, so it fails there with error 32. The restriction
+  is the refusal of that open, not of every namespace change: creating a new
+  entry is not refused, and the adapter's own publication renames by leaf name
+  without opening the parent.
 - A pin on a directory above it, up to the drive root, shares read and write.
   Write-class opens of that directory are not refused, so other programs can
   rename, replace and move entries in it while the pin is held; an ordinary
@@ -145,12 +149,13 @@ directory above the owned one still decides what a program may change there, and
 each component is still opened without following a reparse point and validated
 before its child is opened or created.
 
-The owned directory is the session directory for read, publication and
-append/intent pins, and the configured state root for session ownership. The
-metadata lock and the fork reservation own the directory that contains the
-session directories. While either runs, it holds that directory at read-only
-sharing, so another program's rename into it or write-then-replace in it gets
-error 32 until the operation ends.
+The owned directory is the directory that contains the file for read,
+publication and append/intent pins (normally the session directory for
+transcript and metadata operations), and the configured state root for session
+ownership. The metadata lock and the fork reservation own the directory that
+contains the session directories. While either runs, it holds that directory at
+read-only sharing, so another program's rename into it or write-then-replace in
+it gets error 32 until the operation ends.
 
 Replacement writes complete and `FlushFileBuffers` the new private temporary
 before a same-directory native `NtSetInformationFile(FileRenameInformationEx)`

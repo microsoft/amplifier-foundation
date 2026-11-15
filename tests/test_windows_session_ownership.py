@@ -3208,6 +3208,7 @@ def test_native_entry_renamed_into_the_creation_gap_is_refused_before_descent(tm
             _grant_everyone(api, prepared, 2)  # FILE_ADD_FILE for Everyone: an untrusted ancestor.
             refusal = "foreign access"
     raced, real_create = [], api.CreateDirectoryW
+    live, real_open_file, real_close = set(), api.CreateFileW, api.close
 
     def lose_the_race(path, security):
         if PureWindowsPath(path) == PureWindowsPath(gap) and not raced:
@@ -3215,7 +3216,17 @@ def test_native_entry_renamed_into_the_creation_gap_is_refused_before_descent(tm
             raced.append(path)
         return real_create(path, security)  # ERROR_ALREADY_EXISTS for the gap.
 
-    api.CreateDirectoryW = lose_the_race
+    def open_file(*arguments):
+        handle = real_open_file(*arguments)
+        if handle != win._INVALID:
+            live.add(handle)
+        return handle
+
+    def close(handle):
+        live.discard(handle)
+        real_close(handle)
+
+    api.CreateDirectoryW, api.CreateFileW, api.close = lose_the_race, open_file, close
     with pytest.raises(shared.SharedStateError, match=refusal):
         with win._pinned(api, directory, root=root, create=True):
             pytest.fail("pinned through an entry that was renamed into the gap")
@@ -3223,4 +3234,8 @@ def test_native_entry_renamed_into_the_creation_gap_is_refused_before_descent(tm
     assert list(elsewhere.iterdir()) == []  # Nothing was created through the junction.
     if kind == "folder":
         assert list(gap.iterdir()) == []  # No descendant was created in the foreign folder.
-    assert _delete_open_error(base) == 0  # The refusal released every pin.
+    # The refusal released every pin: each handle that was opened is closed
+    # again, including the one on the refused entry, and neither the pinned
+    # ancestor nor the refused entry still refuses a DELETE open.
+    assert not live
+    assert _delete_open_error(base) == 0 and _delete_open_error(gap) == 0

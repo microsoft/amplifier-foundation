@@ -947,7 +947,9 @@ def windows_ancestor_evidence(path: Path, win) -> dict:
 
     This diagnostic runs only after the normal production preflight refused.
     It never makes a failed path acceptable. All opened ancestors remain held
-    until inspection ends, using the same production handle/share policy.
+    until inspection ends, through the production directory open. Every
+    component is held with read-only sharing here; production pins above the
+    owned root also share write.
     """
     path = win._absolute(path)
     api = win._API()
