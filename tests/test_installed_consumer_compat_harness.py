@@ -1587,7 +1587,8 @@ def native_acl_model(harness):
             return api.sid
         return aces()[(pointer.value - 1008) // 100].sid
 
-    def opened(path, *, directory):
+    def opened(path, *, directory, traversal=False):
+        # _PinnedDirectories passes ``traversal``; the harness diagnostic does not.
         assert directory
         api.opens.append(path)
         if path.name == "home":
