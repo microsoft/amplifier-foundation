@@ -123,7 +123,7 @@ def test_resume_preparation_keeps_recovered_backup_separate(tmp_path, pending):
     store.save(rows(2), {})
     store.save(rows(3), {})
     if pending:
-        jsonl.intent_path(store.transcript_path).write_text("{}")
+        _fixture_pending(jsonl.intent_path(store.transcript_path))
     else:
         store.transcript_path.write_bytes(b"invalid primary\n")
     jsonl._CACHE.clear()
