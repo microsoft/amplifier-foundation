@@ -88,6 +88,15 @@ def _transcript_contains_keyword(session_dir: Path, keyword: str) -> bool:
         True if keyword found anywhere in the transcript text.
     """
     transcript_path = session_dir / TRANSCRIPT_FILENAME
+    from .history import SessionHistoryStore
+
+    selected = SessionHistoryStore(session_dir)._versioned_reader()
+    if selected is not None:
+        keyword_lower = keyword.lower()
+        return any(
+            keyword_lower in json.dumps(entry, ensure_ascii=False).lower()
+            for entry in selected.load_messages()
+        )
     if not transcript_path.exists():
         return False
     keyword_lower = keyword.lower()

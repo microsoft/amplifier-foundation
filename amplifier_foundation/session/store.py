@@ -12,6 +12,7 @@ on disk or how directories are structured.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -88,6 +89,10 @@ def load_transcript(session_dir: Path) -> list[dict[str, Any]]:
     Returns:
         List of parsed message dicts.
     """
+    if os.path.lexists(session_dir / "transcript.v2"):
+        from .transcript_v2 import CommittedTranscriptReader
+
+        return CommittedTranscriptReader(session_dir).load_messages()
     return list(read_jsonl(session_dir / TRANSCRIPT_FILENAME))
 
 
@@ -109,6 +114,12 @@ def load_transcript_with_lines(session_dir: Path) -> list[dict[str, Any]]:
             that includes the 1-based line number.
     """
     entries: list[dict[str, Any]] = []
+    if os.path.lexists(session_dir / "transcript.v2"):
+        from .transcript_v2 import UnsupportedTranscript
+
+        # Repair/rewind line numbers refer to the physical legacy body. Do not
+        # invent them for a versioned transcript or allow the old repair writer.
+        raise UnsupportedTranscript("Legacy repair/rewind does not support versioned history")
     path = session_dir / TRANSCRIPT_FILENAME
     with path.open(encoding="utf-8") as fh:
         for line_num, line in enumerate(fh, start=1):
@@ -132,6 +143,10 @@ def write_transcript(session_dir: Path, entries: list[dict[str, Any]], *,
         session_dir: Path to the session directory.
         entries: List of message dicts to write.
     """
+    if os.path.lexists(session_dir / "transcript.v2"):
+        from .transcript_v2 import UnsupportedTranscript
+
+        raise UnsupportedTranscript("Legacy writer cannot replace versioned history")
     if _private_windows(windows_policy):
         # Canonical transcripts must be created privately, not with the generic
         # JSONL utility. Preserve system/developer rows for this lower-level API.

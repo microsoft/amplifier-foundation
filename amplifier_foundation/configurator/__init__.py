@@ -39,14 +39,22 @@ from amplifier_foundation.configurator._types import (
 class SessionConfigurator:
     """Facade over BundleStateManager (mutations) and BundleInspector (queries).
 
-    All existing call sites continue to work — the public API is identical to
-    the original monolithic class.  Tests that directly access private attributes
+    Existing call sites continue to use ``session.coordinator``.  Hosts may pass
+    an explicit ``coordinator`` view to route configuration operations through
+    their participating graph without replacing the actual session.  The host
+    owns that view's authority and lifetime.
+
+    Tests that directly access private attributes
     (``_stash``, ``_bundle``, ``_coordinator``, etc.) continue to work via
     read-only properties that proxy to the internal manager/inspector.
     """
 
-    def __init__(self, session: Any, prepared_bundle: Any) -> None:
-        self._state = BundleStateManager(session, prepared_bundle)
+    def __init__(
+        self, session: Any, prepared_bundle: Any, *, coordinator: Any = None
+    ) -> None:
+        self._state = BundleStateManager(
+            session, prepared_bundle, coordinator=coordinator
+        )
         self._inspector = BundleInspector(self._state)
         # BundleInspector.__init__ sets _original_snapshot = None.
         # Capture initial state snapshot; take_snapshot() may be patched in tests.

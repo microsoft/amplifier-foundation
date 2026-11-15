@@ -1,0 +1,1824 @@
+"""Opt-in canonical-v1 media candidate building, never live transcript activation.
+
+The application owns source selection, original observation policy, exclusive
+writer fencing, media admission, checkpoint/apply and recovery retention.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+from copy import deepcopy
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import stat
+import tempfile
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Awaitable, BinaryIO, Callable, ContextManager, Iterator, Protocol
+
+from ._media_conversion_parser import CHUNK, Scanner, Span, Unsupported, copy_span
+
+NAMESPACE = "experimental.media.v1"
+ADAPTER = "foundation.canonical-media-conversion.v1"
+_MARKER = re.compile(r"\[Session image ([0-9a-f]{64})\]\Z")
+_MISSING_LIMIT = object()
+
+
+def _image_limit(value):
+    """None is an absent optional quota, never an absent host policy."""
+    if value is not None and (type(value) is not int or value <= 0):
+        raise Unsupported("Host image count must be None or a positive integer")
+    return value
+
+
+def _host_image_limit(store):
+    policy = getattr(store, "policy", None)
+    if policy is None:
+        raise Unsupported("Media operation needs an explicit host policy object")
+    return _image_limit(getattr(policy, "max_images", _MISSING_LIMIT))
+
+
+class MediaCapability(Protocol):
+    async def ingest(self, value, *, source_format, origin, policy): ...
+    async def publish(self, refs, *, origin, disposition): ...
+
+
+@dataclass(frozen=True)
+class SourceIdentity:
+    path: str
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ConversionPlan:
+    adapter: str
+    owner: str
+    session_id: str
+    source: SourceIdentity
+    backups: tuple[SourceIdentity, ...]
+    records: int
+    inline_images: int
+    existing_refs: int
+    selected_records: int
+    committed_prefix: dict | None = None
+    committed_session_dir: str | None = None
+    target_prefix: dict | None = None
+    target_session_dir: str | None = None
+    portable_directory: str | None = None
+
+
+@dataclass(frozen=True)
+class Candidate:
+    directory: str
+    sha256: str
+    bytes: int
+    records: int
+    images: int
+    original_bytes: int
+    decoded_bytes: int
+    inline_removed_bytes: int = 0
+    state: str = "verified-candidate-not-applied"
+    committed_prefix: dict | None = None
+    held_records: int = 0
+
+
+Fence = Callable[[str], ContextManager[None]]
+Origin = Callable[[int, int], dict[str, Any]]
+AssetReader = Callable[[dict[str, Any]], ContextManager[BinaryIO]]
+
+
+@contextmanager
+def bind_committed_media_cohort(session_dir, *, expected, owner, fence, producer, store):
+    """Join a live HOST producer's original truth to exact committed source data.
+
+    This creates no permission or receipt. Use the yielded ``fence``,
+    ``eligible_record`` and ``origin_for`` together for build_candidate inside
+    this context. Exit it successfully BEFORE the actual source rewrite; the
+    producer's separate host custody/admission must remain current through ACK.
+    """
+    from ._media_cohort import bind
+    with bind(session_dir, expected=expected, owner=owner, fence=fence,
+              producer=producer, store=store) as cohort:
+        yield cohort
+
+
+def _checked_cohort(origin_for):
+    from ._media_cohort import _BoundCohort
+    cohort = getattr(origin_for, "__self__", None)
+    return cohort if type(cohort) is _BoundCohort else None
+
+
+def _check_cohort(origin_for):
+    cohort = _checked_cohort(origin_for)
+    if cohort is not None:
+        cohort.check()
+
+
+def _json(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def _digest(stream: BinaryIO) -> tuple[str, int]:
+    digest, size = hashlib.sha256(), 0
+    while chunk := stream.read(CHUNK):
+        digest.update(chunk)
+        size += len(chunk)
+    return digest.hexdigest(), size
+
+
+@contextmanager
+def _open(path: Path) -> Iterator[BinaryIO]:
+    if not path.is_absolute() or path.resolve() != path:
+        raise Unsupported("Explicit absolute, non-symlink source path required")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise Unsupported("Source must be a regular file")
+        yield stream
+
+
+def _stamp(stream: BinaryIO) -> tuple[int, ...]:
+    info = os.fstat(stream.fileno())
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _identity(path: Path) -> SourceIdentity:
+    with _open(path) as stream:
+        before = _stamp(stream)
+        digest, size = _digest(stream)
+        after = _stamp(stream)
+        named = path.stat(follow_symlinks=False)
+        if before != after or (named.st_dev, named.st_ino) != before[:2] or size != before[2]:
+            raise Unsupported("Source changed during verification")
+    return SourceIdentity(str(path), *before, digest)
+
+
+def _check(expected: SourceIdentity) -> None:
+    if _identity(Path(expected.path)) != expected:
+        raise Unsupported("Source identity/hash changed since preview")
+
+
+class _CommittedView:
+    """Seekable parser view over PUBLIC checked ranges, never a body-file bypass."""
+
+    def __init__(self, source, start):
+        self.source, self.start, self.position = source, start, 0
+        self.size = source.commit.committed_bytes - start
+
+    def tell(self):
+        return self.position
+
+    def seek(self, offset):
+        if type(offset) is not int or not 0 <= offset <= self.size:
+            raise Unsupported("Committed parser offset outside selected prefix")
+        self.position = offset
+        return offset
+
+    def read(self, size=CHUNK):
+        if type(size) is not int or not 0 <= size <= CHUNK:
+            raise Unsupported("Committed parser requires bounded reads")
+        end = min(self.size, self.position + size)
+        value = self.source.read_range(self.start + self.position, self.start + end)
+        self.position = end
+        return value
+
+
+@contextmanager
+def _source_view(plan, *, include_header=False):
+    if plan.committed_prefix is None or plan.portable_directory is not None:
+        with _open(Path(plan.source.path)) as stream:
+            yield stream
+        return
+    from .transcript_source import open_committed_source
+    from .transcript_v2 import CommittedPrefix
+    expected = CommittedPrefix(**plan.committed_prefix)
+    with open_committed_source(plan.committed_session_dir, expected=expected) as source:
+        yield _CommittedView(source, 0)
+        source.read_range(0, 0)  # Recheck even if consumer stopped at its last byte.
+
+
+def _check_source(plan):
+    _validate_plan(plan)
+    if plan.committed_prefix is None or plan.portable_directory is not None:
+        _check(plan.source)
+        if plan.portable_directory is not None:
+            verify_export(Path(plan.portable_directory))
+    else:
+        with _source_view(plan):
+            pass
+    if plan.target_prefix is not None:
+        from .transcript_source import open_committed_source
+        from .transcript_v2 import CommittedPrefix
+        with open_committed_source(plan.target_session_dir, expected=CommittedPrefix(**plan.target_prefix)):
+            pass
+
+
+def _validate_plan(plan):
+    if (type(plan) is not ConversionPlan or plan.adapter != ADAPTER
+            or type(plan.owner) is not str or not plan.owner
+            or type(plan.records) is not int or plan.records < 0
+            or type(plan.selected_records) is not int
+            or not 0 <= plan.selected_records <= plan.records):
+        raise Unsupported("Invalid exact conversion plan/selection")
+    if plan.committed_prefix is None:
+        if plan.committed_session_dir is not None or plan.target_prefix is not None or plan.portable_directory is not None:
+            raise Unsupported("Legacy source cannot carry a committed session directory")
+        return
+    from .transcript_v2 import CommittedPrefix
+    value = plan.committed_prefix
+    if type(value) is not dict or set(value) != set(CommittedPrefix.__dataclass_fields__):
+        raise Unsupported("Invalid committed conversion selector")
+    prefix = CommittedPrefix(**value)
+    _prefix_types(prefix)
+    for name in ("sequence", "committed_bytes", "message_count"):
+        if type(getattr(prefix, name)) is not int or getattr(prefix, name) < 0:
+            raise Unsupported("Committed selector bounds must be exact integers")
+    if (type(prefix.sha256) is not str or not re.fullmatch("[0-9a-f]{64}", prefix.sha256)
+            or prefix.body != f"g-{prefix.generation}.jsonl"
+            or (plan.portable_directory is None and type(plan.committed_session_dir) is not str)):
+        raise Unsupported("Invalid committed conversion source facts")
+    if plan.portable_directory is None:
+        session = Path(plan.committed_session_dir)
+        derived = SourceIdentity(
+            str(session / "transcript.v2" / prefix.body), 0, 0,
+            prefix.committed_bytes, 0, 0, prefix.sha256,
+        )
+        if (not session.is_absolute() or ".." in session.parts or session.name != prefix.session_id
+                or plan.source != derived):
+            raise Unsupported("Committed plan recovery/source facts differ from selected prefix")
+    else:
+        package = Path(plan.portable_directory)
+        if (plan.committed_session_dir is not None or not package.is_absolute() or ".." in package.parts
+                or plan.source.path != str(package / "candidate.jsonl")
+                or (plan.source.sha256, plan.source.size) != (prefix.sha256, prefix.committed_bytes)):
+            raise Unsupported("Portable import source differs from verified package")
+    if plan.session_id != prefix.session_id or plan.records != prefix.message_count or plan.backups:
+        raise Unsupported("Conversion source identity/count differs")
+    if plan.target_prefix is None:
+        if plan.target_session_dir is not None:
+            raise Unsupported("Target directory needs an explicit target prefix")
+    else:
+        target = CommittedPrefix(**plan.target_prefix)
+        _prefix_types(target)
+        path = Path(plan.target_session_dir)
+        if (target.message_count != 0 or target.session_id == prefix.session_id
+                or not path.is_absolute() or ".." in path.parts or path.name != target.session_id):
+            raise Unsupported("Transfer requires an explicitly selected empty prospective target")
+
+
+def _prefix_types(prefix):
+    from .transcript_v2 import CommittedPrefix
+    if type(prefix) is not CommittedPrefix:
+        raise Unsupported("Exact committed prefix type required")
+    for key in ("sequence", "committed_bytes", "message_count"):
+        if type(getattr(prefix, key)) is not int or getattr(prefix, key) < 0:
+            raise Unsupported("Committed prefix bounds must be exact integers")
+    for key in ("session_id", "generation", "operation_id"):
+        if type(getattr(prefix, key)) is not str or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,220}", getattr(prefix, key)
+        ):
+            raise Unsupported("Invalid committed source identity")
+    if (prefix.body != f"g-{prefix.generation}.jsonl" or type(prefix.sha256) is not str
+            or not re.fullmatch("[0-9a-f]{64}", prefix.sha256)):
+        raise Unsupported("Invalid committed prefix body/digest")
+
+
+def _saved_plan(directory):
+    path = directory / "plan.json"
+    with _open(path) as source:
+        raw = source.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise Unsupported("Oversized saved conversion plan")
+    value = json.loads(raw)
+    plan = ConversionPlan(**{
+        **value, "source": SourceIdentity(**value["source"]),
+        "backups": tuple(SourceIdentity(**item) for item in value["backups"]),
+    })
+    _validate_plan(plan)
+    return plan
+
+
+def _records(scanner, prefix=None):
+    """Validate an explicit T2 header; never discover T2 by guessing a v1 row."""
+    records = iter(scanner.records())
+    if prefix is not None:
+        from .transcript_v2 import _validate_body_header
+        header = next(records, None)
+        if header is None:
+            raise Unsupported("Missing selected committed generation header")
+        scanner.fields(header)  # Duplicate header members are never accepted.
+        _validate_body_header(scanner.small(header), prefix["generation"])
+    yield from records
+
+
+def _message(scanner: Scanner, record: Span) -> dict[str, Span]:
+    fields = scanner.fields(record)
+    role = fields.get("role")
+    if role is None or role.kind != 34 or not scanner.small(role):
+        raise Unsupported("Not a canonical v1 message; v2 writer layout is gated")
+    if "content" not in fields:
+        raise Unsupported("Canonical message content is required")
+    return fields
+
+
+def _images(scanner: Scanner, fields: dict[str, Span]) -> Iterator[tuple[int, Span, Span, str]]:
+    content = fields["content"]
+    if content.kind != 91:
+        return
+    for index, block in enumerate(scanner.array(content)):
+        if block.kind != 123:
+            raise Unsupported("Non-object canonical content block")
+        members = scanner.fields(block)
+        kind = members.get("type")
+        if kind is None:
+            raise Unsupported("Content block without a type")
+        if scanner.small(kind) != "image":
+            if scanner.small(kind) == "tool_result":
+                raise Unsupported("Nested tool-result content belongs to its format owner")
+            continue
+        # Extensions may contain pixels/placement policy. Do not guess.
+        if set(members) - {"type", "source", "visibility"} or "source" not in members:
+            raise Unsupported("Unsupported image block extension")
+        source = scanner.fields(members["source"])
+        if set(source) != {"type", "media_type", "data"}:
+            raise Unsupported("Unsupported image source schema")
+        mime = scanner.small(source["media_type"])
+        if scanner.small(source["type"]) != "base64" or mime not in ("image/png", "image/jpeg"):
+            raise Unsupported("Only canonical static PNG/JPEG base64 sources are qualified")
+        if source["data"].kind != 34:
+            raise Unsupported("Image payload must be a JSON string")
+        yield index, block, source["data"], mime
+
+
+def _media(scanner: Scanner, fields: dict[str, Span]) -> tuple[Span | None, Span | None]:
+    metadata = fields.get("metadata")
+    if metadata is None:
+        return None, None
+    if metadata.kind != 123:
+        if scanner.small(metadata, 4) is None:
+            return None, None
+        raise Unsupported("Canonical metadata is not an object/null")
+    members = scanner.fields(metadata)
+    namespace = members.get(NAMESPACE)
+    if namespace is None:
+        return metadata, None
+    media = scanner.fields(namespace)
+    if (set(media) not in ({"refs"}, {"v", "refs"}) or media["refs"].kind != 91
+            or ("v" in media and (type(scanner.small(media["v"])) is not int
+                                  or scanner.small(media["v"]) != 1))):
+        raise Unsupported("Unknown canonical media namespace shape")
+    return metadata, media["refs"]
+
+
+def _refs(scanner: Scanner, fields: dict[str, Span]) -> Iterator[tuple[Span, dict]]:
+    _, refs = _media(scanner, fields)
+    if refs:
+        for span in scanner.array(refs):
+            members = scanner.fields(span)  # Do not erase duplicate ref members.
+            if "provenance" in members:
+                scanner.fields(members["provenance"])
+            ref = scanner.small(span)
+            _validate_ref(ref)
+            yield span, ref
+
+
+def _validate_ref(ref: dict) -> None:
+    fields = {"v", "session_id", "sha256", "mime", "bytes", "width", "height", "provenance"}
+    if not isinstance(ref, dict) or set(ref) != fields or type(ref["v"]) is not int or ref["v"] != 1:
+        raise Unsupported("Unknown/invalid canonical media ref version or fields")
+    session = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,220}\Z")
+    if not isinstance(ref["session_id"], str) or not session.fullmatch(ref["session_id"]):
+        raise Unsupported("Invalid canonical media session")
+    if not isinstance(ref["sha256"], str) or not re.fullmatch("[0-9a-f]{64}", ref["sha256"]):
+        raise Unsupported("Invalid canonical media digest")
+    if ref["mime"] not in ("image/png", "image/jpeg", "image/gif", "image/webp"):
+        raise Unsupported("Unknown canonical media type")
+    if any(type(ref[key]) is not int or ref[key] <= 0 for key in ("bytes", "width", "height")):
+        raise Unsupported("Invalid canonical media dimensions/length")
+    provenance = ref["provenance"]
+    if not isinstance(provenance, dict) or set(provenance) != {
+        "kind", "session_id", "id", "created_at", "expires_at",
+    }:
+        raise Unsupported("Invalid canonical media provenance")
+    if provenance["kind"] not in ("tool", "upload", "host", "migration"):
+        raise Unsupported("Unknown canonical media provenance kind")
+    if not isinstance(provenance["session_id"], str) or not session.fullmatch(provenance["session_id"]):
+        raise Unsupported("Invalid original media session")
+    if not isinstance(provenance["id"], str) or not provenance["id"]:
+        raise Unsupported("Missing original observation identity")
+    try:
+        created = datetime.fromisoformat(provenance["created_at"])
+        expiry = provenance["expires_at"]
+        expired = datetime.fromisoformat(expiry) if expiry is not None else None
+        if created.utcoffset() is None or (expired is not None and (
+            expired.utcoffset() is None or expired < created
+        )):
+            raise ValueError("Unqualified original media lifetime")
+    except (TypeError, ValueError) as exc:
+        raise Unsupported("Invalid original media timestamps") from exc
+
+
+def _slots(scanner: Scanner, fields: dict[str, Span]) -> Iterator[str]:
+    content = fields["content"]
+    if content.kind != 91:
+        return
+    for block in scanner.array(content):
+        if block.kind != 123:
+            continue
+        members = scanner.fields(block)
+        kind, text = members.get("type"), members.get("text")
+        if kind is None or text is None or text.kind != 34 or text.end - text.start > 1024:
+            continue
+        if scanner.small(kind) == "text":
+            match = _MARKER.fullmatch(scanner.small(text))
+            if match:
+                yield match[1]
+
+
+def preview(
+    source: Path, *, owner: str, session_id: str, fence: Fence,
+    backups: tuple[Path, ...] = (), selected_records: int | None = None,
+) -> ConversionPlan:
+    """Read-only explicit source inventory under its real owner's writer fence.
+
+    A selected prefix is applied BEFORE asset enumeration. No suffix asset can
+    become part of a fork/export merely because it is in the same source file.
+    """
+    if not owner or not session_id or len(backups) > 64:
+        raise ValueError("Explicit owner/session and bounded backup selection required")
+    if os.name != "posix":
+        raise Unsupported("Canonical conversion durability is currently qualified on POSIX only")
+    if selected_records is not None and (type(selected_records) is not int or selected_records < 0):
+        raise ValueError("selected_records must be a nonnegative integer")
+    with fence(owner):
+        identity = _identity(source)
+        backup_ids = tuple(_identity(path) for path in backups)
+        records = images = refs = 0
+        with _open(source) as stream:
+            scanner = Scanner(stream)
+            for record in scanner.records():
+                fields = _message(scanner, record)
+                if selected_records is None or records < selected_records:
+                    image_count = sum(1 for _ in _images(scanner, fields))
+                    if image_count and next(_slots(scanner, fields), None):
+                        raise Unsupported("Existing text collides with canonical image slot marker")
+                    ref_count = sum(1 for _ in _refs(scanner, fields))
+                    if ref_count and fields["content"].kind != 91:
+                        raise Unsupported("Historical reference conversion requires explicit canonical image slots")
+                    if image_count and ref_count:
+                        raise Unsupported("Mixed existing refs and inline images need owner-reviewed slot ordering")
+                    images += image_count
+                    refs += ref_count
+                records += 1
+        _check(identity)
+        for backup in backup_ids:
+            _check(backup)
+        if selected_records is not None and selected_records > records:
+            raise Unsupported("Selected prefix exceeds canonical history")
+    return ConversionPlan(
+        ADAPTER, owner, session_id, identity, backup_ids, records, images, refs,
+        records if selected_records is None else selected_records,
+    )
+
+
+def preview_committed(
+    session_dir: Path, *, expected, owner: str, fence: Fence,
+    selected_records: int | None = None,
+) -> ConversionPlan:
+    """Inventory an exact public T2 committed source, excluding header and tail.
+
+    The bare message candidate is conversion evidence, not a writable T2 body.
+    Only the actual binding/format owner may create a new generation and ACK.
+    """
+    from .transcript_source import open_committed_source
+    from .transcript_v2 import CommittedPrefix
+    if type(expected) is not CommittedPrefix or not owner:
+        raise Unsupported("Exact typed committed prefix and owner required")
+    _prefix_types(expected)
+    if not isinstance(session_dir, Path) or not session_dir.is_absolute():
+        raise Unsupported("Explicit canonical committed session directory required")
+    if selected_records is not None and (
+        type(selected_records) is not int or not 0 <= selected_records <= expected.message_count
+    ):
+        raise ValueError("Selected records outside expected committed prefix")
+    with fence(owner), open_committed_source(session_dir, expected=expected) as source:
+        # Identity is the actual committed descriptor, not raw file size/mtime,
+        # which may include a deliberately uncommitted suffix.
+        identity = SourceIdentity(
+            str(session_dir / "transcript.v2" / expected.body),
+            0, 0, expected.committed_bytes, 0, 0, expected.sha256,
+        )
+        plan = ConversionPlan(
+            ADAPTER, owner, expected.session_id, identity, (), expected.message_count,
+            0, 0, expected.message_count if selected_records is None else selected_records,
+            asdict(expected), str(session_dir),
+        )
+        scanner = Scanner(_CommittedView(source, 0))
+        images = refs = records = 0
+        for record in _records(scanner, plan.committed_prefix):
+            fields = _message(scanner, record)
+            if records < plan.selected_records:
+                image_count = sum(1 for _ in _images(scanner, fields))
+                ref_count = sum(1 for _ in _refs(scanner, fields))
+                if image_count and next(_slots(scanner, fields), None):
+                    raise Unsupported("Existing text collides with canonical image slot marker")
+                # Existing T2 string-content refs already have a role-position
+                # binding accepted by the actual writer/projector. Preserve
+                # them unchanged; do not infer new slots or inline pixels.
+                if image_count and ref_count:
+                    raise Unsupported("Mixed inline/ref slot ordering is not qualified")
+                images += image_count
+                refs += ref_count
+            records += 1
+        if records != expected.message_count:
+            raise Unsupported("Committed conversion source record count changed")
+        source.read_range(0, 0)
+    return ConversionPlan(
+        plan.adapter, owner, expected.session_id, identity, (), records, images, refs,
+        plan.selected_records, plan.committed_prefix, plan.committed_session_dir,
+    )
+
+
+def _decode(scanner: Scanner, span: Span, output: BinaryIO) -> tuple[str, int]:
+    scanner.seek(span.start)
+    pending, ended, size = b"", False, 0
+    digest = hashlib.sha256()
+    try:
+        for chunk in scanner.string_chunks():
+            if ended and chunk:
+                raise Unsupported("Base64 data after padding")
+            pending += chunk
+            count = len(pending) // 4 * 4
+            if not count:
+                continue
+            raw, pending = pending[:count], pending[count:]
+            decoded = base64.b64decode(raw, validate=True)
+            # Reject noncanonical pad bits as well as whitespace/invalid alphabet.
+            if base64.b64encode(decoded) != raw:
+                raise Unsupported("Noncanonical base64 encoding")
+            if b"=" in raw:
+                ended = True
+                if pending:
+                    raise Unsupported("Base64 data after padding")
+            output.write(decoded)
+            digest.update(decoded)
+            size += len(decoded)
+        if pending or not size:
+            raise Unsupported("Incomplete/empty base64 image")
+    except (ValueError, binascii.Error) as exc:
+        raise Unsupported("Invalid strict base64 image") from exc
+    output.seek(0)
+    return digest.hexdigest(), size
+
+
+def _expired(ref):
+    expiry = ref["provenance"]["expires_at"]
+    return expiry is not None and datetime.fromisoformat(expiry) <= datetime.now(timezone.utc)
+
+
+def _verify_asset(ref: dict, reader: AssetReader, *, metadata_expired=False) -> None:
+    _validate_ref(ref)
+    if metadata_expired and _expired(ref):
+        return  # Identity admission is still required by the actual writer.
+    snapshot = deepcopy(ref)
+    with reader(deepcopy(snapshot)) as stream:
+        digest, size = _digest(stream)
+    if digest != snapshot.get("sha256") or size != snapshot["bytes"]:
+        raise Unsupported("Asset binary closure verification failed")
+
+
+def _sync(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_new(path: Path, value: Any) -> None:
+    with path.open("xb") as output:
+        os.chmod(path, 0o600)
+        output.write(_json(value) + b"\n")
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def _event(journal: BinaryIO, **value: Any) -> None:
+    journal.write(_json(value) + b"\n")
+    journal.flush()
+    os.fsync(journal.fileno())
+
+
+def _patch(db: sqlite3.Connection, start: int, end: int, value: bytes) -> None:
+    if len(value) > 16384:
+        raise Unsupported("Canonical edit exceeds adapter bound")
+    db.execute("insert into patches values(?,?,?)", (start, end, value))
+
+
+def _emit_candidate(source, output, db, selected_end):
+    offset = 0
+    for start, end, value in db.execute("select start,end,value from patches order by start,rowid"):
+        if start < offset:
+            raise Unsupported("Overlapping conversion edits")
+        copy_span(source, output, offset, start)
+        output.write(value)
+        offset = end
+    copy_span(source, output, offset, selected_end)
+    if selected_end:
+        output.write(b"\n")
+
+
+class _HashWriter:
+    def __init__(self):
+        self.digest = hashlib.sha256()
+        self.size = 0
+
+    def write(self, value):
+        self.digest.update(value)
+        self.size += len(value)
+
+    def result(self):
+        return self.digest.hexdigest(), self.size
+
+
+def _namespace_patch(
+    scanner: Scanner, fields: dict[str, Span], row: int, db: sqlite3.Connection,
+) -> None:
+    """Write metadata edits to disk, never an in-memory per-message ref list."""
+    metadata, refs = _media(scanner, fields)
+    # Spool replacement insertions too: SQLite per-row blobs stay bounded.
+    if refs is not None:
+        position = refs.end - 1
+        prefix = b"," if next(scanner.array(refs), None) is not None else b""
+        suffix = b""
+    elif metadata is not None:
+        position = metadata.end - 1
+        prefix = (b"," if scanner.fields(metadata) else b"") + _json(NAMESPACE) + b':{"refs":['
+        suffix = b"]}"
+    else:
+        position = fields["content"].end  # Insert a new field after content.
+        prefix = b',"metadata":{' + _json(NAMESPACE) + b':{"refs":['
+        suffix = b"]}}"
+        old = fields.get("metadata")
+        if old is not None:
+            # metadata:null is replaced, not duplicated.
+            position = old.start
+            prefix = b"{" + _json(NAMESPACE) + b':{"refs":['
+    first = True
+    for (raw,) in db.execute("select ref from assets where row=? order by block", (row,)):
+        _patch(db, position, position, prefix + (b"" if first else b",") + raw)
+        prefix, first = b"", False
+    if not first:
+        old = fields.get("metadata")
+        end = old.end if old is not None and metadata is None else position
+        _patch(db, position, end, suffix)
+
+
+async def _stage_image_groups(scanner, fields, row, db, directory, capability, origin_for, journal, cancelled):
+    """Spool source facts on disk; F1 returns one origin group's refs in memory."""
+    ingest_group = getattr(capability, "ingest_group_sync", None)
+    if not callable(ingest_group):
+        return False
+    for index, _, data, mime in _images(scanner, fields):
+        if cancelled():
+            raise InterruptedError("Conversion cancelled before group decoding")
+        origin = deepcopy(origin_for(row, index))
+        if len(_json(origin)) > 16384:
+            raise Unsupported("Original group provenance exceeds adapter bound")
+        file = directory / f"decoded-{row}-{index}"
+        with file.open("xb+") as pixels:
+            os.chmod(file, 0o600)
+            digest, size = _decode(scanner, data, pixels)
+        db.execute("insert into image_groups values(?,?,?,?,?,?)",
+                   (row, index, _json(origin), mime, digest, size))
+    db.commit()
+    for (encoded_origin,) in db.execute(
+        "select origin from image_groups where row=? group by origin order by min(block)", (row,),
+    ):
+        origin = json.loads(encoded_origin)
+        if cancelled():
+            raise InterruptedError("Conversion cancelled before group staging")
+
+        def sources():
+            for index, mime in db.execute(
+                "select block,mime from image_groups where row=? and origin=? order by block",
+                (row, encoded_origin),
+            ):
+                with _open(directory / f"decoded-{row}-{index}") as pixels:
+                    yield {"stream": pixels, "mime": mime}
+
+        _event(journal, state="group-ingest-intent", row=row, origin=origin)
+        _check_cohort(origin_for)
+        result = ingest_group(sources(), origin=deepcopy(origin), policy=None)
+        _check_cohort(origin_for)
+        refs = deepcopy(result["staged_refs"])
+        if not isinstance(refs, list):
+            raise Unsupported("Group owner returned invalid reference sequence")
+        count = 0
+        for index, mime, digest, size in db.execute(
+            "select block,mime,digest,bytes from image_groups where row=? and origin=? order by block",
+            (row, encoded_origin),
+        ):
+            if count >= len(refs):
+                raise Unsupported("Group owner omitted original image")
+            ref = refs[count]
+            _validate_ref(ref)
+            if (ref["provenance"] != origin or ref["sha256"] != digest or ref["bytes"] != size
+                    or ref["mime"] != mime):
+                raise Unsupported("Group owner changed ordered original image identity")
+            db.execute("insert into assets values(?,?,?,?)", (row, index, _json(ref), encoded_origin))
+            count += 1
+        if count != len(refs):
+            raise Unsupported("Group owner returned extra image references")
+        db.commit()
+        _event(journal, state="group-staged", row=row, origin=origin, count=count)
+        if cancelled():
+            raise InterruptedError("Conversion cancelled after group staging")
+        _event(journal, state="group-publication-intent", row=row, origin=origin, count=count)
+        _check_cohort(origin_for)
+        result = await capability.publish(deepcopy(refs), origin=deepcopy(origin), disposition="retain")
+        _check_cohort(origin_for)
+        if result["refs"] != refs:
+            raise Unsupported("Group publication changed complete original ref set")
+        for ref in refs:
+            _event(journal, state="published-assets-only", row=row, ref=ref)
+        if cancelled():
+            raise InterruptedError("Conversion cancelled after group publication")
+    return True
+
+
+async def _adopt_existing_groups(scanner, selected_records, db, adopt, target_id, limit, journal, cancelled,
+                                 prefix=None):
+    if cancelled():
+        raise InterruptedError("Conversion cancelled before selected reference collection")
+    for row, record in enumerate(_records(scanner, prefix)):
+        if row >= selected_records:
+            break
+        if cancelled():
+            raise InterruptedError("Conversion cancelled during selected record collection")
+        for span, ref in _refs(scanner, _message(scanner, record)):
+            if cancelled():
+                raise InterruptedError("Conversion cancelled during selected reference collection")
+            db.execute("insert into transfer_refs values(?,?,?,?,?,?)", (
+                row, span.start, span.end, _json(ref["provenance"]), _json(ref), None,
+            ))
+    db.commit()
+    for (origin,) in db.execute(
+        "select origin from transfer_refs group by origin order by min(start)",
+    ):
+        if cancelled():
+            raise InterruptedError("Conversion cancelled before reference group adoption")
+        # Collection is disk-backed across the selection. F1's list API still
+        # materializes one origin group's metadata (not pixels), even when the
+        # host has no optional image-count quota.
+        count = db.execute("select count(*) from transfer_refs where origin=?", (origin,)).fetchone()[0]
+        if limit is not None and count > limit:
+            raise Unsupported("Selected transfer group exceeds host image count")
+        refs = [json.loads(raw) for (raw,) in db.execute(
+            "select ref from transfer_refs where origin=? order by start", (origin,),
+        )]
+        expected = [{**deepcopy(ref), "session_id": target_id} for ref in refs]
+        _event(journal, state="adoption-group-intent", origin=json.loads(origin), count=len(refs))
+        adopted = await adopt(deepcopy(refs))
+        if not isinstance(adopted, list) or adopted != expected:
+            raise Unsupported("Adoption changed bytes or original provenance/expiry")
+        for ref, copied in zip(refs, adopted):
+            _validate_ref(copied)
+            db.execute("update transfer_refs set adopted=? where ref=?", (_json(copied), _json(ref)))
+        db.commit()
+        _event(journal, state="adopted-assets-only", origin=json.loads(origin), count=len(refs))
+        if cancelled():
+            raise InterruptedError("Conversion cancelled after reference adoption")
+
+
+async def build_candidate(
+    plan: ConversionPlan, directory: Path, *, fence: Fence, capability: MediaCapability,
+    origin_for: Origin, asset_reader: AssetReader, cancelled: Callable[[], bool] = lambda: False,
+    export_assets: bool = False,
+    _adopt_ref: Callable[[list[dict]], Awaitable[list[dict]]] | None = None,
+    _target_session_id: str | None = None,
+    _adopt_limit: int | None | object = _MISSING_LIMIT,
+    eligible_record: Callable[[int], bool] | None = None,
+) -> Candidate:
+    """Build assets-first candidate + enumerable journal; NEVER replace source.
+
+    ``asset_reader`` is an owner-authorized published/staged inspection seam,
+    not ordinary model resolution. It must verify admission/provenance and open
+    immutable original bytes. No path/hash-only asset adoption is performed.
+    """
+    if plan.adapter != ADAPTER:
+        raise Unsupported("Unsupported conversion plan")
+    if os.name != "posix":
+        raise Unsupported("Canonical conversion durability is currently qualified on POSIX only")
+    if not directory.is_absolute() or directory.parent.resolve() != directory.parent:
+        raise Unsupported("Explicit private operation directory required")
+    cohort = _checked_cohort(origin_for) or _checked_cohort(eligible_record) or _checked_cohort(fence)
+    if cohort is not None:
+        if (getattr(eligible_record, "__self__", None) is not cohort
+                or getattr(eligible_record, "__func__", None) is not type(cohort).eligible_record
+                or getattr(origin_for, "__self__", None) is not cohort
+                or getattr(origin_for, "__func__", None) is not type(cohort).origin_for
+                or getattr(fence, "__self__", None) is not cohort
+                or getattr(fence, "__func__", None) is not type(cohort).fence):
+            raise Unsupported("Checked cohort callbacks must belong to the same live binding")
+        cohort.check_builder(plan, capability)
+    with fence(plan.owner):
+        _check_source(plan)
+        for backup in plan.backups:
+            _check(backup)
+        directory.mkdir(mode=0o700)  # Existing/unknown operation is never replayed.
+        _write_new(directory / "plan.json", asdict(plan))
+        _sync(directory.parent)
+        with (directory / "journal.jsonl").open("xb") as journal:
+            os.chmod(directory / "journal.jsonl", 0o600)
+            _event(journal, state="started", adapter=ADAPTER, source=asdict(plan.source))
+            try:
+                return await _build(
+                    plan, directory, capability, origin_for, asset_reader, cancelled, journal,
+                    export_assets, _adopt_ref, _target_session_id,
+                    _adopt_limit,
+                    eligible_record,
+                )
+            except BaseException as exc:
+                # No exception payload, image data or opaque provider text in journal.
+                _event(journal, state="interrupted", reason=type(exc).__name__)
+                raise
+
+
+async def _build(
+    plan, directory, capability, origin_for, reader, cancelled, journal,
+    export_assets, adopt_ref, target_session_id,
+    adopt_limit,
+    eligible_record,
+):
+    # Recovery copies are per rewrite, never a standing growing second body.
+    for index, identity in enumerate((plan.source, *plan.backups)):
+        opening = _source_view(plan, include_header=True) if index == 0 else _open(Path(identity.path))
+        with opening as source, (directory / f"original-{index}").open("xb") as output:
+            os.chmod(output.name, 0o600)
+            copy_span(source, output, 0, identity.size)
+            output.flush()
+            os.fsync(output.fileno())
+        with (directory / f"original-{index}").open("rb") as source:
+            if _digest(source) != (identity.sha256, identity.size):
+                raise Unsupported("Original recovery copy mismatch")
+    if plan.target_prefix is not None:
+        from .transcript_source import open_committed_source
+        from .transcript_v2 import CommittedPrefix
+        with open_committed_source(
+            plan.target_session_dir, expected=CommittedPrefix(**plan.target_prefix),
+        ) as target, (directory / "original-target").open("xb") as output:
+            os.chmod(output.name, 0o600)
+            for raw in target.iter_bytes():
+                output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+    db = sqlite3.connect(directory / "manifest.sqlite")
+    os.chmod(directory / "manifest.sqlite", 0o600)
+    try:
+        db.execute("pragma cache_size=-512")
+        db.execute("pragma temp_store=FILE")
+        db.execute("create table patches(start integer,end integer,value blob)")
+        db.execute("create table assets(row integer,block integer,ref blob,origin blob)")
+        db.execute("create table closure(ref blob)")
+        db.execute("create table image_groups(row integer,block integer,origin blob,mime text,digest text,bytes integer)")
+        db.execute("create index image_groups_row_origin on image_groups(row,origin,block)")
+        db.execute("create table transfer_refs(row integer,start integer,end integer,origin blob,ref blob,adopted blob)")
+        if plan.committed_prefix is not None:
+            db.execute("create table held(row integer)")
+        if plan.target_prefix is not None:
+            # Only the target's already issued actual header is copied as
+            # candidate data. The writer still generates its own rewrite header.
+            from .transcript_source import open_committed_source
+            from .transcript_v2 import CommittedPrefix
+            with _source_view(plan) as original:
+                scanner = Scanner(original)
+                header = next(scanner.records())
+            with open_committed_source(
+                plan.target_session_dir, expected=CommittedPrefix(**plan.target_prefix),
+            ) as target:
+                raw = target.read_range(0, target.commit.committed_bytes)
+                if len(raw) > CHUNK or not raw.endswith(b"\n"):
+                    raise Unsupported("Empty target must contain only its bounded generation header")
+                _patch(db, header.start, header.end, raw[:-1])
+        if adopt_ref is not None:
+            _image_limit(adopt_limit)
+            with _source_view(plan) as source:
+                await _adopt_existing_groups(
+                    Scanner(source), plan.selected_records, db, adopt_ref, target_session_id,
+                    adopt_limit, journal, cancelled,
+                    plan.committed_prefix,
+                )
+        db.execute("create index assets_row_block on assets(row,block)")
+        decoded_bytes = image_count = inline_removed_bytes = 0
+        selected_end = 0
+        held_records = 0
+        with _source_view(plan) as source:
+            scanner = Scanner(source)
+            if plan.committed_prefix is not None:
+                # Keep the actual source header in candidate/export. It is a
+                # selector, not a new installed generation or commit authority.
+                first = next(scanner.records())
+                selected_end = first.end
+                scanner.seek(0)
+            for row, record in enumerate(_records(scanner, plan.committed_prefix)):
+                if row >= plan.selected_records:
+                    break
+                if cancelled():
+                    raise InterruptedError("Conversion cancelled at record checkpoint")
+                fields = _message(scanner, record)
+                if plan.committed_prefix is not None and next(_images(scanner, fields), None) is not None:
+                    eligible = False if eligible_record is None else eligible_record(row)
+                    if type(eligible) is not bool:
+                        raise Unsupported("Eligibility must be an explicit synchronous boolean")
+                    if not eligible:
+                        db.execute("insert into held values(?)", (row,))
+                        _event(journal, state="held-original-policy-unavailable", row=row)
+                        held_records += 1
+                        selected_end = record.end
+                        continue
+                if next(_refs(scanner, fields), None) is not None and next(_images(scanner, fields), None) is not None:
+                    raise Unsupported("Mixed existing refs and inline images need owner-reviewed slot ordering")
+                for span, ref in _refs(scanner, fields):
+                    if cancelled():
+                        raise InterruptedError("Conversion cancelled before reference adoption/validation")
+                    if adopt_ref is not None:
+                        raw = db.execute("select adopted from transfer_refs where row=? and start=?",
+                                         (row, span.start)).fetchone()
+                        if raw is None or raw[0] is None:
+                            raise Unsupported("Missing owner-adopted reference group")
+                        adopted = json.loads(raw[0])
+                        _patch(db, span.start, span.end, _json(adopted))
+                        ref = deepcopy(adopted)
+                    elif ref.get("session_id") != plan.session_id:
+                        raise Unsupported("Foreign ref requires explicit owner-authorized adoption")
+                    if plan.committed_prefix is not None:
+                        # Expiry-neutral owner identity is not pixel/model access.
+                        validator = getattr(capability, "validate_published_ref", None)
+                        if not callable(validator) or validator(deepcopy(ref), check_expiry=False) != ref:
+                            raise Unsupported("Committed conversion requires exact published ref identity")
+                    _verify_asset(ref, reader, metadata_expired=plan.committed_prefix is not None)
+                    db.execute("insert into closure values(?)", (_json(ref),))
+                grouped = await _stage_image_groups(
+                    scanner, fields, row, db, directory, capability, origin_for, journal, cancelled,
+                )
+                for index, block, data, mime in _images(scanner, fields):
+                    if cancelled():
+                        raise InterruptedError("Conversion cancelled before image staging")
+                    if grouped:
+                        raw, raw_origin = db.execute(
+                            "select ref,origin from assets where row=? and block=?", (row, index),
+                        ).fetchone()
+                        ref, origin = json.loads(raw), json.loads(raw_origin)
+                        size = ref["bytes"]
+                    else:
+                        origin = deepcopy(origin_for(row, index))
+                        with tempfile.TemporaryFile(dir=directory) as pixels:
+                            digest, size = _decode(scanner, data, pixels)
+                            _event(journal, state="ingest-intent", row=row, block=index, origin=origin,
+                                   sha256=digest, bytes=size)
+                            result = await capability.ingest(
+                                {"stream": pixels, "mime": mime}, source_format="image-bytes",
+                                origin=deepcopy(origin), policy=None,
+                            )
+                        refs = result["staged_refs"]
+                        if len(refs) != 1:
+                            raise Unsupported("Media ingest must stage exactly one image")
+                        ref = deepcopy(refs[0])
+                        if ref.get("sha256") != digest or ref.get("bytes") != size or ref.get("mime") != mime:
+                            raise Unsupported("Ingest changed original image identity")
+                        db.execute("insert into assets values(?,?,?,?)", (row, index, _json(ref), _json(origin)))
+                        db.commit()
+                        _event(journal, state="staged", row=row, block=index, ref=ref, origin=origin)
+                        if cancelled():
+                            raise InterruptedError("Conversion cancelled after staging")
+                        _event(journal, state="publication-intent", row=row, block=index, ref=ref, origin=origin)
+                        publication = await capability.publish(
+                            [deepcopy(ref)], origin=deepcopy(origin), disposition="retain",
+                        )
+                        if publication["refs"] != [ref]:
+                            raise Unsupported("Publication changed staged ref identity")
+                    if ref.get("session_id") != plan.session_id or ref.get("provenance") != origin:
+                        raise Unsupported("Ingest changed original observation scope/policy")
+                    _verify_asset(ref, reader)
+                    db.execute("insert into closure values(?)", (_json(ref),))
+                    # Image position is retained as a text slot; F1 owns its exact
+                    # marker contract. No user role/tool pairing is reconstructed.
+                    members = scanner.fields(block)
+                    # Full block rewrite is bounded except original data: copy
+                    # optional visibility as its exact raw span.
+                    replacement = b'{"type":"text","text":' + _json(
+                        f"[Session image {ref['sha256']}]"
+                    )
+                    visibility = members.get("visibility")
+                    if visibility:
+                        replacement += b',"visibility":' + _json(scanner.small(visibility))
+                    replacement += b"}"
+                    _patch(db, block.start, block.end, replacement)
+                    image_count += 1
+                    decoded_bytes += size
+                    inline_removed_bytes += block.end - block.start
+                    _event(journal, state="published-assets-only", row=row, block=index, ref=ref)
+                    if cancelled():
+                        raise InterruptedError("Conversion cancelled after publication")
+                _namespace_patch(scanner, fields, row, db)
+                db.commit()
+                # JSONL termination is normalized only for selected-prefix end.
+                selected_end = record.end
+            _check_source(plan)
+            if cancelled():
+                raise InterruptedError("Conversion cancelled before candidate output")
+            _event(journal, state="assets-verified", count=image_count)
+            with (directory / "candidate.jsonl").open("xb") as output:
+                os.chmod(output.name, 0o600)
+                _emit_candidate(source, output, db, selected_end)
+                output.flush()
+                os.fsync(output.fileno())
+            expected = _HashWriter()
+            _emit_candidate(source, expected, db, selected_end)
+            with _open(directory / "candidate.jsonl") as readback:
+                if _digest(readback) != expected.result():
+                    raise Unsupported("Candidate differs from exact allowed-span transformation")
+        # Verify parse, ref equality/order and binary closure from the candidate,
+        # rather than treating a successful ingest receipt as a verified rewrite.
+        output_prefix = plan.target_prefix or plan.committed_prefix
+        _verify_candidate(directory / "candidate.jsonl", db, reader, plan.selected_records, output_prefix)
+        if export_assets:
+            if held_records:
+                raise Unsupported("Held original policy cannot authorize portable inline pixels")
+            _portable_export(directory, db, reader, plan.selected_records, output_prefix)
+        if cancelled():
+            raise InterruptedError("Conversion cancelled before verification receipt")
+        _check_source(plan)
+        for identity in plan.backups:
+            _check(identity)
+        with (directory / "candidate.jsonl").open("rb") as stream:
+            digest, size = _digest(stream)
+        db.commit()
+        candidate_prefix = None if output_prefix is None else {
+            **output_prefix, "committed_bytes": size,
+            "message_count": plan.selected_records, "sha256": digest,
+        }
+        result = Candidate(
+            str(directory), digest, size, plan.selected_records, image_count,
+            plan.source.size, decoded_bytes, inline_removed_bytes,
+            committed_prefix=candidate_prefix, held_records=held_records,
+        )
+        with _open(directory / "manifest.sqlite") as stream:
+            manifest_hash, manifest_size = _digest(stream)
+        with _open(directory / "plan.json") as stream:
+            plan_hash, plan_size = _digest(stream)
+        _write_new(directory / "verified.json", {
+            **asdict(result), "adapter": ADAPTER,
+            "manifest_sha256": manifest_hash, "manifest_bytes": manifest_size,
+            "plan_sha256": plan_hash, "plan_bytes": plan_size,
+        })
+        _event(journal, state=result.state, sha256=digest, bytes=size)
+        _sync(directory)
+        return result
+    finally:
+        db.close()
+
+
+def _export_assets(directory, db, reader, *, metadata_expired=False):
+    """Portable bytes are evidence only, never import/admission authority."""
+    assets = directory / "assets"
+    assets.mkdir(mode=0o700)
+    for (raw,) in db.execute("select ref from closure order by rowid"):
+        ref = json.loads(raw)
+        if metadata_expired and _expired(ref):
+            continue
+        digest = ref.get("sha256")
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise Unsupported("Invalid asset digest")
+        path = assets / digest
+        if path.exists():
+            with _open(path) as existing:
+                if _digest(existing) != (digest, ref["bytes"]):
+                    raise Unsupported("Export asset changed")
+            continue
+        with reader(deepcopy(ref)) as source, path.open("xb") as output:
+            os.chmod(path, 0o600)
+            observed = _HashWriter()
+            while chunk := source.read(CHUNK):
+                output.write(chunk)
+                observed.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        if observed.result() != (digest, ref["bytes"]):
+            raise Unsupported("Export binary closure mismatch")
+    _sync(assets)
+
+
+def _portable_export(directory, db, reader, records, prefix=None):
+    """Separate delivery surface: NEVER copy private recovery/plan/journal data."""
+    portable = directory / "portable"
+    portable.mkdir(mode=0o700)
+    with _open(directory / "candidate.jsonl") as source, (portable / "candidate.jsonl").open("xb") as output:
+        os.chmod(output.name, 0o600)
+        while chunk := source.read(CHUNK):
+            output.write(chunk)
+        output.flush()
+        os.fsync(output.fileno())
+    exported = sqlite3.connect(portable / "manifest.sqlite")
+    os.chmod(portable / "manifest.sqlite", 0o600)
+    try:
+        exported.execute("pragma cache_size=-512")
+        exported.execute("create table closure(ref blob)")
+        if prefix is not None:
+            exported.execute("create table held(row integer)")
+            for (row,) in db.execute("select row from held"):
+                exported.execute("insert into held values(?)", (row,))
+        for (raw,) in db.execute("select ref from closure order by rowid"):
+            exported.execute("insert into closure values(?)", (raw,))
+        exported.commit()
+        _export_assets(portable, exported, reader, metadata_expired=prefix is not None)
+        _verify_candidate(portable / "candidate.jsonl", exported, reader, records, prefix)
+    finally:
+        exported.close()
+    receipt = {"adapter": ADAPTER, "records": records, "state": "portable-integrity-only-not-authority"}
+    if prefix is not None:
+        receipt["committed_prefix"] = prefix
+    for name, key in (("candidate.jsonl", "candidate"), ("manifest.sqlite", "manifest")):
+        with _open(portable / name) as source:
+            digest, size = _digest(source)
+        receipt[f"{key}_sha256"], receipt[f"{key}_bytes"] = digest, size
+    if prefix is not None:
+        receipt["committed_prefix"] = {
+            **prefix, "committed_bytes": receipt["candidate_bytes"],
+            "message_count": records, "sha256": receipt["candidate_sha256"],
+        }
+    _write_new(portable / "export.json", receipt)
+    _sync(portable)
+
+
+async def transfer_prefix(
+    plan: ConversionPlan, directory: Path, *, fence: Fence,
+    source_store: Any, target_store: Any, target_session_id: str,
+    asset_reader: AssetReader, cancelled: Callable[[], bool] = lambda: False,
+) -> Candidate:
+    """Fork/import only via the real source owner's accepted-commit adoption.
+
+    The host must qualify source_store (including an authorized exported-store
+    adapter) itself; bundle possession or a digest does not create one. Filter
+    prefix with preview FIRST. Target asset adoption does not commit a transcript.
+    """
+    if plan.committed_prefix is not None:
+        raise Unsupported(
+            "T2 portable export is integrity only; target adoption requires an explicit target binding plan"
+        )
+    if plan.inline_images:
+        raise Unsupported("Externalize inline images before transferring reference ownership")
+    limit = _host_image_limit(target_store)
+
+    async def adopt(refs):
+        value = await target_store.adopt(refs, source_store)
+        # F1 host store returns the adopted reference sequence.
+        if not isinstance(value, list) or len(value) != len(refs):
+            raise Unsupported("Invalid owner adoption result")
+        return value
+
+    return await build_candidate(
+        plan, directory, fence=fence, capability=target_store,
+        origin_for=lambda *_: {}, asset_reader=asset_reader, cancelled=cancelled,
+        export_assets=True, _adopt_ref=adopt, _target_session_id=target_session_id,
+        _adopt_limit=limit,
+    )
+
+
+async def transfer_committed_prefix(
+    plan: ConversionPlan, directory: Path, *, fence: Fence, source_store,
+    target_binding, target_store, expected_target, asset_reader: AssetReader,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> Candidate:
+    """Selected-prefix fork/import into an EXPLICIT existing empty T2 target.
+
+    No target creation, transcript publication or implicit import authority.
+    The host independently admits both owners; accepted source refs transfer
+    via actual store.adopt, target write uses apply_committed_candidate afterward.
+    """
+    from .transcript_lifetime import VersionedSessionBinding
+    from .transcript_v2 import CommittedPrefix
+    from .media import SessionMediaStore
+    _validate_plan(plan)
+    if plan.committed_prefix is None or plan.target_prefix is not None or plan.inline_images:
+        raise Unsupported("Transfer needs a selected refs-first committed source plan")
+    if (type(target_binding) is not VersionedSessionBinding or type(expected_target) is not CommittedPrefix
+            or type(source_store) is not SessionMediaStore or type(target_store) is not SessionMediaStore):
+        raise Unsupported("Actual target binding and explicit committed predecessor required")
+    _prefix_types(expected_target)
+    if (target_binding.expected != expected_target or expected_target.message_count != 0
+            or target_binding.session_id != target_store.session_id
+            or target_store.root != target_binding.directory / "media"
+            or source_store.session_id != plan.session_id
+            or source_store.root != Path(plan.committed_session_dir) / "media"):
+        raise Unsupported("Transfer source/target owner selection differs")
+    target_binding.check()
+    selected = replace(
+        plan, target_prefix=asdict(expected_target),
+        target_session_dir=str(target_binding.directory),
+    )
+    _validate_plan(selected)
+    limit = _host_image_limit(target_store)
+
+    async def adopt(refs):
+        target_binding.check()
+        result = await target_store.adopt(deepcopy(refs), source_store)
+        target_binding.check()
+        return result
+
+    return await build_candidate(
+        selected, directory, fence=fence, capability=target_store, origin_for=lambda *_: {},
+        asset_reader=asset_reader, cancelled=cancelled, export_assets=True,
+        _adopt_ref=adopt, _target_session_id=target_store.session_id, _adopt_limit=limit,
+    )
+
+
+def preview_import(
+    portable: Path, *, owner: str, fence: Fence, authorize: Callable[[dict], bool],
+    selected_records: int | None = None,
+) -> ConversionPlan:
+    """Read-only qualified package selection; hashes alone are not permission."""
+    from .transcript_v2 import CommittedPrefix
+    with fence(owner):
+        verify_export(portable)
+        with _open(portable / "export.json") as stream:
+            raw = stream.read(16385)
+        if len(raw) > 16384:
+            raise Unsupported("Oversized portable export selection")
+        facts = json.loads(raw)
+        package_records = _export_record_count(facts)
+        encoded = facts.get("committed_prefix")
+        if type(encoded) is not dict:
+            raise Unsupported("Explicit header-bearing T2 export required")
+        prefix = CommittedPrefix(**encoded)
+        _prefix_types(prefix)
+        if selected_records is None:
+            selected_records = prefix.message_count
+        if type(selected_records) is not int or not 0 <= selected_records <= prefix.message_count:
+            raise Unsupported("Selected import prefix exceeds authorized package")
+        identity = _identity(portable / "candidate.jsonl")
+        refs = 0
+        observed_records = 0
+        with _open(portable / "candidate.jsonl") as stream:
+            scanner = Scanner(stream)
+            for row, record in enumerate(_records(scanner, encoded)):
+                fields = _message(scanner, record)
+                if next(_images(scanner, fields), None) is not None:
+                    raise Unsupported("Import requires externalized selected image references")
+                if row < selected_records:
+                    refs += sum(1 for _ in _refs(scanner, fields))
+                observed_records += 1
+        if observed_records != package_records:
+            raise Unsupported("Portable full-package record count mismatch")
+        if not callable(authorize) or authorize(deepcopy(facts)) is not True:
+            raise Unsupported("Host did not authorize this exact portable package")
+        plan = ConversionPlan(
+            ADAPTER, owner, prefix.session_id, identity, (), package_records, 0, 0,
+            selected_records, asdict(prefix), None, portable_directory=str(portable),
+        )
+        _validate_plan(plan)
+        _check_source(plan)
+        return replace(plan, existing_refs=refs)
+
+
+async def import_committed_prefix(
+    plan: ConversionPlan, directory: Path, *, fence: Fence, target_binding,
+    target_store, expected_target, asset_reader: AssetReader, receipt, verifier,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> Candidate:
+    """Owner-authorized portable import, then actual target ACK separately.
+
+    `verifier(ref, receipt=..., target_session_id=...)` is the existing F1 exact
+    host package authorization boundary. A portable hash receipt cannot grant it.
+    """
+    from .transcript_lifetime import VersionedSessionBinding
+    from .transcript_v2 import CommittedPrefix
+    from .media import SessionMediaStore
+    _validate_plan(plan)
+    if (plan.portable_directory is None or plan.target_prefix is not None
+            or type(target_binding) is not VersionedSessionBinding
+            or type(target_store) is not SessionMediaStore or type(expected_target) is not CommittedPrefix
+            or target_binding.expected != expected_target or expected_target.message_count != 0
+            or target_binding.session_id != target_store.session_id
+            or target_store.root != target_binding.directory / "media" or not callable(verifier)):
+        raise Unsupported("Explicit authorized portable source and empty target owner required")
+    selected = replace(plan, target_prefix=asdict(expected_target),
+                       target_session_dir=str(target_binding.directory))
+    _validate_plan(selected)
+    portable = Path(plan.portable_directory)
+
+    async def adopt(refs):
+        result = []
+        for ref in refs:
+            if cancelled():
+                raise InterruptedError("Import cancelled before owner asset admission")
+            target_binding.check()
+            if _expired(ref):
+                accepted = target_store.import_verified(deepcopy(ref), None, receipt=receipt, verifier=verifier)
+            else:
+                with _open(portable / "assets" / ref["sha256"]) as stream:
+                    accepted = target_store.import_verified(
+                        deepcopy(ref), stream, receipt=receipt, verifier=verifier,
+                    )
+            result.append(accepted)
+            target_binding.check()
+        return result
+
+    return await build_candidate(
+        selected, directory, fence=fence, capability=target_store, origin_for=lambda *_: {},
+        asset_reader=asset_reader, cancelled=cancelled, export_assets=True, _adopt_ref=adopt,
+        _target_session_id=target_store.session_id, _adopt_limit=_host_image_limit(target_store),
+    )
+
+
+def adopt_selected_media(
+    messages: list[dict], *, source_store: Any, target_store: Any,
+    target_session_id: str, now: datetime | None = None,
+) -> list[dict]:
+    """Sync closure callback for an ALREADY selected in-memory fork snapshot.
+
+    All messages transform successfully before returning; caller must not write
+    until return, then acknowledge its actual target checkpoint. Failure can
+    leave published-uncommitted assets in F1's journal, never dangling messages.
+    This intentionally retains the existing fork caller's list cost; it is not
+    the bounded huge-record conversion API.
+    """
+    current = now or datetime.now(timezone.utc)
+    if current.utcoffset() is None:
+        raise ValueError("Fork media clock must be timezone qualified")
+    # F1 binds the selected complete set for a real origin, not independent
+    # per-image observations. Group across the ALREADY selected snapshot before
+    # copying anything. This API intentionally shares the caller's list cost.
+    groups: dict[bytes, list[dict]] = {}
+    adopted_by_identity: dict[bytes, dict] = {}
+    for message in messages:
+        metadata = message.get("metadata")
+        namespace = metadata.get(NAMESPACE) if isinstance(metadata, dict) else None
+        if namespace is None:
+            continue
+        if not isinstance(namespace, dict) or set(namespace) != {"refs"} or not isinstance(namespace["refs"], list):
+            raise Unsupported("Unknown selected media namespace")
+        for original_ref in namespace["refs"]:
+            _validate_ref(original_ref)
+            ref = deepcopy(original_ref)
+            if source_store is None or target_store is None or not callable(getattr(target_store, "adopt_sync", None)):
+                raise Unsupported("Selected media requires an owner-authorized closure callback")
+            if getattr(source_store, "read_only", False):
+                source_store.validate_published_ref(deepcopy(ref), check_expiry=False)
+            else:
+                source_store.validate_ref(deepcopy(ref), committed=True, check_expiry=False)
+            expiry = ref["provenance"]["expires_at"]
+            if expiry is None or datetime.fromisoformat(expiry) > current:
+                groups.setdefault(_json(ref["provenance"]), []).append(ref)
+    limit = _host_image_limit(target_store) if groups else None
+    for refs in groups.values():
+        if limit is not None and len(refs) > limit:
+            raise Unsupported("Selected transfer group exceeds host image count")
+        expected = [{**deepcopy(ref), "session_id": target_session_id} for ref in refs]
+        adopted = target_store.adopt_sync(deepcopy(refs), source_store)
+        if not isinstance(adopted, list) or adopted != expected:
+            raise Unsupported("Selected adoption changed original identity or expiry")
+        for ref, copied in zip(refs, adopted):
+            _validate_ref(copied)
+            adopted_by_identity[_json(ref)] = deepcopy(copied)
+    result = []
+    for message in messages:
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict) or NAMESPACE not in metadata:
+            result.append(message)
+            continue
+        namespace = metadata[NAMESPACE]
+        if not isinstance(namespace, dict) or set(namespace) != {"refs"} or not isinstance(namespace["refs"], list):
+            raise Unsupported("Unknown selected media namespace")
+        refs = namespace["refs"]
+        if refs and (source_store is None or target_store is None or not callable(
+            getattr(target_store, "adopt_sync", None)
+        )):
+            raise Unsupported("Selected media requires an owner-authorized closure callback")
+        content = message.get("content")
+        if not isinstance(content, (str, list)):
+            raise Unsupported("Selected media message has unsupported content")
+        # Validate marker positions once, before any adoption effects.
+        slots = []
+        if isinstance(content, list):
+            for index, block in enumerate(content):
+                if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                    match = _MARKER.fullmatch(block["text"])
+                    if match:
+                        slots.append((index, match[1]))
+            if [digest for _, digest in slots] != [ref.get("sha256") for ref in refs if isinstance(ref, dict)]:
+                raise Unsupported("Selected media slots do not match exact ordered refs")
+        retained, replacements, warnings = [], {}, []
+        for index, ref in enumerate(refs):
+            _validate_ref(ref)
+            snapshot = deepcopy(ref)
+            expected = {**snapshot, "session_id": target_session_id}
+            # Host validation establishes actual committed origin, even when
+            # expiry forbids any pixel read/copy. It grants no new TTL.
+            if getattr(source_store, "read_only", False):
+                source_store.validate_published_ref(deepcopy(snapshot), check_expiry=False)
+            else:
+                source_store.validate_ref(deepcopy(snapshot), committed=True, check_expiry=False)
+            expiry = snapshot["provenance"]["expires_at"]
+            if expiry is not None and datetime.fromisoformat(expiry) <= current:
+                warning = "[Image unavailable: original observation expired; no pixels supplied]"
+                if isinstance(content, list):
+                    replacements[slots[index][0]] = warning
+                else:
+                    warnings.append(warning)
+                continue
+            adopted = adopted_by_identity.get(_json(snapshot))
+            if adopted != expected:
+                raise Unsupported("Selected adoption changed original identity or expiry")
+            _validate_ref(adopted)
+            retained.append(deepcopy(adopted))
+        copied = dict(message)
+        copied_metadata = dict(metadata)
+        copied_metadata[NAMESPACE] = {"refs": retained}
+        copied["metadata"] = copied_metadata
+        if replacements:
+            copied_content = list(content)
+            for index, warning in replacements.items():
+                copied_content[index] = {**content[index], "text": warning}
+            copied["content"] = copied_content
+        elif warnings:
+            copied["content"] = content + "\n" + "\n".join(warnings)
+        result.append(copied)
+    return result
+
+
+def _export_record_count(value):
+    """Join complete package facts before any caller chooses a smaller prefix."""
+    from .transcript_v2 import CommittedPrefix
+    count = value.get("records")
+    if type(count) is not int or count < 0:
+        raise Unsupported("Portable record count must be an exact nonnegative integer")
+    encoded = value.get("committed_prefix")
+    if encoded is not None:
+        if type(encoded) is not dict or set(encoded) != set(CommittedPrefix.__dataclass_fields__):
+            raise Unsupported("Invalid portable committed prefix")
+        prefix = CommittedPrefix(**encoded)
+        _prefix_types(prefix)
+        if (prefix.message_count != count or prefix.sha256 != value.get("candidate_sha256")
+                or type(value.get("candidate_bytes")) is not int
+                or prefix.committed_bytes != value["candidate_bytes"]):
+            raise Unsupported("Portable prefix differs from complete package facts")
+    return count
+
+
+def verify_export(directory: Path) -> None:
+    """Verify saved candidate and independent portable binary closure, boundedly.
+
+    Read-only integrity is not authentication, retention consent or a checkpoint.
+    Import requires an application-authorized source owner and transfer_prefix.
+    """
+    expected = {"candidate.jsonl", "manifest.sqlite", "assets", "export.json"}
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name not in expected or entry.is_symlink():
+                raise Unsupported("Unexpected private/unknown file in portable export")
+    receipt = directory / "export.json"
+    if receipt.stat().st_size > 16384:
+        raise Unsupported("Invalid export receipt")
+    value = json.loads(receipt.read_bytes())
+    if value.get("adapter") != ADAPTER:
+        raise Unsupported("Unknown portable export adapter")
+    count = _export_record_count(value)
+    for name, key in (("candidate.jsonl", "candidate"), ("manifest.sqlite", "manifest")):
+        with _open(directory / name) as source:
+            if _digest(source) != (value[f"{key}_sha256"], value[f"{key}_bytes"]):
+                raise Unsupported("Portable export changed")
+
+    @contextmanager
+    def reader(ref):
+        digest = ref.get("sha256", "")
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise Unsupported("Invalid export digest")
+        with _open(directory / "assets" / digest) as stream:
+            yield stream
+
+    db = sqlite3.connect(f"file:{directory / 'manifest.sqlite'}?mode=ro", uri=True)
+    try:
+        db.execute("pragma cache_size=-512")
+        _verify_candidate(directory / "candidate.jsonl", db, reader, count,
+                          value.get("committed_prefix"))
+        db.execute("pragma temp_store=FILE")
+        db.execute("create temp table reachable(digest text primary key)")
+        for (raw,) in db.execute("select ref from closure"):
+            ref = json.loads(raw)
+            db.execute("insert or ignore into reachable values(?)", (ref["sha256"],))
+        with os.scandir(directory / "assets") as entries:
+            for entry in entries:
+                if entry.is_symlink() or not entry.is_file() or db.execute(
+                    "select 1 from reachable where digest=?", (entry.name,)
+                ).fetchone() is None:
+                    raise Unsupported("Unexpected asset/private bytes in portable export")
+    finally:
+        db.close()
+
+def _closure_schema(db):
+    allowed = {
+        ("table", "closure"), ("table", "patches"), ("table", "assets"),
+        ("table", "image_groups"), ("index", "assets_row_block"),
+        ("table", "transfer_refs"),
+        ("table", "held"),
+        ("index", "image_groups_row_origin"),
+    }
+    for kind, name in db.execute("select type,name from sqlite_master"):
+        if (kind, name) not in allowed:
+            raise Unsupported("Unexpected/dynamic objects in historical manifest")
+    schema = db.execute("select type,sql from sqlite_master where name='closure'").fetchone()
+    if schema is None or schema[0] != "table" or not re.fullmatch(
+        r"CREATE TABLE closure\s*\(\s*ref blob\s*\)", schema[1], re.IGNORECASE,
+    ):
+        raise Unsupported("Historical manifest closure is not the generated plain table")
+    if db.execute(
+        "select 1 from closure where typeof(ref)!='blob' or length(ref)>16384 limit 1"
+    ).fetchone():
+        raise Unsupported("Historical manifest contains an oversized/noncanonical reference row")
+
+
+def _iter_candidate_refs(path, db, reader, expected_records, prefix=None):
+    _closure_schema(db)
+    expected = iter(db.execute("select ref from closure order by rowid"))
+    count = 0
+    with _open(path) as source:
+        scanner = Scanner(source)
+        for record in _records(scanner, prefix):
+            fields = _message(scanner, record)
+            if next(_images(scanner, fields), None) is not None:
+                held = prefix is not None and db.execute(
+                    "select 1 from held where row=?", (count,)
+                ).fetchone() is not None
+                if not held:
+                    raise Unsupported("Inline image survived candidate conversion")
+            for _, ref in _refs(scanner, fields):
+                item = next(expected, None)
+                if item is None or _json(ref) != item[0]:
+                    raise Unsupported("Candidate reference closure mismatch")
+                _verify_asset(ref, reader, metadata_expired=prefix is not None)
+                # Authority comes from this exact parsed canonical position,
+                # never a second query of a potentially dynamic manifest.
+                yield deepcopy(ref)
+            strict_slots = prefix is None
+            if prefix is not None:
+                schema = db.execute("select 1 from sqlite_master where name='assets' and type='table'").fetchone()
+                strict_slots = schema is not None and db.execute(
+                    "select 1 from assets where row=? limit 1", (count,)
+                ).fetchone() is not None
+            if strict_slots and fields["content"].kind == 91 and _media(scanner, fields)[1] is not None:
+                slots = iter(_slots(scanner, fields))
+                for _, ref in _refs(scanner, fields):
+                    if next(slots, None) != ref["sha256"]:
+                        raise Unsupported("Canonical image slot/ref position mismatch")
+                if next(slots, None) is not None:
+                    raise Unsupported("Unbound canonical image marker")
+            count += 1
+    if count != expected_records or next(expected, None) is not None:
+        raise Unsupported("Candidate record/reference count mismatch")
+
+
+def _verify_candidate(path, db, reader, expected_records, prefix=None):
+    for _ in _iter_candidate_refs(path, db, reader, expected_records, prefix):
+        pass
+
+
+def iter_verified_candidate_refs(
+    operation_dir: Path, *, installed: Path, session_id: str, asset_reader: AssetReader,
+) -> Iterator[dict]:
+    """Bounded owner verifier for an ACTUALLY installed historical candidate.
+
+    This is a reference enumerator, not a receipt/ACK constructor or authority.
+    The actual checkpoint owner binds it to a local receipt, real source/writer
+    fence and store. It MUST exhaust this iterator before accepting anything:
+    final file/manifest rechecks happen after the last yielded reference.
+    No record is passed to json.loads(), including a huge individual message.
+    """
+    if reconcile(operation_dir, installed=installed) != "installed-bytes-match-checkpoint-unconfirmed":
+        raise Unsupported("Installed canonical body differs from verified historical candidate")
+    expected = _identity(installed)
+    verified = operation_dir / "verified.json"
+    if verified.stat().st_size > 16384:
+        raise Unsupported("Invalid historical candidate verification receipt")
+    receipt = json.loads(verified.read_bytes())
+    if receipt.get("committed_prefix") is not None:
+        raise Unsupported("T2 candidates require the actual versioned writer/receipt, never a legacy ACK")
+    if receipt.get("adapter") != ADAPTER or (expected.sha256, expected.size) != (
+        receipt["sha256"], receipt["bytes"],
+    ):
+        raise Unsupported("Unknown or changed historical candidate checkpoint")
+    db = sqlite3.connect(f"file:{operation_dir / 'manifest.sqlite'}?mode=ro", uri=True)
+    try:
+        db.execute("pragma cache_size=-512")
+        for ref in _iter_candidate_refs(installed, db, asset_reader, receipt["records"]):
+            if ref["session_id"] != session_id:
+                raise Unsupported("Historical candidate ref belongs to another session")
+            yield ref
+        _check(expected)
+        if reconcile(operation_dir, installed=installed) != "installed-bytes-match-checkpoint-unconfirmed":
+            raise Unsupported("Historical candidate changed during checkpoint enumeration")
+    finally:
+        db.close()
+
+
+def candidate_facts(operation_dir: Path) -> dict:
+    """Bounded integrity facts, never an admission or checkpoint receipt."""
+    if reconcile(operation_dir) != "verified-candidate-not-applied":
+        raise Unsupported("Candidate operation is not complete")
+    with _open(operation_dir / "verified.json") as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise Unsupported("Oversized candidate facts")
+    value = json.loads(raw)
+    if value.get("adapter") != ADAPTER:
+        raise Unsupported("Unknown candidate adapter")
+    plan = _saved_plan(operation_dir)
+    if (type(value.get("records")) is not int or value["records"] != plan.selected_records
+            or type(value.get("bytes")) is not int or value["bytes"] < 0):
+        raise Unsupported("Candidate bounds differ from selected plan")
+    if plan.committed_prefix is not None:
+        expected = {**(plan.target_prefix or plan.committed_prefix), "committed_bytes": value["bytes"],
+                    "message_count": value["records"], "sha256": value["sha256"]}
+        if value.get("committed_prefix") != expected:
+            raise Unsupported("Candidate selector differs from preserved source plan")
+        from .transcript_v2 import CommittedPrefix
+        _prefix_types(CommittedPrefix(**value["committed_prefix"]))
+    elif value.get("committed_prefix") is not None:
+        raise Unsupported("Legacy candidate cannot carry a committed selector")
+    return value
+
+
+def load_candidate_plan(operation_dir: Path) -> ConversionPlan:
+    """Load hash-verified selection DATA for recovery, never owner authority.
+
+    A host may reconstruct its original CommittedPrefix selector from this
+    plan only after independently authorizing the session, operation and purpose
+    under an actual current binding. It must not substitute binding.expected
+    after a possibly successful write for the original predecessor.
+    """
+    candidate_facts(operation_dir)
+    return _saved_plan(operation_dir)
+
+
+@contextmanager
+def _candidate_witness_guard(operation, witnesses):
+    """Pin lexical components once, recheck namespace and files on EVERY call.
+
+    Preparation calls this thousands of times for huge candidates. Rebuilding
+    pathlib objects/resolving the same parts per call grows CPython's intern
+    table. These owned descriptors cache no stat/hash or writer authority.
+    """
+    parts = operation.parts
+    descriptors = [os.open(operation.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for component in parts[1:]:
+            descriptors.append(os.open(
+                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptors[-1],
+            ))
+        identities = [(os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in descriptors]
+        selected = [(Path(witness.path).name, witness) for witness in witnesses]
+
+        def check():
+            for index, component in enumerate(parts[1:]):
+                info = os.stat(component, dir_fd=descriptors[index], follow_symlinks=False)
+                if (info.st_dev, info.st_ino) != identities[index + 1]:
+                    raise Unsupported("Candidate namespace changed during publication")
+            for name, witness in selected:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=descriptors[-1])
+                with os.fdopen(fd, "rb") as stream:
+                    if (not stat.S_ISREG(os.fstat(fd).st_mode)
+                            or _stamp(stream) != (witness.dev, witness.ino, witness.size,
+                                                  witness.mtime_ns, witness.ctime_ns)):
+                        raise Unsupported("Candidate operation changed during publication")
+            # Namespace substitution during file checks cannot authorize bytes
+            # from a detached directory, even if file contents match.
+            for index, component in enumerate(parts[1:]):
+                info = os.stat(component, dir_fd=descriptors[index], follow_symlinks=False)
+                if (info.st_dev, info.st_ino) != identities[index + 1]:
+                    raise Unsupported("Candidate namespace changed during publication")
+        check()
+        yield check
+        check()
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+@contextmanager
+def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reader: AssetReader,
+                            expected_source=None):
+    """Pin a header-bearing T2 candidate for the sole format/lifetime writer.
+
+    Yields (regular_binary_stream, unsealed_CommittedPrefix, live_check).
+    The format owner prepares its own immutable canonical snapshot and ref
+    iterator; these facts neither authorize publication nor mint a receipt.
+    """
+    from .transcript_v2 import CommittedPrefix
+    facts = candidate_facts(operation_dir)
+    plan = _saved_plan(operation_dir)
+    if expected_source is not None and (
+        type(expected_source) is not CommittedPrefix or asdict(expected_source) != plan.committed_prefix
+    ):
+        raise Unsupported("Independently selected source differs from candidate operation")
+    if expected_source is not None:
+        _prefix_types(expected_source)
+    encoded = facts.get("committed_prefix")
+    if not isinstance(encoded, dict):
+        raise Unsupported("Explicit committed-source candidate required")
+    prefix = CommittedPrefix(**encoded)
+    if (prefix.session_id != session_id or prefix.sha256 != facts["sha256"]
+            or prefix.committed_bytes != facts["bytes"] or prefix.message_count != facts["records"]):
+        raise Unsupported("Candidate selector differs from exact candidate facts")
+    identity = _identity(operation_dir / "candidate.jsonl")
+    witnesses = [identity]
+    for name in ("verified.json", "plan.json", "manifest.sqlite", "original-0"):
+        witnesses.append(_identity(operation_dir / name))
+    if plan.target_prefix is not None:
+        witnesses.append(_identity(operation_dir / "original-target"))
+
+    db = sqlite3.connect(f"file:{operation_dir / 'manifest.sqlite'}?mode=ro", uri=True)
+    try:
+        db.execute("pragma cache_size=-512")
+        for ref in _iter_candidate_refs(
+            operation_dir / "candidate.jsonl", db, asset_reader, facts["records"], encoded,
+        ):
+            if ref["session_id"] != session_id:
+                raise Unsupported("Candidate belongs to another media owner")
+        with _candidate_witness_guard(operation_dir, witnesses) as check:
+            with _open(operation_dir / "candidate.jsonl") as stream:
+                if _stamp(stream) != (identity.dev, identity.ino, identity.size,
+                                      identity.mtime_ns, identity.ctime_ns):
+                    raise Unsupported("Candidate descriptor changed")
+                yield stream, prefix, check
+                check()
+                if candidate_facts(operation_dir) != facts:
+                    raise Unsupported("Candidate operation changed during final verification")
+    finally:
+        db.close()
+
+
+def iter_serialized_candidate_refs(stream, *, candidate_prefix) -> Iterator[dict]:
+    """Compatibility data lens; the owning prepared object should use iter_refs.
+
+    Consumer must exhaust this iterator and keep its prepared.open_verified()
+    context live. No manifest SELECT or caller-provided ref list is authority.
+    """
+    # One shared strict media-schema scanner, not a converter-specific second
+    # admission grammar. Unsealed prefix/no-op check grants data integrity only;
+    # actual prepared owner binds source/PID/lifetime in prepared.iter_refs().
+    from .versioned_checkpoint import scan_serialized_refs
+    yield from scan_serialized_refs(stream, prefix=candidate_prefix, check=lambda: None)
+
+
+def reconcile(directory: Path, *, installed: Path | None = None) -> str:
+    """Read saved exact candidate identity after a lost acknowledgement.
+
+    Does not re-ingest, republish, replace, truncate or infer a commit from an
+    assets-only journal. An equal installed hash is still not an owner checkpoint.
+    """
+    verified = directory / "verified.json"
+    if not verified.exists():
+        return "interrupted-preserve-and-inspect-journal"
+    if verified.stat().st_size > 16384:
+        raise Unsupported("Invalid verification receipt")
+    value = json.loads(verified.read_bytes())
+    with _open(directory / "candidate.jsonl") as stream:
+        observed = _digest(stream)
+    if observed != (value["sha256"], value["bytes"]):
+        raise Unsupported("Saved candidate changed after verification")
+    for name, key in (("manifest.sqlite", "manifest"), ("plan.json", "plan")):
+        with _open(directory / name) as stream:
+            if _digest(stream) != (value[f"{key}_sha256"], value[f"{key}_bytes"]):
+                raise Unsupported("Saved manifest/plan changed after verification")
+    plan_path = directory / "plan.json"
+    if plan_path.stat().st_size > 1024 * 1024:
+        raise Unsupported("Invalid saved plan")
+    plan = json.loads(plan_path.read_bytes())
+    for index, identity in enumerate((plan["source"], *plan["backups"])):
+        with _open(directory / f"original-{index}") as stream:
+            if _digest(stream) != (identity["sha256"], identity["size"]):
+                raise Unsupported("Saved original/backup changed after verification")
+    if plan.get("target_prefix") is not None:
+        with _open(directory / "original-target") as stream:
+            target = plan["target_prefix"]
+            if _digest(stream) != (target["sha256"], target["committed_bytes"]):
+                raise Unsupported("Saved target original changed after verification")
+    if installed is None:
+        return "verified-candidate-not-applied"
+    with _open(installed) as stream:
+        current = _digest(stream)
+    return "installed-bytes-match-checkpoint-unconfirmed" if current == observed else "installed-bytes-differ"
