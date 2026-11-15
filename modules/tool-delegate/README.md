@@ -22,6 +22,42 @@ Control context inheritance with two orthogonal parameters:
   - `agents` - Includes delegate/task tool results
   - `full` - Includes ALL tool results
 
+### Selected media-reference inheritance
+
+Canonical `metadata["experimental.media.v1"]["refs"]` on depth/turn/scope-selected
+rows is strictly validated with Foundation's public `validate_blob_ref` and copied
+without unrelated metadata. This is structural validation, **not access authority**.
+Tool text results retain the same scope selection and assistant-labelled summary.
+Their refs are never attached to that synthetic assistant summary: ref-only tool
+carriers retain the actual selected `role: tool`, `name` and `tool_call_id`.
+Selected assistant media carriers, or tool media without a nonempty name/call ID,
+refuse before spawn rather than guessing or reconstructing a tool association.
+Ordinary plain-JSON text results retain their existing container formatting;
+inline image blocks and ambiguous image/source/data envelopes are reduced to
+explicit text blocks rather than stringified into context. Serialized JSON tool
+payloads are inspected for the same unsafe media shapes and refused before spawn;
+safe ordinary JSON text stays byte-identical. JSON text is never a source of
+canonical refs, consent or authority. JSON-looking malformed or too-deep payloads
+also refuse: unsuccessful privacy inspection never falls back to forwarding raw
+serialized text.
+
+Text still appears once in the existing bounded parent-context instruction.
+Only ref-bearing rows are also passed to the host's existing `session.spawn`
+`parent_messages` kwarg, with their selected role, empty `content`, and canonical
+refs. Image-only selected rows can therefore carry refs without an empty text
+wrapper. `none`, disabled inheritance, and text-only calls pass no such kwarg.
+No additional history read or selection is performed.
+
+A missing/unknown `parent_messages` ABI refuses ref-bearing inheritance before
+invoking spawn; legacy text-only hosts keep working unchanged. Accepting a kwarg
+(including `**kwargs`) is not evidence that a host adopted or checkpointed media.
+For ref-bearing calls, returned `metadata.media_inheritance` reports `status:
+forwarded`, `acceptance: unknown`, and message/ref counts only. Delegation success
+does not assert media acceptance. The host's existing authorized child adoption,
+current guards, original provenance/expiry and canonical checkpoint ACK remain
+authoritative; this tool neither adopts assets nor manufactures an ACK. Expired
+refs are not renewed or resolved by the delegate.
+
 ### Session Resume
 
 Resume sessions using the full `session_id` returned by previous delegate calls:

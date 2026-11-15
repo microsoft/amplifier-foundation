@@ -1273,10 +1273,10 @@ class DelegateTool:
                     block_type = block.get("type", "")
                     if block_type == "text":
                         text = block.get("text", "")
-                        if text:
+                        if isinstance(text, str) and text:
                             text_parts.append(text)
-                    elif block_type not in filtered_types:
-                        logger.debug(f"Unknown content block type '{block_type}'")
+                    elif not isinstance(block_type, str) or block_type not in filtered_types:
+                        logger.debug("Non-text block omitted from inherited context")
                 elif isinstance(block, str):
                     text_parts.append(block)
 
@@ -1284,6 +1284,130 @@ class DelegateTool:
                 return "\n".join(text_parts)
 
         return ""
+
+    def _inherited_tool_content(self, content: Any) -> Any:
+        """Keep legacy plain-JSON text formatting, never repr inline media.
+
+        Tool results historically used their JSON container representation.
+        Preserve that for ordinary text data; ambiguous media/source containers
+        use only explicit text blocks, just like conversation content. This is
+        payload filtering, not a media-reference parser or authority decision.
+        """
+        active: set[int] = set()
+
+        def text_data(value: Any) -> bool:
+            if value is None or type(value) in (bool, int, float):
+                return True
+            if type(value) is str:
+                if "data:image/" in value.lower():
+                    return False
+                # Tool APIs may serialize their content envelopes. Inspect
+                # only for payload safety; never discover canonical refs or
+                # authority in JSON text. Preserve safe ordinary text exactly.
+                if value.lstrip().startswith(("[", "{", '"')):
+                    try:
+                        decoded = json.loads(value)
+                    except RecursionError:
+                        raise ValueError(
+                            "Serialized tool payload is too deep for safe media inspection"
+                        ) from None
+                    except ValueError:
+                        # A broken serialized envelope cannot be certified as
+                        # payload-free. Never send its raw text on parse failure.
+                        raise ValueError(
+                            "Malformed serialized tool payload: safe media inspection unavailable"
+                        ) from None
+                    try:
+                        safe = text_data(decoded)
+                    except RecursionError:
+                        raise ValueError(
+                            "Serialized tool payload is too deep for safe media inspection"
+                        ) from None
+                    if not safe:
+                        raise ValueError(
+                            "Serialized inline media tool payload cannot be inherited"
+                        )
+                return True
+            if type(value) not in (list, dict) or id(value) in active:
+                return False
+            active.add(id(value))
+            try:
+                if type(value) is list:
+                    return all(text_data(item) for item in value)
+                # Unknown source/data envelopes must not be stringified into
+                # instructions, even when no canonical refs accompany them.
+                media_keys = {
+                    "image", "images", "image_url", "input_image",
+                    "base64", "b64_json", "data", "source",
+                }
+                for key, item in value.items():
+                    if type(key) is not str or key.lower() in media_keys:
+                        return False
+                    if key == "type" and (
+                        not isinstance(item, str) or "image" in item.lower()
+                    ):
+                        return False
+                    if not text_data(item):
+                        return False
+                return True
+            finally:
+                active.remove(id(value))
+
+        try:
+            if text_data(content):
+                return content
+        except RecursionError:
+            pass  # Deep/recursive containers are not safe text representations.
+        text = self._sanitize_content(content)
+        return "" if "data:image/" in text.lower() else text
+
+    def _with_inherited_media(
+        self, source: dict[str, Any], target: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Copy only canonical refs on an already depth/scope-selected row.
+
+        Structural validity is not authority. The host's existing child adoption,
+        provenance, expiry and checkpoint guards still decide acceptance.
+        Import lazily so a text-only delegation needs no media implementation.
+        """
+        namespace = "experimental.media.v1"
+        metadata = source.get("metadata")
+        if not isinstance(metadata, dict) or namespace not in metadata:
+            return target
+        try:
+            from amplifier_foundation.session.media import validate_blob_ref
+        except ImportError:
+            raise ValueError("Media reference inheritance validator unavailable") from None
+        payload = metadata[namespace]
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"refs"}
+            or not isinstance(payload["refs"], list)
+        ):
+            raise ValueError("Invalid inherited media reference envelope")
+        try:
+            refs = [validate_blob_ref(ref) for ref in payload["refs"]]
+        except ValueError:
+            # Do not interpolate arbitrary parent metadata into output/telemetry.
+            raise ValueError("Invalid inherited media reference") from None
+        if refs:
+            role = source.get("role")
+            if role not in ("user", "tool"):
+                raise ValueError("Media inheritance unavailable for selected carrier role")
+            if role == "tool":
+                name, call_id = source.get("name"), source.get("tool_call_id")
+                if (
+                    not isinstance(name, str) or not name.strip()
+                    or not isinstance(call_id, str) or not call_id.strip()
+                ):
+                    raise ValueError(
+                        "Media inheritance unavailable: selected tool carrier needs name and tool_call_id"
+                    )
+                # The bounded text summary may use an assistant label, but the
+                # media carrier must retain its actual selected tool slot.
+                target.update(role="tool", name=name, tool_call_id=call_id)
+            target["metadata"] = {namespace: {"refs": refs}}
+        return target
 
     def _sanitize_conversation_only(
         self, messages: list[dict[str, Any]]
@@ -1321,8 +1445,11 @@ class DelegateTool:
                 content = msg.get("content", "")
                 sanitized_content = self._sanitize_content(content)
 
-                if sanitized_content:
-                    sanitized.append({"role": role, "content": sanitized_content})
+                selected = self._with_inherited_media(
+                    msg, {"role": role, "content": sanitized_content}
+                )
+                if sanitized_content or selected.get("metadata"):
+                    sanitized.append(selected)
 
         return sanitized
 
@@ -1348,16 +1475,20 @@ class DelegateTool:
             # Include tool results only from agent tools
             if role == "tool":
                 tool_name = msg.get("name", "")
-                if tool_name in agent_tools:
-                    content = msg.get("content", "")
-                    if content:
-                        # Format as assistant message with agent context
-                        sanitized.append(
-                            {
-                                "role": "assistant",
-                                "content": f"[Agent Result from {tool_name}]: {content}",
-                            }
-                        )
+                if isinstance(tool_name, str) and tool_name in agent_tools:
+                    content = self._inherited_tool_content(msg.get("content", ""))
+                    selected = self._with_inherited_media(
+                        msg,
+                        {
+                            "role": "assistant",
+                            "content": (
+                                f"[Agent Result from {tool_name}]: {content}"
+                                if content else ""
+                            ),
+                        },
+                    )
+                    if content or selected.get("metadata"):
+                        sanitized.append(selected)
                 continue
 
             if msg.get("tool_call_id"):
@@ -1377,8 +1508,11 @@ class DelegateTool:
                 content = msg.get("content", "")
                 sanitized_content = self._sanitize_content(content)
 
-                if sanitized_content:
-                    sanitized.append({"role": role, "content": sanitized_content})
+                selected = self._with_inherited_media(
+                    msg, {"role": role, "content": sanitized_content}
+                )
+                if sanitized_content or selected.get("metadata"):
+                    sanitized.append(selected)
 
         return sanitized
 
@@ -1403,17 +1537,24 @@ class DelegateTool:
             # Include all tool results
             if role == "tool":
                 tool_name = msg.get("name", "unknown")
-                content = msg.get("content", "")
-                if content:
-                    # Truncate very long tool results
-                    if len(content) > 4000:
-                        content = content[:4000] + "... [truncated]"
-                    sanitized.append(
-                        {
-                            "role": "assistant",
-                            "content": f"[Tool Result from {tool_name}]: {content}",
-                        }
-                    )
+                if not isinstance(tool_name, str):
+                    tool_name = "unknown"
+                content = self._inherited_tool_content(msg.get("content", ""))
+                # Truncate very long tool results, as on the text-only path.
+                if content and len(content) > 4000:
+                    content = content[:4000] + "... [truncated]"
+                selected = self._with_inherited_media(
+                    msg,
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"[Tool Result from {tool_name}]: {content}"
+                            if content else ""
+                        ),
+                    },
+                )
+                if content or selected.get("metadata"):
+                    sanitized.append(selected)
                 continue
 
             if msg.get("tool_call_id"):
@@ -1431,8 +1572,11 @@ class DelegateTool:
                 content = msg.get("content", "")
                 sanitized_content = self._sanitize_content(content)
 
-                if sanitized_content:
-                    sanitized.append({"role": role, "content": sanitized_content})
+                selected = self._with_inherited_media(
+                    msg, {"role": role, "content": sanitized_content}
+                )
+                if sanitized_content or selected.get("metadata"):
+                    sanitized.append(selected)
 
         return sanitized
 
@@ -1497,6 +1641,10 @@ class DelegateTool:
             if role == "user":
                 role_label = "USER"
             elif role == "assistant":
+                role_label = "ASSISTANT"
+            elif role == "tool":
+                # Tool-result text remains the familiar assistant summary.
+                # Only the separate ref-only carrier keeps the tool role.
                 role_label = "ASSISTANT"
 
             # Truncate very long messages
@@ -2173,14 +2321,68 @@ class DelegateTool:
                     context_depth, context_turns, context_scope
                 )
 
-            # Format parent context into instruction
+            # Keep the familiar bounded text instruction byte-identical. Forward
+            # only selected ref-bearing rows, without duplicating their text.
+            # Never pass raw parent rows or unrelated metadata to the host.
+            media_kwargs: dict[str, Any] = {}
+            media_summary: dict[str, Any] | None = None
+            media_messages = [
+                {
+                    "role": msg["role"], "content": "", "metadata": msg["metadata"],
+                    **(
+                        {"name": msg["name"], "tool_call_id": msg["tool_call_id"]}
+                        if msg["role"] == "tool" else {}
+                    ),
+                }
+                for msg in (parent_messages or [])
+                if msg.get("metadata")
+            ]
+            if media_messages:
+                try:
+                    parameters = inspect.signature(spawn_fn).parameters
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        "Media inheritance unavailable: session.spawn parent_messages support unknown"
+                    ) from None
+                parameter = parameters.get("parent_messages")
+                if not (
+                    any(
+                        p.kind is inspect.Parameter.VAR_KEYWORD
+                        for p in parameters.values()
+                    )
+                    or (
+                        parameter is not None
+                        and parameter.kind in (
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            inspect.Parameter.KEYWORD_ONLY,
+                        )
+                    )
+                ):
+                    raise ValueError(
+                        "Media inheritance unavailable: session.spawn does not support parent_messages"
+                    )
+                media_kwargs["parent_messages"] = media_messages
+                # Snapshot counts before invoking a host that may mutate its
+                # detached input. Do not re-read arbitrary returned rows.
+                media_summary = {
+                    "status": "forwarded",
+                    "acceptance": "unknown",
+                    "message_count": len(media_messages),
+                    "ref_count": sum(
+                        len(msg["metadata"]["experimental.media.v1"]["refs"])
+                        for msg in media_messages
+                    ),
+                }
+
+            # Format text only; an image-only row must not add an empty wrapper.
             effective_instruction = instruction
-            if parent_messages:
+            text_messages = [msg for msg in (parent_messages or []) if msg.get("content")]
+            if text_messages:
                 logger.debug(
-                    f"Built {len(parent_messages)} context messages (depth={context_depth}, scope={context_scope})"
+                    f"Built {len(text_messages)} context messages (depth={context_depth}, scope={context_scope})"
                 )
                 context_text = self._format_parent_context_for_instruction(
-                    parent_messages
+                    text_messages
                 )
                 effective_instruction = f"{context_text}\n\n[YOUR TASK]\n{instruction}"
 
@@ -2274,6 +2476,7 @@ class DelegateTool:
                 provider_preferences=provider_preferences,
                 self_delegation_depth=child_self_delegation_depth,
                 session_metadata=session_metadata,
+                **media_kwargs,
             )
             result = await self._await_child_with_deadline(spawn_coro)
 
@@ -2344,6 +2547,11 @@ class DelegateTool:
             output_metadata = dict(result_metadata)
             if call_budget is not None:
                 output_metadata["budget_enforced"] = budget_enforced
+            if media_summary is not None:
+                # A callable accepting the public kwarg is not proof of host
+                # adoption or canonical ACK. Preserve that distinction even
+                # when a **kwargs host returns ordinary delegation success.
+                output_metadata["media_inheritance"] = media_summary
 
             # Return output with session_id for multi-turn capability.
             # "response" is `cleaned_response` -- byte-identical to
