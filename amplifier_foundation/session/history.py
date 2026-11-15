@@ -108,7 +108,14 @@ def _read_messages(
     messages: list[dict[str, Any]] = []
     rows = None
     if prepare_index:
-        from .jsonl import Row, TranscriptIndex, _digest, _index_state, _MAX_ROWS, _remember
+        from .jsonl import (
+            _MAX_ROWS,
+            Row,
+            TranscriptIndex,
+            _digest,
+            _index_state,
+            _remember,
+        )
 
         path, stamp, cached = _index_state(path, windows_policy=windows_policy)
         if stamp is not None and cached is None:
