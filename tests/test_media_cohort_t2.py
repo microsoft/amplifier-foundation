@@ -507,6 +507,25 @@ def test_missing_strong_store_validator_refuses_without_final_only_fallback(tmp_
             pass
 
 
+def test_cohort_fence_with_unpaired_generic_callbacks_refuses_before_operation(tmp_path, monkeypatch):
+    with fixture(tmp_path) as (binding, store, fence):
+        producer, _, refs, _ = seed(binding, store)
+        producer.mapping = {}
+        expected = binding.expected
+        plan = preview_committed(binding.directory, expected=expected, owner='fixture', fence=fence)
+        monkeypatch.setattr('amplifier_foundation.session.media_conversion._decode',
+                            lambda *a, **k: pytest.fail('Unpaired cohort fence cannot reach decoder'))
+        with producer.custody(), bind_committed_media_cohort(
+            binding.directory, expected=expected, owner='fixture', fence=fence, producer=producer, store=store,
+        ) as cohort, pytest.raises(Unsupported, match='callbacks'):
+            asyncio.run(build_candidate(
+                plan, tmp_path / 'operation', fence=cohort.fence, capability=store,
+                origin_for=lambda *_: refs[0]['provenance'], eligible_record=lambda *_: True,
+                asset_reader=lambda ref: store.resolve_ref(ref, committed=False),
+            ))
+        assert not (tmp_path / 'operation').exists()
+
+
 @pytest.mark.parametrize('reverse', [False, True])
 def test_checked_callback_mispair_refuses_before_operation(tmp_path, reverse):
     with fixture(tmp_path) as (binding, store, fence):
