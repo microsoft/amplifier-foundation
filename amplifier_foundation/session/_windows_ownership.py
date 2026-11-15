@@ -283,9 +283,11 @@ class _API:
 
     def open(self, path: Path, *, directory: bool = False, create: bool = False,
              exclusive: bool = False, write: bool = False, advisory_read: bool = False,
-             owner_temporary: bool = False) -> int:
+             owner_temporary: bool = False, traversal: bool = False) -> int:
         if advisory_read and (path.name != "owner.json" or directory or create or exclusive or write):
             raise ValueError("delete-sharing is restricted to a replaceable advisory owner reader")
+        if traversal and (not directory or create or exclusive or write):
+            raise ValueError("write-sharing is restricted to a traversal-ancestor directory pin")
         if owner_temporary and (directory or create or advisory_read or not exclusive or not write
                                 or not re.fullmatch(r"\.owner-[0-9a-f]{32}\.tmp", path.name)):
             raise ValueError("rename access is restricted to a new private owner temporary file")
@@ -297,10 +299,17 @@ class _API:
         if owner_temporary:
             access |= 0x10000  # DELETE on this source handle, not the stable lock.
         with self.private_security(directory=directory) as security:
-            # Pins deny deletion/rename. Sharing restrictions do NOT cover
-            # FILE_WRITE_ATTRIBUTES: traversal ACL checks prevent untrusted
-            # reparse conversion, not this share mode (MS-FSA 2.1.5.10.37).
-            share = 1 if directory else _SHARE_RW
+            # Every pin withholds FILE_SHARE_DELETE: the pinned directory
+            # itself cannot be renamed, moved or deleted. A pin on an owned
+            # directory shares read only, which also refuses write-class opens
+            # of that directory (an ordinary Win32 rename opens the target's
+            # parent that way). A pin on a traversal ancestor (a directory above
+            # the caller's own root) shares read and write, so other programs
+            # can still rename, replace and move entries in it. Sharing
+            # restrictions do NOT cover FILE_WRITE_ATTRIBUTES: traversal ACL
+            # checks prevent untrusted reparse conversion, not this share mode
+            # (MS-FSA 2.1.5.10.37).
+            share = 1 if directory and not traversal else _SHARE_RW
             if advisory_read:
                 share |= 4  # FILE_SHARE_DELETE permits atomic owner replacement.
             handle = self.CreateFileW(str(path), access, share, C.byref(security),
@@ -389,8 +398,11 @@ class _PinnedDirectories:
             if api.GetDriveTypeW(str(chain[0])) != 3:  # DRIVE_FIXED
                 raise SharedStateError("Windows ownership requires a local fixed NTFS volume")
             for path in chain:
+                # Decided before the open: only a directory at or below the
+                # caller's root is opened without write sharing. See _API.open.
+                owned = path.is_relative_to(owned_from)
                 try:
-                    handle = api.open(path, directory=True)
+                    handle = api.open(path, directory=True, traversal=not owned)
                 except OSError as exc:
                     if exc.winerror not in {2, 3}:
                         raise
@@ -401,7 +413,10 @@ class _PinnedDirectories:
                         if not api.CreateDirectoryW(str(path), C.byref(security)):
                             if C.get_last_error() != 183:  # Raced another private creator.
                                 raise C.WinError(C.get_last_error())
-                    handle = api.open(path, directory=True)
+                    # After error 183 the component may have been created or
+                    # renamed in by someone else. It is opened without following
+                    # a reparse point and validated below before any descendant.
+                    handle = api.open(path, directory=True, traversal=not owned)
                 self.handles.append(handle)
                 if len(self.handles) == 1:
                     filesystem = C.create_unicode_buffer(32)
@@ -410,7 +425,6 @@ class _PinnedDirectories:
                     ))
                     if filesystem.value != "NTFS":
                         raise SharedStateError("Windows ownership requires local NTFS")
-                owned = path.is_relative_to(owned_from)
                 # Validate every ancestor before opening/creating its child.
                 # The pins prevent replacement; ACLs reject untrusted attribute
                 # mutation even where Win32 sharing would allow it.
