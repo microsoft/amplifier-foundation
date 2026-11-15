@@ -1608,6 +1608,52 @@ def load_candidate_plan(operation_dir: Path) -> ConversionPlan:
 
 
 @contextmanager
+def _candidate_witness_guard(operation, witnesses):
+    """Pin lexical components once, recheck namespace and files on EVERY call.
+
+    Preparation calls this thousands of times for huge candidates. Rebuilding
+    pathlib objects/resolving the same parts per call grows CPython's intern
+    table. These owned descriptors cache no stat/hash or writer authority.
+    """
+    parts = operation.parts
+    descriptors = [os.open(operation.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for component in parts[1:]:
+            descriptors.append(os.open(
+                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptors[-1],
+            ))
+        identities = [(os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in descriptors]
+        selected = [(Path(witness.path).name, witness) for witness in witnesses]
+
+        def check():
+            for index, component in enumerate(parts[1:]):
+                info = os.stat(component, dir_fd=descriptors[index], follow_symlinks=False)
+                if (info.st_dev, info.st_ino) != identities[index + 1]:
+                    raise Unsupported("Candidate namespace changed during publication")
+            for name, witness in selected:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=descriptors[-1])
+                with os.fdopen(fd, "rb") as stream:
+                    if (not stat.S_ISREG(os.fstat(fd).st_mode)
+                            or _stamp(stream) != (witness.dev, witness.ino, witness.size,
+                                                  witness.mtime_ns, witness.ctime_ns)):
+                        raise Unsupported("Candidate operation changed during publication")
+            # Namespace substitution during file checks cannot authorize bytes
+            # from a detached directory, even if file contents match.
+            for index, component in enumerate(parts[1:]):
+                info = os.stat(component, dir_fd=descriptors[index], follow_symlinks=False)
+                if (info.st_dev, info.st_ino) != identities[index + 1]:
+                    raise Unsupported("Candidate namespace changed during publication")
+        check()
+        yield check
+        check()
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+@contextmanager
 def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reader: AssetReader,
                             expected_source=None):
     """Pin a header-bearing T2 candidate for the sole format/lifetime writer.
@@ -1639,17 +1685,6 @@ def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reade
     if plan.target_prefix is not None:
         witnesses.append(_identity(operation_dir / "original-target"))
 
-    def check():
-        # Prepared-owner checks can run for every output chunk. Rehashing the
-        # entire candidate here would make huge-string handoff quadratic.
-        # Pin exact namespace/regular-file stamps; full hashes check on entry
-        # and after the consumer context settles.
-        for witness in witnesses:
-            with _open(Path(witness.path)) as stream:
-                if _stamp(stream) != (witness.dev, witness.ino, witness.size,
-                                      witness.mtime_ns, witness.ctime_ns):
-                    raise Unsupported("Candidate operation changed during publication")
-
     db = sqlite3.connect(f"file:{operation_dir / 'manifest.sqlite'}?mode=ro", uri=True)
     try:
         db.execute("pragma cache_size=-512")
@@ -1658,15 +1693,15 @@ def open_verified_candidate(operation_dir: Path, *, session_id: str, asset_reade
         ):
             if ref["session_id"] != session_id:
                 raise Unsupported("Candidate belongs to another media owner")
-        check()
-        with _open(operation_dir / "candidate.jsonl") as stream:
-            if _stamp(stream) != (identity.dev, identity.ino, identity.size,
-                                  identity.mtime_ns, identity.ctime_ns):
-                raise Unsupported("Candidate descriptor changed")
-            yield stream, prefix, check
-            check()
-            if candidate_facts(operation_dir) != facts:
-                raise Unsupported("Candidate operation changed during final verification")
+        with _candidate_witness_guard(operation_dir, witnesses) as check:
+            with _open(operation_dir / "candidate.jsonl") as stream:
+                if _stamp(stream) != (identity.dev, identity.ino, identity.size,
+                                      identity.mtime_ns, identity.ctime_ns):
+                    raise Unsupported("Candidate descriptor changed")
+                yield stream, prefix, check
+                check()
+                if candidate_facts(operation_dir) != facts:
+                    raise Unsupported("Candidate operation changed during final verification")
     finally:
         db.close()
 

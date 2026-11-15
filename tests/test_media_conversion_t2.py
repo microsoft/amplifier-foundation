@@ -338,3 +338,26 @@ def test_expired_owned_ref_remains_metadata_no_pixels_no_new_ttl(tmp_path):
         assert not list((tmp_path / 'operation/portable/assets').iterdir())
         verify_export(tmp_path / 'operation/portable')
         assert ref['provenance'] == origin
+
+
+def test_candidate_guard_rechecks_namespace_and_each_file_without_path_reparse(tmp_path):
+    from amplifier_foundation.session.media_conversion import _candidate_witness_guard, _identity
+    operation = tmp_path / 'operation'
+    operation.mkdir()
+    path = operation / 'candidate.jsonl'
+    path.write_bytes(b'original')
+    identity = _identity(path)
+    with pytest.raises(Unsupported, match='operation changed'):
+        with _candidate_witness_guard(operation, [identity]) as check:
+            check()
+            path.write_bytes(b'changed!')
+            check()
+    path.write_bytes(b'original')
+    identity = _identity(path)
+    with pytest.raises(Unsupported, match='namespace changed'):
+        with _candidate_witness_guard(operation, [identity]) as check:
+            moved = tmp_path / 'old-operation'
+            operation.rename(moved)
+            operation.mkdir()
+            (operation / 'candidate.jsonl').write_bytes(b'original')
+            check()
