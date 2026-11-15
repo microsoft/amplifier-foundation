@@ -98,6 +98,33 @@ Origin = Callable[[int, int], dict[str, Any]]
 AssetReader = Callable[[dict[str, Any]], ContextManager[BinaryIO]]
 
 
+@contextmanager
+def bind_committed_media_cohort(session_dir, *, expected, owner, fence, producer, store):
+    """Join a live HOST producer's original truth to exact committed source data.
+
+    This creates no permission or receipt. Use the yielded ``fence``,
+    ``eligible_record`` and ``origin_for`` together for build_candidate inside
+    this context. Exit it successfully BEFORE the actual source rewrite; the
+    producer's separate host custody/admission must remain current through ACK.
+    """
+    from ._media_cohort import bind
+    with bind(session_dir, expected=expected, owner=owner, fence=fence,
+              producer=producer, store=store) as cohort:
+        yield cohort
+
+
+def _checked_cohort(origin_for):
+    from ._media_cohort import _BoundCohort
+    cohort = getattr(origin_for, "__self__", None)
+    return cohort if type(cohort) is _BoundCohort else None
+
+
+def _check_cohort(origin_for):
+    cohort = _checked_cohort(origin_for)
+    if cohort is not None:
+        cohort.check()
+
+
 def _json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
@@ -692,7 +719,9 @@ async def _stage_image_groups(scanner, fields, row, db, directory, capability, o
                     yield {"stream": pixels, "mime": mime}
 
         _event(journal, state="group-ingest-intent", row=row, origin=origin)
+        _check_cohort(origin_for)
         result = ingest_group(sources(), origin=deepcopy(origin), policy=None)
+        _check_cohort(origin_for)
         refs = deepcopy(result["staged_refs"])
         if not isinstance(refs, list):
             raise Unsupported("Group owner returned invalid reference sequence")
@@ -717,7 +746,9 @@ async def _stage_image_groups(scanner, fields, row, db, directory, capability, o
         if cancelled():
             raise InterruptedError("Conversion cancelled after group staging")
         _event(journal, state="group-publication-intent", row=row, origin=origin, count=count)
+        _check_cohort(origin_for)
         result = await capability.publish(deepcopy(refs), origin=deepcopy(origin), disposition="retain")
+        _check_cohort(origin_for)
         if result["refs"] != refs:
             raise Unsupported("Group publication changed complete original ref set")
         for ref in refs:
@@ -792,6 +823,13 @@ async def build_candidate(
         raise Unsupported("Canonical conversion durability is currently qualified on POSIX only")
     if not directory.is_absolute() or directory.parent.resolve() != directory.parent:
         raise Unsupported("Explicit private operation directory required")
+    cohort = _checked_cohort(origin_for)
+    if cohort is not None:
+        if (getattr(eligible_record, "__self__", None) is not cohort
+                or getattr(eligible_record, "__func__", None) is not type(cohort).eligible_record
+                or getattr(origin_for, "__func__", None) is not type(cohort).origin_for):
+            raise Unsupported("Checked cohort callbacks must belong to the same live binding")
+        cohort.check_builder(plan, capability)
     with fence(plan.owner):
         _check_source(plan)
         for backup in plan.backups:

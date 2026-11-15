@@ -330,6 +330,87 @@ The legacy `transfer_prefix` entry point still refuses T2; use the explicitly
 typed prospective paths below instead of mixing source header/session selectors
 with foreign target refs.
 
+### Checked original cohort data/source binding
+
+`bind_committed_media_cohort(session_dir, *, expected, owner, fence, producer,
+store)` is a context manager over the **existing** enrolled committed source and
+actual writable `SessionMediaStore`. It yields `eligible_record`, `origin_for`,
+`check`, and a `fence` adapter. Use those exact paired methods with
+`build_candidate` **inside** the context. The adapter reuses only the already
+held actual owner fence; publication fences are not generally reentrant.
+Successfully exit this source-pinned context **before** the legitimate source
+rewrite changes the current descriptor. The host's independent producer custody,
+current-purpose admission and real retained-record/typed ACK checks must remain
+valid through activation and their own final exits. A candidate built before a
+late source/producer/fence refusal is not permission to apply it or retry it.
+
+The `producer` is synchronous **trusted host code** already held inside its
+producer-owned live custody context, not an untrusted data object claiming to be
+a receipt. Foundation supplies no producer issuer, seal, registry, historical
+observation map or consent engine. Its invocation is:
+
+```python
+producer(*, commit, rowfacts, images) -> None | row_binding
+```
+
+`commit` is the actual exact `CommittedPrefix`. `rowfacts` is
+`{index, start, end, sha256, role}`: zero-based message index excluding the header,
+absolute JSON-object span excluding LF, raw-row hash, and parsed role. `images`
+is a read-only bounded structural iterator of `{block_index, block_start,
+block_end, data_start, data_end, mime}` using absolute body offsets and actual
+full-content-array positions. It supplies **no decoded identity or pixels**.
+Returning `None` holds the whole row without base64 decoding, asset reads or
+staging; the helper does not attempt to fill gaps by digest, tool-call label,
+current approval, new timestamps, null expiry or guessed echo relationships.
+
+The strict returned data shape is:
+
+```python
+{
+    "source_commit": detached_exact_eight_prefix_fields,
+    "row": exact_rowfacts,
+    "projection": "canonical-original",
+    "groups": ordered_iterable_of({
+        "origin": unchanged_original_five_provenance_fields,
+        "retention": "durable",
+        "members": ordered_iterable_of({
+            "block_index": actual_inline_content_position,
+            "occurrence_id": original_producer_occurrence_identity,
+            "ref": actual_previously_admitted_F1_reference,
+        }),
+    }),
+}
+```
+
+The producer owns original policy, full original member cardinality/order and
+occurrences, and its current-purpose decision. Matching returned data alone does
+not establish that truth. All mappings are exhausted and checked against the
+complete source's physical positions and F1's actual final ordered retained
+`validate_published_group` **before** any inline decode. Unknown, incomplete,
+expired, request-only, unsupported projection/echo, cross-row true-origin groups
+or incompatible post-hook subsets hold their whole affected rows in this first
+slice. Duplicated byte hashes do not collapse distinct original occurrences.
+Contradictory prefix/row/block/MIME identities refuse. Only complete qualified
+rows are then decoded incrementally to anonymous temporary files and compared to
+the producer's already-admitted ref identities. No corpus-sized list is built;
+metadata is disk-backed, except F1's existing O(one true-origin group) list API.
+
+Eligible/origin calls and builder ingestion/publication boundaries recheck live
+source, producer mapping/current purpose and actual final publication. Reuse
+after context exit refuses. The helper's durable-policy field is not a substitute
+for the writer's independent actual per-record retention and physical asset
+admission; canonical acceptance still requires the existing sealed checkpoint.
+Malformed or revoked producer code propagates failure, never silently grants
+eligibility. Cold use requires reacquiring the real source and producer context,
+not deserializing a callback or treating saved mapping facts as authority.
+
+The maintained fixture producer is explicitly **synthetic trusted host code**,
+using actual production F1 ingest, final publication and typed source checkpoint,
+then actual bounded conversion/serialized rewrite/typed ACK/readback. It is not
+evidence that a production historical raw-inline producer mapping exists. Until
+the owning host supplies genuine original receipt/policy/group/echo facts, those
+production rows remain held. No new raw copies are retained for demonstration.
+
 ### Selected T2 fork and offline portable import
 
 ```python
