@@ -1054,18 +1054,24 @@ def test_native_retained_exact_identity_contends_and_rejects_case_alias_and_rena
             normal_alias.acquire(app="normal-case-alias")
         with pytest.raises(ValueError, match="canonical"):
             shared.SharedSessionStore.from_identity(alias, root=store.root)
-        # Effective ancestor pins refuse a case-only rename while ownership is
-        # held. Require sharing violation, not an unrelated path/access error.
-        with pytest.raises(OSError) as caught:
-            store.workspace.rename(store.workspace.with_name("WORKSPACE"))
-        assert caught.value.winerror == 32, caught.value
-        assert store.workspace.resolve().name == store.workspace.name
+        # Ownership pins the coordination tree under the state root, not the
+        # workspace beside it. The folder that holds both is a traversal
+        # ancestor, so a case-only rename of the workspace works while ownership
+        # is held. (It was refused with a sharing violation while traversal
+        # pins shared read only: that refusal was the rename-block defect.)
+        renamed = store.workspace.with_name("WORKSPACE")
+        store.workspace.rename(renamed)
+        assert renamed.resolve().name == "WORKSPACE"
+        # The rename cannot authorize silently rewriting the retained exact
+        # identity, and it does not disturb the live owner or its lock.
+        with pytest.raises(ValueError, match="canonical"):
+            shared.SharedSessionStore.from_identity(identity, root=store.root)
+        held.check()
+        with pytest.raises(shared.SessionBusyError):
+            restored.acquire(app="retained-after-rename")
     finally:
         held.release()
-    # Positive release control: case-only rename now works, but it cannot
-    # authorize silently rewriting the previously retained exact identity.
-    renamed = store.workspace.with_name("WORKSPACE")
-    store.workspace.rename(renamed)
+    # Release changes nothing about the retained identity's refusal.
     assert renamed.resolve().name == "WORKSPACE"
     with pytest.raises(ValueError, match="canonical"):
         shared.SharedSessionStore.from_identity(identity, root=store.root)
@@ -2862,3 +2868,359 @@ def test_native_history_metadata_stable_lock_noninheritance_and_process_contenti
     assert store.load_metadata()["name"] == "Canonical"
     assert store.load_metadata()["unknown"] == "keep"
     assert lock.stat().st_ino == inode
+
+# --- Sharing on traversal-ancestor pins versus owned pins --------------------
+#
+# A pin on a directory above the caller's own root shares read and write. A pin
+# on the root and below shares read only. No pin shares delete. The native
+# cases mirror the measured defect: while a session's ownership was held, no
+# other program could rename, replace or move an entry in the folders above
+# Foundation's own (Windows error 32).
+
+
+def _share_recording_api(monkeypatch, existing, raced=()):
+    """The real ``_API.open`` over stubbed Win32 calls; records each CreateFileW share."""
+    api = win._API.__new__(win._API)
+    api.sid = "S-1-5-21-1-2-3-1000"
+    existing, raced = set(existing), set(raced)
+    opened, created, paths, last_error = [], [], {}, [0]
+
+    def descriptor(sddl, revision, out, length):
+        C.cast(out, C.POINTER(win.PVOID))[0] = 456
+        return 1
+
+    def create_file(path, access, share, security, disposition, flags, template):
+        path = PureWindowsPath(path)
+        assert access == win._READ_CONTROL | win._ATTRIBUTES | 1 and disposition == 3
+        assert flags == win._OPEN_REPARSE | win._BACKUP_SEMANTICS
+        opened.append((path, share))
+        if path not in existing:
+            last_error[0] = 2
+            return win._INVALID
+        paths[len(paths) + 1] = path
+        return len(paths)
+
+    def create_directory(path, security):
+        path = PureWindowsPath(path)
+        assert path not in existing
+        created.append(path)
+        existing.add(path)
+        if path in raced:  # Another creator or mover won: ERROR_ALREADY_EXISTS.
+            last_error[0] = 183
+            return 0
+        return 1
+
+    def final_path(handle, buffer, size, flags):
+        buffer.value = str(paths[handle])
+        return len(buffer.value)
+
+    def volume(handle, name, size, serial, maximum, flags, filesystem, length):
+        filesystem.value = "NTFS"
+        return 1
+
+    def winerror(code):
+        failure = OSError(f"native error {code}")
+        failure.winerror = code
+        return failure
+
+    api.ConvertStringSecurityDescriptorToSecurityDescriptorW = descriptor
+    api.CreateFileW, api.CreateDirectoryW = create_file, create_directory
+    api.GetFinalPathNameByHandleW, api.GetVolumeInformationByHandleW = final_path, volume
+    api.GetDriveTypeW = lambda path: 3
+    api.SetHandleInformation = lambda handle, mask, flags: 1
+    api.LocalFree = lambda descriptor: None
+    api.info = lambda *args, **kwargs: None
+    api.validate_acl = lambda handle, **kwargs: None
+    api.close = lambda handle: None
+    monkeypatch.setattr(C, "get_last_error", lambda: last_error[0], raising=False)
+    monkeypatch.setattr(C, "WinError", winerror, raising=False)
+    return api, opened, created
+
+
+@pytest.mark.parametrize("raced", [None, r"C:\Users\me\install", r"C:\Users\me\install\ownership"])
+def test_every_pin_shares_write_only_above_the_owned_root(monkeypatch, raced):
+    """Share mode per chain component, including the re-open after error 183."""
+    root = PureWindowsPath(r"C:\Users\me\install\ownership")
+    directory = root / "v1" / "session"
+    chain = list(reversed([directory, *directory.parents]))
+    missing = chain[3:]  # The installation folder and everything below it.
+    raced = {PureWindowsPath(raced)} if raced else set()
+    api, opened, created = _share_recording_api(monkeypatch, chain[:3], raced)
+
+    pins = win._PinnedDirectories(api, directory, owned_from=root, private=True, create=True)
+
+    assert len(pins.handles) == len(chain) and not pins.missing
+    assert created == missing
+    expected = []
+    for path in chain:
+        # Read and write above the root; read only on the root and below.
+        share = 1 if path.is_relative_to(root) else 3
+        expected += [(path, share)] * (2 if path in missing else 1)  # Miss, then re-open.
+    assert opened == expected
+    assert not any(share & 4 for _, share in opened)  # No pin shares delete.
+    for path in raced:  # The re-open after error 183 uses the component's own share.
+        assert [share for seen, share in opened if seen == path] == [1 if path.is_relative_to(root) else 3] * 2
+
+
+def test_read_only_pins_use_the_same_share_rule_without_creating(monkeypatch):
+    root = PureWindowsPath(r"C:\Users\me\install\ownership")
+    chain = list(reversed([root, *root.parents]))
+    api, opened, created = _share_recording_api(monkeypatch, chain[:-1])
+    pins = win._PinnedDirectories(api, root / "v1", owned_from=root, private=True)
+    assert pins.missing and not created
+    assert opened == [(path, 3) for path in chain[:-1]] + [(root, 1)]
+
+
+@pytest.mark.parametrize("kwargs", [
+    {}, {"directory": True, "create": True}, {"directory": True, "exclusive": True},
+    {"directory": True, "write": True},
+])
+def test_write_sharing_cannot_be_requested_for_a_file_or_a_creating_open(kwargs):
+    api = win._API.__new__(win._API)
+    with pytest.raises(ValueError, match="traversal-ancestor directory pin"):
+        api.open(PureWindowsPath(r"C:\state\object"), traversal=True, **kwargs)
+
+
+def _everyday_changes(folder, outside):
+    """What an ordinary program does in a folder. Self-contained: a child runs this source."""
+    import os
+    from pathlib import Path
+
+    folder, outside = Path(folder), Path(outside)
+    note, renamed = folder / "note.txt", folder / "note-renamed.txt"
+    note.write_bytes(b"first")
+    os.rename(note, renamed)  # Rename a file in place.
+    assert renamed.read_bytes() == b"first" and not note.exists()
+    fresh = folder / "note-renamed.txt.tmp"
+    fresh.write_bytes(b"second")
+    os.replace(fresh, renamed)  # Save by write-then-replace over an existing file.
+    assert renamed.read_bytes() == b"second" and not fresh.exists()
+    made, made_renamed = folder / "made", folder / "made-renamed"
+    made.mkdir()
+    os.rename(made, made_renamed)  # Rename a folder in place.
+    assert made_renamed.is_dir() and not made.exists()
+    arriving, arrived = outside / "arriving", folder / "arrived"
+    arriving.mkdir(parents=True)
+    (arriving / "inner.txt").write_bytes(b"third")
+    os.rename(arriving, arrived)  # Move a folder in from elsewhere.
+    assert (arrived / "inner.txt").read_bytes() == b"third" and not arriving.exists()
+    (arrived / "inner.txt").unlink()  # Leave nothing, so the next run starts clean.
+    arrived.rmdir()
+    made_renamed.rmdir()
+    renamed.unlink()
+
+
+def _in_child(function, *arguments):
+    """Run one self-contained helper in a separate Python process."""
+    import inspect
+
+    code = "import sys\n" + inspect.getsource(function) + f"\n{function.__name__}(*sys.argv[1:])\n"
+    return subprocess.run([sys.executable, "-I", "-c", code, *map(str, arguments)],
+                          capture_output=True, text=True, timeout=30)
+
+
+def _delete_open_error(directory):
+    """Open a directory for DELETE while sharing read, write and delete.
+
+    The probe's own share mode admits every other handle, so only a handle that
+    withholds delete sharing can refuse it. Returns the Win32 error, 0 if opened.
+    """
+    api = win._API()
+    handle = api.CreateFileW(str(directory), 0x10000, 7, None, 3,
+                             win._OPEN_REPARSE | win._BACKUP_SEMANTICS, None)
+    if handle == win._INVALID:
+        return C.get_last_error()
+    api.close(handle)
+    return 0
+
+
+def _assert_pinned_itself(directory):
+    """A pinned directory cannot be renamed, moved or opened for deletion."""
+    moved = directory.with_name(directory.name + "-moved")
+    with pytest.raises(OSError) as caught:
+        directory.rename(moved)
+    assert caught.value.winerror == 32, caught.value
+    assert directory.is_dir() and not moved.exists()
+    assert _delete_open_error(directory) == 32
+
+
+def _assert_refuses_arrivals(directory, outside):
+    """An owned directory keeps read-only sharing: nothing is renamed into it."""
+    outside.mkdir(exist_ok=True)
+    for name, make in (("stray.txt", lambda path: path.write_bytes(b"stray")),
+                       ("stray-folder", lambda path: path.mkdir())):
+        stray = outside / name
+        make(stray)
+        with pytest.raises(OSError) as caught:
+            os.rename(stray, directory / name)
+        assert caught.value.winerror == 32, caught.value
+        assert stray.exists() and not (directory / name).exists()
+        stray.unlink() if stray.is_file() else stray.rmdir()
+
+
+@native
+def test_native_held_ownership_leaves_the_folders_above_its_root_usable(tmp_path, monkeypatch):
+    """The measured defect, in the consumer layout: state root directly in the install folder."""
+    profile = tmp_path / "profile"
+    install = profile / "AppData" / "Local" / "Amplifier"
+    install.mkdir(parents=True)
+    workspace = profile / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("AMPLIFIER_HOME", str(install / "native"))
+    store = shared.SharedSessionStore(workspace, "root-1", root=install / "ownership")
+    above = [install, install.parent, install.parent.parent, profile]
+    outside = tmp_path / "outside"
+    held = store.acquire(app="live-worker")
+    try:
+        owned = [store.root, store.root / "v1", store._directory.parent, store._directory]
+        for folder in above:
+            _everyday_changes(folder, outside)  # Refused with error 32 before.
+            # "No other program can": once more, from a separate Python process.
+            child = _in_child(_everyday_changes, folder, outside)
+            assert child.returncode == 0, child.stderr
+            _assert_pinned_itself(folder)
+        for folder in owned:
+            _assert_pinned_itself(folder)
+            _assert_refuses_arrivals(folder, outside)
+        held.check()
+    finally:
+        held.release()
+    # Positive release control: no pin is left on any folder.
+    for folder in [*above, *owned]:
+        assert _delete_open_error(folder) == 0
+    _everyday_changes(store.root, outside)
+    profile.rename(profile.with_name("profile-moved"))
+
+
+@native
+@pytest.mark.parametrize("layout", ["root-above-leaf", "root-is-leaf"])
+def test_native_traversal_pins_share_write_and_owned_pins_do_not(tmp_path, layout):
+    """An empty tree isolates the directory pins. root-is-leaf is the history layout."""
+    base = tmp_path / "pin-base"
+    middle, leaf = base / "middle", base / "middle" / "leaf"
+    base.mkdir()
+    root = leaf if layout == "root-is-leaf" else middle
+    above = [folder for folder in (base, middle) if not folder.is_relative_to(root)]
+    owned = [folder for folder in (middle, leaf) if folder.is_relative_to(root)]
+    outside = tmp_path / "outside"
+    api = win._API()
+    with win._pinned(api, leaf, root=root, create=True):
+        for folder in above:
+            _everyday_changes(folder, outside)
+            child = _in_child(_everyday_changes, folder, outside)
+            assert child.returncode == 0, child.stderr
+            _assert_pinned_itself(folder)
+        for folder in owned:
+            _assert_pinned_itself(folder)
+            _assert_refuses_arrivals(folder, outside)
+        assert list(leaf.iterdir()) == []  # No file handle provides the protection.
+    for folder in [*above, *owned]:
+        assert _delete_open_error(folder) == 0
+        _everyday_changes(folder, outside)  # Every folder is ordinary again.
+    base.rename(base.with_name("pin-base-moved"))
+
+
+@native
+@pytest.mark.parametrize("guard", ["write", "metadata", "fork"])
+def test_native_history_pins_restrict_only_their_own_folder(tmp_path, guard):
+    """Real history pin holders. Each one's root is the directory it pins."""
+    from contextlib import ExitStack
+    from amplifier_foundation.session.history import SessionHistoryStore
+
+    sessions = tmp_path / "home" / "projects" / "fixture" / "sessions"
+    store = SessionHistoryStore(sessions / "history", windows_policy="private")
+    rows = [{"role": "user", "content": "synthetic \u2603"}]
+    store.save(rows, {"turn": 1})
+    sibling = SessionHistoryStore(sessions / "sibling", windows_policy="private")
+    outside = tmp_path / "outside"
+    # A write lease owns the session folder only. The metadata lock and the fork
+    # reservation own the sessions folder, so they hold it at read-only sharing.
+    owned = store.session_dir if guard == "write" else sessions
+    above = [folder for folder in (sessions, sessions.parent, sessions.parent.parent)
+             if not folder.is_relative_to(owned)]
+    with ExitStack() as held:
+        if guard == "write":
+            held.enter_context(history_win._file(store.transcript_path, write=True))
+        elif guard == "metadata":
+            held.enter_context(history_win.metadata_lock(store.session_dir))
+        else:
+            held.enter_context(history_win.reserve_new_session(sessions / "fork"))
+        for folder in above:
+            _everyday_changes(folder, outside)
+            _assert_pinned_itself(folder)
+        child = _in_child(_everyday_changes, above[0], outside)
+        assert child.returncode == 0, child.stderr
+        _assert_pinned_itself(owned)
+        _assert_refuses_arrivals(owned, outside)
+        # History's own publication needs no write sharing: another session
+        # saves and loads beside the held pins.
+        sibling.save(rows, {"turn": 2})
+        assert sibling.load(include_events=False).messages == rows
+    for folder in [*above, owned]:
+        assert _delete_open_error(folder) == 0
+    _everyday_changes(owned, outside)
+    store.save(rows + [{"role": "assistant", "content": "after"}], {"turn": 3})
+    assert store.load_metadata() == {"turn": 3}
+    assert sibling.load_metadata() == {"turn": 2}
+
+
+def _grant_everyone(api, path, mask):
+    """Replace the DACL: full control for the current user plus ``mask`` for Everyone."""
+    descriptor = win.PVOID()
+    api.ok(api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        f"O:{api.sid}D:P(A;;FA;;;{api.sid})(A;;0x{mask:x};;;WD)", 1, C.byref(descriptor), None,
+    ))
+    setter = api.security.SetFileSecurityW
+    setter.argtypes, setter.restype = [C.c_wchar_p, win.DWORD, win.PVOID], win.BOOL
+    try:
+        api.ok(setter(str(path), 0x80000005, descriptor))
+    finally:
+        api.LocalFree(descriptor)
+
+
+@native
+@pytest.mark.parametrize("position", ["above-root", "root"])
+@pytest.mark.parametrize("kind", ["junction", "folder"])
+def test_native_entry_renamed_into_the_creation_gap_is_refused_before_descent(tmp_path, position, kind):
+    """Since traversal pins share write, a rename can win the race that error 183 reports.
+
+    The component is still opened without following a reparse point and
+    validated before any descendant is created.
+    """
+    base = tmp_path / "gap-base"
+    base.mkdir()
+    gap = base / "gap"  # Missing. Its parent, a traversal ancestor, is pinned sharing write.
+    directory = gap / "state" / "leaf"
+    root = gap if position == "root" else gap / "state"
+    prepared, elsewhere = tmp_path / "prepared", tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    api = win._API()
+    if kind == "junction":
+        result = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(prepared), str(elsewhere)],
+                                capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        refusal = "reparse"
+    else:
+        prepared.mkdir()
+        if position == "root":
+            refusal = "unsafe Windows traversal directory"  # An ordinary inherited DACL is not private.
+        else:
+            _grant_everyone(api, prepared, 2)  # FILE_ADD_FILE for Everyone: an untrusted ancestor.
+            refusal = "foreign access"
+    raced, real_create = [], api.CreateDirectoryW
+
+    def lose_the_race(path, security):
+        if PureWindowsPath(path) == PureWindowsPath(gap) and not raced:
+            os.rename(prepared, gap)  # Possible only because the pin on base shares write.
+            raced.append(path)
+        return real_create(path, security)  # ERROR_ALREADY_EXISTS for the gap.
+
+    api.CreateDirectoryW = lose_the_race
+    with pytest.raises(shared.SharedStateError, match=refusal):
+        with win._pinned(api, directory, root=root, create=True):
+            pytest.fail("pinned through an entry that was renamed into the gap")
+    assert raced and not prepared.exists()
+    assert list(elsewhere.iterdir()) == []  # Nothing was created through the junction.
+    if kind == "folder":
+        assert list(gap.iterdir()) == []  # No descendant was created in the foreign folder.
+    assert _delete_open_error(base) == 0  # The refusal released every pin.
