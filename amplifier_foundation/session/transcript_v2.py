@@ -138,6 +138,12 @@ class CommittedTranscriptReader:
         self.session_dir = Path(session_dir)
         self.root = self.session_dir / "transcript.v2"
 
+    def _control_path(self, name):
+        """Lexical construction only; callers still freshly check every file."""
+        if name in ("transcript.jsonl", "transcript.jsonl.backup"):
+            return self.session_dir / name / "format.json"
+        return self.root / name
+
     def _transition(self):
         """A partially installed namespace is not an empty healthy session.
 
@@ -145,10 +151,10 @@ class CommittedTranscriptReader:
         contract. Writer-created sessions additionally require the durable ready
         witness and both nonempty legacy entry fences before exposing a commit.
         """
-        journal = self.root / "migration.json"
-        ready = self.root / "ready.json"
+        journal = self._control_path("migration.json")
+        ready = self._control_path("ready.json")
         if not os.path.lexists(journal):
-            if os.path.lexists(ready) or os.path.lexists(self.root / "operations"):
+            if os.path.lexists(ready) or os.path.lexists(self._control_path("operations")):
                 raise UnsupportedTranscript("Versioned ready witness lacks migration journal")
             return
         with _file(journal) as stream:
@@ -167,7 +173,7 @@ class CommittedTranscriptReader:
         }:
             raise UnsupportedTranscript("Migration is incomplete")
         for name in ("transcript.jsonl", "transcript.jsonl.backup"):
-            with _file(self.session_dir / name / "format.json") as stream:
+            with _file(self._control_path(name)) as stream:
                 raw = stream.read(_CHUNK + 1)
             value = _decode(raw) if len(raw) <= _CHUNK else None
             if not _is_v2_object(value) or value != {
@@ -179,7 +185,7 @@ class CommittedTranscriptReader:
 
     def _descriptor(self) -> tuple[CommittedPrefix, bytes]:
         self._transition()
-        with _file(self.root / "current.json") as stream:
+        with _file(self._control_path("current.json")) as stream:
             raw = stream.read(_CHUNK + 1)
         if len(raw) > _CHUNK:
             raise UnsupportedTranscript("Versioned transcript descriptor is oversized")

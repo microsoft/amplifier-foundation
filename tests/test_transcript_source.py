@@ -9,10 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from pathlib import PurePath
 
 import pytest
 
 from amplifier_foundation.session import transcript_source as s
+from amplifier_foundation.session import transcript_v2 as v2
 from amplifier_foundation.session import transcript_writer as w
 from amplifier_foundation.session.transcript_v2 import (
     CommittedTranscriptReader,
@@ -353,3 +355,255 @@ def test_budget_refusal_preserves_source_for_stream_fallback(tmp_path):
         # Budget refusal doesn't poison a verified source's streaming fallback.
         bounds = source.message_range(0)
         assert source.read_range(bounds.start, bounds.start + 1) == b"{"
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("transition", [False, True])
+@pytest.mark.skipif(not hasattr(PurePath, "_parse_path"),
+                    reason="lexical parse probe requires Python 3.12+")
+def test_checked_ranges_reuse_lexical_paths_not_authority(
+        tmp_path, monkeypatch, record_property, empty, transition):
+    """Count real forwarded construction/parsing, not timing or intern capacity."""
+    _, commit, _ = fixture(tmp_path, [] if empty else None)
+    if not transition:
+        for name in ("migration.json", "ready.json", "operations"):
+            (tmp_path / "transcript.v2" / name).rename(tmp_path / name)
+    expected = (tmp_path / "transcript.v2" / commit.body).read_bytes()
+    with s.open_committed_source(tmp_path, expected=commit) as source:
+        counts = {"construct": 0, "parse": 0, "namespace": 0, "descriptor": 0}
+        files = []
+        original_init = PurePath.__init__
+        original_parse = PurePath._parse_path.__func__
+        original_namespace = s._namespace
+        original_descriptor = source._reader._descriptor
+        original_file = v2._file
+
+        def construct(self, *args, **kwargs):
+            counts["construct"] += 1
+            original_init(self, *args, **kwargs)
+
+        def parse(cls, *args):
+            counts["parse"] += 1
+            return original_parse(cls, *args)
+
+        def namespace(*args):
+            counts["namespace"] += 1
+            return original_namespace(*args)
+
+        def descriptor():
+            counts["descriptor"] += 1
+            return original_descriptor()
+
+        @contextmanager
+        def checked_file(path):
+            files.append(path.name)
+            with original_file(path) as stream:
+                yield stream
+
+        reports = []
+        # No warmup reads. Opening the source is the one cold verification.
+        with monkeypatch.context() as patch:
+            patch.setattr(PurePath, "__init__", construct)
+            patch.setattr(PurePath, "_parse_path", classmethod(parse))
+            patch.setattr(s, "_namespace", namespace)
+            patch.setattr(source._reader, "_descriptor", descriptor)
+            patch.setattr(s, "_file", checked_file)
+            patch.setattr(v2, "_file", checked_file)
+            for reads in (1, 4, 16):
+                before = dict(counts)
+                file_start = len(files)
+                for index in range(reads):
+                    start = (index * 7) % len(expected)
+                    stop = min(start + 13, len(expected))
+                    assert source.read_range(start, stop) == expected[start:stop]
+                    assert source.read_range(start, start) == b""
+                delta = {key: counts[key] - before[key] for key in counts}
+                actual_reads = reads * 2
+                assert delta["namespace"] == delta["descriptor"] == 2 * actual_reads
+                opened = files[file_start:]
+                assert opened.count(commit.body) == actual_reads
+                assert opened.count("current.json") == 2 * actual_reads
+                assert opened.count("migration.json") == (2 * actual_reads if transition else 0)
+                assert opened.count("ready.json") == (2 * actual_reads if transition else 0)
+                assert opened.count("format.json") == (4 * actual_reads if transition else 0)
+                reports.append({"reads": actual_reads, **delta, "file_checks": len(opened)})
+        record_property("lexical_cost", json.dumps(reports, sort_keys=True))
+        assert [(r["construct"], r["parse"]) for r in reports] == [(0, 0)] * 3, reports
+
+
+@pytest.mark.parametrize("selection", ["commit", "root", "session_dir"])
+def test_mutable_selection_cannot_retarget_cached_paths(tmp_path, selection):
+    _, commit, _ = fixture(tmp_path)
+    with s.open_committed_source(tmp_path) as source:
+        if selection == "commit":
+            source.commit = replace(commit, operation_id="different")
+        else:
+            setattr(source._reader, selection, tmp_path / "different")
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+        # Restoring the selection must not revive a failed source.
+        source.commit = commit
+        source._reader.root = tmp_path / "transcript.v2"
+        source._reader.session_dir = tmp_path
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+
+
+def test_relative_source_cwd_change_refuses_permanently(tmp_path, monkeypatch):
+    fixture(tmp_path)
+    monkeypatch.chdir(tmp_path.parent)
+    with s.open_committed_source(Path(tmp_path.name)) as source:
+        assert source.read_range(0, 1) == b"{"
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+        monkeypatch.chdir(tmp_path.parent)
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+
+
+def test_absolute_source_does_not_depend_on_cwd(tmp_path, monkeypatch):
+    fixture(tmp_path)
+    with s.open_committed_source(tmp_path.absolute()) as source:
+        monkeypatch.chdir(tmp_path.parent)
+        assert source.read_range(0, 1) == b"{"
+        monkeypatch.chdir(tmp_path)
+        assert source.read_range(0, 1) == b"{"
+
+
+def test_parent_components_and_ancestor_symlinks_refuse(tmp_path):
+    fixture(tmp_path)
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    for path in (alias, tmp_path / ".." / tmp_path.name):
+        with pytest.raises((UnsupportedTranscript, OSError)):
+            with s.open_committed_source(path):
+                pytest.fail("accepted an alias or parent component")
+
+
+def test_descriptor_raw_bytes_still_authority(tmp_path):
+    fixture(tmp_path)
+    current = tmp_path / "transcript.v2" / "current.json"
+    with s.open_committed_source(tmp_path) as source:
+        # Semantically equal prefix, different exact descriptor.
+        current.write_bytes(current.read_bytes() + b" ")
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+
+
+@pytest.mark.parametrize("control", [
+    "transcript.v2/current.json", "transcript.v2/migration.json",
+    "transcript.v2/ready.json", "transcript.jsonl/format.json",
+    "transcript.jsonl.backup/format.json",
+])
+def test_control_file_change_during_range_refuses(tmp_path, monkeypatch, control):
+    fixture(tmp_path)
+    target = tmp_path / control
+    with s.open_committed_source(tmp_path) as source:
+        original = s._file
+
+        @contextmanager
+        def changing(path):
+            with original(path) as stream:
+                yield stream
+                target.write_bytes(b"{}")
+        monkeypatch.setattr(s, "_file", changing)
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+
+
+@pytest.mark.parametrize("during_read", [False, True])
+def test_ancestor_swap_with_same_body_inode_refuses(tmp_path, monkeypatch, during_read):
+    import shutil
+
+    session = tmp_path / "ancestor" / "session"
+    session.mkdir(parents=True)
+    _, commit, _ = fixture(session)
+    prepared = tmp_path / "prepared"
+    # Prepare all links before pinning so link-count/ctime changes do not mask
+    # directory-identity refusal, even though every selected file inode agrees.
+    shutil.copytree(session.parent, prepared, copy_function=os.link)
+    assert os.stat(session / "transcript.v2" / commit.body).st_ino == os.stat(
+        prepared / "session" / "transcript.v2" / commit.body).st_ino
+
+    def swap():
+        session.parent.rename(tmp_path / "retained")
+        prepared.rename(session.parent)
+
+    with s.open_committed_source(session) as source:
+        if during_read:
+            original = s._file
+
+            @contextmanager
+            def changing(path):
+                with original(path) as stream:
+                    class Wrapped:
+                        def __getattr__(self, name):
+                            return getattr(stream, name)
+
+                        def read(self, count=-1):
+                            raw = stream.read(count)
+                            swap()
+                            return raw
+                    yield Wrapped()
+            monkeypatch.setattr(s, "_file", changing)
+        else:
+            swap()
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+
+
+@pytest.mark.parametrize("created", ["ready.json", "operations"])
+def test_missing_transition_is_not_sticky(tmp_path, created):
+    fixture(tmp_path)
+    root = tmp_path / "transcript.v2"
+    for name in ("migration.json", "ready.json", "operations"):
+        (root / name).rename(tmp_path / name)
+    with s.open_committed_source(tmp_path) as source:
+        assert source.read_range(0, 1) == b"{"
+        (tmp_path / created).rename(root / created)
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+        with pytest.raises(UnsupportedTranscript):
+            source.read_range(0, 1)
+
+
+def test_inherited_source_refuses_before_lock_and_parent_stays_usable(tmp_path):
+    fixture(tmp_path)
+    with s.open_committed_source(tmp_path) as source:
+        # An inherited source includes a shared offset FD and possibly a lock
+        # owned by a vanished thread. Refuse before touching either resource.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            import threading
+            locked, release = threading.Event(), threading.Event()
+
+            def hold():
+                with source._lock:
+                    locked.set()
+                    release.wait()
+            holder = pool.submit(hold)
+            assert locked.wait(5)
+            pid = os.fork()
+            if pid == 0:
+                import signal
+                signal.alarm(3)
+                try:
+                    source.read_range(0, 1)
+                except UnsupportedTranscript:
+                    os._exit(0)
+                except BaseException:
+                    os._exit(2)
+                os._exit(1)
+            try:
+                _, status = os.waitpid(pid, 0)
+            finally:
+                release.set()
+                holder.result(timeout=5)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert source.read_range(0, 1) == b"{"

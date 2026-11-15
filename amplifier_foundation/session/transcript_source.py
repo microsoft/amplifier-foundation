@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from ._media_conversion_parser import CHUNK, Scanner
 from .transcript_encoding import transduce
@@ -41,7 +42,7 @@ MAX_WINDOW_BYTES = 16 * 1024 * 1024
 
 def _namespace(path):
     """Pin every directory component identity, never follow a link."""
-    path = Path(path).absolute()
+    path = (path if isinstance(path, Path) else Path(path)).absolute()
     if os.name != "posix" or ".." in path.parts:
         raise UnsupportedTranscript("Qualified POSIX namespace required")
     fds, identities = [], []
@@ -62,6 +63,23 @@ def _namespace(path):
     finally:
         for fd in reversed(fds):
             os.close(fd)
+
+
+class _RangeReader(CommittedTranscriptReader):
+    """Per-source immutable lexical state, never a cached check or open FD."""
+
+    def __init__(self, session_dir):
+        super().__init__(session_dir)
+        construct = super()._control_path
+        self._paths = MappingProxyType({
+            name: construct(name).absolute() for name in (
+                "migration.json", "ready.json", "operations", "current.json",
+                "transcript.jsonl", "transcript.jsonl.backup",
+            )
+        })
+
+    def _control_path(self, name):
+        return self._paths[name]
 
 
 @dataclass(frozen=True)
@@ -93,6 +111,12 @@ class CommittedSource:
     def __init__(self, reader, prefix, descriptor, stamp, offsets, namespace):
         self._reader = reader
         self.commit = prefix
+        self._prefix = prefix
+        self._bindings = (reader.root, reader.session_dir)
+        self._cwd = os.getcwd() if not reader.root.is_absolute() else None
+        self._root = reader.root.absolute()
+        self._body_path = self._root / prefix.body
+        self._pid = os.getpid()
         self._descriptor = descriptor
         self._stamp = stamp
         self._offsets = offsets
@@ -103,20 +127,28 @@ class CommittedSource:
     def _check(self):
         if not self._active:
             raise UnsupportedTranscript("Committed source is closed or invalidated")
-        if _namespace(self._reader.root) != self._namespace:
+        if (self.commit != self._prefix
+                or (self._reader.root, self._reader.session_dir) != self._bindings
+                or (self._cwd is not None and os.getcwd() != self._cwd)):
+            raise UnsupportedTranscript("Committed source binding changed; reopen explicitly")
+        if _namespace(self._root) != self._namespace:
             raise UnsupportedTranscript("Committed namespace replaced; reopen explicitly")
         prefix, descriptor = self._reader._descriptor()
-        if prefix != self.commit or descriptor != self._descriptor:
+        if prefix != self._prefix or descriptor != self._descriptor:
             raise UnsupportedTranscript("Committed source selection changed; reopen explicitly")
 
     @contextmanager
     def _body(self):
+        # Check before the inherited RLock or shared offset FD can be touched.
+        if os.getpid() != self._pid:
+            self._active = False
+            raise UnsupportedTranscript("Committed source belongs to another process")
         # Host pages can run on worker threads; the anonymous offset stream's
         # seek/read pairs must not interleave between windows.
         with self._lock:
             try:
                 self._check()
-                with _file(self._reader.root / self.commit.body) as stream:
+                with _file(self._body_path) as stream:
                     if _stamp(os.fstat(stream.fileno())) != self._stamp:
                         raise UnsupportedTranscript("Committed source identity changed; reopen explicitly")
                     yield stream
@@ -235,7 +267,7 @@ def open_committed_source(session_dir: str | Path, *,
     refusal bounds match the writer transducer. The temporary index is anonymous
     rebuildable data, never transcript authority and never persisted hash state.
     """
-    reader = CommittedTranscriptReader(session_dir)
+    reader = _RangeReader(session_dir)
     namespace = _namespace(reader.root)
     prefix, descriptor = reader._descriptor()
     if expected is not None and prefix != expected:
