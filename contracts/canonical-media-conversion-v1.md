@@ -372,6 +372,16 @@ its digest. Original receipt/retention authority is never recovered from the
 portable hashes themselves. Expired adopted/imported observations are original
 metadata only; no pixel copy/read or TTL renewal.
 
+Before import selection or package authorization, `verify_export` requires exact
+nonnegative integer agreement between the T2 prefix's `message_count`, portable
+`records`, and all observed message rows (excluding the header). Prefix byte/hash
+facts must also match the complete candidate. Boolean/float counts and
+understated/overstated packages refuse; host authorization cannot excuse an
+internally contradictory package. Only after full-package validation may
+`preview_import(selected_records=...)` select an explicitly smaller prefix.
+Omitting that argument selects the entire validated package, never an implicit
+truncation inferred from contradictory receipt data.
+
 The same converter engine copies the actual selected target's issued header
 into its **candidate**, patches source-owner refs to exact target-owned refs,
 and keeps all other selected message bytes/metadata unchanged. The same sole

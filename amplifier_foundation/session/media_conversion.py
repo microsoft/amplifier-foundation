@@ -1217,8 +1217,7 @@ def preview_import(
         if len(raw) > 16384:
             raise Unsupported("Oversized portable export selection")
         facts = json.loads(raw)
-        if not callable(authorize) or authorize(deepcopy(facts)) is not True:
-            raise Unsupported("Host did not authorize this exact portable package")
+        package_records = _export_record_count(facts)
         encoded = facts.get("committed_prefix")
         if type(encoded) is not dict:
             raise Unsupported("Explicit header-bearing T2 export required")
@@ -1229,11 +1228,8 @@ def preview_import(
         if type(selected_records) is not int or not 0 <= selected_records <= prefix.message_count:
             raise Unsupported("Selected import prefix exceeds authorized package")
         identity = _identity(portable / "candidate.jsonl")
-        plan = ConversionPlan(
-            ADAPTER, owner, prefix.session_id, identity, (), prefix.message_count, 0, 0,
-            selected_records, asdict(prefix), None, portable_directory=str(portable),
-        )
         refs = 0
+        observed_records = 0
         with _open(portable / "candidate.jsonl") as stream:
             scanner = Scanner(stream)
             for row, record in enumerate(_records(scanner, encoded)):
@@ -1242,6 +1238,15 @@ def preview_import(
                     raise Unsupported("Import requires externalized selected image references")
                 if row < selected_records:
                     refs += sum(1 for _ in _refs(scanner, fields))
+                observed_records += 1
+        if observed_records != package_records:
+            raise Unsupported("Portable full-package record count mismatch")
+        if not callable(authorize) or authorize(deepcopy(facts)) is not True:
+            raise Unsupported("Host did not authorize this exact portable package")
+        plan = ConversionPlan(
+            ADAPTER, owner, prefix.session_id, identity, (), package_records, 0, 0,
+            selected_records, asdict(prefix), None, portable_directory=str(portable),
+        )
         _validate_plan(plan)
         _check_source(plan)
         return replace(plan, existing_refs=refs)
@@ -1413,6 +1418,25 @@ def adopt_selected_media(
     return result
 
 
+def _export_record_count(value):
+    """Join complete package facts before any caller chooses a smaller prefix."""
+    from .transcript_v2 import CommittedPrefix
+    count = value.get("records")
+    if type(count) is not int or count < 0:
+        raise Unsupported("Portable record count must be an exact nonnegative integer")
+    encoded = value.get("committed_prefix")
+    if encoded is not None:
+        if type(encoded) is not dict or set(encoded) != set(CommittedPrefix.__dataclass_fields__):
+            raise Unsupported("Invalid portable committed prefix")
+        prefix = CommittedPrefix(**encoded)
+        _prefix_types(prefix)
+        if (prefix.message_count != count or prefix.sha256 != value.get("candidate_sha256")
+                or type(value.get("candidate_bytes")) is not int
+                or prefix.committed_bytes != value["candidate_bytes"]):
+            raise Unsupported("Portable prefix differs from complete package facts")
+    return count
+
+
 def verify_export(directory: Path) -> None:
     """Verify saved candidate and independent portable binary closure, boundedly.
 
@@ -1430,6 +1454,7 @@ def verify_export(directory: Path) -> None:
     value = json.loads(receipt.read_bytes())
     if value.get("adapter") != ADAPTER:
         raise Unsupported("Unknown portable export adapter")
+    count = _export_record_count(value)
     for name, key in (("candidate.jsonl", "candidate"), ("manifest.sqlite", "manifest")):
         with _open(directory / name) as source:
             if _digest(source) != (value[f"{key}_sha256"], value[f"{key}_bytes"]):
@@ -1446,7 +1471,6 @@ def verify_export(directory: Path) -> None:
     db = sqlite3.connect(f"file:{directory / 'manifest.sqlite'}?mode=ro", uri=True)
     try:
         db.execute("pragma cache_size=-512")
-        count = value["records"]
         _verify_candidate(directory / "candidate.jsonl", db, reader, count,
                           value.get("committed_prefix"))
         db.execute("pragma temp_store=FILE")

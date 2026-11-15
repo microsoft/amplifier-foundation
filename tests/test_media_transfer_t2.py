@@ -233,6 +233,75 @@ def test_offline_portable_import_requires_exact_host_authorization_and_target_ac
             assert row['status'] == rows[0]['status'] and row['usage'] == rows[0]['usage']
 
 
+@pytest.mark.parametrize('field', ['prefix', 'records', 'both'])
+@pytest.mark.parametrize('count', [1, 3, True, 2.0])
+def test_import_rejects_inconsistent_full_package_counts_before_authorization(tmp_path, field, count):
+    with owners(tmp_path) as (source, source_store, target, target_store, fence):
+        seed(source, source_store)
+        plan = preview_committed(source.directory, expected=source.expected, owner='fixture', fence=fence)
+        build(plan, tmp_path / 'operation', source_store, target, target_store, fence)
+        portable = tmp_path / 'operation/portable'
+        path = portable / 'export.json'
+        facts = json.loads(path.read_bytes())
+        assert facts['records'] == facts['committed_prefix']['message_count'] == 2
+        if field in ('prefix', 'both'):
+            facts['committed_prefix']['message_count'] = count
+        if field in ('records', 'both'):
+            facts['records'] = count
+        path.write_text(json.dumps(facts))
+        expected = target.expected
+        def forbidden(_):
+            raise AssertionError('Contradictory package must fail before authorization')
+        with pytest.raises(ValueError):
+            verify_export(portable)
+        for selection in (None, 1):
+            with pytest.raises(ValueError):
+                preview_import(portable, owner='fixture', fence=fence,
+                               authorize=forbidden, selected_records=selection)
+        assert target.expected == expected
+        assert not (tmp_path / 'import-operation').exists()
+
+
+def test_import_validates_full_package_before_explicit_smaller_selection(tmp_path):
+    with owners(tmp_path) as (source, source_store, target, target_store, fence):
+        rows, refs, _ = seed(source, source_store)
+        plan = preview_committed(source.directory, expected=source.expected, owner='fixture', fence=fence)
+        build(plan, tmp_path / 'operation', source_store, target, target_store, fence)
+        portable = tmp_path / 'operation/portable'
+        verify_export(portable)
+        full = preview_import(portable, owner='fixture', fence=fence, authorize=lambda _: True)
+        selected = preview_import(portable, owner='fixture', fence=fence,
+                                  authorize=lambda _: True, selected_records=1)
+        assert full.records == full.selected_records == 2
+        assert selected.records == 2 and selected.selected_records == 1
+        with closing(VersionedSessionBinding.create_new(
+            tmp_path / 'imported', session_id='imported', operation_id='import-init', admit=lambda: None,
+        )) as imported, closing(SessionMediaStore(
+            tmp_path / 'imported/media', 'imported', checkpoint_verifier=verified_media_checkpoint_refs,
+        )) as media:
+            @contextmanager
+            def target_fence(owner):
+                with imported.publication():
+                    yield
+            expected = imported.expected
+            candidate = asyncio.run(import_committed_prefix(
+                selected, tmp_path / 'import-operation', fence=target_fence, target_binding=imported,
+                target_store=media, expected_target=expected,
+                asset_reader=lambda ref: media.resolve_ref(ref, committed=False),
+                receipt='actual-host-authorization',
+                verifier=lambda ref, **kw: (kw['receipt'] == 'actual-host-authorization'
+                                           and kw['target_session_id'] == 'imported'
+                                           and ref['sha256'] in {r['sha256'] for r in refs}),
+            ))
+            assert candidate.records == 1
+            result = apply(tmp_path / 'import-operation', imported, media, expected)
+            assert result.state == 'acknowledged' and result.commit.message_count == 1
+            with open_committed_source(imported.directory, expected=result.commit) as snapshot:
+                row = snapshot.window(0, 1).messages[0]
+                assert row['content'] == rows[0]['content']
+            assert b'UNSELECTED PRIVATE SUFFIX' not in (tmp_path / 'import-operation/candidate.jsonl').read_bytes()
+
+
 def test_expired_transfer_keeps_original_metadata_without_any_pixel_copy(tmp_path, monkeypatch):
     from datetime import datetime as RealDatetime, timezone
     class Clock(RealDatetime):
