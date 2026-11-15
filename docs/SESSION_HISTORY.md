@@ -120,16 +120,45 @@ release those pins before yielding the stream. Read, seek and peek use that
 same non-inheritable handle without reopening its pathname. Each future path
 open independently validates its ancestors and file again. This lets an ordinary
 atomic settings writer publish into an ancestor while a history reader remains
-open; it does not bypass a separately held ownership or write-operation lease.
+open. Releasing the reader's pins releases no separately held ownership or
+write-operation lease: each lease keeps its own pins.
+
 Ownership, publication, append/intent, metadata-lock and fork-reservation pins
-retain their existing lifetimes and sharing restrictions.
+retain their existing lifetimes. One rule sets the sharing of every pin:
+
+- A pin on the directory that the operation owns, and on each directory below
+  it, shares read only. Windows then refuses a write-class open of that
+  directory. An ordinary Win32 rename, move or replace (`MoveFileEx`,
+  `os.rename`, `os.replace`) opens the target's parent directory that way, so
+  it fails there with error 32. The restriction is the refusal of that open, not
+  of every namespace change: creating a new entry is not refused, and the
+  adapter's own publication renames by leaf name without opening the parent.
+- A pin on a directory above it, up to the drive root, shares read and write.
+  Write-class opens of that directory are not refused, so other programs can
+  rename, replace and move entries in it while the pin is held; an ordinary
+  atomic settings writer can publish into it.
+- No pin shares delete. A pinned directory itself cannot be renamed, moved or
+  deleted while the pin is held.
+
+A share check only refuses an open; it grants no ACL right. The ACL of a
+directory above the owned one still decides what a program may change there, and
+each component is still opened without following a reparse point and validated
+before its child is opened or created.
+
+The owned directory is the session directory for read, publication and
+append/intent pins, and the configured state root for session ownership. The
+metadata lock and the fork reservation own the directory that contains the
+session directories. While either runs, it holds that directory at read-only
+sharing, so another program's rename into it or write-then-replace in it gets
+error 32 until the operation ends.
 
 Replacement writes complete and `FlushFileBuffers` the new private temporary
 before a same-directory native `NtSetInformationFile(FileRenameInformationEx)`
 replacement with `REPLACE_IF_EXISTS | POSIX_SEMANTICS`. The native request uses
 only the destination leaf name with a null root handle; the source handle's
-directory must match the pinned destination directory. Directory pins keep
-`FILE_LIST_DIRECTORY` access and deny write/delete sharing throughout publication.
+directory must match the pinned destination directory. Every directory pin keeps
+`FILE_LIST_DIRECTORY` access throughout publication. The pin on the destination
+directory denies write/delete sharing; the pins on its ancestors deny delete sharing.
 Adapter readers share deletion:
 an already-open adapter reader retains the complete old file while later readers
 see the new file. Unsupported native rename/disposition operations fail; there is no

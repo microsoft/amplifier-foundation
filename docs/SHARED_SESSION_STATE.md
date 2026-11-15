@@ -45,7 +45,7 @@ layout, application lock, lease or takeover protocol.
 
 | Operation | Windows boundary |
 | --- | --- |
-| `acquire()`, `HeldSession.check()`, `release()` | Exclusive nonblocking `LockFileEx` on the stable `session.lock`; the handle and all pinned coordination ancestors deny delete sharing and are non-inheritable. Closing/crashing releases the OS lock, not by deleting its target. |
+| `acquire()`, `HeldSession.check()`, `release()` | Exclusive nonblocking `LockFileEx` on the stable `session.lock`; the handle and all pinned coordination ancestors deny delete sharing and are non-inheritable. Pins on the state root and below also deny write sharing; pins above it do not (see below). Closing/crashing releases the OS lock, not by deleting its target. |
 | `read()`, `stamp()`, `list_ids()` | Read-only access through validated handles and pinned ancestors on a local fixed NTFS volume. No missing directories are created. A stamp uses file identity, size, write time and creation time; it is not a durability acknowledgment. |
 | `transfer_fence()` and ordinary admission | Inspect the existing native marker safely without creating native directories. Existing valid fences block execution; malformed, foreign-owned or unsafe markers fail closed. Acquisition checks before publishing owner diagnostics. |
 | `owner.json` | Protected, complete temporary-file writes, file-buffer flush and atomic replacement for advisory display only. Only explicit advisory owner readers share deletion, so a diagnostic reader does not block replacement. Lock and directory pins still deny deletion. Release closes ownership even if advisory publication fails. No directory/ancestor power-loss persistence is claimed. |
@@ -74,6 +74,16 @@ parent. `FILE_ADD_FILE`/`FILE_WRITE_DATA`, `FILE_WRITE_ATTRIBUTES`, delete-child
 ACL/owner changes and other mutation grants are not exempt. Inherit-only ACEs
 grant no access to a nonprivate parent; each existing child is checked separately,
 and new children receive protected DACLs.
+
+Pins above the configured state/native root share read and write. Pins on the
+root and below share read only. No pin shares delete. So while ownership is
+held, no pinned directory can be renamed, moved or deleted, and Windows refuses
+a write-class open of the root and of each pinned directory below it: an
+ordinary Win32 rename, move or replace into one of those directories fails with
+error 32. Other programs can still rename, replace and move entries in the
+directories above the root, for example the profile and installation
+directories. A share check only refuses an open; it grants no ACL right, and it
+protects each pinned directory, not an unrelated path such as the workspace.
 
 Win32 sharing does **not** exclude attribute-only access. The ACL checks, not
 the share mode, prevent untrusted reparse conversion before absolute-path
