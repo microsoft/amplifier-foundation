@@ -61,6 +61,9 @@ jobs:
       - name: Qualify actual public graph and private media boundaries
         run: |
           uv run --no-sync pytest tests/test_media_hook_bridge.py tests/test_media_foundation_integration.py tests/test_session_media.py tests/test_media_projection.py tests/test_media_provider.py tests/test_session_checkpoint.py tests/test_configurator_coordinator.py tests/test_versioned_media_checkpoint.py tests/test_transcript_lifetime.py tests/test_transcript_lifetime_platform.py -q --tb=short -rA
+      # Explicit paths are needed: the root tests/ selection omits nested delegate tests.
+      - name: Qualify selected delegate media inheritance
+        run: uv run --no-sync pytest modules/tool-delegate/tests/test_delegate_media_inheritance.py modules/tool-delegate/tests/test_delegate_spawn_new_session.py modules/tool-delegate/tests/test_return_contract_injection.py -q --tb=short -rA
 
   # Hosted Windows runners have long paths ON; a default Windows PC has them
   # OFF and changing that needs an administrator. With them off, Windows
