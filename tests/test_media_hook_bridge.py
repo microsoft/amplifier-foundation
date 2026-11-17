@@ -51,6 +51,7 @@ class HooksObserver:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind,expected", [
     ("continue", {"original": True}), ("empty", None), ("null", None),
+    ("modify_none", {"original": True}),
     ("replace", "replacement"), ("list", ["text"]), ("output_removed", {"success": True}),
     ("inplace_delete", None), ("inplace_output", {"original": True, "output": {}}),
     ("data_on_continue", "declared"), ("deny", None),
@@ -66,6 +67,8 @@ async def test_effective_output_table_and_exact_once(kind, expected):
             return HookResult(action="modify", data={})
         if kind == "null":
             return HookResult(action="modify", data={"result": None})
+        if kind == "modify_none":
+            return HookResult(action="modify", data=None)
         if kind == "replace":
             return HookResult(action="modify", data={"result": "replacement"})
         if kind == "list":

@@ -84,7 +84,9 @@ def _policy_value(store: Any) -> Any:
 
 def _effective_options(options: Any, request: ChatRequest, model: Any) -> Any:
     """Equivalent explicit defaults normalize; changed wire options never do."""
-    value = _json_value(options)
+    # Provider protocols use None for omitted options. The wrapper prepares the
+    # same effective empty mapping, so the native default must validate too.
+    value = _json_value({} if options is None else options)
     if type(value) is dict:
         value = dict(value)
         selected_model = model if model is not None else request.model

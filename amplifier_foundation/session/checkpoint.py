@@ -296,5 +296,3 @@ def acknowledge_legacy_checkpoint(
         )
         object.__setattr__(receipt, "_attestation", _attest(receipt))
     return receipt
-
-

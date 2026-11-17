@@ -67,6 +67,11 @@ refs. A later injection callback cannot resurrect an earlier null. Native
 context injection/denial remains processed once. Only refs surviving the final
 complete result may be published and placed in canonical rows.
 
+`HookResult(action="modify", data=None)` is Core's no-op, not an explicit
+replacement with `{"result": None}`. The witness and later callbacks therefore
+retain the prior effective result in that case. An actual empty replacement
+mapping removes the result and must not fall back to the original.
+
 The bridge retains its attributed route API for the paired streaming dispatcher.
 It does not install child sessions, grant inherited media access or add
 delegate/fork/subprocess forwarding. Those remain outside this extraction.

@@ -975,7 +975,9 @@ class _HooksView:
                             # Injection/approval cannot also carry a replacement
                             # through Core's one-action boundary without loss.
                             witness.complete = False
-                    elif result.action == "modify":
+                    elif result.action == "modify" and result.data is not None:
+                        # Core applies an actual replacement payload, including
+                        # an empty dict. Modify(data=None) is a native no-op.
                         witness.effective = None
                     elif data != before:
                         # Core serializes each callback's input separately: an

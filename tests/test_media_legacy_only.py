@@ -117,7 +117,7 @@ def test_image_checkpoint_reload_count_send_without_storage_programme(tmp_path, 
                             "mime_types": ["image/png", "image/jpeg"]}
                 def request_budget(self, private, *, request_options=None):
                     assert active == [True]
-                    cap.validate(private, purpose="count", request_options=request_options or {})
+                    cap.validate(private, purpose="count", request_options=request_options)
                     if self.counted is not None:
                         assert private is self.counted
                     self.counted = private

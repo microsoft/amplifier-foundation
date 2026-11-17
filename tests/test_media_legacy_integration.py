@@ -103,7 +103,7 @@ class _JointGraphLoader:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("image_format", ["PNG", "JPEG"])
-@pytest.mark.parametrize("effective", ["retain", "outer-null", "callback-error"])
+@pytest.mark.parametrize("effective", ["retain", "outer-null", "modify-none", "callback-error"])
 async def test_public_graph_final_refs_checkpoint_private_request_joint(
     tmp_path, image_format, effective,
 ):
@@ -132,6 +132,14 @@ async def test_public_graph_final_refs_checkpoint_private_request_joint(
             raise RuntimeError("Participating image policy failed")
         if effective == "outer-null":
             return HookResult(action="modify", data={"result": None})
+        if effective == "modify-none":
+            return HookResult(action="modify", data=None)
+        return HookResult()
+
+    terminal_followup = []
+
+    def observe_terminal(event_name, data):
+        terminal_followup.append(deepcopy(data.get("result")))
         return HookResult()
 
     session.coordinator.loader = _JointGraphLoader(observe)
@@ -152,6 +160,9 @@ async def test_public_graph_final_refs_checkpoint_private_request_joint(
         graph.participant("host.terminal").hooks.register(
             "tool:post", terminal, name="outer-policy", priority=900,
         )
+        graph.participant("host.terminal").hooks.register(
+            "tool:post", observe_terminal, name="after-outer-policy", priority=950,
+        )
         receipt = graph.seal()
         rich = ToolResult(success=True, output={"useful": "original image"}, content=[
             ImageBlock(source={"type": "base64", "media_type": f"image/{image_format.lower()}",
@@ -164,9 +175,11 @@ async def test_public_graph_final_refs_checkpoint_private_request_joint(
         assert bridge.validate_receipt(receipt)
         assert seen == [refs] and len(late_seen) == 1
         assert encoded not in json.dumps(late_seen)
-        if effective != "retain":
+        if effective not in ("retain", "modify-none"):
             assert settled["result"] is None
-            assert settled["complete"] is (effective == "outer-null")
+            assert settled["complete"] is (effective != "callback-error")
+            if effective == "outer-null":
+                assert terminal_followup == [None]
             await store.publish(refs, origin=origin, disposition="drop")
             assert not (path / "transcript.jsonl").exists()
             return
@@ -174,6 +187,7 @@ async def test_public_graph_final_refs_checkpoint_private_request_joint(
         assert settled["complete"] is True
         final_refs = settled["result"]["output"][MEDIA_NAMESPACE]["refs"]
         assert final_refs == refs
+        assert terminal_followup[0]["output"][MEDIA_NAMESPACE]["refs"] == final_refs
         await store.publish(final_refs, origin=origin, disposition="retain")
         rows = [{"role": "tool", "tool_call_id": "image-call",
                  "content": settled["result"]["content"],
