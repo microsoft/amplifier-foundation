@@ -60,7 +60,9 @@ pixels are private request data, never canonical history or diagnostic payloads.
 
 Legacy ACK and each source revalidation scan history: O(history), with one decoded
 row resident, but no bound within one huge JSON row. Repeated refs and provider
-checks can repeat that work. This is not a bounded-append implementation or a
+checks can repeat that work. Binary buffering uses the same securely opened
+no-follow primary descriptor; it adds no cache or reusable verification authority
+and does not skip any source checks. This is not a bounded-append implementation or a
 latency SLA. Durability is POSIX-only; the participating positive bridge ABI is
 exactly Core 2.0.2 and assumes a cooperative, explicitly owned host graph.
 

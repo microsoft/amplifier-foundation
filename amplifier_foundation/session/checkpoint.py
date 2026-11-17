@@ -83,7 +83,9 @@ def _primary(session_dir: Path, *, writable: bool = False,
             (os.O_RDWR if writable else os.O_RDONLY) | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=directory,
         )
-        stream = os.fdopen(descriptor, "rb", buffering=0)
+        # Keep the exact no-follow descriptor, but buffer line iteration:
+        # FileIO.readline() otherwise issues byte-sized reads over full history.
+        stream = os.fdopen(descriptor, "rb")
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise CheckpointRefused("Canonical transcript is not a regular file")
         yield stream, descriptors

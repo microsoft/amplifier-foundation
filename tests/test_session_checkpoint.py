@@ -2,6 +2,7 @@
 
 import dataclasses
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -51,6 +52,20 @@ def test_exact_saved_primary_and_metadata_reachability(tmp_path):
     assert receipt.verify()["kind"] == "legacy-checkpoint-backed-v1"
     assert (path / "transcript.jsonl").read_bytes() == raw
     assert sorted(item.name for item in path.iterdir()) == ["transcript.jsonl"]
+
+
+def test_legacy_scan_buffers_the_same_secure_primary_descriptor(tmp_path):
+    from amplifier_foundation.session.checkpoint import _primary
+
+    path = tmp_path / "session"
+    rows = [{"role": "user", "content": "x" * 256} for _ in range(10000)]
+    raw = save(path, rows)
+    with _primary(path) as (stream, _):
+        assert isinstance(stream, io.BufferedReader)
+        assert isinstance(stream.raw, io.FileIO)
+        assert stream.raw.fileno() == stream.fileno()
+        assert b"".join(stream) == raw
+    assert ack(path, rows).message_count == len(rows)
 
 
 @pytest.mark.parametrize("changed", [
