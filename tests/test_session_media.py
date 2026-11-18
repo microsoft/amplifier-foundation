@@ -274,6 +274,17 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(ref["bytes"], len(data))
                 self.assertEqual(ref["sha256"], hashlib.sha256(data).hexdigest())
 
+    async def test_animated_gif_and_webp_are_not_silently_flattened(self):
+        for format_name in ("GIF", "WEBP"):
+            with self.subTest(format_name=format_name):
+                stream = io.BytesIO()
+                Image.new("RGB", (3, 2), "red").save(
+                    stream, format=format_name, save_all=True,
+                    append_images=[Image.new("RGB", (3, 2), "blue")], duration=100,
+                )
+                with self.assertRaisesRegex(MediaRefusal, "animated images"):
+                    await self.stage(value=stream.getvalue())
+
 
     async def test_same_bytes_dedup_not_provenance(self):
         a = await self.stage()
