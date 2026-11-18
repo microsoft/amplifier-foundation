@@ -44,6 +44,42 @@ jobs:
       - name: Run tests
         run: uv run pytest tests/ -q --tb=short -rA
 
+  media-binding:
+    name: Media binding (released Core 2.0.2, Python 3.13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+
+      # Positive binding tests require this exact released ABI and POSIX.
+      # Resolve independently: do not change the ordinary Core 1.x root lock.
+      - name: Install candidate with released Core and Pillow
+        run: |
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv/bin/python '.[media]' 'amplifier-core==2.0.2' 'pytest>=9.0.3' 'pytest-asyncio>=1.3.0' 'pytest-timeout>=2.3.0'
+          .venv/bin/python -c "import os; from importlib.metadata import version; from PIL import Image; print('Core', version('amplifier-core'), 'Pillow', version('Pillow')); assert os.name == 'posix'; assert version('amplifier-core') == '2.0.2'"
+
+      - name: Qualify binding, hooks and media without skips
+        run: |
+          .venv/bin/python -m pytest tests/test_media_host_binding.py tests/test_media_hook_bridge.py tests/test_session_media.py -q --tb=short -rA --junitxml=media-binding-results.xml
+          .venv/bin/python - <<'PY'
+          import xml.etree.ElementTree as ET
+          report = ET.parse("media-binding-results.xml").getroot()
+          cases = report.findall(".//testcase")
+          assert cases, "Media qualification ran no tests"
+          skipped = report.findall(".//skipped")
+          assert not skipped, f"Media qualification unexpectedly skipped {len(skipped)} tests"
+          print(f"Qualified {len(cases)} media tests with no skips")
+          PY
+
   # Hosted Windows runners have long paths ON; a default Windows PC has them
   # OFF and changing that needs an administrator. With them off, Windows
   # refuses an ordinary path of 260 characters or more. The shared source store
