@@ -143,6 +143,8 @@ class ParticipatingHookGraph:
         self._record: Any = None
         self._mount_records: list[tuple[Any, Any, str]] = []
         self._slot_sources: dict[tuple[str, Any], Any] = {}
+        # Current direct host slots, not historical module-load provenance.
+        self._host_slots: dict[tuple[str, Any], tuple[Any, str, str]] = {}
         self._suspended: dict[tuple[str, Any], Any] = {}
         self._adapter_mounts: list[Any] = []
         self._generation = uuid4().hex
@@ -496,6 +498,10 @@ class ParticipatingHookGraph:
         successor._views = dict(self._views)
         successor._mount_records = list(self._mount_records)
         successor._slot_sources = dict(self._slot_sources)
+        successor._host_slots = {
+            slot: (endpoint, owner, successor._generation)
+            for slot, (endpoint, owner, _) in self._host_slots.items()
+        }
         successor._suspended = dict(self._suspended)
         successor._adapter_mounts = list(self._adapter_mounts)
         successor._ready = [list(item) for item in self._ready]
@@ -726,9 +732,17 @@ class _CoordinatorView:
                         slot = (kind, occurrence[2])
                     record["slots"].add(slot)
                     graph._slot_sources[slot] = (record, module)
+                    graph._host_slots.pop(slot, None)
                 else:
                     # Direct remounts cannot inherit historical load provenance.
                     graph._slot_sources.pop(slot, None)
+                    graph._host_slots.pop(slot, None)
+                    if (graph is self._bridge._graph and graph._state == "open" and
+                            kind in ("providers", "tools") and
+                            not any(slot in item["slots"] for item in graph._loads) and
+                            self._bridge._coordinator.get(*slot) is module):
+                        graph._host_slots[slot] = (
+                            module, self._participant, graph._generation)
                 graph._mount_records.append((slot, module, self._participant))
         return value
 
@@ -743,20 +757,63 @@ class _CoordinatorView:
         slot = (mount_point, name)
         if graph is None or self._participant not in graph.participants:
             raise ValueError("adapter mount requires an actual graph participant")
-        graph._mutation("adapter mount after seal")
+        bridge = self._bridge
         source = graph._slot_sources.get(slot)
-        if (source is None or source[1] is not previous or
-                self._bridge._coordinator.get(mount_point, name) is not previous):
+        loading = _mounting.get()
+
+        def constructing_source() -> bool:
+            # ContextVar values can outlive their callback in a spawned task.
+            # Only its live owning attempt can exempt pre-initialize adaptation.
+            return (
+                source is not None and loading is not None and loading[0] is graph and
+                loading[1] is source[0] and source[0]["plan"][0] == self._participant and
+                source[0].get("mount_task") is asyncio.current_task() and
+                not source[0]["mounted"]
+            )
+
+        if (graph._state != "open" or
+                (not graph._session.initialized and not constructing_source()) or
+                graph._session.coordinator is not bridge._coordinator or
+                bridge._active_boundaries or bridge._active_requests or bridge._processing or
+                bridge._active_contributions or any(lease._active for lease in bridge._routes)):
+            raise ValueError("adapter mount requires current idle open construction")
+        # Direct host-created slots have no configured-load source by design.
+        # The current issuer ledger strongly retains the exact endpoint/owner;
+        # never search historical matches or fabricate a module occurrence.
+        direct = graph._host_slots.get(slot)
+        host_slot = source is None and (
+            mount_point in ("providers", "tools") and type(name) is str and bool(name) and
+            slot not in graph._suspended and
+            not any(slot in item["slots"] for item in graph._loads) and
+            direct is not None and direct[0] is previous and
+            direct[1] == self._participant and direct[2] == graph._generation
+        )
+        if ((source is None and not host_slot) or
+                (source is not None and source[1] is not previous) or
+                bridge._coordinator.get(mount_point, name) is not previous):
             graph._invalidate("adapter does not match actual prior construction")
             raise ValueError("adapter prior endpoint does not match actual loaded slot")
         try:
-            result = await self._bridge._coordinator.mount(mount_point, module, name)
+            result = await MediaMountLifecycle._await_tracked(
+                graph, bridge._coordinator.mount(mount_point, module, name))
+            if (bridge._graph is not graph or graph._state != "open" or
+                    (not graph._session.initialized and not constructing_source()) or
+                    graph._session.coordinator is not bridge._coordinator or
+                    bridge._active_boundaries or bridge._active_requests or
+                    bridge._active_contributions or any(lease._active for lease in bridge._routes) or
+                    bridge._coordinator.get(mount_point, name) is not module or
+                    (source is not None and graph._slot_sources.get(slot) is not source) or
+                    (source is None and graph._host_slots.get(slot) is not direct)):
+                raise ValueError("adapter construction changed before mount settled")
         except BaseException:
             graph._invalidate("participating adapter mount failed")
             raise
         graph._mount_records.append((slot, module, self._participant))
         graph._adapter_mounts.append((slot, previous, module, self._participant))
-        graph._slot_sources[slot] = (source[0], module)
+        if source is not None:
+            graph._slot_sources[slot] = (source[0], module)
+        else:
+            graph._host_slots[slot] = (module, self._participant, graph._generation)
         return result
 
     async def unmount(self, *args: Any, **kwargs: Any) -> Any:
@@ -768,6 +825,7 @@ class _CoordinatorView:
             kind = args[0] if args else kwargs["mount_point"]
             name = args[1] if len(args) > 1 else kwargs.get("name")
             graph._slot_sources.pop((kind, name), None)
+            graph._host_slots.pop((kind, name), None)
         return await self._bridge._coordinator.unmount(*args, **kwargs)
 
     def get(self, mount_point: str, name: str | None = None) -> Any:
@@ -1126,6 +1184,8 @@ class _LoaderView:
                 if record["mounted"]:
                     graph._invalidate("module mounted repeatedly")
             token = _mounting.set((graph, record)) if graph else None
+            if record is not None:
+                record["mount_task"] = asyncio.current_task()
             try:
                 value = await mount(view)
                 if record is not None:
@@ -1136,6 +1196,8 @@ class _LoaderView:
                     graph._invalidate("participating module mount failed")
                 raise
             finally:
+                if record is not None:
+                    record.pop("mount_task", None)
                 if token is not None:
                     _mounting.reset(token)
 

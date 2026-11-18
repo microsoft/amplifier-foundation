@@ -43,6 +43,35 @@ or name alone cannot authorize restoration. Generic nonparticipating coordinator
 retain their prior stash behavior. Requests/boundaries in flight fence changes;
 successful resealing invalidates the earlier generation token.
 
+### Adapters over direct host-created slots
+
+The same participating `view.mount_adapter(mount_point, adapter, previous=endpoint,
+name=slot_name)` also records an adapter over a named provider/tool slot created
+by that exact host participant's earlier `view.mount`. The bridge retains the
+current endpoint strongly, its exact participant and issuer generation, separately
+from configured module-load provenance. It does not invent a configured occurrence
+or let a direct remount inherit an earlier module load.
+
+The prior endpoint must be identical to both the current issuer-owned endpoint
+and the actual native slot. Other participants, equal copies, foreign endpoints,
+raw replacements, stale endpoints and removed slots cannot authorize an edge.
+The graph must be current, open, initialized and idle; sealed, invalid, active
+request/boundary/route/native-operation and post-cleanup calls refuse before
+dispatch. A failed/cancelled or changed native operation cannot record a successful
+edge or restore qualification. Native effects may precede await completion; no
+rollback or retry is implied by refusal.
+
+Issuer-owned same-session transitions carry valid direct-slot provenance into
+the successor generation; retained session-scoped views resolve that current
+issuer. Suspension/restoration retains the exact endpoint without creating
+configured-load provenance. Configured-slot adapters continue to use their
+actual module-load source, separately from this host-created path.
+
+This remains a cooperative contract, not interception of arbitrary raw mutation.
+An unobserved raw remove-and-reinsert of the identical object cannot be detected
+from endpoint identity alone. Hosts must use the participating lifecycle and finish
+cleanup before reusing any session handle.
+
 ## Final effective result
 
 Invoke the bridge with the actual call event after media staging:
