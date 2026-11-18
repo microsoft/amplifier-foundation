@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies (with grpc-adapter)
         env:
           # The pinned Core wheel hit uv's 30s download timeout on Win/Python 3.11.
-          # Allow a bounded slow transfer without retrying or hiding test failures.
+          # Allow a bounded slow transfer without adding retries or hiding failures.
           UV_HTTP_TIMEOUT: '120'
         run: uv sync --extra grpc-adapter
 

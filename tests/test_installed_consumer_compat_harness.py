@@ -110,6 +110,13 @@ def test_original_six_job_matrix_and_named_summary_remain():
         "python-version": ["3.11", "3.12", "3.13"],
     }
     assert original["strategy"]["fail-fast"] is False
+    dependencies = next(
+        step for step in original["steps"]
+        if step.get("name") == "Install dependencies (with grpc-adapter)"
+    )
+    assert dependencies["run"] == "uv sync --extra grpc-adapter"
+    assert dependencies["env"] == {"UV_HTTP_TIMEOUT": "120"}
+    assert "continue-on-error" not in dependencies
     assert original["steps"][-1]["run"] == "uv run pytest tests/ -q --tb=short -rA"
 
 
