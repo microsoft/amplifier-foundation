@@ -44,6 +44,40 @@ class Loader:
         self.queue.clear()
 
 
+async def test_configured_adapter_remains_supported_inside_actual_module_mount():
+    original = object()
+    adapter = WorkCheckedTool(original)
+
+    class AdaptingLoader(Loader):
+        async def load(self, module_id, config, **kwargs):
+            if module_id != "fixture-tool":
+                return await super().load(module_id, config, **kwargs)
+
+            async def mount(current):
+                await current.mount("tools", original, name="configured")
+                await current.mount_adapter(
+                    "tools", adapter, previous=original, name="configured")
+            return mount
+
+    session = AmplifierSession({
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "tools": [{"module": "fixture-tool"}],
+    })
+    session.coordinator.loader = AdaptingLoader()
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="configured-adapter-during-initialization",
+        participants=("fixture-loop", "fixture-context", "fixture-tool"),
+    )
+    try:
+        await session.initialize()
+        graph.seal()
+        assert session.coordinator.get("tools", "configured") is adapter
+        assert bridge.validate_receipt(bridge.graph_receipt)
+    finally:
+        await session.cleanup()
+
+
 class WorkerControl:
     """Host-created endpoint identity only: this fixture never executes work."""
 

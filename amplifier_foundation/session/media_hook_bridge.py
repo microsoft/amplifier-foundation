@@ -758,12 +758,13 @@ class _CoordinatorView:
         if graph is None or self._participant not in graph.participants:
             raise ValueError("adapter mount requires an actual graph participant")
         bridge = self._bridge
-        if (graph._state != "open" or not graph._session.initialized or
+        source = graph._slot_sources.get(slot)
+        if (graph._state != "open" or
+                (source is None and not graph._session.initialized) or
                 graph._session.coordinator is not bridge._coordinator or
                 bridge._active_boundaries or bridge._active_requests or bridge._processing or
                 bridge._active_contributions or any(lease._active for lease in bridge._routes)):
             raise ValueError("adapter mount requires current idle open construction")
-        source = graph._slot_sources.get(slot)
         # Direct host-created slots have no configured-load source by design.
         # The current issuer ledger strongly retains the exact endpoint/owner;
         # never search historical matches or fabricate a module occurrence.
@@ -784,7 +785,7 @@ class _CoordinatorView:
             result = await MediaMountLifecycle._await_tracked(
                 graph, bridge._coordinator.mount(mount_point, module, name))
             if (bridge._graph is not graph or graph._state != "open" or
-                    not graph._session.initialized or
+                    (source is None and not graph._session.initialized) or
                     graph._session.coordinator is not bridge._coordinator or
                     bridge._active_boundaries or bridge._active_requests or
                     bridge._active_contributions or any(lease._active for lease in bridge._routes) or
