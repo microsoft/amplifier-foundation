@@ -118,6 +118,13 @@ def test_original_six_job_matrix_and_named_summary_remain():
     assert dependencies["env"] == {"UV_HTTP_TIMEOUT": "120"}
     assert "continue-on-error" not in dependencies
     assert original["steps"][-1]["run"] == "uv run pytest tests/ -q --tb=short -rA"
+    long_paths = workflow["jobs"]["windows-long-paths-off"]
+    long_path_dependencies = next(
+        step for step in long_paths["steps"] if step.get("name") == "Install dependencies"
+    )
+    assert long_path_dependencies["run"] == "uv sync --extra grpc-adapter"
+    assert long_path_dependencies["env"] == {"UV_HTTP_TIMEOUT": "120"}
+    assert "continue-on-error" not in long_path_dependencies
 
 
 def test_separate_native_and_ubuntu_jobs_keep_pins_and_failure_evidence():
