@@ -284,14 +284,19 @@ async def test_current_task_and_same_session_provenance_not_inferred_from_marker
         await f.session.cleanup()
 
 
-@pytest.mark.parametrize("method", ["compact_context", "complete"])
+@pytest.mark.parametrize("marker", ["operation", "canonical", "overlay"])
 @pytest.mark.parametrize("scope", [None, {"text_only": False, "nested": False}, "other-scope"])
-async def test_compaction_never_reads_stored_or_admitted_inline_pixels(tmp_path, monkeypatch, method, scope):
+async def test_compaction_never_reads_stored_or_admitted_inline_pixels(tmp_path, monkeypatch, marker, scope):
     f = await construction(tmp_path)
     try:
         request, encoded = await canonical_request(f)
-        if method == "complete":
+        if marker == "canonical":
             request.metadata = {"purpose": "context-compaction"}
+
+        def overlay(private, **kwargs):
+            private.metadata = {"purpose": "context-compaction"} if marker == "overlay" else {}
+            return {"request": private, "validate": lambda: True}
+
         rich, _ = image_result()
         request.messages.append(Message(role="user", content=rich.content))
         f.store.request_only_verifier = lambda *args, **kwargs: True
@@ -303,9 +308,10 @@ async def test_compaction_never_reads_stored_or_admitted_inline_pixels(tmp_path,
         wrapper = f.binding.wrap_provider(
             f.provider, provider_identity={"provider": "offline", "account": "test", "generation": "two"},
             execution_scope=scope,
+            prepare_overlay=overlay,
         )
         original = request.model_dump_json()
-        if method == "compact_context":
+        if marker == "operation":
             await wrapper.compact_context(request)
             observed = f.provider.compacted[-1]
         else:

@@ -330,9 +330,11 @@ class MediaPreparedProvider:
             raise ValueError("request_options must be a mapping")
         return {**(request_options or {}), **kwargs}
 
-    def _execution_scope(self, request: Any, *, text_only: bool) -> Any:
-        metadata = getattr(request, "metadata", None) or {}
-        if text_only or metadata.get("purpose") == "context-compaction":
+    def _execution_scope(self, request: Any, *, text_only: bool, source: Any = None) -> Any:
+        if text_only or any(
+            (getattr(candidate, "metadata", None) or {}).get("purpose") == "context-compaction"
+            for candidate in (request, source)
+        ):
             if self._scope is None:
                 return {"text_only": True}
             if isinstance(self._scope, Mapping):
@@ -372,7 +374,7 @@ class MediaPreparedProvider:
             _fingerprint(value)
             for value in (
                 request, normalized_options, identity, model,
-                self._execution_scope(request, text_only=text_only),
+                self._execution_scope(request, text_only=text_only, source=source),
                 id(self._provider),
             )
         )
@@ -536,7 +538,7 @@ class MediaPreparedProvider:
                     projected_source, provider_identity=identity, model=model,
                     request_options=copy.deepcopy(options), purpose=purpose,
                     execution_scope=copy.deepcopy(
-                        self._execution_scope(request, text_only=text_only),
+                        self._execution_scope(request, text_only=text_only, source=projected_source),
                     ),
                 )
             )
