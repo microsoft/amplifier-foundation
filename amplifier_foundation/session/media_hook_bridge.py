@@ -759,8 +759,13 @@ class _CoordinatorView:
             raise ValueError("adapter mount requires an actual graph participant")
         bridge = self._bridge
         source = graph._slot_sources.get(slot)
+        loading = _mounting.get()
+        constructing_source = (
+            source is not None and loading is not None and loading[0] is graph and
+            loading[1] is source[0] and source[0]["plan"][0] == self._participant
+        )
         if (graph._state != "open" or
-                (source is None and not graph._session.initialized) or
+                (not graph._session.initialized and not constructing_source) or
                 graph._session.coordinator is not bridge._coordinator or
                 bridge._active_boundaries or bridge._active_requests or bridge._processing or
                 bridge._active_contributions or any(lease._active for lease in bridge._routes)):
@@ -785,7 +790,7 @@ class _CoordinatorView:
             result = await MediaMountLifecycle._await_tracked(
                 graph, bridge._coordinator.mount(mount_point, module, name))
             if (bridge._graph is not graph or graph._state != "open" or
-                    (source is None and not graph._session.initialized) or
+                    (not graph._session.initialized and not constructing_source) or
                     graph._session.coordinator is not bridge._coordinator or
                     bridge._active_boundaries or bridge._active_requests or
                     bridge._active_contributions or any(lease._active for lease in bridge._routes) or

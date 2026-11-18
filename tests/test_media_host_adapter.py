@@ -78,6 +78,36 @@ async def test_configured_adapter_remains_supported_inside_actual_module_mount()
         await session.cleanup()
 
 
+async def test_configured_adapter_refuses_after_cleanup_before_native_dispatch():
+    session, bridge, graph, host = await construction()
+    previous = session.coordinator.get("tools", "configured")
+    await session.cleanup()
+    with pytest.raises(ValueError, match="idle"):
+        await host.mount_adapter("tools", WorkCheckedTool(previous),
+                                 previous=previous, name="configured")
+    assert session.coordinator.get("tools", "configured") is previous
+    assert graph.participants_evidence()["adapters"] == ()
+
+
+async def test_configured_adapter_cleanup_during_await_cannot_record_success(monkeypatch):
+    session, bridge, graph, host = await construction()
+    previous = session.coordinator.get("tools", "configured")
+    real_wait = MediaMountLifecycle._await_tracked
+
+    async def cleanup_wait(current, operation):
+        result = await real_wait(current, operation)
+        await session.cleanup()
+        return result
+
+    monkeypatch.setattr(MediaMountLifecycle, "_await_tracked", staticmethod(cleanup_wait))
+    with pytest.raises(ValueError, match="changed"):
+        await host.mount_adapter("tools", WorkCheckedTool(previous),
+                                 previous=previous, name="configured")
+    assert graph.participants_evidence()["adapters"] == ()
+    with pytest.raises(ValueError):
+        graph.seal()
+
+
 class WorkerControl:
     """Host-created endpoint identity only: this fixture never executes work."""
 
