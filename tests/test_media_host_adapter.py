@@ -108,6 +108,51 @@ async def test_configured_adapter_cleanup_during_await_cannot_record_success(mon
         graph.seal()
 
 
+async def test_deferred_constructor_context_cannot_authorize_adapter_after_cleanup():
+    release = asyncio.Event()
+    deferred = []
+    previous = object()
+
+    class DeferredLoader(Loader):
+        async def load(self, module_id, config, **kwargs):
+            if module_id != "fixture-tool":
+                return await super().load(module_id, config, **kwargs)
+
+            async def mount(current):
+                await current.mount("tools", previous, name="configured")
+
+                async def later():
+                    await release.wait()
+                    with pytest.raises(ValueError, match="idle"):
+                        await current.mount_adapter(
+                            "tools", WorkCheckedTool(previous),
+                            previous=previous, name="configured")
+                deferred.append(asyncio.create_task(later()))
+            return mount
+
+    session = AmplifierSession({
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "tools": [{"module": "fixture-tool"}],
+    })
+    session.coordinator.loader = DeferredLoader()
+    bridge = install_media_hook_bridge(session.coordinator)
+    graph = bridge.begin_participating_graph(
+        session, owner="deferred-configured-adapter",
+        participants=("fixture-loop", "fixture-context", "fixture-tool"),
+    )
+    try:
+        await session.initialize()
+        await session.cleanup()
+        release.set()
+        await deferred[0]
+        assert session.coordinator.get("tools", "configured") is previous
+        assert graph.participants_evidence()["adapters"] == ()
+    finally:
+        release.set()
+        await asyncio.gather(*deferred, return_exceptions=True)
+        await session.cleanup()
+
+
 class WorkerControl:
     """Host-created endpoint identity only: this fixture never executes work."""
 

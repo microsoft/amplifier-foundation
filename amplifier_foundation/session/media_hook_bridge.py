@@ -760,12 +760,19 @@ class _CoordinatorView:
         bridge = self._bridge
         source = graph._slot_sources.get(slot)
         loading = _mounting.get()
-        constructing_source = (
-            source is not None and loading is not None and loading[0] is graph and
-            loading[1] is source[0] and source[0]["plan"][0] == self._participant
-        )
+
+        def constructing_source() -> bool:
+            # ContextVar values can outlive their callback in a spawned task.
+            # Only its live owning attempt can exempt pre-initialize adaptation.
+            return (
+                source is not None and loading is not None and loading[0] is graph and
+                loading[1] is source[0] and source[0]["plan"][0] == self._participant and
+                source[0].get("mount_task") is asyncio.current_task() and
+                not source[0]["mounted"]
+            )
+
         if (graph._state != "open" or
-                (not graph._session.initialized and not constructing_source) or
+                (not graph._session.initialized and not constructing_source()) or
                 graph._session.coordinator is not bridge._coordinator or
                 bridge._active_boundaries or bridge._active_requests or bridge._processing or
                 bridge._active_contributions or any(lease._active for lease in bridge._routes)):
@@ -790,7 +797,7 @@ class _CoordinatorView:
             result = await MediaMountLifecycle._await_tracked(
                 graph, bridge._coordinator.mount(mount_point, module, name))
             if (bridge._graph is not graph or graph._state != "open" or
-                    (not graph._session.initialized and not constructing_source) or
+                    (not graph._session.initialized and not constructing_source()) or
                     graph._session.coordinator is not bridge._coordinator or
                     bridge._active_boundaries or bridge._active_requests or
                     bridge._active_contributions or any(lease._active for lease in bridge._routes) or
@@ -1177,6 +1184,8 @@ class _LoaderView:
                 if record["mounted"]:
                     graph._invalidate("module mounted repeatedly")
             token = _mounting.set((graph, record)) if graph else None
+            if record is not None:
+                record["mount_task"] = asyncio.current_task()
             try:
                 value = await mount(view)
                 if record is not None:
@@ -1187,6 +1196,8 @@ class _LoaderView:
                     graph._invalidate("participating module mount failed")
                 raise
             finally:
+                if record is not None:
+                    record.pop("mount_task", None)
                 if token is not None:
                     _mounting.reset(token)
 
