@@ -75,6 +75,7 @@ class _Candidate:
     overlay_validator: Any
     release_options: str
     option_defaults: tuple[Any, Any]
+    text_only: bool = False
     fitted: bool = False
     measured: bool = False
 
@@ -329,8 +330,21 @@ class MediaPreparedProvider:
             raise ValueError("request_options must be a mapping")
         return {**(request_options or {}), **kwargs}
 
+    def _execution_scope(self, request: Any, *, text_only: bool, source: Any = None) -> Any:
+        if text_only or any(
+            (getattr(candidate, "metadata", None) or {}).get("purpose") == "context-compaction"
+            for candidate in (request, source)
+        ):
+            if self._scope is None:
+                return {"text_only": True}
+            if isinstance(self._scope, Mapping):
+                return {**self._scope, "text_only": True}
+            return {"text_only": True, "parent_scope": self._scope}
+        return self._scope
+
     def _binding(
         self, request: Any, options: dict[str, Any], *, source: Any = None,
+        text_only: bool = False,
     ) -> tuple[tuple[str, ...], Any, Any]:
         model = self._model_source
         if callable(model):
@@ -359,7 +373,8 @@ class MediaPreparedProvider:
         key = tuple(
             _fingerprint(value)
             for value in (
-                request, normalized_options, identity, model, self._scope,
+                request, normalized_options, identity, model,
+                self._execution_scope(request, text_only=text_only, source=source),
                 id(self._provider),
             )
         )
@@ -418,7 +433,8 @@ class MediaPreparedProvider:
         if (
             self._closed
             or _digest(candidate.source) != candidate.source_digest
-            or self._binding(candidate.canonical, options, source=candidate.source)[0] != candidate.key
+            or self._binding(candidate.canonical, options, source=candidate.source,
+                             text_only=candidate.text_only)[0] != candidate.key
             or (
                 candidate.overlay_validator is not None
                 and candidate.overlay_validator() is not True
@@ -428,7 +444,8 @@ class MediaPreparedProvider:
         candidate.lifetime.validate()
         if (
             self._closed
-            or self._binding(candidate.canonical, options)[0] != candidate.base_key
+            or self._binding(candidate.canonical, options,
+                             text_only=candidate.text_only)[0] != candidate.base_key
             or _digest(candidate.source) != candidate.source_digest
         ):
             raise ValueError("Media binding changed during validation")
@@ -442,6 +459,7 @@ class MediaPreparedProvider:
         purpose: str,
         dispatch: bool = False,
         private: bool = False,
+        text_only: bool = False,
     ) -> _Candidate:
         from .media_projection import _digest
 
@@ -451,7 +469,7 @@ class MediaPreparedProvider:
                 old.lifetime.validate()
                 if (
                     old.canonical is request
-                    and self._binding(request, options)[0] == old.base_key
+                    and self._binding(request, options, text_only=text_only)[0] == old.base_key
                 ):
                     self._validate(old, options)
                     return old
@@ -469,7 +487,7 @@ class MediaPreparedProvider:
         owned_overlays = []
         try:
             lifetime.validate()
-            base_key, _, selected_model = self._binding(request, options)
+            base_key, _, selected_model = self._binding(request, options, text_only=text_only)
             option_defaults = (
                 selected_model, getattr(request, "reasoning_effort", None),
             )
@@ -494,12 +512,14 @@ class MediaPreparedProvider:
                     owned_overlays.append(projected_source)
                 if overlay_validator() is not True:
                     raise ValueError("Host media overlay admission refused")
-                if self._binding(request, options)[0] != base_key:
+                if self._binding(request, options, text_only=text_only)[0] != base_key:
                     raise ValueError("Canonical request changed during host overlay")
             lifetime.validate()
             source_digest = _digest(projected_source)
-            key, identity, model = self._binding(request, options, source=projected_source)
-            if self._binding(request, options)[0] != base_key:
+            key, identity, model = self._binding(
+                request, options, source=projected_source, text_only=text_only,
+            )
+            if self._binding(request, options, text_only=text_only)[0] != base_key:
                 raise ValueError("Media binding changed during support qualification")
             lifetime.validate()
             if self._closed or (
@@ -508,7 +528,7 @@ class MediaPreparedProvider:
                 raise ValueError("Media admission changed during support qualification")
             lifetime.validate()
             if (
-                self._binding(request, options)[0] != base_key
+                self._binding(request, options, text_only=text_only)[0] != base_key
                 or _digest(projected_source) != source_digest
             ):
                 raise ValueError("Media binding changed during admission validation")
@@ -517,7 +537,9 @@ class MediaPreparedProvider:
                 self._capability.prepare_request(
                     projected_source, provider_identity=identity, model=model,
                     request_options=copy.deepcopy(options), purpose=purpose,
-                    execution_scope=copy.deepcopy(self._scope),
+                    execution_scope=copy.deepcopy(
+                        self._execution_scope(request, text_only=text_only, source=projected_source),
+                    ),
                 )
             )
         except BaseException:
@@ -530,6 +552,7 @@ class MediaPreparedProvider:
         candidate = _Candidate(
             request, key, base_key, prepared, projected_source, source_digest,
             lifetime, overlay_validator, release_options, option_defaults,
+            text_only=text_only,
         )
         self._candidates.append(candidate)
         self._active.append(prepared)
@@ -835,7 +858,7 @@ class MediaPreparedProvider:
                 {k: v for k, v in kwargs.items() if k != "request_options"},
             )
             candidate = await self._prepare(
-                request, options, purpose="transport", private=True
+                request, options, purpose="transport", private=True, text_only=True
             )
             self._validate(candidate, options)
             return await _result(

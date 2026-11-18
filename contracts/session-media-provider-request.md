@@ -77,6 +77,75 @@ invent provider capabilities or a measured budget. An optional actual
 method; `{"v": 1, "tools": "chat_request"}` means the stream consumes canonical
 `ChatRequest.tools`, not duplicate runtime tool objects.
 
+`compact_context` always prepares a separate text-only candidate. Requests marked
+`metadata={"purpose": "context-compaction"}` are likewise text-only through
+count/refit/complete/stream, including after an overlay. Compaction never reads
+stored pixels or retains admitted inline images. Existing nested scope constraints
+remain in force; an explicit `text_only=False` cannot override compaction.
+
+## Shared host lifecycle
+
+`amplifier_foundation.session.media_host.SessionMediaBinding` joins these existing
+components without a new capability registry or a host/model/source-hash allowlist.
+It does not choose modules or certify arbitrary code. Positive construction still
+requires the exact released Core **2.0.2** ABI, POSIX store, an explicitly selected
+cooperative graph, and actual initialization through the participating loader.
+
+Illustrative host recipe (the `actual_*` values belong to the host):
+
+```python
+from amplifier_foundation.session.media_host import SessionMediaBinding
+
+# Run in PreparedBundle.create_session(before_initialize=...) before mounts.
+binding = SessionMediaBinding(
+    session, store=actual_session_media_store, owner="actual-host",
+    participants=actual_reviewed_modules_and_late_owners,
+)
+binding.registration.register_capability(
+    "session.durable_checkpoint", actual_host_checkpoint_callback,
+)
+
+# After initialization, finish late registrations through this view.
+binding.registration.hooks.register(
+    "tool:post", actual_final_policy, name="host-final-policy", priority=900,
+)
+wrapped = binding.wrap_provider(
+    actual_provider, provider_identity=actual_live_account_generation_getter,
+    prepare_overlay=actual_optional_overlay,
+)
+await binding.registration.mount_adapter(
+    "providers", wrapped, previous=actual_provider, name=actual_provider_slot,
+)
+assert binding.seal()
+```
+
+The supplied `SessionMediaStore` must have callable `checkpoint_verifier` and
+current `policy_verifier` callbacks. Keep the host's existing read/source policy,
+request-only issuance, media root and writer ownership; the helper neither
+resolves paths nor grants file access. The loop must report contract-1 readiness
+and actually implement current-task provenance, final `session.media.tool_post`
+settlement, ref-only canonical append and `session.durable_checkpoint`. A report
+alone cannot prove these obligations. Only surviving refs from a complete final
+result may be published. The saved-primary checkpoint must still be independently
+acknowledged through the existing store/writer API; binding does not persist or
+acknowledge on a hook event.
+
+Use `binding.configure()` around actual idle saved-settings/mode edits and pass
+`binding.registration` to `SessionConfigurator`. Before first seal this observes
+the existing configuration phase; after seal it uses the issuer's transition and
+reseals. A counted request fences transition admission without disabling that
+unchanged candidate. Failed transitions leave producers disabled. Wrappers fence
+capability/bridge/writer replacement as well as the graph, and session cleanup
+revokes all tracked private requests/streams before closing the supplied store.
+Underlying provider resources still belong to the host.
+
+This is opt-in, not an automatic retrofit: preserve the ordinary unselected text
+path. A selected binding that loses qualification refuses private requests; it
+does not silently retry or send a differently fitted warning request. Inline
+uploads/surfaces need their existing exact request/block issuance and overlay;
+metadata alone cannot authorize them. Fork/child adoption and history migration
+are not provided.
+
 ## Cleanup and limits
 
 Use `release_media_request(canonical, request_options=...)` to abandon only that
