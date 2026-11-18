@@ -36,7 +36,10 @@ _SESSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,220}$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _REF_FIELDS = {"v", "session_id", "sha256", "mime", "bytes", "width", "height", "provenance"}
 _ORIGIN_FIELDS = {"kind", "session_id", "id", "created_at", "expires_at"}
-_MIMES = {"image/png", "image/jpeg"}
+_IMAGE_MIME = {"PNG": "image/png", "JPEG": "image/jpeg",
+               "GIF": "image/gif", "WEBP": "image/webp"}
+_IMAGE_FORMATS = tuple(_IMAGE_MIME)
+_MIMES = frozenset(_IMAGE_MIME.values())
 _CHUNK = 64 * 1024  # I/O chunk, not an observation quota.
 
 
@@ -300,16 +303,16 @@ def _decode_image(stream: BinaryIO, policy: MediaPolicy) -> tuple[str, int, int]
         pixel_limit = min(bounds)
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            image = Image.open(stream, formats=("PNG", "JPEG"))
-            width, height = image.size
-            if width * height > pixel_limit:
-                raise MediaRefusal("image exceeds decoder or host pixel limit")
-            if image.format not in {"PNG", "JPEG"} or getattr(image, "n_frames", 1) != 1:
-                raise MediaRefusal("only static PNG/JPEG images are supported")
-            mime = "image/png" if image.format == "PNG" else "image/jpeg"
-            image.verify()
+            with Image.open(stream, formats=_IMAGE_FORMATS) as image:
+                width, height = image.size
+                if width * height > pixel_limit:
+                    raise MediaRefusal("image exceeds decoder or host pixel limit")
+                if getattr(image, "is_animated", False):
+                    raise MediaRefusal("animated images are not supported")
+                mime = _IMAGE_MIME[image.format]
+                image.verify()
             stream.seek(0)
-            with Image.open(stream, formats=("PNG", "JPEG")) as decoded:
+            with Image.open(stream, formats=_IMAGE_FORMATS) as decoded:
                 decoded.load()
             return mime, width, height
     except MediaRefusal:

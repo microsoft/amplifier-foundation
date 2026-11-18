@@ -259,10 +259,20 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         for source in (
             {"encoding": "base64", "data": "not base64!"},
             {"stream": io.BytesIO(self.data), "mime": "image/jpeg"},
-            b"not an image", image_bytes("GIF"),
+            b"not an image", b"GIF89a",
         ):
             with self.assertRaises(MediaRefusal):
                 await self.stage(value=source)
+
+
+    async def test_static_gif_and_webp_preserve_original_identity(self):
+        for format_name, mime in (("GIF", "image/gif"), ("WEBP", "image/webp")):
+            with self.subTest(format_name=format_name):
+                data = image_bytes(format_name)
+                ref = await self.stage(value=data, origin={**self.origin, "id": format_name})
+                self.assertEqual(ref["mime"], mime)
+                self.assertEqual(ref["bytes"], len(data))
+                self.assertEqual(ref["sha256"], hashlib.sha256(data).hexdigest())
 
 
     async def test_same_bytes_dedup_not_provenance(self):
