@@ -354,6 +354,25 @@ assertion would silently clear exactly the shadowed sessions the field exists
 to catch. The field is purely additive: no existing key's name, type, or value
 changed, and consumers that ignore it are unaffected.
 
+## Cooperative execution suspension
+
+A host may opt into safe-boundary suspension by registering
+`session.suspension.capture(error, delegation_record)`. It recognizes only its
+own proven child-suspension outcome and returns a suspension exception carrying
+the retained delegation record; ordinary errors and cancellation retain their
+existing behavior. The host owns durable child checkpoints and current admission.
+
+The original tool-completion owner resumes through
+`DelegateTool.resume_execution(continuation)`, under the original parent and
+tool-call identity. It invokes the host's `session.execution_resume` capability,
+preserves the remaining deadline, and applies the same completion event, result
+contract and budget reporting as the original delegation. It never calls
+`execute(arguments)` or starts another child as a fallback.
+
+Missing resume support, a changed parent/call identity, or an exhausted deadline
+refuses resumption. This opt-in interface does not make arbitrary tools safely
+cancellable, infer remote outcomes, or enable automatic crash replay.
+
 ## Note
 
 This module is recommended over `tool-task` for new development due to its enhanced context control and bug fixes.
