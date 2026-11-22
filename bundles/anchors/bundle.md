@@ -21,6 +21,7 @@ session:
     source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
     config:
       extended_thinking: true
+      native_provider: true
   context:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
