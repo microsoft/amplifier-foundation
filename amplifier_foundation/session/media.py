@@ -721,7 +721,7 @@ class SessionMediaStore:
                         except FileExistsError:
                             with self._open_verified(ref, self._dirs["assets"], digest):
                                 pass
-                            self._fsync_asset(digest)
+                            self._fsync_entry(self._dirs["assets"], digest)
                         else:
                             with os.fdopen(fd, "wb") as target:
                                 while chunk := source.read(_CHUNK):
@@ -780,27 +780,34 @@ class SessionMediaStore:
                 pending.write(_json(ref) + b"\n")
                 count += 1
             pending.seek(0)
+            directory = self._dirs["records"]
             for line in pending:
                 ref = json.loads(line)
-                record = self._read(self._dirs["records"], _key(ref) + ".json")
+                name = _key(ref) + ".json"
+                record = self._read(directory, name)
+                if (record["state"] == "committed" and "checkpoint" in record
+                        and _key(record["checkpoint"]) == checkpoint_key):
+                    # A prior replace can be visible despite a failed directory sync.
+                    self._fsync_entry(directory, name)
+                    continue
                 record.update(state="committed", checkpoint=serialized)
-                self._write(self._dirs["records"], _key(ref) + ".json", record)
+                self._write(directory, name, record)
             self._checkpoints = {checkpoint_key: receipt}
         # This pipeline acknowledges only the existing legacy canonical source.
         # A caller-supplied diagnostic kind cannot select a different format.
         return {"state": "committed", "durability": "legacy-checkpoint-backed",
                 "ref_count": count}
 
-    def _fsync_asset(self, digest: str) -> None:
+    @staticmethod
+    def _fsync_entry(directory: int, name: str) -> None:
         """Reconciliation must finish durability barriers, not only hash bytes."""
-        fd = os.open(digest, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                     dir_fd=self._dirs["assets"])
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         try:
             _private_file(fd)
             os.fsync(fd)
         finally:
             os.close(fd)
-        os.fsync(self._dirs["assets"])
+        os.fsync(directory)
 
     def verify_checkpoint(self, ref: dict) -> None:
         record = self._read(self._dirs["records"], _key(ref) + ".json")

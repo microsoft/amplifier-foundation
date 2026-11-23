@@ -384,6 +384,53 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             self.store.resolve_ref(ref)
 
 
+    async def test_repeated_ack_preserves_committed_record_and_finishes_durability(self):
+        ref = await self.stage()
+        await self.store.publish([ref], origin=self.origin, disposition="retain")
+        receipt = {"refs": [ref], "revision": 1}
+        directory = self.root / "records"
+        record, = directory.glob("*.json")
+        real_fsync = os.fsync
+        directory_identity = directory.stat()
+
+        def fail_directory_sync(fd):
+            if os.path.samestat(os.fstat(fd), directory_identity):
+                raise OSError("injected directory flush failure")
+            real_fsync(fd)
+
+        # The atomic replace succeeded but the directory flush did not.
+        with patch("os.fsync", side_effect=fail_directory_sync):
+            with self.assertRaisesRegex(OSError, "injected directory flush failure"):
+                self.store.acknowledge_checkpoint(receipt)
+        with self.assertRaises(MediaRefusal):
+            self.store.resolve_ref(ref)
+        visible = record.stat()
+        self.assertEqual(json.loads(record.read_bytes())["checkpoint"], receipt)
+
+        synced = []
+
+        def observe_fsync(fd):
+            synced.append(os.fstat(fd))
+            real_fsync(fd)
+
+        with patch("os.fsync", side_effect=observe_fsync):
+            self.store.acknowledge_checkpoint(receipt)
+        self.assertTrue(os.path.samestat(visible, record.stat()))
+        self.assertTrue(any(os.path.samestat(row, visible) for row in synced))
+        self.assertTrue(any(os.path.samestat(row, directory_identity) for row in synced))
+        with self.store.resolve_ref(ref) as stream:
+            self.assertEqual(stream.read(), self.data)
+
+        # True and 1 compare equal in Python but are different JSON identities.
+        changed = {**receipt, "revision": True}
+        self.store.acknowledge_checkpoint(changed)
+        self.assertIs(json.loads(record.read_bytes())["checkpoint"]["revision"], True)
+
+        (self.root / "assets" / ref["sha256"]).write_bytes(bytes(len(self.data)))
+        with self.assertRaises(MediaRefusal):
+            self.store.acknowledge_checkpoint(changed)
+
+
     async def test_checkpoint_verifier_exhausted_before_any_commit(self):
         ref = await self.stage()
         await self.store.publish([ref], origin=self.origin, disposition="retain")
