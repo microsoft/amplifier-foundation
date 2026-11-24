@@ -34,6 +34,7 @@ except ImportError:  # Text/ref readers remain importable on unqualified platfor
 MEDIA_NAMESPACE = "experimental.media.v1"
 _SESSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,220}$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
+_STAGE_NAME = re.compile(r"[0-9a-f]{32}\.bin")
 _REF_FIELDS = {"v", "session_id", "sha256", "mime", "bytes", "width", "height", "provenance"}
 _ORIGIN_FIELDS = {"kind", "session_id", "id", "created_at", "expires_at"}
 _IMAGE_MIME = {"PNG": "image/png", "JPEG": "image/jpeg",
@@ -500,11 +501,38 @@ class SessionMediaStore:
             })
         elif prior["ref"] != ref or prior["retention"] != policy.retention:
             raise MediaRefusal("conflicting staged media observation")
+        elif policy.retention == "durable" and self._has_original(prior):
+            # Re-ingest validated the bytes again. Retire only this invocation's
+            # scratch after proving the earlier record still has its own original.
+            try:
+                self._remove_stage(name)
+            except OSError:
+                pass  # The original record remains authoritative.
+            return ref
         self._write(self._dirs["staging"], name + ".json", {
             "v": 1, "state": "staged", "staging": name, "origin": origin,
             "intended_owner": self.session_id, "ref": ref,
         })
         return ref
+
+    def _has_original(self, record: dict) -> bool:
+        ref = record["ref"]
+        expiry = ref["provenance"]["expires_at"]
+        if expiry is not None and _date(expiry) <= datetime.now(timezone.utc):
+            return False
+        if record["state"] == "staged":
+            directory, name = self._dirs["staging"], record.get("staging")
+        elif record["state"] in {"published", "committed"}:
+            directory, name = self._dirs["assets"], ref["sha256"]
+        else:
+            return False
+        try:
+            if record["state"] == "staged" and not self._owns_stage(record):
+                return False
+            self._verify_file(ref, directory, name)
+        except (OSError, ValueError):
+            return False  # The fresh copy may be useful for recovery.
+        return True
 
     async def ingest(self, value: Any, *, source_format: str, origin: Any, policy: Any) -> dict:
         return self.ingest_sync(value, source_format=source_format, origin=origin, policy=policy)
@@ -644,41 +672,45 @@ class SessionMediaStore:
             snapshot.close()
             raise
 
-    def _open_verified(self, ref: dict, directory: int, name: str) -> BinaryIO:
+    def _verify_file(self, ref: dict, directory: int, name: str, copy_to: BinaryIO | None = None) -> None:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-        stream = os.fdopen(fd, "rb")
-        snapshot = tempfile.TemporaryFile(mode="w+b")
-        try:
+        with os.fdopen(fd, "rb") as stream:
             before = _private_file(fd)
             if before.st_size != ref["bytes"]:
                 raise MediaRefusal("original media size changed")
             sha = hashlib.sha256()
             while chunk := stream.read(_CHUNK):
                 sha.update(chunk)
-                snapshot.write(chunk)
+                if copy_to is not None:
+                    copy_to.write(chunk)
             after = os.fstat(fd)
             fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
             if any(getattr(before, f) != getattr(after, f) for f in fields) or sha.hexdigest() != ref["sha256"]:
                 raise MediaRefusal("original media bytes changed")
+
+    def _open_verified(self, ref: dict, directory: int, name: str) -> BinaryIO:
+        snapshot = tempfile.TemporaryFile(mode="w+b")
+        try:
+            self._verify_file(ref, directory, name, copy_to=snapshot)
             snapshot.seek(0)
             return snapshot
         except BaseException:
             snapshot.close()
             raise
-        finally:
-            stream.close()
 
     def resolve_ref(self, ref: Any, *, committed: bool = True) -> BinaryIO:
         if self.read_only:
             raise MediaRefusal("observer reads require guarded resolve_published_ref")
-        normalized = self.validate_ref(ref, committed=committed)
-        record = self._read(self._dirs["records"], _key(normalized) + ".json")
-        directory, name = (
-            (self._dirs["staging"], record["staging"])
-            if record["state"] == "staged"
-            else (self._dirs["assets"], normalized["sha256"])
-        )
-        return self._open_verified(normalized, directory, name)
+        if committed:
+            normalized = self.validate_ref(ref)
+        else:
+            # Keep a staged reader's snapshot alive across publication/retirement.
+            with self._lock:
+                normalized = self.validate_ref(ref, committed=False)
+                record = self._read(self._dirs["records"], _key(normalized) + ".json")
+                if record["state"] == "staged":
+                    return self._open_verified(normalized, self._dirs["staging"], record["staging"])
+        return self._open_verified(normalized, self._dirs["assets"], normalized["sha256"])
 
     async def publish(self, refs: Any, *, origin: Any, disposition: str) -> dict:
         return self.publish_sync(refs, origin=origin, disposition=disposition)
@@ -719,8 +751,7 @@ class SessionMediaStore:
                             fd = os.open(digest, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                                          os.O_NOFOLLOW, 0o600, dir_fd=self._dirs["assets"])
                         except FileExistsError:
-                            with self._open_verified(ref, self._dirs["assets"], digest):
-                                pass
+                            self._verify_file(ref, self._dirs["assets"], digest)
                             self._fsync_entry(self._dirs["assets"], digest)
                         else:
                             with os.fdopen(fd, "wb") as target:
@@ -775,28 +806,63 @@ class SessionMediaStore:
                 expiry = ref["provenance"]["expires_at"]
                 expired = expiry is not None and _date(expiry) <= datetime.now(timezone.utc)
                 if not (record["state"] == "committed" and expired):
-                    with self._open_verified(ref, self._dirs["assets"], ref["sha256"]):
-                        pass
-                pending.write(_json(ref) + b"\n")
+                    self._verify_file(ref, self._dirs["assets"], ref["sha256"])
+                pending.write(_json([ref, not expired]) + b"\n")
                 count += 1
             pending.seek(0)
             directory = self._dirs["records"]
             for line in pending:
-                ref = json.loads(line)
+                ref, live_asset = json.loads(line)
                 name = _key(ref) + ".json"
                 record = self._read(directory, name)
                 if (record["state"] == "committed" and "checkpoint" in record
                         and _key(record["checkpoint"]) == checkpoint_key):
                     # A prior replace can be visible despite a failed directory sync.
                     self._fsync_entry(directory, name)
-                    continue
-                record.update(state="committed", checkpoint=serialized)
-                self._write(directory, name, record)
+                else:
+                    record.update(state="committed", checkpoint=serialized)
+                    self._write(directory, name, record)
+                if live_asset and record.get("staging"):
+                    self._retire_committed_stage(record)
             self._checkpoints = {checkpoint_key: receipt}
         # This pipeline acknowledges only the existing legacy canonical source.
         # A caller-supplied diagnostic kind cannot select a different format.
         return {"state": "committed", "durability": "legacy-checkpoint-backed",
                 "ref_count": count}
+
+    def _remove_stage(self, name: str) -> None:
+        directory = self._dirs["staging"]
+        for entry in (name, name + ".json"):
+            try:
+                os.unlink(entry, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+        os.fsync(directory)
+
+    def _owns_stage(self, record: dict) -> bool:
+        name, ref = record.get("staging"), record["ref"]
+        if not isinstance(name, str) or not _STAGE_NAME.fullmatch(name):
+            return False
+        receipt = self._read(self._dirs["staging"], name + ".json")
+        return receipt == {"v": 1, "state": "staged", "staging": name, "ref": ref,
+                           "origin": ref["provenance"], "intended_owner": self.session_id}
+
+    def _retire_committed_stage(self, record: dict) -> None:
+        # The immutable record retains its original staging name. Only a matching
+        # local staging receipt authorizes removal; a repeated ACK has none to do.
+        name, ref = record["staging"], record["ref"]
+        directory = self._dirs["staging"]
+        try:
+            if not self._owns_stage(record):
+                return
+            try:
+                self._verify_file(ref, directory, name)
+            except FileNotFoundError:
+                pass  # Reconcile interruption between the two unlinks.
+            self._remove_stage(name)
+        except (OSError, ValueError):
+            # Leave uncertain evidence for recovery. Cleanup cannot revoke an ACK.
+            return
 
     @staticmethod
     def _fsync_entry(directory: int, name: str) -> None:

@@ -46,6 +46,13 @@ parent traversal, changed source, ambiguous JSON and altered/forged receipts.
 Iterators must be exhausted: a late source check can refuse after yielding a ref.
 The store exhausts verification before binding any committed acceptance.
 
+After the source verifier finishes, a durable, unexpired image's verified asset
+and committed record own its original bytes. The writer can retire that
+observation's matching temporary body and staging receipt. Interrupted cleanup
+is retried by a later ACK of the same ref. Request-only, dropped, expired,
+unverified or unrelated staging evidence is left alone. Cleanup does not change
+model access, original expiry or the need for a fresh ACK after reopening.
+
 Only scalar `receipt.verify()` facts may be journaled; private paths, callbacks,
 seals and live receipts are not durable authority. Reopening the same media store
 requires a fresh ACK of the actual primary before model access. Current source
