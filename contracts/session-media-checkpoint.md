@@ -56,6 +56,14 @@ provider/model/options to one request lease. The host must abandon unused reques
 with `release_media_request` and close/aclose the wrapper on teardown. Hydrated
 pixels are private request data, never canonical history or diagnostic payloads.
 
+A read-only host can serve an original download after the worker closes using
+`resolve_checkpointed_ref_for_source_read(ref)`. The ref must belong to this
+store and have a previously acknowledged durable record. The host supplies a
+current `source_read_verifier` that authorizes the exact ref for `purpose="download"`.
+The store checks the record, expiry and grant around the verified byte copy.
+This operation neither acquires writer ownership nor grants model replay.
+An existing published-only transfer remains available on its separate authority.
+
 ## Deliberate limits
 
 Legacy ACK and each source revalidation scan history: O(history), with one decoded

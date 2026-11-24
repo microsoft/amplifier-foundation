@@ -611,6 +611,91 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             observer.close()
 
 
+    async def test_cold_original_download_requires_checkpoint_and_its_own_source_grant(self):
+        ref = await self.stage()
+        with self.assertRaisesRegex(MediaRefusal, "read-only observer"):
+            self.store.resolve_checkpointed_ref_for_source_read(ref)
+        purposes = []
+        def grant(selected, *, purpose):
+            purposes.append(purpose)
+            return selected == ref and purpose == "download"
+        observer = SessionMediaStore(self.root, "session1", policy=self.policy, read_only=True,
+                                     source_read_verifier=grant)
+        self.addCleanup(observer.close)
+        with self.assertRaises(MediaRefusal):
+            observer.resolve_checkpointed_ref_for_source_read(ref)
+        await self.store.publish([ref], origin=self.origin, disposition="retain")
+        with self.assertRaisesRegex(MediaRefusal, "previously checkpointed"):
+            observer.resolve_checkpointed_ref_for_source_read(ref)
+        self.assertEqual(purposes, [])
+        self.store.acknowledge_checkpoint({"refs": [ref]})
+        self.store.close()
+        with observer.resolve_checkpointed_ref_for_source_read(ref) as stream:
+            self.assertEqual(stream.read(), self.data)
+        self.assertEqual(purposes, ["download", "download"])
+        with self.assertRaises(MediaRefusal):
+            observer.resolve_published_ref(ref)
+        with self.assertRaises(MediaRefusal):
+            observer.resolve_ref(ref)
+
+
+    async def test_cold_download_closes_private_copy_if_source_grant_changes(self):
+        ref = await self.stage()
+        await self.commit(ref)
+        self.store.close()
+        grants = iter([True, False])
+        selected = copy.deepcopy(ref)
+        checked = []
+        def grant(value, *, purpose):
+            checked.append(value)
+            return next(grants)
+        observer = SessionMediaStore(self.root, "session1", policy=self.policy, read_only=True,
+                                     source_read_verifier=grant)
+        self.addCleanup(observer.close)
+        snapshots = []
+        open_verified = observer._open_verified
+        def capture(*args):
+            snapshots.append(open_verified(*args))
+            selected.clear()  # The caller may reuse its input while the original is copied.
+            return snapshots[-1]
+        with patch.object(observer, "_open_verified", side_effect=capture):
+            with self.assertRaisesRegex(MediaRefusal, "verified selected source"):
+                observer.resolve_checkpointed_ref_for_source_read(selected)
+        self.assertEqual(checked, [ref, ref])
+        self.assertEqual(len(snapshots), 1)
+        self.assertTrue(snapshots[0].closed)
+
+
+    async def test_cold_download_rechecks_expiry_after_copy(self):
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        cutoff = now + timedelta(minutes=1)
+        origin = {**self.origin, "created_at": now.isoformat(), "expires_at": cutoff.isoformat()}
+        ref = await self.stage(origin=origin)
+        await self.commit(ref, origin=origin)
+        self.store.close()
+        observer = SessionMediaStore(self.root, "session1", policy=self.policy, read_only=True,
+                                     source_read_verifier=lambda ref, purpose: True)
+        self.addCleanup(observer.close)
+        clock = now
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock
+        open_verified = observer._open_verified
+        def copy_and_advance(*args):
+            nonlocal clock
+            snapshot = open_verified(*args)
+            clock = cutoff
+            return snapshot
+        with patch("amplifier_foundation.session.media.datetime", Clock), \
+             patch.object(observer, "_open_verified", side_effect=copy_and_advance):
+            with self.assertRaises(MediaRefusal) as expired:
+                observer.resolve_checkpointed_ref_for_source_read(ref)
+        self.assertEqual(expired.exception.code, "expired")
+
+
     async def test_classification_is_indexed_routing_not_delivery_authority(self):
         ref = await self.stage()
         self.store.classify_origin(ref, classification="computer-use")
