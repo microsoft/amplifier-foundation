@@ -617,28 +617,50 @@ class SessionMediaStore:
         The host separately owns the selected current/recovery source and its
         export/transfer permission. Staged observations never qualify.
         """
+        return self._validate_source_ref(ref, purpose="transfer", check_expiry=check_expiry)
+
+    def _validate_source_ref(self, ref: Any, *, purpose: str, check_expiry: bool = False) -> dict:
         normalized = self.validate_ref(ref, committed=False, check_expiry=check_expiry)
         record = self._read(self._dirs["records"], _key(normalized) + ".json")
+        if purpose == "download" and record["state"] != "committed":
+            raise MediaRefusal("download requires a previously checkpointed original")
         if record["state"] not in {"published", "committed"}:
             raise MediaRefusal("media lacks accepted publication")
         if self.read_only and (
             self.source_read_verifier is None or self.source_read_verifier(
-                copy.deepcopy(normalized), purpose="transfer"
+                copy.deepcopy(normalized), purpose=purpose
             ) is not True
         ):
-            raise MediaRefusal("read-only transfer lacks verified selected source")
+            raise MediaRefusal(f"read-only {purpose} lacks verified selected source")
         return normalized
 
-
-
     def resolve_published_ref(self, ref: Any) -> BinaryIO:
-        normalized = self.validate_published_ref(ref)
-        expires = normalized["provenance"]["expires_at"]
-        if expires is not None and _date(expires) <= datetime.now(timezone.utc):
-            raise MediaRefusal("expired source has metadata only", code="expired")
+        return self._source_snapshot(ref, purpose="transfer")
+
+    def resolve_checkpointed_ref_for_source_read(self, ref: Any) -> BinaryIO:
+        """Open a verified original for a host-authorized download while the writer is asleep."""
+        if not self.read_only:
+            raise MediaRefusal("download requires a read-only observer")
+        return self._source_snapshot(ref, purpose="download")
+
+    def _source_snapshot(self, ref: Any, *, purpose: str) -> BinaryIO:
+        def validate() -> dict:
+            if purpose == "transfer":
+                return self.validate_published_ref(ref)
+            return self._validate_source_ref(ref, purpose=purpose)
+
+        def require_unexpired(normalized: dict) -> None:
+            expires = normalized["provenance"]["expires_at"]
+            if expires is not None and _date(expires) <= datetime.now(timezone.utc):
+                raise MediaRefusal("expired source has metadata only", code="expired")
+
+        normalized = validate()
+        require_unexpired(normalized)
         snapshot = self._open_verified(normalized, self._dirs["assets"], normalized["sha256"])
         try:
-            self.validate_published_ref(ref)
+            final = validate()
+            if purpose == "download":
+                require_unexpired(final)
             return snapshot
         except BaseException:
             snapshot.close()
