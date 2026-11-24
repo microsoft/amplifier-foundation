@@ -644,21 +644,21 @@ class SessionMediaStore:
         return self._source_snapshot(ref, purpose="download")
 
     def _source_snapshot(self, ref: Any, *, purpose: str) -> BinaryIO:
-        def validate() -> dict:
+        def validate(selected) -> dict:
             if purpose == "transfer":
-                return self.validate_published_ref(ref)
-            return self._validate_source_ref(ref, purpose=purpose)
+                return self.validate_published_ref(selected)
+            return self._validate_source_ref(selected, purpose=purpose)
 
         def require_unexpired(normalized: dict) -> None:
             expires = normalized["provenance"]["expires_at"]
             if expires is not None and _date(expires) <= datetime.now(timezone.utc):
                 raise MediaRefusal("expired source has metadata only", code="expired")
 
-        normalized = validate()
+        normalized = validate(ref)
         require_unexpired(normalized)
         snapshot = self._open_verified(normalized, self._dirs["assets"], normalized["sha256"])
         try:
-            final = validate()
+            final = validate(normalized)
             if purpose == "download":
                 require_unexpired(final)
             return snapshot

@@ -644,17 +644,24 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         await self.commit(ref)
         self.store.close()
         grants = iter([True, False])
+        selected = copy.deepcopy(ref)
+        checked = []
+        def grant(value, *, purpose):
+            checked.append(value)
+            return next(grants)
         observer = SessionMediaStore(self.root, "session1", policy=self.policy, read_only=True,
-                                     source_read_verifier=lambda ref, purpose: next(grants))
+                                     source_read_verifier=grant)
         self.addCleanup(observer.close)
         snapshots = []
         open_verified = observer._open_verified
         def capture(*args):
             snapshots.append(open_verified(*args))
+            selected.clear()  # The caller may reuse its input while the original is copied.
             return snapshots[-1]
         with patch.object(observer, "_open_verified", side_effect=capture):
             with self.assertRaisesRegex(MediaRefusal, "verified selected source"):
-                observer.resolve_checkpointed_ref_for_source_read(ref)
+                observer.resolve_checkpointed_ref_for_source_read(selected)
+        self.assertEqual(checked, [ref, ref])
         self.assertEqual(len(snapshots), 1)
         self.assertTrue(snapshots[0].closed)
 
