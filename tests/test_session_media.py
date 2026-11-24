@@ -1231,6 +1231,54 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             observer.close()
 
+    async def test_transfer_retry_uses_settled_target_after_staging_retirement(self):
+        source = await self.stage()
+        await self.commit(source)
+        for operation in ("adopt", "import"):
+            with self.subTest(operation=operation):
+                root = Path(self.directory.name) / operation
+                target = SessionMediaStore(root, "target", policy=self.policy,
+                                           checkpoint_verifier=lambda receipt: receipt["refs"])
+                self.addCleanup(target.close)
+
+                def transfer():
+                    if operation == "adopt":
+                        return target.adopt_sync([source], self.store)[0]
+                    return target.import_verified(source, io.BytesIO(self.data), receipt="accepted",
+                                                  verifier=lambda ref, **kwargs: ref == source)
+
+                adopted = transfer()
+                with self.assertRaises(MediaRefusal):
+                    target.resolve_ref(adopted)
+                target.acknowledge_checkpoint({"refs": [adopted]})
+                record, = (root / "records").glob("*.json")
+                before = record.read_bytes()
+                # A settled writer may already have reclaimed this observation.
+                stage = root / "staging" / json.loads(before)["staging"]
+                stage.unlink()
+                stage.with_suffix(".bin.json").unlink()
+                self.assertEqual(transfer(), adopted)
+                self.assertEqual(record.read_bytes(), before)
+                with target.resolve_ref(adopted) as original:
+                    self.assertEqual(original.read(), self.data)
+
+    async def test_transfer_retry_recovers_missing_asset_and_refuses_damaged_asset(self):
+        source = await self.stage()
+        await self.commit(source)
+        root = Path(self.directory.name) / "target"
+        target = SessionMediaStore(root, "target", policy=self.policy)
+        self.addCleanup(target.close)
+        adopted, = target.adopt_sync([source], self.store)
+        original = root / "assets" / adopted["sha256"]
+        original.unlink()
+        self.assertEqual(target.adopt_sync([source], self.store), [adopted])
+        self.assertEqual(original.read_bytes(), self.data)
+        damaged = b"x" * len(self.data)
+        original.write_bytes(damaged)
+        with self.assertRaises(MediaRefusal):
+            target.adopt_sync([source], self.store)
+        self.assertEqual(original.read_bytes(), damaged)
+
     async def test_import_final_owner_expiry_preserves_metadata_without_source_retry(self):
         from datetime import datetime as RealDatetime, timedelta, timezone
         cutoff = RealDatetime(2030, 1, 1, tzinfo=timezone.utc)
