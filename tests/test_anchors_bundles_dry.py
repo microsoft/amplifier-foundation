@@ -174,6 +174,11 @@ class TestAmpDevIsAThinVariant:
             "anchors-amp-dev:../../behaviors/amp-dev.yaml",
         ]
 
+    def test_base_requests_native_transport_from_supporting_hosts(self) -> None:
+        loop = _frontmatter(ANCHORS_DIR / "bundle.md")["session"]["orchestrator"]
+        assert loop["module"] == "loop-streaming"
+        assert loop["config"]["native_provider"] is True
+
     def test_nested_manifests_are_the_only_entrypoints(self) -> None:
         assert not (BUNDLES_DIR / "anchors.md").exists()
         assert not (BUNDLES_DIR / "anchors-amp-dev.md").exists()
