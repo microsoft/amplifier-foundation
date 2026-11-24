@@ -1,0 +1,137 @@
+// Validates an entire bundle repository — checks packaging, inspects every bundle, and writes a quality report.
+digraph validate_bundle_repo {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Bundle Repository Validator\nChecks every bundle, verifies packaging, and produces a quality report"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="db1b70f05eae4eea302b90ff59f197bdd1dd1a529d99cfc60413d240c47950c9"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done!", shape=oval, fillcolor="#e0e0e0"]
+
+    step_environment_check [label="Check Prerequisites\n\"Is everything installed?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import sys import subprocess  results = {     'phase': 'environment_pre"]
+    step_validate_all_flags [label="Read Settings\n\"What should we check?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  validate_all = '{{validate_all}}' validate_agents = '{{validate_agents"]
+    step_packaging_check [label="Check Packaging\n\"Is the project set up right?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import sys from pathlib import Path  repo_path = '{{repo_path}}'  resul"]
+    cond_step_build_check [label="Has a\npyproject.toml?", shape=diamond, fillcolor="#fff9c4"]
+    step_build_check [label="Try Building\n\"Can we package it?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import subprocess import sys import tempfile from pathlib import Path  "]
+    cond_step_set_default_build_check [label="Has a\npyproject.toml?", shape=diamond, fillcolor="#fff9c4"]
+    step_set_default_build_check [label="Skip Build Check\n\"No pyproject — move on\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json result = {     'phase': 'build_check',     'skipped': True,     'passed"]
+    step_repo_discovery [label="Find All Bundles\n\"What's in this repo?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json from pathlib import Path  def estimate_tokens(content: str) -> int:    "]
+    step_validate_all_bundles [label="Validate Each Bundle\n\"Do they all load correctly?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import asyncio import json import sys from pathlib import Path  env_check = json.lo"]
+    step_behavior_hygiene_validation [label="Check Behaviors\n\"Are behavior files tidy?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re import sys from pathlib import Path  def estimate_tokens(cont"]
+    step_standalone_completeness_validation [label="Check Standalone Bundles\n\"Is anything missing?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import asyncio import json import re import sys from pathlib import Path  env_check"]
+    step_experiments_validation [label="Check Experiments\n\"Are experiments valid?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import asyncio import json import re import sys from pathlib import Path  env_check"]
+    step_context_sink_compliance [label="Check Context Rules\n\"Are context files compliant?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re import sys from pathlib import Path  def estimate_tokens(cont"]
+    step_tool_placement_analysis [label="Check Tool Placement\n\"Are tools in the right spot?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re import sys from pathlib import Path  discovery = json.loads('"]
+    cond_step_validate_recipes [label="Recipe validation\nenabled?", shape=diamond, fillcolor="#fff9c4"]
+    step_validate_recipes [label="Validate All Recipes\n(validate-recipes)", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed", tooltip="validate-recipes"]
+    cond_step_set_default_recipe_validation [label="Recipe validation\nenabled?", shape=diamond, fillcolor="#fff9c4"]
+    step_set_default_recipe_validation [label="Skip Recipe Check\n\"Not requested — move on\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  result = {     'quality_level': 'good',     'summary': 'Recipe validat"]
+    step_quality_classification [label="Grade the Results\n\"How did everything score?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import sys  # Parse all results individual = json.loads('''{{individual"]
+    step_initialize_optional_outputs [label="Prepare Defaults\n\"Set up fallback values\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  defaults = {     'approval_summary': '_Quick approval not performed - "]
+    step_set_default_approval_summary [label="Use Default Approval\n\"No AI review needed\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Quick approval not performed - detailed LLM analysis was run instead._' "]
+    step_set_default_composition_analysis [label="Use Default Analysis\n\"No deep dive needed\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Composition analysis not performed - all bundles met quality thresholds via deterministic che"]
+    step_set_default_repo_conventions [label="Use Default Conventions\n\"No convention check needed\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '_Convention analysis not performed - all bundles met quality thresholds._' "]
+    cond_step_quick_approval [label="Everything\npassed?", shape=diamond, fillcolor="#fff9c4"]
+    step_quick_approval [label="Quick Approval\n\"Stamp it — all good!\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_composition_analysis [label="Needs detailed\nanalysis?", shape=diamond, fillcolor="#fff9c4"]
+    step_composition_analysis [label="Deep Dive Analysis\n\"What went wrong?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_repo_conventions [label="Convention check\nneeded?", shape=diamond, fillcolor="#fff9c4"]
+    step_repo_conventions [label="Review Conventions\n\"Following the rules?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_bundle_doc_freshness_check [label="Check Doc Freshness\n\"Are docs up to date?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json, re, sys from pathlib import Path  _discovery_raw = r'''{{discovery_res"]
+    step_bundle_doc_regen_detail [label="Refresh Detail Docs\n\"Update entry-point docs\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json # v3: No per-entry-point .detail.md files — this step is a no-op. print"]
+    step_bundle_overview_regen_structural [label="Build Overview Diagram\n\"Map the repo structure\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json, sys from pathlib import Path  raw = r'''{{bundle_doc_freshness}}''' fr"]
+    cond_step_bundle_overview_regen_enhance [label="Enhance\ndiagrams?", shape=diamond, fillcolor="#fff9c4"]
+    step_bundle_overview_regen_enhance [label="Polish Diagram Labels\n\"Make it readable\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_bundle_overview_regen_write [label="Save Updated Docs\n\"Write files to disk\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json, subprocess, re, sys from pathlib import Path  targets = json.loads(r''"]
+    step_synthesize_report [label="Write Final Report\n\"Summarize everything\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_environment_check
+    step_environment_check -> step_validate_all_flags
+    step_environment_check -> step_packaging_check
+    step_packaging_check -> cond_step_build_check
+    cond_step_build_check -> step_build_check [label="packaging_check.has_pypro"]
+    step_packaging_check -> cond_step_set_default_build_check
+    cond_step_set_default_build_check -> step_set_default_build_check [label="packaging_check.has_pypro"]
+    step_packaging_check -> step_repo_discovery
+    step_build_check -> step_repo_discovery
+    step_set_default_build_check -> step_repo_discovery
+    step_repo_discovery -> step_validate_all_bundles
+    step_validate_all_bundles -> step_behavior_hygiene_validation
+    step_validate_all_bundles -> step_standalone_completeness_validation
+    step_validate_all_bundles -> step_experiments_validation
+    step_validate_all_bundles -> step_context_sink_compliance
+    step_validate_all_bundles -> step_tool_placement_analysis
+    step_repo_discovery -> cond_step_validate_recipes
+    step_validate_all_flags -> cond_step_validate_recipes
+    cond_step_validate_recipes -> step_validate_recipes [label="validation_flags.validate"]
+    step_validate_all_flags -> cond_step_set_default_recipe_validation
+    cond_step_set_default_recipe_validation -> step_set_default_recipe_validation [label="validation_flags.validate"]
+    step_validate_all_bundles -> step_quality_classification
+    step_behavior_hygiene_validation -> step_quality_classification
+    step_standalone_completeness_validation -> step_quality_classification
+    step_experiments_validation -> step_quality_classification
+    step_context_sink_compliance -> step_quality_classification
+    step_tool_placement_analysis -> step_quality_classification
+    step_validate_recipes -> step_quality_classification
+    step_set_default_recipe_validation -> step_quality_classification
+    step_quality_classification -> step_initialize_optional_outputs
+    step_initialize_optional_outputs -> step_set_default_approval_summary
+    step_initialize_optional_outputs -> step_set_default_composition_analysis
+    step_initialize_optional_outputs -> step_set_default_repo_conventions
+    step_set_default_approval_summary -> cond_step_quick_approval
+    cond_step_quick_approval -> step_quick_approval [label="quality_classification.re"]
+    step_quality_classification -> cond_step_composition_analysis
+    cond_step_composition_analysis -> step_composition_analysis [label="quality_classification.re"]
+    step_composition_analysis -> cond_step_repo_conventions
+    cond_step_repo_conventions -> step_repo_conventions [label="quality_classification.re"]
+    step_repo_discovery -> step_bundle_doc_freshness_check
+    step_bundle_doc_freshness_check -> step_bundle_doc_regen_detail
+    step_bundle_doc_freshness_check -> step_bundle_overview_regen_structural
+    step_bundle_overview_regen_structural -> cond_step_bundle_overview_regen_enhance
+    cond_step_bundle_overview_regen_enhance -> step_bundle_overview_regen_enhance [label="enhance_diagrams != 'fals"]
+    step_bundle_overview_regen_enhance -> step_bundle_overview_regen_write
+    step_quality_classification -> step_synthesize_report
+    step_quick_approval -> step_synthesize_report
+    step_composition_analysis -> step_synthesize_report
+    step_repo_conventions -> step_synthesize_report
+    step_set_default_approval_summary -> step_synthesize_report
+    step_set_default_composition_analysis -> step_synthesize_report
+    step_set_default_repo_conventions -> step_synthesize_report
+    step_set_default_recipe_validation -> step_synthesize_report
+    step_bundle_doc_regen_detail -> step_synthesize_report
+    step_bundle_overview_regen_write -> step_synthesize_report
+    cond_step_build_check -> step_repo_discovery [label="skip", style=dashed]
+    cond_step_set_default_build_check -> step_repo_discovery [label="skip", style=dashed]
+    cond_step_validate_recipes -> step_quality_classification [label="skip", style=dashed]
+    cond_step_set_default_recipe_validation -> step_quality_classification [label="skip", style=dashed]
+    cond_step_quick_approval -> step_bundle_doc_freshness_check [label="skip", style=dashed]
+    cond_step_composition_analysis -> step_bundle_doc_freshness_check [label="skip", style=dashed]
+    cond_step_repo_conventions -> step_bundle_doc_freshness_check [label="skip", style=dashed]
+    cond_step_bundle_overview_regen_enhance -> step_bundle_overview_regen_write [label="skip", style=dashed]
+    step_synthesize_report -> done
+
+    subgraph cluster_legend {
+        label="Legend\n\"What do the shapes mean?\""
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_bash [label="Script Step\n\"Automated task\"", shape=box, fillcolor="#bbdefb"]
+        leg_agent [label="AI Agent Step\n\"Reviewed by AI\"", shape=box, fillcolor="#c8e6c9"]
+        leg_sub [label="Sub-Recipe Call\n\"Runs another recipe\"", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed"]
+        leg_cond [label="Condition\n\"Yes or no?\"", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_bash -> leg_agent -> leg_sub -> leg_cond -> leg_start [style=invis]
+    }
+}
