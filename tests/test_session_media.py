@@ -213,6 +213,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["refs"], [])
         with self.assertRaises(MediaRefusal):
             self.store.acknowledge_checkpoint({"refs": [ref]})
+        self.assertEqual(len(list((self.root / "staging").glob("*.bin"))), 1)
 
 
     async def test_wrong_origin_refuses_publication(self):
@@ -294,6 +295,86 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         await self.commit(b, origin=other)
         self.assertNotEqual(a["provenance"], b["provenance"])
         self.assertEqual(len(list((self.root / "assets").iterdir())), 1)
+
+
+    async def test_checkpoint_retires_only_verified_staging_and_preserves_provenance(self):
+        staging = self.root / "staging"
+        first = await self.stage()
+        self.assertEqual(first, await self.stage())  # uncommitted retry keeps its one owner
+        second = await self.stage(origin={**self.origin, "id": "call2"})
+        self.assertEqual(len(list(staging.glob("*.bin"))), 2)
+        with self.store.resolve_ref(first, committed=False) as staged_reader:
+            for ref in (first, second):
+                await self.store.publish([ref], origin=ref["provenance"], disposition="retain")
+            self.assertEqual(len(list(staging.glob("*.bin"))), 2)
+            await self.commit(first)
+            self.assertEqual(staged_reader.read(), self.data)
+        self.assertEqual(len(list(staging.glob("*.bin"))), 1)
+        self.assertEqual(first, await self.stage())  # retry after commitment
+        self.store.acknowledge_checkpoint({"refs": [first, second]})
+        self.assertEqual(list(staging.iterdir()), [])
+        self.assertEqual(len(list((self.root / "assets").iterdir())), 1)
+        for ref in (first, second):
+            with self.store.resolve_ref(ref) as stream:
+                self.assertEqual(stream.read(), self.data)
+
+
+    async def test_failed_checkpoint_keeps_the_only_intact_staging_body(self):
+        ref = await self.stage()
+        await self.store.publish([ref], origin=self.origin, disposition="retain")
+        (self.root / "assets" / ref["sha256"]).write_bytes(b"x" * len(self.data))
+        with self.assertRaises(MediaRefusal):
+            self.store.acknowledge_checkpoint({"refs": [ref]})
+        staged, = (self.root / "staging").glob("*.bin")
+        self.assertEqual(staged.read_bytes(), self.data)
+
+
+    async def test_retry_preserves_fresh_evidence_when_original_staging_is_damaged(self):
+        ref = await self.stage()
+        staging = self.root / "staging"
+        original, = staging.glob("*.bin")
+        damaged = b"x" * len(self.data)
+        original.write_bytes(damaged)
+        self.assertEqual(ref, await self.stage())
+        self.assertCountEqual((p.read_bytes() for p in staging.glob("*.bin")), [self.data, damaged])
+        self.assertEqual(len(list(staging.glob("*.json"))), 2)
+
+
+    async def test_interrupted_staging_cleanup_preserves_ack_and_retries(self):
+        staging = self.root / "staging"
+        ref = await self.stage()
+        original_unlink = os.unlink
+        def interrupt(name, *, dir_fd):
+            if name.endswith(".json"):
+                raise OSError("staging receipt removal interrupted")
+            original_unlink(name, dir_fd=dir_fd)
+        with patch("amplifier_foundation.session.media.os.unlink", side_effect=interrupt):
+            await self.commit(ref)
+        self.assertEqual(list(staging.glob("*.bin")), [])
+        self.assertEqual(len(list(staging.glob("*.json"))), 1)
+        with self.store.resolve_ref(ref) as stream:
+            self.assertEqual(stream.read(), self.data)
+        self.store.close()
+        self.store = SessionMediaStore(self.root, "session1", policy=self.policy,
+                                       checkpoint_verifier=lambda receipt: receipt["refs"])
+        self.store.acknowledge_checkpoint({"refs": [ref]})
+        self.assertEqual(list(staging.iterdir()), [])
+
+
+    async def test_checkpoint_cleanup_never_uses_another_observation_staging_path(self):
+        a = await self.stage()
+        b = await self.stage(origin={**self.origin, "id": "call2"})
+        await self.store.publish([a], origin=self.origin, disposition="retain")
+        directory = self.root / "records"
+        paths = {json.loads(p.read_text())["ref"]["provenance"]["id"]: p for p in directory.iterdir()}
+        first = json.loads(paths["call1"].read_text())
+        second = json.loads(paths["call2"].read_text())
+        first["staging"] = second["staging"]
+        paths["call1"].write_text(json.dumps(first))
+        self.store.acknowledge_checkpoint({"refs": [a]})
+        self.assertEqual(len(list((self.root / "staging").glob("*.bin"))), 2)
+        with self.store.resolve_ref(b, committed=False) as stream:
+            self.assertEqual(stream.read(), self.data)
 
 
     async def test_resume_rechecks_canonical_checkpoint(self):
@@ -1100,6 +1181,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         self.store.publish_sync([ref], origin=self.origin, disposition="retain")
         with self.assertRaises(MediaRefusal):
             self.store.acknowledge_checkpoint({"refs": [ref]})
+        self.assertEqual(len(list((self.root / "staging").glob("*.bin"))), 1)
         cutoff = RealDatetime.now(timezone.utc) + timedelta(seconds=10)
         self.store.policy = MediaPolicy()
         origin = {"kind": "host", "session_id": "session1", "id": "original-ttl",
