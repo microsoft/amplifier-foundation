@@ -1113,24 +1113,36 @@ class SessionMediaStore:
                 raise MediaRefusal("adoption cannot promote dropped or absent acceptance")
             if record.get("metadata_only") is True:
                 continue
-            with self._open_verified(ref, self._dirs["staging"], record["staging"]) as source:
-                try:
-                    fd = os.open(ref["sha256"], os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                                 os.O_NOFOLLOW, 0o600, dir_fd=self._dirs["assets"])
-                except FileExistsError:
-                    with self._open_verified(ref, self._dirs["assets"], ref["sha256"]):
-                        pass
-                    self._fsync_asset(ref["sha256"])
-                else:
-                    with os.fdopen(fd, "wb") as target:
-                        while chunk := source.read(_CHUNK):
-                            target.write(chunk)
-                        target.flush()
-                        os.fsync(target.fileno())
-                    os.fsync(self._dirs["assets"])
+            self._ensure_adopted_asset(record, ref)
             if record["state"] != "committed":
                 record["state"] = "published"
                 self._write(self._dirs["records"], _key(ref) + ".json", record)
+
+    def _ensure_adopted_asset(self, record: dict, ref: dict) -> None:
+        if record["state"] in {"published", "committed"}:
+            try:
+                original = self._open_verified(ref, self._dirs["assets"], ref["sha256"])
+            except FileNotFoundError:
+                pass  # A retained staging original can repair an absent asset.
+            else:
+                original.close()
+                self._fsync_asset(ref["sha256"])
+                return
+        with self._open_verified(ref, self._dirs["staging"], record["staging"]) as source:
+            try:
+                fd = os.open(ref["sha256"], os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                             os.O_NOFOLLOW, 0o600, dir_fd=self._dirs["assets"])
+            except FileExistsError:
+                with self._open_verified(ref, self._dirs["assets"], ref["sha256"]):
+                    pass
+                self._fsync_asset(ref["sha256"])
+            else:
+                with os.fdopen(fd, "wb") as target:
+                    while chunk := source.read(_CHUNK):
+                        target.write(chunk)
+                    target.flush()
+                    os.fsync(target.fileno())
+                os.fsync(self._dirs["assets"])
 
     def journal(self):
         """Enumerable metadata-only recovery entries, no deletion or hydration."""
