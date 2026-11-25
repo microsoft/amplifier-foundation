@@ -119,26 +119,42 @@ def atomic(path, value):
     atomic_write(path, json.dumps(value), private=True)
 
 
-def clean_checkout(root):
+def _clean_at_revision(root, revision):
+    # Porcelain v2 with -z reports HEAD and tracked changes in one read.
+    command = _with_longpaths([
+        "git", "--no-optional-locks", "status", "--porcelain=v2", "-z",
+        "--branch", "--untracked-files=no",
+    ])
+    try:
+        status = subprocess.check_output(
+            [*command, "--no-ahead-behind"], cwd=root,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.CalledProcessError as error:
+        if error.returncode != 129:
+            raise
+        # Git 2.15/2.16 lack --no-ahead-behind.
+        status = subprocess.check_output(
+            command, cwd=root, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    records = status.split(b"\0")
+    expected = b"# branch.oid " + revision.encode("ascii")
+    return expected in records and all(row.startswith(b"# ") for row in records if row)
+
+
+def clean_checkout(root, *, revision=None):
     """Tracked changes and unknown extras are local work, even when ignored."""
     root = Path(root)
     if not (root / ".git").is_dir() or (root / ".git").is_symlink():
         return False  # Linked worktrees can refer to a mutable external Git dir.
     # Commit-addressed roots can exceed MAX_PATH even for Git object reads.
-    dirty = subprocess.check_output(
-        _with_longpaths(
-            [
-                "git",
-                "--no-optional-locks",
-                "status",
-                "--porcelain",
-                "--untracked-files=no",
-            ]
-        ),
-        cwd=root,
-        text=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    if revision is None:
+        dirty = subprocess.check_output(
+            _with_longpaths(["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=no"]),
+            cwd=root, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    else:
+        dirty = not _clean_at_revision(root, revision)
     extras = subprocess.check_output(
         _with_longpaths(["git", "ls-files", "--others", "-z"]), cwd=root,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -197,11 +213,7 @@ class SharedSourceStore:
             or metadata.get("commit") != revision
         ):
             raise ValueError("Shared source identity changed")
-        actual = subprocess.check_output(
-            _with_longpaths(["git", "rev-parse", "HEAD"]), cwd=target, text=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        ).strip()
-        if actual != revision or not clean_checkout(target):
+        if not clean_checkout(target, revision=revision):
             raise ValueError("Shared source contents changed")
         return target
 
