@@ -83,6 +83,71 @@ async def test_bundle_and_skill_share_exact_snapshot_and_generation_bindings(
     ]
 
 
+@pytest.mark.parametrize(
+    "change",
+    ["head", "worktree", "staged-restored", "rename", "unknown", "ignored", "nested-marker"],
+)
+def test_published_reader_refuses_changed_source(tmp_path, repository, change):
+    repo, revision = repository
+    url = "https://example.invalid/repo"
+    store = SharedSourceStore(tmp_path / "store")
+    target = store.checkout(url, revision)
+    target.parent.mkdir(parents=True)
+    repo.rename(target)
+    (target / ".amplifier_cache_meta.json").write_text(json.dumps({"git_url": url, "commit": revision}))
+    if change == "head":
+        git(target, "commit", "--allow-empty", "-m", "different commit with the same tree")
+    elif change == "worktree":
+        (target / "bundle.md").write_text("edited")
+    elif change == "staged-restored":
+        (target / "bundle.md").write_text("edited")
+        git(target, "add", "bundle.md")
+        (target / "bundle.md").write_text("bundle")
+    elif change == "rename":
+        git(target, "mv", "bundle.md", f"# branch.oid {revision}")
+    elif change == "ignored":
+        (target / ".git/info/exclude").write_text("ignored.txt\n")
+        (target / "ignored.txt").write_text("preserve ignored work")
+    elif change == "nested-marker":
+        (target / "skills/.amplifier_cache_meta.json").write_text("nested")
+    else:
+        (target / "unknown").write_text("unknown")
+    target.chmod(target.stat().st_mode & ~0o222)
+    try:
+        with pytest.raises(ValueError, match="contents changed"):
+            store.verify(url, revision)
+    finally:
+        target.chmod(target.stat().st_mode | 0o700)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("older_git", [False, True])
+async def test_published_reader_observes_checkout_without_index_writes(
+    tmp_path, monkeypatch, repository, older_git
+):
+    repo, revision = repository
+    url = "https://example.invalid/repo"
+    store = SharedSourceStore(tmp_path / "store")
+    target = await store.ensure(url, revision, existing=repo)
+    index = target / ".git/index"
+    before = index.read_bytes(), index.stat().st_mtime_ns
+    calls = []
+    check_output = subprocess.check_output
+
+    def capture(argv, **kwargs):
+        calls.append(argv)
+        if older_git and "--no-ahead-behind" in argv:
+            raise subprocess.CalledProcessError(129, argv)
+        return check_output(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "check_output", capture)
+    assert store.verify(url, revision) == target
+    assert len(calls) == (3 if older_git else 2)
+    assert "--no-optional-locks" in calls[0] and "--no-ahead-behind" in calls[0]
+    assert calls[-1][-3:] == ["ls-files", "--others", "-z"]
+    assert (index.read_bytes(), index.stat().st_mtime_ns) == before
+
+
 @pytest.mark.asyncio
 async def test_dirty_sources_and_credentials_do_not_enter_store(tmp_path, repository):
     repo, revision = repository

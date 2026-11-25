@@ -19,7 +19,7 @@ import pytest
         ("sources/git.py", "_clone_at_commit"),
         ("sources/shared.py", "clean_checkout"),
         ("sources/shared.py", "_index_refresh_owned"),
-        ("sources/shared.py", "verify"),
+        ("sources/shared.py", "_clean_at_revision"),
         ("sources/shared.py", "ensure"),
         ("modules/activator.py", "_install_dependencies_uncached"),
         ("modules/batch.py", "_install"),
