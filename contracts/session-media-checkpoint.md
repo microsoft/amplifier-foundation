@@ -44,7 +44,9 @@ The receipt verifies the exact primary inode/content and canonical rows after
 file and directory fsync. It refuses pending append, backup recovery, symlink or
 parent traversal, changed source, ambiguous JSON and altered/forged receipts.
 Iterators must be exhausted: a late source check can refuse after yielding a ref.
-The store exhausts verification before binding any committed acceptance.
+The store exhausts verification, flushes each referenced record and flushes their
+shared directory once before binding acceptance or retiring any staging. A failed
+directory flush leaves staging available for a later acknowledgement.
 
 After the source verifier finishes, a durable, unexpired image's verified asset
 and committed record own its original bytes. The writer can retire that

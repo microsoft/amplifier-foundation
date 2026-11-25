@@ -465,6 +465,77 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             self.store.resolve_ref(ref)
 
 
+    async def test_committed_record_without_staging_can_reopen(self):
+        ref = await self.stage()
+        await self.commit(ref)
+        record_path, = (self.root / "records").glob("*.json")
+        record = json.loads(record_path.read_bytes())
+        record.pop("staging")
+        record_path.write_text(json.dumps(record))
+        self.store.close()
+        self.store = SessionMediaStore(self.root, "session1", policy=self.policy,
+                                       checkpoint_verifier=lambda receipt: receipt["refs"])
+        self.store.acknowledge_checkpoint({"refs": [ref]})
+        with self.store.resolve_ref(ref) as stream:
+            self.assertEqual(stream.read(), self.data)
+
+
+    async def test_stage_survives_if_its_committed_owner_disappears_before_cleanup(self):
+        ref = await self.stage()
+        await self.store.publish([ref], origin=self.origin, disposition="retain")
+        records = self.root / "records"
+        record_path, = records.glob("*.json")
+        directory_identity = records.stat()
+        real_fsync = os.fsync
+
+        def remove_record_after_barrier(fd):
+            real_fsync(fd)
+            if os.path.samestat(os.fstat(fd), directory_identity):
+                record_path.unlink()
+
+        with patch("os.fsync", side_effect=remove_record_after_barrier):
+            self.store.acknowledge_checkpoint({"refs": [ref]})
+        staged, = (self.root / "staging").glob("*.bin")
+        self.assertEqual(staged.read_bytes(), self.data)
+        with self.assertRaises(MediaRefusal):
+            self.store.resolve_ref(ref)
+
+
+    async def test_checkpoint_flushes_all_records_before_retiring_staging(self):
+        first = await self.stage()
+        second = await self.stage(origin={**self.origin, "id": "call2"})
+        for ref in (first, second):
+            await self.store.publish([ref], origin=ref["provenance"], disposition="retain")
+        receipt = {"refs": [first, second]}
+        records, staging = self.root / "records", self.root / "staging"
+        directory_identity = records.stat()
+        real_fsync = os.fsync
+        barriers = []
+
+        def observe(fd):
+            if os.path.samestat(os.fstat(fd), directory_identity):
+                states = sorted(json.loads(p.read_bytes())["state"] for p in records.glob("*.json"))
+                barriers.append((states, len(list(staging.glob("*.bin")))))
+                if len(barriers) == 1:
+                    raise OSError("records directory flush interrupted")
+            real_fsync(fd)
+
+        with patch("os.fsync", side_effect=observe):
+            with self.assertRaisesRegex(OSError, "records directory flush interrupted"):
+                self.store.acknowledge_checkpoint(receipt)
+            for ref in (first, second):
+                with self.assertRaises(MediaRefusal):
+                    self.store.resolve_ref(ref)
+            self.store.acknowledge_checkpoint(receipt)
+            self.store.acknowledge_checkpoint(receipt)
+
+        self.assertEqual(barriers, [(["committed", "committed"], n) for n in (2, 2, 0)])
+        self.assertFalse(list(staging.iterdir()))
+        for ref in (first, second):
+            with self.store.resolve_ref(ref) as stream:
+                self.assertEqual(stream.read(), self.data)
+
+
     async def test_repeated_ack_preserves_committed_record_and_finishes_durability(self):
         ref = await self.stage()
         await self.store.publish([ref], origin=self.origin, disposition="retain")

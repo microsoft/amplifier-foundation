@@ -388,6 +388,11 @@ class SessionMediaStore:
             return json.load(stream)
 
     def _write(self, directory: int, name: str, value: Any) -> None:
+        self._replace_record(directory, name, value)
+        os.fsync(directory)
+
+    def _replace_record(self, directory: int, name: str, value: Any) -> None:
+        """Replace a file after flushing its bytes. The caller flushes its directory."""
         if self.read_only:
             raise MediaRefusal("read-only media store cannot mutate")
         temporary = f".{name}.{uuid.uuid4().hex}"
@@ -399,7 +404,6 @@ class SessionMediaStore:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
-        os.fsync(directory)
 
     def _origin(self, origin: Any, policy: MediaPolicy) -> tuple[dict, str]:
         if origin is None:
@@ -774,7 +778,8 @@ class SessionMediaStore:
                                          os.O_NOFOLLOW, 0o600, dir_fd=self._dirs["assets"])
                         except FileExistsError:
                             self._verify_file(ref, self._dirs["assets"], digest)
-                            self._fsync_entry(self._dirs["assets"], digest)
+                            self._fsync_file(self._dirs["assets"], digest)
+                            os.fsync(self._dirs["assets"])
                         else:
                             with os.fdopen(fd, "wb") as target:
                                 while chunk := source.read(_CHUNK):
@@ -829,23 +834,30 @@ class SessionMediaStore:
                 expired = expiry is not None and _date(expiry) <= datetime.now(timezone.utc)
                 if not (record["state"] == "committed" and expired):
                     self._verify_file(ref, self._dirs["assets"], ref["sha256"])
-                pending.write(_json([ref, not expired]) + b"\n")
+                stage = record.get("staging") if not expired else None
+                pending.write(_json({"ref": ref, "staging": stage}) + b"\n")
                 count += 1
             pending.seek(0)
             directory = self._dirs["records"]
             for line in pending:
-                ref, live_asset = json.loads(line)
-                name = _key(ref) + ".json"
+                name = _key(json.loads(line)["ref"]) + ".json"
                 record = self._read(directory, name)
                 if (record["state"] == "committed" and "checkpoint" in record
                         and _key(record["checkpoint"]) == checkpoint_key):
                     # A prior replace can be visible despite a failed directory sync.
-                    self._fsync_entry(directory, name)
+                    self._fsync_file(directory, name)
                 else:
                     record.update(state="committed", checkpoint=serialized)
-                    self._write(directory, name, record)
-                if live_asset and record.get("staging"):
-                    self._retire_committed_stage(record)
+                    self._replace_record(directory, name, record)
+            if count:
+                # All entries share this directory. Finish the durability barrier
+                # before retiring any staging or granting checkpoint access.
+                os.fsync(directory)
+                pending.seek(0)
+                for line in pending:
+                    observation = json.loads(line)
+                    if observation["staging"]:
+                        self._retire_committed_stage(observation)
             self._checkpoints = {checkpoint_key: receipt}
         # This pipeline acknowledges only the existing legacy canonical source.
         # A caller-supplied diagnostic kind cannot select a different format.
@@ -877,6 +889,11 @@ class SessionMediaStore:
         try:
             if not self._owns_stage(record):
                 return
+            # Only a surviving stage needs another record read. Its current
+            # committed owner must still name the stage observed before the flush.
+            current = self._read(self._dirs["records"], _key(ref) + ".json")
+            if not current or current.get("state") != "committed" or current.get("staging") != name:
+                return
             try:
                 self._verify_file(ref, directory, name)
             except FileNotFoundError:
@@ -887,15 +904,13 @@ class SessionMediaStore:
             return
 
     @staticmethod
-    def _fsync_entry(directory: int, name: str) -> None:
-        """Reconciliation must finish durability barriers, not only hash bytes."""
+    def _fsync_file(directory: int, name: str) -> None:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         try:
             _private_file(fd)
             os.fsync(fd)
         finally:
             os.close(fd)
-        os.fsync(directory)
 
     def verify_checkpoint(self, ref: dict) -> None:
         record = self._read(self._dirs["records"], _key(ref) + ".json")
